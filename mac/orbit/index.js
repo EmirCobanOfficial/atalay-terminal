@@ -150,8 +150,10 @@ const QUALITY = {
   behind: { fps: 20, dpr: 1.25 },
   saver: { fps: 30, dpr: 1.25 },
 };
-// What the app reports through activity() and power(); a hidden page also stops on its own.
-const ACT = { visible: true, focused: true, saver: false, until: 0 };
+// What the app reports through activity() and power(); a hidden page also stops on its own, and so does a map whose box
+// is gone (shown: Source Control's view, git-mode, and the activity bar's views, cloud-mode, put #mapwrap out of the
+// layout; Settings is a window over the dashboard and leaves it there).
+const ACT = { visible: true, focused: true, saver: false, until: 0, shown: true };
 function wantDpr() {
   const d = !ACT.saver || ACT.focused ? QUALITY.front.dpr : QUALITY.behind.dpr;
   return Math.min(d, ACT.saver ? QUALITY.saver.dpr : d, window.devicePixelRatio || 1);
@@ -171,6 +173,7 @@ const CAM = { right: new THREE.Vector3(), up: new THREE.Vector3(), fwd: new THRE
 let viewReady = false;
 
 function resize() {
+  if (!ACT.shown) return; // sized again once it's back in the layout
   const w = Math.max(200, host.clientWidth), h = Math.max(160, host.clientHeight), dpr = wantDpr();
   if (w === SIZE.w && h === SIZE.h && dpr === SIZE.dpr) return;
   SIZE.w = w;
@@ -191,7 +194,13 @@ function resize() {
     intro();
   }
 }
-new ResizeObserver(resize).observe(host);
+new ResizeObserver(() => {
+  // Out of the layout: no frames until it's back, at the size it had (no render targets reallocated twice).
+  ACT.shown = host.clientWidth > 0 && host.clientHeight > 0;
+  if (!ACT.shown) return;
+  resize();
+  wake();
+}).observe(host);
 
 function fitDistance() {
   const vf = THREE.MathUtils.degToRad(camera.fov / 2);
@@ -1827,8 +1836,8 @@ function refreshCore() {
 
 // ---------- loop ----------
 // Frames are drawn only as often as they're needed (QUALITY): the front rate while the dashboard is in front and
-// for a moment after you zoom or something happens on the map, less behind a chat window, and none at all when it
-// can't be seen.
+// for a moment after you zoom or something happens on the map, less behind another app, and none at all when it can't
+// be seen or a full view took it out of the layout (ACT.shown).
 let rafId = 0, lastFrame = performance.now(), lastMinimap = 0;
 function poke(ms = 1500) {
   ACT.until = performance.now() + ms;
@@ -1838,7 +1847,8 @@ function poke(ms = 1500) {
 let frameTimer = 0;
 function nextFrame() {
   frameTimer = 0;
-  if (!rafId && ACT.visible && !document.hidden) rafId = requestAnimationFrame(frame);
+  // A full view took the map out of the layout while it slept: the loop stops here, and the ResizeObserver wakes it.
+  if (!rafId && ACT.visible && ACT.shown && !document.hidden) rafId = requestAnimationFrame(frame);
 }
 function wake() {
   // A sleeping loop (an interaction raised the rate): its frame comes now. lastFrame stays, or the frame would wait again.
@@ -1846,7 +1856,7 @@ function wake() {
     clearTimeout(frameTimer);
     return nextFrame();
   }
-  if (rafId || !ACT.visible || document.hidden) return;
+  if (rafId || !ACT.visible || !ACT.shown || document.hidden) return;
   lastFrame = performance.now();
   rafId = requestAnimationFrame(frame);
 }
@@ -1858,8 +1868,8 @@ function targetFps(now) {
 document.addEventListener('visibilitychange', wake);
 function frame(now) {
   rafId = 0;
-  if (!ACT.visible || document.hidden) return;
-  // Throttled (behind a chat, power save): an animation frame each display refresh only to skip it kept the main thread
+  if (!ACT.visible || !ACT.shown || document.hidden) return;
+  // Throttled (behind another app with nothing happening, power save): an animation frame each display refresh only to skip it kept the main thread
   // awake at 60–120 Hz. A frame more than ~1.5 refreshes away sleeps on a timer instead. At 60 fps it stays on rAF.
   const target = 1000 / targetFps(now);
   const dueIn = target - (now - lastFrame) - 2;
