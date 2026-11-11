@@ -133,12 +133,15 @@ const bloom = new UnrealBloomPass(new THREE.Vector2(512, 512), 0.62, 0.45, 0.6);
 composer.addPass(bloom);
 composer.addPass(new OutputPass());
 
-// Frame rate and resolution by where the map is. In front: 60 fps at full Retina resolution, since below either the
-// thin lines and names of the moving session hexagons flicker in the glow. Behind a chat window (or another app) the
-// map is in the corner of your eye, so it draws fewer and smaller frames. In power save (power(), from the app: the
-// switch on the map, a low battery or Low Power Mode on the Mac; on battery on Windows) it never goes past `saver`, in
-// front either, and the cinematic camera doesn't start on its own.
-// Dragging the view, or the camera flying somewhere, gets the front rate anywhere.
+// Frame rate and resolution by where the map is. In front: 60 fps at the front resolution (`front.dpr`, 1.5 on a Retina
+// display, see below), since below either the thin lines and names of the moving session hexagons flicker in the glow.
+// Behind another app (activity(): the app isn't the active one, on the Mac and on Windows; one of its own chat windows
+// in front still counts as in front) it keeps that resolution and the front rate for a moment after something happens
+// on it (a tool call, its reply, a session's status: poke), so what moves stays smooth; with nothing happening it's in
+// the corner of your eye and draws the behind rate. In power save (power(), from the app: the switch on the map, a low
+// battery or Low Power Mode on the Mac; on battery on Windows) it never goes past `saver`, in front either, draws
+// smaller frames behind, and the cinematic camera doesn't start on its own. Dragging the view, or the camera flying
+// somewhere, gets the front rate anywhere.
 // At Retina the renderer and the bloom pipeline run at pixelRatio × canvas pixels; DPR 2 is 4× the fragment work of
 // DPR 1, and bloom's five-level mip chain pays that cost every frame. 1.5 keeps stylised low-poly looking the same
 // (fine rings and text barely soften) while cutting compositor and GPU load on macOS WindowServer.
@@ -1352,6 +1355,7 @@ function wireHit(ev, t) {
 
 function onEvent(ev) {
   const now = performance.now();
+  poke(1600); // a bolt's flight: up to 1.55 s
   const node = nodeOf(ev);
   switch (ev.k) {
     case 'tool': {
@@ -1806,6 +1810,7 @@ function onState(st) {
 function onStatus(sid, status) {
   const n = NODES.get(sid);
   if (!n) return;
+  poke(2000); // the three ripples of "waiting" end 1.92 s on
   if (status === 'waiting') for (let i = 0; i < 3; i++) ripple(n, STATUS.waiting.color, 90, 1400, i * 260);
   else if (status === 'idle') ripple(n, STATUS.idle.color, 80, 1500);
 }
@@ -1846,7 +1851,7 @@ function wake() {
   rafId = requestAnimationFrame(frame);
 }
 function targetFps(now) {
-  if (press || camAnim || !ACT.saver) return QUALITY.front.fps;
+  if (press || camAnim) return QUALITY.front.fps;
   const fps = ACT.focused || now < ACT.until ? QUALITY.front.fps : QUALITY.behind.fps;
   return ACT.saver ? Math.min(fps, QUALITY.saver.fps) : fps;
 }
