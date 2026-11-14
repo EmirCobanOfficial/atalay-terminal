@@ -14,7 +14,7 @@ enum Limits {
 
     private static let script = """
     #!/bin/sh
-    # Atalay's Terminal: Claude Code passes its status JSON here (statusLine in its settings.json). The latest one that
+    # Orbiterm: Claude Code passes its status JSON here (statusLine in its settings.json). The latest one that
     # carries the account's usage limits is kept for the dashboard. A status line of your own (statusline-next) still
     # gets the JSON and shows what it prints.
     dir="$HOME/Library/Application Support/atalay-terminal"

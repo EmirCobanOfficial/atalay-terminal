@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/atalaykarahan/orbiterm-releases/main/assets/icon.png" width="140" alt="Atalay's Terminal">
+  <img src="https://raw.githubusercontent.com/atalaykarahan/orbiterm-releases/main/assets/icon.png" width="140" alt="Orbiterm">
 </p>
 
-<h1 align="center">Atalay's Terminal</h1>
+<h1 align="center">Orbiterm</h1>
 
 <p align="center">
   A HUD for running many AI coding sessions (Claude Code, Codex, Antigravity) on a Mac or on Windows: every session on a
@@ -83,8 +83,8 @@ Works with Claude Code, Codex and Antigravity; not affiliated with Anthropic, Op
 Needs Xcode or the Command Line Tools (Swift 5.9+).
 
 ```sh
-cd app
-./build-app.sh --open      # builds "build/Atalay's Terminal.app" and opens it
+cd mac
+./build-app.sh --open      # builds "build/Orbiterm.app" and opens it
 ```
 
 A build from source has everything that runs on your Mac. Friends, messages and levels need the released app: its

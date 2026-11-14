@@ -13,7 +13,7 @@ enum CodexHooks {
     private static let scriptURL = support.appendingPathComponent("codex-hook.sh")
     private static let script = #"""
     #!/bin/sh
-    # Atalay's Terminal: Codex runs this on its hooks (~/.codex/hooks.json), the event's JSON on stdin. A PermissionRequest
+    # Orbiterm: Codex runs this on its hooks (~/.codex/hooks.json), the event's JSON on stdin. A PermissionRequest
     # (Codex is about to ask you to approve a command) is kept for the dashboard; the same session's next tool output, stop,
     # interrupt or prompt drops it. It prints nothing: Codex decides nothing differently and asks as usual.
     dir="$HOME/Library/Application Support/atalay-terminal/codex-waiting"

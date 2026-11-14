@@ -1,6 +1,6 @@
 'use strict';
 
-// The Windows app's link to the Atalay's Terminal API, in Electron's main process: the user's hacker name and tag, how
+// The Windows app's link to the Orbiterm API, in Electron's main process: the user's hacker name and tag, how
 // many are online, their XP, and the friends, messages and notifications that the API pushes into a live socket. It
 // ports the Mac app's Cloud.swift (with CloudBridge, the pages' "cloud" handler), Social.swift and ClientKey.swift.
 // main.js tells it what only main.js knows (whether the user is working, how long since the last input, the theme),

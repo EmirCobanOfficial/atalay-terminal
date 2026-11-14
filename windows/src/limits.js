@@ -8,7 +8,7 @@ const path = require('path');
 
 // PowerShell, as Claude Code can run the command from Git Bash or from PowerShell. A status line the user had runs as
 // Claude Code would run it: through Git Bash when it's installed, else PowerShell (cmd would break a bash command).
-const SCRIPT = `# Atalay's Terminal: Claude Code passes its status JSON here (statusLine in its settings.json). The latest one that
+const SCRIPT = `# Orbiterm: Claude Code passes its status JSON here (statusLine in its settings.json). The latest one that
 # carries the account's usage limits is kept for the dashboard. A status line of your own (statusline-next) still gets
 # the JSON and shows what it prints, run as Claude Code runs one: through Git Bash when it's installed, else PowerShell.
 $ErrorActionPreference = 'SilentlyContinue'

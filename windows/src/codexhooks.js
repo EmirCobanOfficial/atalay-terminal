@@ -18,7 +18,7 @@ try {
   sqlite = require('node:sqlite');
 } catch {}
 
-const SCRIPT = `# Atalay's Terminal: Codex runs this on its hooks (~/.codex/hooks.json), the event's JSON on stdin. A PermissionRequest
+const SCRIPT = `# Orbiterm: Codex runs this on its hooks (~/.codex/hooks.json), the event's JSON on stdin. A PermissionRequest
 # (Codex is about to ask you to approve a command) is kept for the dashboard; the same session's next tool output, stop,
 # interrupt or prompt drops it. It prints nothing: Codex decides nothing differently and asks as usual.
 $ErrorActionPreference = 'SilentlyContinue'
