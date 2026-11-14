@@ -7,13 +7,13 @@
 #   scripts/publish.sh ["what changed"]      notes: one line per change (they show as a list in the app)
 #   ATALAY_API_URL        API to publish to (default: production)
 #   ATALAY_ADMIN_TOKEN    the API's ADMIN_TOKEN (default: ~/.atalay-terminal/admin-token, or ../../orbiterm-api/.env for a local API)
-#   ATALAY_RELEASES_REPO  GitHub repo for the files (default: atalaykarahan/atalay-terminal-releases)
+#   ATALAY_RELEASES_REPO  GitHub repo for the files (default: atalaykarahan/orbiterm-releases)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 NOTES="${1:-}"
 API="${ATALAY_API_URL:-https://terminal-api.atalaykarahan.com}"
-REPO="${ATALAY_RELEASES_REPO:-atalaykarahan/atalay-terminal-releases}"
+REPO="${ATALAY_RELEASES_REPO:-atalaykarahan/orbiterm-releases}"
 LOCAL=0
 case "$API" in http://127.0.0.1* | http://localhost*) LOCAL=1 ;; esac
 TOKEN="${ATALAY_ADMIN_TOKEN:-}"

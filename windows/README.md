@@ -1,6 +1,6 @@
 # Orbiterm for Windows
 
-**Out as a pre-release**: [the releases repo's windows release](https://github.com/atalaykarahan/atalay-terminal-releases/releases/tag/windows).
+**Out as a pre-release**: [the releases repo's windows release](https://github.com/atalaykarahan/orbiterm-releases/releases/tag/windows).
 It's built in the open, like the rest of the app, but its installers are built and published on the Windows PC, not on
 GitHub's machines, since they carry the app's API key (below).
 
@@ -39,7 +39,7 @@ node-pty were changed.
 ### Releases and updates
 
 Installed copies look for updates every minute (and on waking or unlocking the PC), as the Mac's heartbeat does, in the
-`windows` release of [atalay-terminal-releases](https://github.com/atalaykarahan/atalay-terminal-releases)
+`windows` release of [orbiterm-releases](https://github.com/atalaykarahan/orbiterm-releases)
 (electron-updater; package.json's `publish`): they read its latest.yml (about 1 KB) with a time limit and hand over to
 electron-updater only when it names a newer version, so a release shows within a minute of going out. It's a pre-release, so it never becomes the repo's latest, the Mac's `.dmg` link keeps working, and a newer
 Mac release can't hide the Windows files. An update downloads by itself and goes in when the app quits, or right away

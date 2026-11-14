@@ -2030,10 +2030,11 @@ const updates = (() => {
   // Where to look is in resources\app-update.yml, written by the release. When it's missing (0.22.0 and 0.22.1 went out
   // without it and never looked for an update) or the API names another feed (apiRelease), a copy of our own in the
   // profile is used instead, so the check never hangs on that one file.
-  const OWN_FEED = 'https://github.com/atalaykarahan/atalay-terminal-releases/releases/download/windows';
+  const OWN_FEED = 'https://github.com/atalaykarahan/orbiterm-releases/releases/download/windows';
   // The only feeds taken from the API: one release (a plain tag, no "/" or "%", so no "../" can lead elsewhere on GitHub)
   // of the app's own releases repo. The installer isn't code-signed: where it comes from is what keeps it the app's own.
-  const FEED_RE = /^https:\/\/github\.com\/atalaykarahan\/atalay-terminal-releases\/releases\/download\/[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$/;
+  // The repo was atalay-terminal-releases until 0.22.3; GitHub still forwards that name, and the server may give it.
+  const FEED_RE = /^https:\/\/github\.com\/atalaykarahan\/(?:orbiterm|atalay-terminal)-releases\/releases\/download\/[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$/;
   let feed = null;
   function useFeed(url) {
     const file = path.join(app.getPath('userData'), 'app-update.yml');

@@ -74,7 +74,7 @@
     },
     "publish": {
       "provider": "generic",
-      "url": "https://github.com/atalaykarahan/atalay-terminal-releases/releases/download/windows"
+      "url": "https://github.com/atalaykarahan/orbiterm-releases/releases/download/windows"
     },
     "electronFuses": {
       "runAsNode": false,

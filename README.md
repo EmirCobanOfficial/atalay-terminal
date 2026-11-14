@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/atalaykarahan/atalay-terminal-releases/main/assets/icon.png" width="140" alt="Atalay's Terminal">
+  <img src="https://raw.githubusercontent.com/atalaykarahan/orbiterm-releases/main/assets/icon.png" width="140" alt="Atalay's Terminal">
 </p>
 
 <h1 align="center">Atalay's Terminal</h1>
@@ -11,15 +11,15 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/atalaykarahan/atalay-terminal-releases/releases/latest/download/Atalays-Terminal.dmg"><b>⬇&nbsp; Download for macOS</b></a>
+  <a href="https://github.com/atalaykarahan/orbiterm-releases/releases/latest/download/Atalays-Terminal.dmg"><b>⬇&nbsp; Download for macOS</b></a>
   &nbsp;·&nbsp;
-  <a href="https://github.com/atalaykarahan/atalay-terminal-releases/releases/download/windows/Atalays-Terminal-Setup.exe"><b>⬇&nbsp; Download for Windows</b></a>
+  <a href="https://github.com/atalaykarahan/orbiterm-releases/releases/download/windows/Atalays-Terminal-Setup.exe"><b>⬇&nbsp; Download for Windows</b></a>
   &nbsp;·&nbsp;
-  <a href="https://github.com/atalaykarahan/atalay-terminal-releases">Install notes and screenshots</a>
+  <a href="https://github.com/atalaykarahan/orbiterm-releases">Install notes and screenshots</a>
 </p>
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/atalaykarahan/atalay-terminal-releases/main/assets/preview.gif" width="900" alt="Claude Code sessions orbiting live, with their subagents, tool calls, files, web research and spend">
+  <img src="https://raw.githubusercontent.com/atalaykarahan/orbiterm-releases/main/assets/preview.gif" width="900" alt="Claude Code sessions orbiting live, with their subagents, tool calls, files, web research and spend">
 </p>
 
 ## What it does
