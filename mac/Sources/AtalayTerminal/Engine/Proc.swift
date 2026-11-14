@@ -57,6 +57,45 @@ enum Proc {
 
     static func children(of pid: Int32) -> [Int32] { list(UInt32(PROC_PPID_ONLY), UInt32(bitPattern: pid)) }
 
+    /// The file descriptors `pid` has open.
+    private static func descriptors(_ pid: Int32) -> [proc_fdinfo] {
+        let stride = MemoryLayout<proc_fdinfo>.stride
+        let size = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, nil, 0)
+        guard size > 0 else { return [] }
+        var fds = [proc_fdinfo](repeating: proc_fdinfo(), count: Int(size) / stride + 16)
+        let got = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, &fds, Int32(fds.count * stride))
+        return got > 0 ? Array(fds.prefix(Int(got) / stride)) : []
+    }
+
+    /// The processes of a task `pid` started at `at` (ms): its descendants (five levels down, never itself) that started
+    /// within three seconds of it, with theirs. Antigravity runs each background command in a terminal of its own and
+    /// copies its output to the task's file itself, so the time is what ties a task to its processes.
+    static func started(around at: Double, under pid: Int32) -> [Int32] {
+        var all: [Int32] = [], level = children(of: pid)
+        for _ in 0..<5 where !level.isEmpty {
+            all += level
+            level = level.flatMap { children(of: $0) }
+        }
+        let roots = all.filter { p in info(p).map { abs(Double($0.started) / 1000 - at) < 3_000 } ?? false }
+        var found = Set(roots), next = roots
+        for _ in 0..<5 where !next.isEmpty {
+            next = next.flatMap { children(of: $0) }
+            found.formUnion(next)
+        }
+        return Array(found)
+    }
+
+    /// Whether `pid` listens on a TCP port: a server, up and waiting for whoever connects.
+    static func listens(_ pid: Int32) -> Bool {
+        descriptors(pid).contains { fd in
+            guard fd.proc_fdtype == UInt32(PROX_FDTYPE_SOCKET) else { return false }
+            var info = socket_fdinfo()
+            let size = Int32(MemoryLayout<socket_fdinfo>.size)
+            guard proc_pidfdinfo(pid, fd.proc_fd, PROC_PIDFDSOCKETINFO, &info, size) == size else { return false }
+            return info.psi.soi_kind == Int32(SOCKINFO_TCP) && info.psi.soi_proto.pri_tcp.tcpsi_state == Int32(TSI_S_LISTEN)
+        }
+    }
+
     static func all() -> [Int32] { list(UInt32(PROC_ALL_PIDS), 0) }
 
     private static func list(_ type: UInt32, _ info: UInt32) -> [Int32] {

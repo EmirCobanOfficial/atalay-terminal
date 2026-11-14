@@ -91,6 +91,9 @@ final class OtherAI: Track {
     var plan: AgyPlan?, stepsKnown = false
     var transcriptOpen = false, userStepIdx = 0
     var runningBgTasks = Set<String>()
+    /// When a command it started (not a helper it keeps from its start, such as an MCP server) last used the CPU: a
+    /// background task still at work though it writes nothing (RadarEngine.agyPendingWork).
+    var childCpuAt = 0.0
     var title = ""
     /// Its subagents (Antigravity's child conversations), as Claude's are shown: the dashboard's workers, its drones. One
     /// of them waiting for the user's permission makes the session wait.

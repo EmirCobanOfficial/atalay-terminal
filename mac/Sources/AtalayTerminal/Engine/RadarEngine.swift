@@ -1115,7 +1115,10 @@ final class RadarEngine {
                 for p in level {
                     guard let info = p == pid ? f.info : Proc.info(p) else { continue }
                     if let prev = otherCpu[p], now > prev.at, info.cpuTime >= prev.ns {
-                        used += Double(info.cpuTime - prev.ns) / ((now - prev.at) * 1e9) * 100
+                        let share = Double(info.cpuTime - prev.ns) / ((now - prev.at) * 1e9) * 100
+                        used += share
+                        // A command it started, past the helpers it starts with: its work counts after the turn too.
+                        if p != pid, share >= 1, Double(info.started) / 1000 >= O.firstTs + 5000 { O.childCpuAt = ms }
                     }
                     otherCpu[p] = (info.cpuTime, now)
                     measured.insert(p)
@@ -1471,8 +1474,9 @@ final class RadarEngine {
                 open = true
             } else if nowMs() - logged.since >= 700 {
                 // Its CLI is back at its prompt (a declined tool's ERROR or a background step's RUNNING in the transcript
-                // say nothing then).
-                open = false
+                // say nothing then): it still works on what it goes on with by itself, a timer it set or a background task
+                // at work ("I'll share the plan once that's done"), as its database tells (agyPendingWork).
+                open = Self.agyPendingWork(root, id, pid: O.pid, now: nowMs(), cpuAt: O.childCpuAt)
                 O.transcriptOpen = false
                 O.runningBgTasks.removeAll()
             }
@@ -1624,8 +1628,12 @@ final class RadarEngine {
             guard let name = names.first(where: { name in
                 guard let fh = FileHandle(forReadingAtPath: dir + "/" + name) else { return false }
                 defer { try? fh.close() }
-                let head = String(decoding: (try? fh.read(upToCount: 300)) ?? Data(), as: UTF8.self)
-                return head.split(separator: "\n").first.map { $0.hasSuffix(tag) || $0.contains(tag + " ") } ?? false
+                // The line that starts its language server names it: the first one, unless something came before it
+                // (`--model` with a model its config doesn't list writes two lines first).
+                let head = String(decoding: (try? fh.read(upToCount: 4096)) ?? Data(), as: UTF8.self)
+                return head.split(separator: "\n").prefix(12).contains {
+                    $0.contains("Starting language server process") && ($0.hasSuffix(tag) || $0.contains(tag + " "))
+                }
             }) else { return }
             agyConfirms[O.id] = (dir + "/" + name, 0, nil)
             agyTurns[O.id] = (nil, 0, nil)
@@ -1820,12 +1828,11 @@ final class RadarEngine {
             seen.insert(id)
             let path = root + "/brain/" + id + "/.system_generated/logs/transcript.jsonl"
             let mtime = fileStat(path)?.mtime ?? 0
-            // Running: its summary says so, or a step of its own isn't over yet. A subagent that set a `schedule` timer
-            // (or waits on a background task) has ended its turn, so its summary says IDLE, yet it goes on by itself
-            // when the timer fires: its parent's planet must not park meanwhile. Half an hour after it last wrote, a step
-            // left open no longer counts.
+            // Running: its summary says so, or it goes on by itself though its turn is over (its summary says IDLE then),
+            // as a subagent that set a `schedule` timer or waits on a background task does (agyPendingWork): its parent's
+            // planet must not park meanwhile. One that hasn't written for six hours isn't looked into.
             var running = (status.hasSuffix("_RUNNING") || status.hasSuffix("_BUSY")) && !killed
-            if !running, !killed, now - mtime < 30 * Self.MIN { running = Self.agySteps(root, id)?.active == true }
+            if !running, !killed, now - mtime < 360 * Self.MIN { running = Self.agyPendingWork(root, id, pid: O.pid, now: now, cpuAt: O.childCpuAt) }
             var log = O.agentLogs[id] ?? AgyLog()
             if mtime != log.mtime {
                 log = Self.agyLog(path, mtime: mtime, id: id)
@@ -1936,6 +1943,41 @@ final class RadarEngine {
         } done: { read = $0 }
         guard read else { return nil }
         return (active, open, waiting, !active && lastStatus == 6)
+    }
+
+    /// What an Antigravity conversation goes on with by itself once its turn is over, from its steps not over yet: a
+    /// `schedule` timer until it fires (its task's start plus the call's DurationSeconds), a background task while it's
+    /// at work (its output, tasks/task-<step>.log, written, or a command it started using the CPU, `cpuAt`, in the last
+    /// minute, or started less than a minute ago). A server it leaves running isn't work once it listens on a port (its
+    /// processes: Antigravity's own that started with the task), and a watcher goes quiet once it's up: the user's turn
+    /// then. Any other step still open (pending, being written, waiting, queued) counts while the conversation wrote in
+    /// the last half hour.
+    private static func agyPendingWork(_ root: String, _ id: String, pid: Int32, now: Double, cpuAt: Double) -> Bool {
+        guard let db = agyOpen(root + "/conversations/" + id + ".db") else { return false }
+        defer { sqlite3_close(db) }
+        let dir = root + "/brain/" + id + "/.system_generated"
+        let wrote = fileStat(dir + "/logs/transcript.jsonl")?.mtime ?? 0
+        let key = "CAST('\"DurationSeconds\":' AS BLOB)"
+        var pending = false
+        agyRows(db, "SELECT idx, status, instr(metadata, CAST('schedule' AS BLOB)) > 0 AND instr(metadata, \(key)) > 0, "
+                + "CAST(substr(metadata, instr(metadata, \(key)) + 18, 12) AS TEXT) FROM steps WHERE status IN (1, 2, 8, 9, 11)") { col in
+            if col(1) != "2" {
+                pending = now - wrote < 30 * MIN
+                return !pending
+            }
+            let log = dir + "/tasks/task-" + col(0) + ".log"
+            let created = (try? FileManager.default.attributesOfItem(atPath: log))?[.creationDate] as? Date
+            let start = created.map { $0.timeIntervalSince1970 * 1000 } ?? wrote
+            if col(2) == "1", let seconds = Double(col(3).prefix { $0.isNumber }) {
+                pending = now < start + seconds * 1000 + 60_000
+            } else if created != nil, Proc.started(around: start, under: pid).contains(where: Proc.listens) {
+                pending = false
+            } else {
+                pending = now - start < 60_000 || now - (fileStat(log)?.mtime ?? 0) < 60_000 || now - cpuAt < 60_000
+            }
+            return !pending
+        }
+        return pending
     }
 
     /// The tool call a step runs: the reply's calls run in order, a step each, right after it.
