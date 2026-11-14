@@ -560,6 +560,64 @@ function agySteps(root, id, sinceStep = 0, planIdx = null) {
   }
 }
 
+// The processes of a task started at `at` (ms) under an Antigravity (`procs`, runaways.js's reading of everything under
+// it, with each one's parent and depth): its descendants five levels down that started within three seconds of it, with
+// theirs. Antigravity runs each background command in a terminal of its own and copies its output to the task's file
+// itself, so the time is what ties a task to its processes. As the Mac's Proc.started(around:under:).
+function agyStartedAround(procs, at) {
+  let next = new Set(procs.filter((q) => q.depth < 5 && Math.abs(q.started - at) < 3000).map((q) => q.pid));
+  const found = new Set(next);
+  for (let d = 0; d < 5 && next.size; d++) {
+    next = new Set(procs.filter((q) => next.has(q.ppid)).map((q) => q.pid));
+    for (const pid of next) found.add(pid);
+  }
+  return procs.filter((q) => found.has(q.pid));
+}
+
+// What an Antigravity conversation goes on with by itself once its turn is over, from its steps not over yet: a
+// `schedule` timer until it fires (its task's start plus the call's DurationSeconds), a background task while it's at
+// work (its output, tasks\task-<step>.log, written, or a command it started using the CPU, `cpuAt`, in the last minute,
+// or started less than a minute ago). A server it leaves running isn't work once it listens on a port (its processes:
+// the Antigravity's own that started with the task, `procs`), and a watcher goes quiet once it's up: the user's turn
+// then. Any other step still open (pending, being written, waiting, queued) counts while the conversation wrote in the
+// last half hour. As the Mac's RadarEngine.agyPendingWork.
+function agyPendingWork(root, id, now, cpuAt, procs) {
+  const db = agyOpen(path.join(root, 'conversations', `${id}.db`));
+  if (!db) return false;
+  const key = `CAST('"DurationSeconds":' AS BLOB)`;
+  let rows = [];
+  try {
+    rows = db
+      .prepare(
+        `SELECT idx, status, instr(metadata, CAST('schedule' AS BLOB)) > 0 AND instr(metadata, ${key}) > 0 AS timer, ` +
+          `CAST(substr(metadata, instr(metadata, ${key}) + 18, 12) AS TEXT) AS seconds FROM steps WHERE status IN (1, 2, 8, 9, 11)`,
+      )
+      .all();
+  } catch {
+    return false;
+  } finally {
+    agyClose(db);
+  }
+  const stat = (file) => {
+    try {
+      return fs.statSync(file);
+    } catch {
+      return null;
+    }
+  };
+  const dir = path.join(root, 'brain', id, '.system_generated');
+  const wrote = stat(path.join(dir, 'logs', 'transcript.jsonl'))?.mtimeMs || 0;
+  return rows.some((r) => {
+    if (Number(r.status) !== 2) return now - wrote < 30 * MIN;
+    const log = stat(path.join(dir, 'tasks', `task-${r.idx}.log`));
+    const start = log ? log.birthtimeMs : wrote;
+    const seconds = /^\d+/.exec(String(r.seconds ?? ''));
+    if (Number(r.timer) === 1 && seconds) return now < start + Number(seconds[0]) * 1000 + 60_000;
+    if (log && procs && agyStartedAround(procs, start).some((q) => q.listens)) return false;
+    return now - start < 60_000 || now - (log ? log.mtimeMs : 0) < 60_000 || now - cpuAt < 60_000;
+  });
+}
+
 // The tool call a step runs: a reply's calls run in order, a step each, right after it.
 function agyPlanned(plan, step) {
   const k = step - plan.idx - 1;
@@ -2983,6 +3041,10 @@ class RadarEngine {
         this.stateDirty = true;
       }
       O.commandStarted = a.commandStarted || 0;
+      // An Antigravity's processes, and when a command it started last used the CPU: a background task still at work
+      // though it writes nothing (agyPendingWork).
+      if (a.procs) O.procs = a.procs;
+      if (a.childBusy) O.childCpuAt = now;
       if (O.tool === 'Codex' && a.cwd) this.readCodexLog(O, a.cwd, a.started, now);
       if (O.tool === 'Antigravity' && a.cwd) this.readAntigravity(O, a.cwd, now);
       if (a.pct >= 1) O.busyUntil = now + 10_000;
@@ -3308,8 +3370,9 @@ class RadarEngine {
       if (turn && turn.working === true) open = true;
       else if (turn && turn.working === false && Date.now() - turn.since >= 700) {
         // Its CLI is back at its prompt (a declined tool's ERROR or a background step's RUNNING in the transcript say
-        // nothing then).
-        open = false;
+        // nothing then): it still works on what it goes on with by itself, a timer it set or a background task at work
+        // ("I'll share the plan once that's done"), as its database tells (agyPendingWork).
+        open = agyPendingWork(root, id, now, O.childCpuAt || 0, O.procs || null);
         O.transcriptOpen = false;
         if (O.runningBgTasks) O.runningBgTasks.clear();
       }
@@ -3382,7 +3445,8 @@ class RadarEngine {
   // `doRefreshQuota:` after it, not a forced one, ends it, as `Cancelling …` does: true of every turn end across 13 logs,
   // a declined tool's too, and never mid-turn), and the confirmation or question it shows (`Surfacing tool
   // confirmation: "WriteFile" at step 4`, `Surfacing ask_question at step 7`) until the user answers. Its log is the one
-  // whose first line names its pid ("Starting language server process with pid 17732"), read from the start once; one
+  // whose language server's start names its pid ("Starting language server process with pid 17732", its first line or
+  // one of the first few), read from the start once; one
   // named for a time before the CLI started (cli-20261111_015629.log) is an earlier run's and isn't opened.
   readAgyConfirmations(O, root) {
     let c = this.agyConfirms.get(O.id);
@@ -3400,7 +3464,7 @@ class RadarEngine {
       };
       const name = names.find((n) => {
         if (born(n) < (O.firstTs || 0) - 120_000) return false;
-        const head = Buffer.alloc(300);
+        const head = Buffer.alloc(4096);
         let got = 0;
         try {
           const fd = fs.openSync(path.join(dir, n), 'r');
@@ -3412,8 +3476,15 @@ class RadarEngine {
         } catch {
           return false;
         }
-        const first = head.subarray(0, got).toString('utf8').split('\n')[0].replace(/\r$/, '');
-        return first.endsWith(tag) || first.includes(`${tag} `);
+        // The line that starts its language server names it: the first one, unless something came before it (`--model`
+        // with a model its config doesn't list writes two lines first).
+        return head
+          .subarray(0, got)
+          .toString('utf8')
+          .split('\n')
+          .slice(0, 12)
+          .map((l) => l.replace(/\r$/, ''))
+          .some((l) => l.includes('Starting language server process') && (l.endsWith(tag) || l.includes(`${tag} `)));
       });
       if (!name) return;
       c = { log: path.join(dir, name), offset: 0, pending: null };
@@ -3572,12 +3643,17 @@ class RadarEngine {
     for (const r of rows) {
       const id = r.conversation_id, title = r.title || '', agent = r.agent_name || '';
       seen.add(id);
-      const running = /_(RUNNING|BUSY)$/.test(r.status || '') && Number(r.killed) !== 1;
+      const killed = Number(r.killed) === 1;
       const file = path.join(root, 'brain', id, '.system_generated', 'logs', 'transcript.jsonl');
       let mtime = 0;
       try {
         mtime = fs.statSync(file).mtimeMs;
       } catch {}
+      // Running: its summary says so, or it goes on by itself though its turn is over (its summary says IDLE then), as a
+      // subagent that set a `schedule` timer or waits on a background task does (agyPendingWork): its parent's planet
+      // must not park meanwhile. One that hasn't written for six hours isn't looked into.
+      let running = /_(RUNNING|BUSY)$/.test(r.status || '') && !killed;
+      if (!running && !killed && now - mtime < 360 * MIN) running = agyPendingWork(root, id, now, O.childCpuAt || 0, O.procs || null);
       let log = O.agentLogs.get(id);
       if (!log || log.mtime !== mtime) {
         log = agyLog(file, mtime, id);

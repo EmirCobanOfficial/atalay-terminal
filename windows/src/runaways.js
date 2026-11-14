@@ -111,6 +111,26 @@ public static class AtlPower {
     int pct = (s.Flag & 128) != 0 || s.Flag == 255 || s.Percent > 100 ? -1 : s.Percent;
     return (s.Saver == 1 ? "1" : "0") + "\\t" + pct;
   }
+}
+public static class AtlPorts {
+  [DllImport("iphlpapi.dll")] static extern uint GetExtendedTcpTable(IntPtr table, ref int size, bool order, int af, int cls, int reserved);
+  // The processes listening on a TCP port, IPv4 and IPv6 (TCP_TABLE_OWNER_PID_LISTENER: rows of 24 and 56 bytes, the
+  // owner's pid last), as "pid,pid,…": a server, up and waiting for whoever connects (the engine's agyPendingWork).
+  public static string Listening() {
+    var pids = new System.Collections.Generic.HashSet<int>();
+    foreach (int af in new[] { 2, 23 }) {
+      int size = 0;
+      GetExtendedTcpTable(IntPtr.Zero, ref size, false, af, 3, 0);
+      if (size <= 0) continue;
+      IntPtr buf = Marshal.AllocHGlobal(size);
+      try {
+        if (GetExtendedTcpTable(buf, ref size, false, af, 3, 0) != 0) continue;
+        int n = Marshal.ReadInt32(buf), row = af == 2 ? 24 : 56;
+        for (int i = 0; i < n; i++) pids.Add(Marshal.ReadInt32(buf, 4 + i * row + row - 4));
+      } finally { Marshal.FreeHGlobal(buf); }
+    }
+    return string.Join(",", pids);
+  }
 }`;
 
 // `onPower({ saver, charge })`: with every reading on Windows, the battery's charge (%, null without one) and whether
@@ -124,6 +144,7 @@ function createRunaways({ onChange, onRead, onPower }) {
   // The latest reading of every process (Windows): pid -> { pid, ppid, orphan, started, cpu, name, cwd, cmd, pct }.
   let table = new Map();
   let kids = new Map(); // pid -> its children's pids
+  let listening = new Set(); // the pids listening on a TCP port, as of the latest reading (Windows)
   let wanted = [];
   let liveSessions = []; // [{ cwd, started }] from the engine
   let ask = () => {};
@@ -221,6 +242,9 @@ function createRunaways({ onChange, onRead, onPower }) {
       '  $pw = "0`t-1"; try { $pw = [AtlPower]::Of() } catch {}',
       '  try { if ($pm -and [string]$pm::EnergySaverStatus -eq "On") { $pw = "1" + $pw.Substring(1) } } catch {}',
       '  [void]$sb.Append("power`t$pw`n")',
+      // What listens on a TCP port: a server an Antigravity left running is up, not at work.
+      '  $ls = ""; try { $ls = [AtlPorts]::Listening() } catch {}',
+      '  [void]$sb.Append("listen`t$ls`n")',
       '  [void]$sb.Append("end`n")',
       '  [Console]::Out.Write($sb.ToString())',
       '  [Console]::Out.Flush()',
@@ -239,6 +263,10 @@ function createRunaways({ onChange, onRead, onPower }) {
         if (line.startsWith('power\t')) {
           const [, saver, pct] = line.split('\t');
           if (onPower) onPower({ saver: saver === '1', charge: Number(pct) >= 0 ? Number(pct) : null });
+          continue;
+        }
+        if (line.startsWith('listen\t')) {
+          listening = new Set(line.slice(7).split(',').map(Number).filter((n) => n > 0));
           continue;
         }
         if (line !== 'end') {
@@ -465,6 +493,10 @@ function createRunaways({ onChange, onRead, onPower }) {
      * The other AI tools running in a terminal (aiTool, TERMINAL_RE), each once: a launcher's child that's the same tool
      * (Codex's Node script starts its own codex.exe) isn't another, nor one Claude runs. Its CPU is all it runs: the
      * launcher only waits while its child works. [{ pid, started, tool, cwd, pct, chain (its parents) }]
+     * An Antigravity's also carries what it runs, for the engine's agyPendingWork (it goes on by itself after its turn):
+     * `procs`, every process under it (ten levels down) with its parent, start, depth and whether it listens on a TCP port;
+     * and `childBusy`, whether a command it started (past the helpers it starts with, such as an MCP server: five seconds
+     * after its own start) used the CPU in the last reading, as the Mac's RadarEngine sets childCpuAt.
      */
     ais() {
       const found = new Map();
@@ -485,7 +517,21 @@ function createRunaways({ onChange, onRead, onPower }) {
         for (let q = !p.orphan && table.get(p.ppid); q && chain.length < 12; q = !q.orphan && table.get(q.ppid)) chain.push(q);
         if (chain.some((q) => /^claude$/i.test(q.name)) || !chain.some((q) => TERMINAL_RE.test(q.name))) continue;
         const shell = shellCommand(pid);
-        out.push({ pid, started: p.started, tool, cwd: p.cwd || '', cmd: p.cmd || '', pct: busy([pid]), chain: chain.map((q) => q.pid), command: shell && shell.line, commandStarted: shell && shell.started });
+        const ai = { pid, started: p.started, tool, cwd: p.cwd || '', cmd: p.cmd || '', pct: busy([pid]), chain: chain.map((q) => q.pid), command: shell && shell.line, commandStarted: shell && shell.started };
+        if (tool === 'Antigravity') {
+          const procs = [];
+          let level = kids.get(pid) || [];
+          for (let depth = 0; depth < 10 && level.length; depth++) {
+            for (const c of level) {
+              const q = table.get(c);
+              if (q) procs.push({ pid: c, ppid: q.ppid, started: q.started, depth, listens: listening.has(c) });
+            }
+            level = level.flatMap((c) => kids.get(c) || []);
+          }
+          ai.procs = procs;
+          ai.childBusy = procs.some((q) => q.started >= p.started + 5000 && ((table.get(q.pid) || {}).pct || 0) >= 1);
+        }
+        out.push(ai);
       }
       return out;
     },
