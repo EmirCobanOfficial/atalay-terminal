@@ -14,7 +14,7 @@ LOCAL=0
 case "$API" in http://127.0.0.1* | http://localhost*) LOCAL=1 ;; esac
 TOKEN="${ATALAY_ADMIN_TOKEN:-}"
 if [ -z "$TOKEN" ]; then
-  if [ $LOCAL = 1 ]; then TOKEN="$(sed -n 's/^ADMIN_TOKEN=//p' ../api/.env 2>/dev/null)"
+  if [ $LOCAL = 1 ]; then TOKEN="$(sed -n 's/^ADMIN_TOKEN=//p' ../../orbiterm-api/.env 2>/dev/null)"
   else TOKEN="$(cat ~/.atalay-terminal/admin-token 2>/dev/null || true)"; fi
 fi
 [ -n "$TOKEN" ] || { echo "no admin token for $API" >&2; exit 1; }

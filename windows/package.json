@@ -46,11 +46,11 @@
     ],
     "extraResources": [
       {
-        "from": "../app/Resources/web",
+        "from": "../mac/Resources/web",
         "to": "web"
       },
       {
-        "from": "../app/Resources/caveman",
+        "from": "../mac/Resources/caveman",
         "to": "caveman"
       },
       {

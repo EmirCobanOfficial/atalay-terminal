@@ -6,7 +6,7 @@
 # installs only a zip whose signature checks out.
 #   scripts/publish.sh ["what changed"]      notes: one line per change (they show as a list in the app)
 #   ATALAY_API_URL        API to publish to (default: production)
-#   ATALAY_ADMIN_TOKEN    the API's ADMIN_TOKEN (default: ~/.atalay-terminal/admin-token, or ../api/.env for a local API)
+#   ATALAY_ADMIN_TOKEN    the API's ADMIN_TOKEN (default: ~/.atalay-terminal/admin-token, or ../../orbiterm-api/.env for a local API)
 #   ATALAY_RELEASES_REPO  GitHub repo for the files (default: atalaykarahan/atalay-terminal-releases)
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -18,7 +18,7 @@ LOCAL=0
 case "$API" in http://127.0.0.1* | http://localhost*) LOCAL=1 ;; esac
 TOKEN="${ATALAY_ADMIN_TOKEN:-}"
 if [ -z "$TOKEN" ]; then
-  if [ $LOCAL = 1 ]; then TOKEN="$(sed -n 's/^ADMIN_TOKEN=//p' ../api/.env 2>/dev/null)"
+  if [ $LOCAL = 1 ]; then TOKEN="$(sed -n 's/^ADMIN_TOKEN=//p' ../../orbiterm-api/.env 2>/dev/null)"
   else TOKEN="$(cat ~/.atalay-terminal/admin-token 2>/dev/null || true)"; fi
 fi
 [ -n "$TOKEN" ] || { echo "no admin token for $API: save it in ~/.atalay-terminal/admin-token" >&2; exit 1; }

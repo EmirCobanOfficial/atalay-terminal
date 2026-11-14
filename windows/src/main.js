@@ -97,7 +97,7 @@ try {
 
 // Where the dashboard's web files are: next to the app when it's installed (electron-builder copies them), the Mac
 // app's folder in the repository when it runs from the sources.
-const WEB = app.isPackaged ? path.join(process.resourcesPath, 'web') : path.join(__dirname, '..', '..', 'app', 'Resources', 'web');
+const WEB = app.isPackaged ? path.join(process.resourcesPath, 'web') : path.join(__dirname, '..', '..', 'mac', 'Resources', 'web');
 const PRELOAD = path.join(__dirname, 'preload.js');
 // ATL_PROBE=<folder>: a check without windows on screen — the pages render out of sight, pictures of them land in the
 // folder, and the app quits (development only: a released app never runs it).
@@ -187,7 +187,7 @@ const savers = createSavers({
   ownDir: path.join(process.env.LOCALAPPDATA || app.getPath('appData'), 'atalay-terminal'),
   bundled: app.isPackaged
     ? { rtk: path.join(process.resourcesPath, 'bin', 'rtk.exe'), caveman: path.join(process.resourcesPath, 'caveman') }
-    : { rtk: path.join(__dirname, '..', 'vendor', 'rtk', 'rtk.exe'), caveman: path.join(__dirname, '..', '..', 'app', 'Resources', 'caveman') },
+    : { rtk: path.join(__dirname, '..', 'vendor', 'rtk', 'rtk.exe'), caveman: path.join(__dirname, '..', '..', 'mac', 'Resources', 'caveman') },
   claudeDir: process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'),
   codexDir: process.env.CODEX_HOME || path.join(os.homedir(), '.codex'),
   home: os.homedir(),

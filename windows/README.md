@@ -4,7 +4,7 @@
 It's built in the open, like the rest of the app, but its installers are built and published on the Windows PC, not on
 GitHub's machines, since they carry the app's API key (below).
 
-The Windows app: Electron around the same dashboard the Mac app shows (`app/Resources/web`, used as it is), with
+The Windows app: Electron around the same dashboard the Mac app shows (`mac/Resources/web`, used as it is), with
 terminals from xterm.js and node-pty (ConPTY), the way VS Code runs its terminal on Windows. It talks to the same API
 (friends, messages, levels, notifications) as the Mac app.
 
@@ -21,7 +21,7 @@ npm run release -- "what changed"     # a signed build, published as the update 
 ```
 
 `npm run staging` is for trying things without touching real users' data, as the Mac's `dev.sh` and staging build
-are: the private API repo cloned as `api/` next to `app/` and `windows/` (gitignored there), running in Docker
+are: the private API repo cloned as `api/` next to `mac/` and `windows/` (gitignored there), running in Docker
 (`docker compose up -d` in `api/`, with an `ADMIN_TOKEN` of its own in `api/.env`). It registers a key of its own with
 that API (`~/.atalay-terminal/client-key-windows-staging`, so the release key is never needed there) and keeps its own
 profile, so it runs next to the installed app.

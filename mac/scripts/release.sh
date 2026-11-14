@@ -31,7 +31,7 @@ scripts/publish.sh "${2:-}"
 API="${ATALAY_API_URL:-https://terminal-api.atalaykarahan.com}"
 TOKEN="${ATALAY_ADMIN_TOKEN:-}"
 if [ -z "$TOKEN" ]; then
-  if [ $PRODUCTION = 0 ]; then TOKEN="$(sed -n 's/^ADMIN_TOKEN=//p' ../api/.env 2>/dev/null)"
+  if [ $PRODUCTION = 0 ]; then TOKEN="$(sed -n 's/^ADMIN_TOKEN=//p' ../../orbiterm-api/.env 2>/dev/null)"
   else TOKEN="$(cat ~/.atalay-terminal/admin-token 2>/dev/null || true)"; fi
 fi
 KEY_ID=$(cut -d: -f1 "${ATALAY_CLIENT_KEY_FILE:-$HOME/.atalay-terminal/client-key}")

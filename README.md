@@ -64,15 +64,15 @@ Works with Claude Code, Codex and Antigravity; not affiliated with Anthropic, Op
 
 ## How it works
 
-- `app/` is the Mac app: Swift (SwiftPM), AppKit and [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm). Every
+- `mac/` is the Mac app: Swift (SwiftPM), AppKit and [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm). Every
   chat and terminal runs in a detached `/usr/bin/screen` session, which is why they survive the app quitting.
-- The dashboard is a web page in a `WKWebView` (`app/Resources/web`); the app feeds it and answers its requests. The
-  orbit map is three.js (`app/orbit`, built into `app/Resources/web/orbit.js`).
-- Source Control looks like VS Code because it's made from it: `app/tools/vscode-assets.py` takes VS Code's icon font,
+- The dashboard is a web page in a `WKWebView` (`mac/Resources/web`); the app feeds it and answers its requests. The
+  orbit map is three.js (`mac/orbit`, built into `mac/Resources/web/orbit.js`).
+- Source Control looks like VS Code because it's made from it: `mac/tools/vscode-assets.py` takes VS Code's icon font,
   its syntax highlighter and grammars, and the user's colour and file icon themes from the VS Code on the Mac into
-  `app/Resources/web` (their licences are kept with them).
-- Themes: `app/Resources/web/themes/themes.json` holds each theme's terminal palette and accent, and
-  `app/Sources/AtalayTerminal/Themes.swift` makes every colour of the app from them: the page's CSS variables
+  `mac/Resources/web` (their licences are kept with them).
+- Themes: `mac/Resources/web/themes/themes.json` holds each theme's terminal palette and accent, and
+  `mac/Sources/AtalayTerminal/Themes.swift` makes every colour of the app from them: the page's CSS variables
   (`style.css`), the terminals' and the native views'. The orbit map keeps the default theme's colours. A theme can
   also follow what the app is doing in its own CSS, and bring its own sounds and terminal cursor
   ([docs/theme-hooks.md](docs/theme-hooks.md)).
@@ -93,9 +93,9 @@ calls to the server are signed with a key that isn't in this repository.
 After a change to the orbit map:
 
 ```sh
-cd app/orbit
+cd mac/orbit
 npm install
-npm run build              # → app/Resources/web/orbit.js
+npm run build              # → mac/Resources/web/orbit.js
 ```
 
 ## License

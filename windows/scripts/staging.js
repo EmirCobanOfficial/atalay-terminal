@@ -16,7 +16,7 @@ const path = require('path');
 
 const API = 'http://127.0.0.1:4800';
 const root = path.join(__dirname, '..');
-const envFile = path.join(root, '..', 'api', '.env');
+const envFile = path.join(root, '..', '..', 'orbiterm-api', '.env');
 const keyFile = path.join(os.homedir(), '.atalay-terminal', 'client-key-windows-staging');
 const packaged = process.argv.includes('--packaged');
 

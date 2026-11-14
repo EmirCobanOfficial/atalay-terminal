@@ -2,8 +2,8 @@
    MUR47 is the theme. The fonts are the dashboard's: in web/ next to the app's package, or in app/Resources/web from the
    sources (npm start). */
 
-@font-face { font-family: 'Black Ops One'; src: url('../../web/themes/fonts/BlackOpsOne-Regular.ttf') format('truetype'), url('../../app/Resources/web/themes/fonts/BlackOpsOne-Regular.ttf') format('truetype'); }
-@font-face { font-family: 'Share Tech Mono'; src: url('../../web/themes/fonts/ShareTechMono-Regular.ttf') format('truetype'), url('../../app/Resources/web/themes/fonts/ShareTechMono-Regular.ttf') format('truetype'); }
+@font-face { font-family: 'Black Ops One'; src: url('../../web/themes/fonts/BlackOpsOne-Regular.ttf') format('truetype'), url('../../mac/Resources/web/themes/fonts/BlackOpsOne-Regular.ttf') format('truetype'); }
+@font-face { font-family: 'Share Tech Mono'; src: url('../../web/themes/fonts/ShareTechMono-Regular.ttf') format('truetype'), url('../../mac/Resources/web/themes/fonts/ShareTechMono-Regular.ttf') format('truetype'); }
 
 @container style(--theme-id: mur47) {
   body:has(> #hud) { font-family: 'Share Tech Mono', Consolas, monospace; }

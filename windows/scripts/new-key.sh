@@ -5,7 +5,7 @@
 # stays on your own machines, never on GitHub: copy ~/.atalay-terminal/client-key-windows to the Windows PC and build
 # there (README). It never shows on screen.
 set -euo pipefail
-cd "$(dirname "$0")/../../app"
+cd "$(dirname "$0")/../../mac"
 FILE="$HOME/.atalay-terminal/client-key-windows"
 scripts/rotate-key.sh "$FILE"
 ATALAY_CLIENT_KEY_FILE="$FILE" ATALAY_CLIENT_KEY_LABEL="windows $(date +%F)" ATALAY_CLIENT_KEY_PLATFORM=windows \
