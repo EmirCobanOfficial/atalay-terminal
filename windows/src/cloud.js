@@ -861,6 +861,7 @@ function createCloud(opts = {}) {
     key.sign(method, url, data, headers);
     const res = await fetcher(String(url), { method, headers, body: data, signal: AbortSignal.timeout(15_000) });
     key.learn(res);
+    if (res.status === 426 && typeof opts.onUpdateRequired === 'function') opts.onUpdateRequired();
     return { status: res.status, text: await res.text() };
   }
 

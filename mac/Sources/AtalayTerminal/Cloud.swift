@@ -12,6 +12,7 @@ struct Release: Codable, Equatable {
     let sha256: String
     let signature: String
     let notes: String
+    let force: Bool?
 }
 
 /// Which Mac an account belongs to: SHA-256 of its hardware UUID (IOPlatformUUID) with an app-specific salt, so it
@@ -132,10 +133,15 @@ final class Cloud {
     private var staged: Updater.Staged?
     private var preparing = false
     private var applying = false
+    /// True when the 60-min force deadline triggered this restart: skips the quit confirmation modal.
+    private(set) var overdueForcedUpdate = false
     /// The build whose download or check failed: not tried again on every heartbeat ("update now" tries again).
     private var failedBuild: Int?
     /// "Update now" was clicked while the build was still downloading in the background.
     private var restartWhenReady = false
+    /// When a forced build was first seen (to install anyway after 60 min if `canRestart()` keeps refusing).
+    private var forcedSince: (build: Int, at: Date)?
+    private var forceTimer: Timer?
 
     let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
     /// 0 when run unbundled (swift run), which never asks for updates.
@@ -144,6 +150,7 @@ final class Cloud {
     /// (development): in the released app it would let anyone point the app, and its signed calls, at a server of theirs.
     private let base = URL(string: (Cloud.mayRedirect ? ProcessInfo.processInfo.environment["ATALAY_API_URL"] : nil)
         ?? Bundle.main.object(forInfoDictionaryKey: "AtalayAPIURL") as? String ?? "http://127.0.0.1:4800")!
+    var apiBaseURL: URL { base }
     private static var mayRedirect: Bool {
         let id = Bundle.main.bundleIdentifier
         return id == nil || id?.hasSuffix(".staging") == true
@@ -255,9 +262,14 @@ final class Cloud {
             s.online = a.online
             s.update = build > 0 ? a.update : nil
             s.updateReady = s.update != nil && staged?.build == s.update?.build
+            if s.update?.force == true, !preparing, !applying, s.updating != nil {
+                s.updating = nil
+                restartWhenReady = false
+            }
             s.xp = a.xp ?? s.xp
             s.xpPaused = a.xpPaused ?? false
             state = s
+            noteForce(s.update)
             if let u = state.update { prepareUpdate(u) }
             maybeRestart()
             // Without a name the API takes none yet (routes.ts UNNAMED_OK): they wait here for the account it signs in to.
@@ -510,7 +522,7 @@ final class Cloud {
     private var rightAway: Bool { installUpdatesRightAway || state.updateRightAway }
 
     private func prepareUpdate(_ u: Release) {
-        guard !preparing, staged?.build != u.build, failedBuild != u.build, state.updating == nil else { return }
+        guard !preparing, !applying, staged?.build != u.build, failedBuild != u.build else { return }
         preparing = true
         Task {
             defer { preparing = false }
@@ -536,30 +548,74 @@ final class Cloud {
         }
     }
 
+    private func noteForce(_ u: Release?) {
+        if let u, u.force == true {
+            if forcedSince?.build != u.build { forcedSince = (u.build, Date()) }
+            if forceTimer == nil {
+                let t = Timer(timeInterval: 60, repeats: true) { _ in
+                    Task { @MainActor in Cloud.shared.maybeRestart() }
+                }
+                t.tolerance = 10
+                RunLoop.main.add(t, forMode: .common)
+                forceTimer = t
+            }
+        } else {
+            forcedSince = nil
+            forceTimer?.invalidate()
+            forceTimer = nil
+        }
+    }
+
+    /// Offers a release discovered outside the heartbeat (UpdateWatch); dedupes and reuses `prepareUpdate`.
+    func offerUpdate(_ u: Release, allowRetryIfForced: Bool = false) {
+        guard build > 0, u.build > build else { return }
+        if let cur = state.update, cur.build > u.build { return }
+        if allowRetryIfForced, u.force == true, failedBuild == u.build { failedBuild = nil }
+        var s = state
+        if u.force == true, !preparing, !applying, s.updating != nil {
+            s.updating = nil
+            restartWhenReady = false
+        }
+        s.update = u
+        s.updateReady = staged?.build == u.build
+        state = s
+        noteForce(u)
+        prepareUpdate(u)
+        maybeRestart()
+    }
+
     /// A staged build goes in when it interrupts nothing: the user has been away 10 minutes (or wants updates right away)
-    /// and no chat runs outside its detached session, which quitting would stop.
+    /// and no chat runs outside its detached session, which quitting would stop. Forced builds skip the idle wait and
+    /// install after at most 60 min even if `canRestart()` keeps refusing.
     func maybeRestart() {
-        guard let staged, staged.build == state.update?.build, !applying, state.updating == nil, canRestart(),
-              rightAway || Social.idleSeconds() >= 600 else { return }
+        guard let staged, staged.build == state.update?.build, !applying, !preparing else { return }
+        if state.update?.force == true {
+            let deadline = forcedSince.map { Date().timeIntervalSince($0.at) >= 3600 } ?? false
+            guard canRestart() || deadline else { return }
+            return restart(into: staged, overdueForce: deadline)
+        }
+        guard canRestart(), rightAway || Social.idleSeconds() >= 600 else { return }
         restart(into: staged)
     }
 
-    private func restart(into staged: Updater.Staged) {
+    private func restart(into staged: Updater.Staged, overdueForce: Bool = false) {
         restartWhenReady = false
         applying = true
+        overdueForcedUpdate = overdueForce
         state.updating = "restarting into \(staged.version)…"
         do {
             try Updater.apply(staged, relaunch: true)
         } catch {
             // Quitting was cancelled: keep this build, the staged one goes in later.
             applying = false
+            overdueForcedUpdate = false
             state.updating = nil
         }
     }
 
     /// "Update now" (the top bar, Settings, the what's-new screen): at once, downloading first if it isn't ready yet.
     func installUpdate() {
-        guard let update = state.update, state.updating == nil else { return }
+        guard let update = state.update, !applying, !(preparing && restartWhenReady) else { return }
         state.updateError = nil
         if let staged, staged.build == update.build { return restart(into: staged) }
         state.updating = "downloading \(update.version)…"
@@ -568,11 +624,12 @@ final class Cloud {
         prepareUpdate(update)
     }
 
-    /// Settings → "check for updates": a heartbeat now, which brings any newer build.
+    /// Settings → "check for updates": a heartbeat now, plus the open release endpoint in case heartbeat is blocked.
     func checkForUpdates() async {
         guard !state.checking else { return }
         state.checking = true
         await beat()
+        await UpdateWatch.shared.check()
         state.checking = false
         state.checkedAt = Date()
     }
@@ -635,6 +692,7 @@ final class Cloud {
             if (200..<300).contains(status) { return json }
             // Signed out (another install of this Mac took the token): the heartbeat signs in again.
             if status == 401 { Task { await self.beat() } }
+            if status == 426 { UpdateWatch.shared.checkNow() }
             return ["error": (json as? [String: Any])?["error"] as? String ?? "http_\(status)"]
         } catch {
             return ["error": "offline"]
@@ -658,6 +716,7 @@ final class Cloud {
         ClientKey.learn(from: response)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         guard (200..<300).contains(status) else {
+            if status == 426 { UpdateWatch.shared.checkNow() }
             let code = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["error"] as? String ?? ""
             throw Failure.status(status, code)
         }

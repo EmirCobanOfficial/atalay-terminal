@@ -377,6 +377,7 @@ const cloud = createCloud({
       return (await safeStorage.decryptStringAsync(sealed)).result;
     },
   },
+  onUpdateRequired: () => updates?.on426?.(),
   onChange(state) {
     pushCloud();
     if (state && state.xp) toNotices(`xp(${JSON.stringify(state.xp)})`);
@@ -2134,10 +2135,29 @@ const updates = (() => {
   // starts): it goes in the moment the download is done, as on the Mac, rather than waiting for the user to step away
   // while the page says "downloading…" with no way out.
   let whenReady = false;
+  let forcedVersion = null, forcedAt = 0, last426At = 0;
+  let downloading = false, downloadingAt = 0, downloadFailures = 0, nextRetryAt = 0;
+  const RETRY_BACKOFF = [60_000, 300_000, 900_000, 1_800_000];
+  const isDownloading = () => downloading && Date.now() - downloadingAt < 300_000;
+  const shouldCheck = (v, ignoreBackoff = false) => {
+    if (!v || !newerVersion(v, app.getVersion())) return false;
+    if (!offer || newerVersion(v, offer.version)) return true;
+    if (v === offer.version && !ready) {
+      if (isDownloading()) return false;
+      return ignoreBackoff || Date.now() >= nextRetryAt;
+    }
+    return false;
+  };
   const usable = !!autoUpdater && app.isPackaged && !PROBE && !STAGING;
   const rightAway = () => !!settings.get('updateRightAway');
   const maybeRestart = () => {
-    if (!ready || busy || terminals.list().some((t) => terminals.local(t.id))) return;
+    if (!ready || busy) return;
+    const localRunning = terminals.list().some((t) => terminals.local(t.id));
+    if (offer && forcedVersion === offer.version) {
+      if (!localRunning || (forcedAt && Date.now() - forcedAt >= 3600_000)) install();
+      return;
+    }
+    if (localRunning) return;
     if (rightAway() || powerMonitor.getSystemIdleTime() >= 600) install();
   };
   const install = () => {
@@ -2152,17 +2172,29 @@ const updates = (() => {
     autoUpdater.on('update-available', (i) => {
       // A newer one than an update already downloaded: that one isn't what goes in any more.
       ready = false;
+      const isNewOffer = !offer || offer.version !== i.version;
+      if (isNewOffer) {
+        downloadFailures = 0;
+        nextRetryAt = 0;
+      }
+      downloading = true;
+      downloadingAt = Date.now();
       offer = { version: i.version, build: 0, notes: notesOf(i.releaseNotes) };
       pushCloud();
-      toNotices(`update(${JSON.stringify({ version: i.version, build: 0 })})`);
+      if (isNewOffer) toNotices(`update(${JSON.stringify({ version: i.version, build: 0 })})`);
     });
     autoUpdater.on('download-progress', (p) => {
+      downloading = true;
+      downloadingAt = Date.now();
       const f = Math.min(1, Math.floor(Number(p && p.percent) || 0) / 100);
       if (f === progress) return;
       progress = f;
       pushCloud();
     });
     autoUpdater.on('update-downloaded', () => {
+      downloading = false;
+      downloadFailures = 0;
+      nextRetryAt = 0;
       ready = true;
       progress = null;
       pushCloud();
@@ -2171,7 +2203,12 @@ const updates = (() => {
     });
     autoUpdater.on('error', (e) => {
       console.error('updates:', e.message);
+      downloading = false;
       progress = null;
+      if (offer && !ready) {
+        downloadFailures += 1;
+        nextRetryAt = Date.now() + RETRY_BACKOFF[Math.min(downloadFailures - 1, RETRY_BACKOFF.length - 1)];
+      }
       // The installer didn't start: this version stays, the page says the update failed, and "update now" can be
       // pressed again.
       if (busy === 'restarting…') {
@@ -2227,17 +2264,27 @@ const updates = (() => {
   // app whose key has died too). When it names a version newer than this one and the one on offer, electron-updater is
   // asked at once, in the feed it names if that's a release of the app's own repo: the update can be offered from the
   // server even when this app's own look at the feed went wrong, and nothing from anywhere else is ever installed.
-  async function apiRelease() {
+  async function apiRelease(ignoreBackoff = false) {
     const res = await net.fetch(`${API_BASE}/v1/releases/windows`, { cache: 'no-store', signal: AbortSignal.timeout(20_000) });
     if (!res.ok) return;
     const r = await res.json();
     const version = r && typeof r.version === 'string' ? r.version : '';
     const url = r && typeof r.feed === 'string' ? r.feed.replace(/\/+$/, '') : '';
-    const current = () => (offer ? offer.version : app.getVersion());
-    if (!/^\d+\.\d+\.\d+$/.test(version) || !newerVersion(version, current()) || !FEED_RE.test(url)) return;
+    const validVersion = /^\d+\.\d+\.\d+$/.test(version) && newerVersion(version, app.getVersion());
+    if (r && r.force && validVersion) {
+      if (forcedVersion !== version) {
+        forcedVersion = version;
+        forcedAt = Date.now();
+      }
+      if (ready && offer && offer.version === version) maybeRestart();
+    } else {
+      forcedVersion = null;
+      forcedAt = 0;
+    }
+    if (!validVersion || !shouldCheck(version, ignoreBackoff) || !FEED_RE.test(url)) return;
     if (url !== feed) {
       // A feed named by mistake mustn't take the place of one that works: taken only once it holds a newer version.
-      if (!newerVersion(await feedVersion(url), current())) return;
+      if (!shouldCheck(await feedVersion(url), ignoreBackoff)) return;
       useFeed(url);
     }
     askUpdater();
@@ -2250,12 +2297,12 @@ const updates = (() => {
     return m[1];
   }
   let polling = null;
-  function poll() {
+  function poll(ignoreBackoff = false) {
     if (!feed) return Promise.resolve(null);
     if (!polling) {
       polling = feedVersion()
         .then((v) => {
-          if (newerVersion(v, offer ? offer.version : app.getVersion())) askUpdater();
+          if (shouldCheck(v, ignoreBackoff)) askUpdater();
           return v;
         })
         .finally(() => (polling = null));
@@ -2287,7 +2334,7 @@ const updates = (() => {
       checking = true;
       pushCloud();
       try {
-        await Promise.allSettled([poll(), apiRelease()]);
+        await Promise.allSettled([poll(true), apiRelease(true)]);
         // What electron-updater found, when it was asked, comes before "up to date" would.
         if (asking) await Promise.race([asking, new Promise((r) => setTimeout(r, 20_000))]);
       } catch {}
@@ -2301,10 +2348,13 @@ const updates = (() => {
       if (ready) return install();
       busy = 'downloading…';
       whenReady = true;
+      downloading = true;
+      downloadingAt = Date.now();
       pushCloud();
       // The download already running is the one waited for. When it fails (offline), the page says so and "update now"
       // comes back for another try, instead of "downloading…" staying for ever.
       autoUpdater.downloadUpdate().catch(() => {
+        downloading = false;
         if (busy !== 'downloading…') return;
         whenReady = false;
         busy = null;
@@ -2317,6 +2367,12 @@ const updates = (() => {
       settings.set('updateRightAway', !!on);
       pushCloud();
       maybeRestart();
+    },
+    on426() {
+      if (!usable || Date.now() - last426At < 5000) return;
+      last426At = Date.now();
+      apiRelease().catch(() => {});
+      poll().catch(() => {});
     },
   };
 })();

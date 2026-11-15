@@ -40,6 +40,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // An update restarts the app only when that stops nothing: no chat runs outside its detached session.
         Cloud.shared.canRestart = { [weak self] in (self?.controller?.runningChatCount ?? 0) == 0 }
         Cloud.shared.start()
+        UpdateWatch.shared.start()
         // Load the notices' page now, so a message can pop up at any time; the chat window follows a little later,
         // hidden, so opening a chat is instant.
         _ = MessagePanel.notices
@@ -72,7 +73,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         let running = controller?.runningChatCount ?? 0
-        if running > 0 {
+        if running > 0, !Cloud.shared.overdueForcedUpdate {
             let a = NSAlert()
             a.messageText = running == 1 ? "1 chat is still running" : "\(running) chats are still running"
             a.informativeText = "Quitting stops Claude in those windows, including hidden ones. The conversations stay saved and can be resumed."
