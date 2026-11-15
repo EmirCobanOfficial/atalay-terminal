@@ -3,6 +3,15 @@
 Each version's lines are its release notes: the app lists them on its "what's new" screen
 (`app/scripts/release.sh <version> "<one line per change>"`).
 
+## 0.23.0
+
+- Leaderboard and profile redesign: a podium, the week day by day, past weeks, your own weeks and tokens by AI
+- Tokens board: pick an AI, model or effort to compare only with your friends
+- Messages are encrypted on the server now, so every computer of your account shows the whole history
+- Antigravity keeps orbiting while it goes on by itself after its turn
+- The app is called Orbiterm everywhere now
+- Updates always reach you now, even if the app's own update button stops working
+
 ## 0.22.3 (Windows only)
 
 - Updates: the app also asks the server which version is current, so an update is always found and offered, even if the app's own check goes wrong
