@@ -73,6 +73,7 @@ if (guard) {
 const { createEngine } = require('./engine');
 const { createGit } = require('./git');
 const { createCloud } = require('./cloud');
+const { createTokenLedger } = require('./tokenledger');
 const { createThemes } = require('./themes');
 const { createAIColors } = require('./aicolors');
 const { createTerminals, which } = require('./terminals');
@@ -87,7 +88,10 @@ const { createLimits } = require('./limits');
 const { createCodexHooks } = require('./codexhooks');
 const { createNotesStore } = require('./notesstore');
 const { createStreamer } = require('./streamer');
+const { createNoteWindows } = require('./notewindow');
+const { createFeedPanel } = require('./feedpanel');
 const { createChatTrash } = require('./chattrash');
+const { createTermFont } = require('./termfont');
 const vendor = require('./vendor');
 
 let autoUpdater = null;
@@ -172,11 +176,13 @@ const themes = createThemes({
       const wc = webContents.fromId(id);
       if (wc && !wc.isDestroyed()) wc.send('atl:theme', css);
     }
-    if (dash) for (const w of [dash, dashView, chatsView]) w.setBackgroundColor(themes.color('--bg'));
+    if (dash) { for (const w of [dash, dashView, chatsView]) w.setBackgroundColor(themes.color('--bg')); noteWindows.setBackground(themes.color('--bg')); }
   },
   // Settings' text size: the dashboard zooms, as a browser does.
   onScale(factor) {
     if (dashView && !dashView.webContents.isDestroyed()) dashView.webContents.setZoomFactor(factor);
+    // The list's width in the page's px changes with its zoom (the menus centre on the whole window by it).
+    pushSide();
   },
 });
 
@@ -263,6 +269,7 @@ const engine = createEngine({
   isAppPid: (pid) => (terminals.list().find((t) => t.pid === pid) || {}).id || false,
   onInit(json) {
     toDash(`init(${json})`);
+    pushSide(true);
     pushWinOpen(true);
     pushActiveSession(true);
   },
@@ -349,13 +356,17 @@ const cloud = createCloud({
   clientKey: RELEASE ? null : loadClientKey(),
   guard,
   fetch: (url, init) => net.fetch(url, init),
+  // The tokens burned, read from the AI tools' own records and sent after a heartbeat (tokenledger.js).
+  // Any API but production keeps its own token book: a local or staging API never got the days the release sent.
+  tokens: createTokenLedger({ dir: path.join(process.env.LOCALAPPDATA || path.join(app.getPath('appData'), '..', 'Local'), 'atalay-terminal'), staging: API_BASE !== 'https://terminal-api.atalaykarahan.com' }),
   // Working, for the XP: someone at the keyboard in the last five minutes, and a sign of work — a Claude session
   // busy, or a terminal printing or typed in.
   isActive: () => powerMonitor.getSystemIdleTime() < 300 && (terminals.busySince(300_000) || engine.live().some((s) => s.status === 'busy')),
   idleSeconds: () => powerMonitor.getSystemIdleTime(),
   theme: () => themes.chosenId(),
   tools: () => toolsAtWork(),
-  // The keys of end-to-end encrypted messages (e2ee.js) are kept sealed by Windows for this user, as the notes' key is.
+  // The keys the old end-to-end encrypted messages were sealed with (read by unseal.js) are kept sealed by Windows for this
+  // user, as the notes' key is; the app only opens them now.
   protect: {
     async seal(text) {
       if (!(await safeStorage.isAsyncEncryptionAvailable())) throw new Error("Windows can't protect the message keys right now");
@@ -475,6 +486,12 @@ function runPanel(win, js) {
 }
 const toDash = (call) => run(dashView, `window.__radar && window.__radar.${call}`);
 const toNotices = (call) => runPanel(panels.notices, `window.__messages && __messages.${call}`);
+// A note out of the dashboard in a window of its own (notewindow.js), and the community feed's corner window (feedpanel.js).
+const noteWindows = createNoteWindows({
+  BrowserWindow, screen, dialog, WEB, settings, webPrefs, bootFor, checkPages, ownerView: () => dashView, getDash: () => dash,
+  pin: pinToDash, uiScale: () => themes.uiScale(), streamerOn: () => streamer.on, quitting: () => quitting, bg: () => themes.color('--bg'),
+});
+const feedPanel = createFeedPanel({ BrowserWindow, WEB, webPrefs, bootFor, checkPages, home: () => chatHome() });
 
 // The chat of the terminal window touched last is the one the chat list marks. Prefer a working/waiting nested AI (Codex,
 // etc.) over the parent Claude process if both happen to be under the same shell. The dashboard's top bar shows every AI
@@ -551,10 +568,19 @@ function setTermFont(size) {
   settings.set('terminalFontSize', n);
   for (const c of chats.values()) send(c.win, 'term:font', n);
 }
-function terminalFont(size) {
+// The terminals' font family (termfont.js, the Mac's TerminalFont.swift): the pick, or Windows' usual one. A pick (or ""
+// for the usual one) is set and every open terminal changes at once; the answer is what Settings shows.
+const termFont = createTermFont({ settings });
+async function terminalFont(size, family) {
   if (typeof size === 'number' && Number.isFinite(size)) setTermFont(size);
+  if ((typeof family === 'string' || family === null) && (await termFont.set(family))) {
+    for (const c of chats.values()) send(c.win, 'term:family', termFont.chosen());
+  }
   const n = Number(settings.get('terminalFontSize'));
-  return { size: termFontSize(), chosen: n >= 9 && n <= 24 };
+  return {
+    size: termFontSize(), chosen: n >= 9 && n <= 24,
+    family: termFont.picked(), current: termFont.current(), usual: termFont.usual(), iterm: false,
+  };
 }
 // View's Zoom In, Zoom Out and Actual Size: in a terminal window its text size (all the terminals', as ⌘+ and ⌘− on the
 // Mac); in any other page that page's zoom, as the menu's own roles did.
@@ -610,7 +636,7 @@ async function askToOpen(url) {
 }
 
 function bootFor(webContents, extra = {}) {
-  const look = { font: 'Cascadia Mono', size: 13 };
+  const look = { font: termFont.current(), size: 13 };
   boots.set(webContents.id, { css: themes.css(), look, ...extra });
   webContents.once('destroyed', () => boots.delete(webContents.id));
 }
@@ -632,7 +658,7 @@ function createDashboard() {
   for (const v of views) {
     v.setBackgroundColor(bg);
     win.contentView.addChildView(v);
-    bootFor(v.webContents);
+    bootFor(v.webContents, v === dashView ? { dashboard: true } : {});
     // Links in the pages open in the browser, never inside the app.
     v.webContents.setWindowOpenHandler(({ url }) => {
       if (/^https?:/.test(url)) shell.openExternal(url);
@@ -663,8 +689,13 @@ function createDashboard() {
   checkPages();
   dashView.webContents.loadFile(path.join(WEB, 'index.html'));
   // The text size Settings keeps, on every load (a reload starts at 100% otherwise).
-  dashView.webContents.on('did-finish-load', () => dashView.webContents.setZoomFactor(themes.uiScale()));
+  dashView.webContents.on('did-finish-load', () => {
+    dashView.webContents.setZoomFactor(themes.uiScale());
+    pushSide(true);
+  });
   chatsView.webContents.loadFile(path.join(__dirname, '..', 'pages', 'chats.html'));
+  // A list (re)loaded while a menu is open is dimmed too.
+  chatsView.webContents.on('did-finish-load', () => sidebarDim && run(chatsView, DIM_JS));
   // Shown once the dashboard's page is there (no empty window first), or a few seconds on whatever happens.
   let shown = false;
   const show = () => {
@@ -679,6 +710,7 @@ function createDashboard() {
   const visibility = () => toDash(`visibility(${win.isVisible() && !win.isMinimized()}, ${!!BaseWindow.getFocusedWindow()})`);
   for (const ev of ['focus', 'blur', 'minimize', 'restore', 'show', 'hide']) win.on(ev, () => setImmediate(visibility));
   for (const ev of ['focus', 'restore', 'show']) win.on(ev, pinAllToDash);
+  for (const ev of ['focus', 'restore', 'show']) win.on(ev, () => noteWindows.pinAll());
   // The level-up waits for the app to be in front (the notices' "focus"): the app's focus events are BrowserWindows'.
   win.on('focus', tellFocus);
   win.on('blur', () => setImmediate(tellFocus));
@@ -716,6 +748,43 @@ function layout() {
   const side = Math.round(chatsList.slide != null ? chatsList.slide : chatsList.shown ? chatsList.width : 0);
   chatsView.setBounds({ x: 0, y: 0, width: side, height: h });
   dashView.setBounds({ x: side, y: 0, width: Math.max(0, w - side), height: h });
+  pushSide();
+}
+
+// The page centres its menus on the whole window, so it needs how far right of the window's edge it starts (the chats
+// list), in its own px: the text size zooms the page, so the same DIPs are fewer px. Sent when it changes (the list
+// dragged, opened or shut, the window or the text size changed), and again after the page loads or reloads (force).
+let sideSent = null;
+function pushSide(force) {
+  if (!dashView || !chatsView || dashView.webContents.isDestroyed()) return;
+  // Each script run on a page still loading adds a listener to it; the load handler pushes this forced anyway.
+  if (!force && dashView.webContents.isLoading()) return;
+  if (force) sideSent = null;
+  const wide = chatsView.getVisible() ? chatsView.getBounds().width : 0;
+  const px = Math.round(wide / (dashView.webContents.getZoomFactor() || 1));
+  if (px === sideSent) return;
+  sideSent = px;
+  run(dashView, `document.documentElement.style.setProperty('--side-x', '${px}px')`);
+}
+
+// Darkens the chats list as the page's backdrop darkens the dashboard, so the open menu is the one thing in front; the
+// cover takes the list's clicks too, as a menu over the whole window would. It lives in the list's page, so it stays
+// while the list is hidden and a list opened meanwhile comes up dimmed (and a reloaded list gets it again).
+let sidebarDim = false;
+const DIM_JS = `(() => {
+  let d = document.getElementById('atl-side-dim');
+  if (!d) {
+    d = document.createElement('div');
+    d.id = 'atl-side-dim';
+    d.style.cssText = 'position:fixed;inset:0;z-index:2147483647;background:rgba(0,0,0,.4)';
+    document.documentElement.appendChild(d);
+  }
+})()`;
+const UNDIM_JS = `document.getElementById('atl-side-dim')?.remove()`;
+function dimSidebar(on) {
+  sidebarDim = on;
+  // A list still loading takes it from its load handler (sidebarDim).
+  if (chatsView && !chatsView.webContents.isLoading()) run(chatsView, on ? DIM_JS : UNDIM_JS);
 }
 
 // CSS's cubic-bezier(0.65, 0, 0.35, 1), the Mac's slide: progress (0…1) -> how far along.
@@ -1071,8 +1140,10 @@ function newFile() {
 function handleRadar(msg) {
   switch (msg.type) {
     case 'ready':
-      // A reloaded page has no menu open.
+      // A reloaded page has no menu open, and starts its feed over: lines from the old one would never dissolve.
       stepAside(false);
+      dimSidebar(false);
+      feedPanel.clearIfCreated();
       engine.requestInit();
       pushWinOpen(true);
       pushCloud();
@@ -1112,10 +1183,34 @@ function handleRadar(msg) {
     // A menu (friends, settings, an update) opened or closed on the dashboard: the windows pinned above it step out of
     // the way meanwhile, as on the Mac.
     case 'modal':
+      dimSidebar(msg.open === true);
       return stepAside(msg.open === true);
+    // A note out of the dashboard in its own window, closed from the dashboard, the dashboard's notes loaded (the notes
+    // left out at the last quit come back), and the community feed's lines (the corner window draws them).
+    case 'noteWindow':
+    case 'noteWindowClose':
+    case 'notesReady':
+      return noteWindows.radar(msg);
+    case 'feedLine':
+    case 'feedOut':
+    case 'feedClear':
+      return feedPanel.radar(msg);
+    // The bell's "Replay animation" (inbox.js): a badge's reveal again, over whatever is in front.
+    case 'badgeReveal':
+      if (typeof msg.id === 'string' && msg.id && msg.id.length <= 64) {
+        toNotices(`reveal && __messages.reveal(${JSON.stringify(msg.id)}, ${Math.min(Math.max(Math.trunc(Number(msg.tier)) || 1, 1), 99)})`);
+      }
+      return true;
+    // What's new and the tips: the page asks for what it can't know, and says when the notes of the version that came by
+    // itself were opened.
+    case 'whatsNew':
+      return pushWhatsNew(), true;
+    case 'whatsNewRead':
+      return settings.set('whatsNewUnread', null), true;
     // Streamer mode (the switch on the map): the chats list, the chat windows and the notices show made-up names too.
     case 'streamer':
       if (streamer.set(msg.on === true)) {
+        noteWindows.setStreamer(streamer.on);
         pushChats(true);
         for (const [id, c] of chats) send(c.win, 'term:info', chatInfo(id, c));
       }
@@ -1156,6 +1251,7 @@ function pinAllToDash() {
 }
 function stepAside(open) {
   modalOpen = open;
+  noteWindows.stepAside(open);
   for (const c of chats.values()) {
     if (!c.win || c.win.isDestroyed()) continue;
     if (open && c.win.isVisible() && !c.win.isMinimized() && !c.steppedAside) {
@@ -1246,7 +1342,7 @@ function openChatWindow({ id = crypto.randomUUID(), cwd, claudeArgs, claude = !!
     ...(PROBE ? { x: -32000, y: -32000, frame: false } : {}),
     webPreferences: webPrefs(),
   });
-  bootFor(win.webContents, { termFont: termFontSize() });
+  bootFor(win.webContents, { termFont: termFontSize(), termFamily: termFont.chosen() });
   const c = { win, sessionId, cwd, claude, claudeArgs, title: title || path.basename(cwd || os.homedir()), startedAt: Date.now(), steppedAside: false };
   chats.set(id, c);
   win.on('focus', () => touchTerminal(id));
@@ -1615,6 +1711,7 @@ function hideOverlay() {
 /** The wheel, centred where the pointer is (Ctrl and the middle mouse button, or Ctrl+K: Windows has no four-finger
  *  click). */
 function showShortcuts() {
+  wheelOpened();
   const p = screen.getCursorScreenPoint();
   const d = screen.getDisplayNearestPoint(p);
   const z = (over && !over.isDestroyed() && over.webContents.getZoomFactor()) || themes.uiScale() || 1;
@@ -1622,6 +1719,30 @@ function showShortcuts() {
 }
 // Ctrl and the middle button in any of the app's windows (preload.js).
 ipcMain.on('atl:wheel', () => showShortcuts());
+
+// ---------- what's new and the tips ----------
+// What's new is off on Windows (whatsnew.js), so the page never asks; kept as on the Mac for when it's turned on. Windows
+// has no build number (cloud.js), so `whatsNewUnread` would hold the app's version.
+function pushWhatsNew() {
+  const state = { unread: settings.get('whatsNewUnread') === app.getVersion(), wheel: settings.get('tipUsedWheel') === true };
+  toDash(`whatsNew(${JSON.stringify({ state })})`);
+}
+// The shortcut wheel opened at least once: its tip on the dashboard is only for someone who never did.
+function wheelOpened() {
+  if (settings.get('tipUsedWheel') === true) return;
+  settings.set('tipUsedWheel', true);
+  pushWhatsNew();
+}
+// Help > What's New ('notes') or Tips ('tips'), and the "updated" note's click: the dashboard in front, the window open.
+function openWhatsNew(what) {
+  showDashboard();
+  toDash(`whatsNew(${JSON.stringify({ open: what === 'tips' ? 'tips' : 'notes' })})`);
+}
+// Settings…: the dashboard in front, Settings open on the category used last.
+function openSettings() {
+  showDashboard();
+  toDash('openSettings(null)');
+}
 
 // ---------- the messages panels: the corner's notices and friends' chats ----------
 // Each chat panel's intended bounds: on a scaled display (125%, 150%) Electron's getBounds() rounds up by a pixel, so
@@ -1635,7 +1756,10 @@ function panelWindow(role, friend) {
     width: 380, height: 140, frame: false, transparent: true, resizable: false, show: false, skipTaskbar: role === 'notices',
     alwaysOnTop: role === 'notices', hasShadow: false, backgroundColor: '#00000000', webPreferences: webPrefs(),
   });
-  bootFor(win.webContents, { role, friend });
+  // The chat window's saved size (page px, without the glow's ring) goes in as __CHAT_SIZE__ (preload.js).
+  const savedSize = settings.get('chatWindowSize');
+  const chatSize = role === 'chat' && Array.isArray(savedSize) && savedSize.length === 2 && savedSize.every((v) => Number.isFinite(v) && v >= 1) ? savedSize : null;
+  bootFor(win.webContents, { role, friend, chatSize });
   if (role === 'notices') {
     win.webContents.on('before-input-event', (e, input) => {
       if (input.type !== 'keyDown' || !(takeover.on || Date.now() < takeover.lockedUntil)) return;
@@ -1786,20 +1910,35 @@ function watchDisplays() {
   }
 }
 
-function openFriendChat(friend) {
-  if (!friend) return false;
+// The one chat window, a tab for each conversation (panels.chats keeps it under one key). Closing it only hides it: its
+// page, the friends list and the conversations stay, and live events keep them current.
+function chatPanel() {
   watchDisplays();
-  let win = panels.chats.get(friend);
+  let win = panels.chats.get('chat');
   if (!win || win.isDestroyed()) {
-    win = panelWindow('chat', friend);
-    panels.chats.set(friend, win);
+    win = panelWindow('chat');
+    panels.chats.set('chat', win);
     win.on('closed', () => {
-      if (panels.chats.get(friend) === win) panels.chats.delete(friend);
-      if (panels.showing.delete(friend)) tellShowing();
+      if (panels.chats.get('chat') === win) panels.chats.delete('chat');
+      if (panels.showing.size) {
+        panels.showing.clear();
+        tellShowing();
+      }
     });
   }
-  // The conversation, loaded and in front (a panel that's already open comes forward).
-  runPanel(win, `window.__messages && __messages.open(${JSON.stringify(friend)})`);
+  return win;
+}
+
+// The chat window made ahead of time, hidden, so the first chat opened doesn't wait for its page and the friends list.
+function warmChat() {
+  if (PROBE || panels.chats.has('chat')) return;
+  runPanel(chatPanel(), 'window.__messages && __messages.warm && __messages.warm()');
+}
+
+function openFriendChat(friend) {
+  if (!friend) return false;
+  // The conversation, loaded and in front (the window and its tab come forward).
+  runPanel(chatPanel(), `window.__messages && __messages.open(${JSON.stringify(friend)})`);
   return true;
 }
 
@@ -1833,7 +1972,20 @@ function handleMessages(win, body) {
         win.steppedAside = false;
         win.setParentWindow(null);
         win.hide();
-        if (role === 'chat') win.close();
+        // The chat window is only hidden (its page and tabs stay); nobody's tab is showing now.
+        if (role === 'chat' && panels.showing.size) {
+          panels.showing.clear();
+          tellShowing();
+        }
+        return true;
+      }
+      // An edge being dragged (messages.js): one setBounds with the new size, the left/top edges moving the corner in
+      // the same call, and nothing else.
+      if (role === 'chat' && body.live === true && win.isVisible()) {
+        const cur = panelBounds.get(win) || win.getBounds();
+        const next = wholeOnDisplay({ x: Math.round(cur.x + (Number(body.dx) || 0) * z), y: Math.round(cur.y + (Number(body.dy) || 0) * z), width: w, height: h });
+        panelBounds.set(win, next);
+        win.setBounds(next);
         return true;
       }
       if (role === 'notices') {
@@ -1898,8 +2050,21 @@ function handleMessages(win, body) {
       panelBounds.set(win, next);
       win.setBounds(next);
       settings.set('chatWindowTopLeft', [next.x, next.y]);
+      // Its size too (the page's px, without the 8 px glow ring each side), after an edge made it larger or smaller.
+      const z = win.webContents.getZoomFactor() || 1;
+      settings.set('chatWindowSize', [Math.round(next.width / z) - 16, Math.round(next.height / z) - 16]);
       return true;
     }
+    // A friend's picture or name in the chat: the dashboard in front, on the friends with their card.
+    case 'openFriend':
+      if (role !== 'chat' || typeof body.id !== 'string' || !body.id) return true;
+      showDashboard();
+      toDash(`openFriend(${JSON.stringify([body.id]).slice(1, -1)})`);
+      return true;
+    // The "updated" note was clicked: what's new in the version you're on.
+    case 'openWhatsNew':
+      openWhatsNew('notes');
+      return true;
     case 'openUpdate':
       showDashboard();
       toDash('openUpdate()');
@@ -1936,10 +2101,15 @@ function handleMessages(win, body) {
       if (role === 'notices') takeover.lockedUntil = Date.now() + Math.min(Math.max(Number(body.ms) || 0, 0), 4000);
       return true;
     case 'showing': {
-      const entry = [...panels.chats.entries()].find(([, w]) => w === win);
-      if (!entry) return true;
-      if (body.id === entry[0]) panels.showing.add(entry[0]);
-      else panels.showing.delete(entry[0]);
+      // The friends whose tabs are open in the chat window (or no one anymore): no pop-ups for them. `id`, the old
+      // form, is the one in front.
+      if (role !== 'chat') return true;
+      panels.showing.clear();
+      if (Array.isArray(body.ids)) {
+        for (const id of body.ids) if (typeof id === 'string' && id) panels.showing.add(id);
+      } else if (typeof body.id === 'string' && body.id) {
+        panels.showing.add(body.id);
+      }
       tellShowing();
       return true;
     }
@@ -2176,6 +2346,8 @@ ipcMain.handle('atl:post', async (e, name, body) => {
   // Only the app's own pages, in their main frame, as on the Mac: nothing loaded into a frame of theirs reaches the app.
   if (!e.senderFrame || e.senderFrame !== e.sender.mainFrame || !ownPage(e.senderFrame.url)) throw new Error('refused');
   body = body || {};
+  if (noteWindows.has(e.sender) && name !== 'noteWindow') throw new Error('refused');
+  if (feedPanel.has(e.sender) && name !== 'feed') throw new Error('refused');
   const win = BrowserWindow.fromWebContents(e.sender);
   try {
     switch (name) {
@@ -2195,6 +2367,13 @@ ipcMain.handle('atl:post', async (e, name, body) => {
       case 'notes':
         if (e.sender !== pageOf(dashView)) throw new Error('not this page');
         return await notesStore.handle(body);
+      // A note's own window and the feed's corner window: each only its own page (a note window never gets `notes` or
+      // `cloud`: the dashboard writes the notes).
+      case 'noteWindow':
+        if (!noteWindows.has(e.sender)) throw new Error('not this page');
+        return await noteWindows.handle(e.sender, body);
+      case 'feed':
+        return feedPanel.handle(e.sender, body);
       case 'theme':
         return themes.handle(body);
       case 'messages':
@@ -2221,7 +2400,8 @@ ipcMain.handle('atl:post', async (e, name, body) => {
         if (body.type === 'openChat') return openFriendChat(body.id);
         if (body.type === 'state') return cloudState();
         if (body.type === 'openSignIn') return openSignIn(body.url);
-        if (body.type === 'terminalFont') return terminalFont(body.size);
+        if (body.type === 'terminalFont') return await terminalFont(body.size, body.family);
+        if (body.type === 'terminalFonts') return { families: await termFont.families() };
         if (body.type === 'refresh') return await cloud.handle(body), cloudState();
         if (body.type === 'signOut' || body.type === 'deleteAccount') {
           const r = await cloud.handle(body);
@@ -2268,6 +2448,8 @@ function buildMenu() {
         // No key of its own: Ctrl+0 is Actual Size's (the text size, ⌘0 on the Mac), and two items on one key leave only
         // one of them working.
         { label: 'Dashboard', click: () => showDashboard() },
+        // The dashboard's Settings, on the category used last (the Mac keeps it in the app menu; no key, as there).
+        { label: 'Settings…', click: () => openSettings() },
         { type: 'separator' },
         {
           label: 'Close Window', accelerator: 'CmdOrCtrl+W',
@@ -2342,7 +2524,15 @@ app.whenReady().then(() => {
   cloud.start();
   runaways.start();
   // The corner's notices can cover the screen (a level-up): never during a development check.
-  if (!PROBE) notices();
+  if (!PROBE) {
+    notices();
+    // The chat window follows a little later, hidden, so opening a chat is instant.
+    setTimeout(warmChat, 3000);
+    // The PowerShell font scan (3-5 s) runs in the background, so Settings > Terminals opens with its list ready.
+    setTimeout(() => termFont.warm(), 20_000);
+    // No "updated" note in the corner, unlike the Mac: what's new is off on Windows (whatsnew.js), so its "see what's new"
+    // would lead nowhere.
+  }
   // The orbit's cinematic camera waits for minutes without input; the terminals ride the orbit as cars.
   setInterval(() => {
     toDash(`idle(${powerMonitor.getSystemIdleTime().toFixed(1)})`);
@@ -2393,8 +2583,9 @@ app.on('before-quit', (e) => {
   if (wc) {
     e.preventDefault();
     savingFiles = true;
-    const saved = wc
-      .executeJavaScript('Promise.all([window.FileEditor ? FileEditor.flush() : true, window.Notes && Notes.flush ? Notes.flush() : true])')
+    // The notes still out first: what they typed last goes to the dashboard's page, which keeps it.
+    const saved = noteWindows.flushAll()
+      .then(() => wc.executeJavaScript('Promise.all([window.FileEditor ? FileEditor.flush() : true, window.Notes && Notes.flush ? Notes.flush() : true])'))
       .catch(() => {});
     Promise.race([saved, new Promise((r) => setTimeout(r, 2000))]).then(() => {
       savingFiles = false;

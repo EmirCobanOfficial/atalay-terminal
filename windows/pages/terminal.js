@@ -33,8 +33,11 @@
       },
     });
   }
+  // The font stack: the family picked in Settings (if any) before the usual fallbacks.
+  const stack = (family) => (family ? `"${String(family).replace(/["\\]/g, '')}", ` : '') +
+    '"MesloLGS NF", "CaskaydiaCove Nerd Font", "Cascadia Mono", Consolas, monospace';
   const term = new Terminal({
-    fontFamily: '"MesloLGS NF", "CaskaydiaCove Nerd Font", "Cascadia Mono", Consolas, monospace',
+    fontFamily: stack(window.__termFamily),
     fontSize: window.__termFont || 14, lineHeight: 1.1, ...cursor(), scrollback: 10000, allowProposedApi: true,
     // Text never fades into its background (Claude's diffs paint lines green and red), as the Mac app's terminals do.
     minimumContrastRatio: 4.5, theme: palette(),
@@ -124,6 +127,11 @@
   });
   document.addEventListener('visibilitychange', () => !document.hidden && refit());
   addEventListener('themechange', () => Object.assign(term.options, { theme: palette(), ...cursor() }));
+  // The terminals' font family changed in Settings ("" is back to the usual stack).
+  atl.on('term:family', (f) => {
+    term.options.fontFamily = stack(f);
+    refit();
+  });
   // The terminals' text size changed (View's zoom with a terminal in front, or Settings sync): the grid follows.
   atl.on('term:font', (n) => {
     if (!(n >= 9 && n <= 24) || term.options.fontSize === n) return;

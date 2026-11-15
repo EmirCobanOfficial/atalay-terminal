@@ -8,17 +8,29 @@ const { contextBridge, ipcRenderer, webFrame } = require('electron');
 const boot = ipcRenderer.sendSync('atl:boot') || {};
 
 const handlers = {};
-for (const name of ['radar', 'cloud', 'git', 'theme', 'overlay', 'messages', 'savers', 'chats', 'archive', 'trash', 'spend', 'files', 'notes']) {
+for (const name of ['radar', 'cloud', 'git', 'theme', 'overlay', 'messages', 'savers', 'chats', 'archive', 'trash', 'spend', 'files', 'notes', 'noteWindow', 'feed']) {
   handlers[name] = { postMessage: (body) => ipcRenderer.invoke('atl:post', name, body) };
 }
 contextBridge.exposeInMainWorld('webkit', { messageHandlers: handlers });
 // The pages name the computer and the command key by it ("this PC", Ctrl+).
 contextBridge.exposeInMainWorld('__platform', process.platform);
-if (boot.look) contextBridge.exposeInMainWorld('__terminalLook', boot.look);
+// The terminal look is set by a function run in the page's own world: exposeInMainWorld would hand the page a frozen
+// object, and fonts.js assigns window.__terminalLook.font when the family changes.
+if (boot.look) contextBridge.executeInMainWorld({ func: (look) => { window.__terminalLook = { ...look }; }, args: [boot.look] });
 // A terminal window's text size (main.js's termFontSize), before it draws its first line.
 if (boot.termFont) contextBridge.exposeInMainWorld('__termFont', boot.termFont);
+// Its font family when one is picked in Settings (termfont.js); empty, the page's own stack.
+if (boot.termFamily) contextBridge.exposeInMainWorld('__termFamily', boot.termFamily);
 if (boot.role) contextBridge.exposeInMainWorld('__MESSAGES_ROLE__', boot.role);
 if (boot.friend) contextBridge.exposeInMainWorld('__MESSAGES_FRIEND__', boot.friend);
+// Only the dashboard's page: its notes open in windows of their own and its community feed is drawn by a window of its own.
+if (boot.dashboard) {
+  contextBridge.exposeInMainWorld('__noteWindows', true);
+  contextBridge.exposeInMainWorld('__nativeFeed', true);
+}
+if (boot.noteWindow) contextBridge.exposeInMainWorld('__NOTE_WINDOW__', boot.noteWindow);
+// The chat window's size as it was left, without the ring for its glow (main.js's chatWindowSize), or null the first time.
+if (boot.role === 'chat') contextBridge.exposeInMainWorld('__CHAT_SIZE__', boot.chatSize || null);
 
 // A terminal window's line to its shell (pages/terminal.js): only its own channels.
 const TERM = /^term:/;
