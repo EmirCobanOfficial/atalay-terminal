@@ -1419,14 +1419,14 @@ window.Cloud = (() => {
 
   // ---------- the leaderboard: two panes under one floating glass bar (ranking + the week day by day) ----------
   let boardBy = 'week'; // 'week' | 'all'
-  let boardFriends = false;
+  let friendsPref = false; // what the Everyone/Friends control was set to
   let boardWhole = false; // "Show all" pressed, until the view opens again
   let boardWeek = null; // Monday YYYY-MM-DD for a past week, or null for this week (never remembered)
   let boardLastWeek = null; // remembered within the session when toggling to All time and back
   let boardWeekOpen = false; // one-column mode: whether the week strip is expanded
   try {
     boardBy = localStorage.getItem('lb-by') === 'all' ? 'all' : 'week';
-    boardFriends = localStorage.getItem('lb-who') === 'friends';
+    friendsPref = localStorage.getItem('lb-who') === 'friends';
   } catch {}
   // Their active time this week, as the board counts its XP: from their Monday (the last of their 7 days is their today).
   const weekActive = (u) => {
@@ -1455,6 +1455,10 @@ window.Cloud = (() => {
   } catch {}
   const tokPick = { tool: '', model: '', effort: '' };
   const tokens = () => boardMetric === 'tokens';
+  // A picked AI, model or effort: the server then shows only you and your friends (picking one by one would give away a
+  // stranger's per-model numbers), so the board is the friends one whatever the control was left on.
+  const picked = () => tokens() && !!(tokPick.tool || tokPick.model || tokPick.effort);
+  const boardFriends = () => friendsPref || picked();
   const tok = (n) => {
     n = Math.max(0, Math.floor(n || 0));
     const [d, unit] = n >= 1e9 ? [1e9, 'B'] : n >= 1e6 ? [1e6, 'M'] : n >= 1e3 ? [1e3, 'K'] : [1, ''];
@@ -1506,7 +1510,7 @@ window.Cloud = (() => {
     const prevWk = addDays(activeWeekStart(), -7);
     if (bounds.first && prevWk < bounds.first) return;
     const metric = boardMetric;
-    const friends = boardFriends;
+    const friends = boardFriends();
     const pick = { ...tokPick };
     const key = boardCacheKey(metric, friends, 'week', prevWk, pick);
     if (boardCache.has(key) || prefetching.has(key)) return;
@@ -1530,8 +1534,8 @@ window.Cloud = (() => {
     clearTimeout(boardTimer);
     clearTimeout(boardLoadTimer);
     const wk = boardBy === 'week' ? boardWeek : null;
-    const key = boardCacheKey(boardMetric, boardFriends, boardBy, wk, tokPick);
-    const wKey = weeksCacheKey(boardMetric, boardFriends);
+    const key = boardCacheKey(boardMetric, boardFriends(), boardBy, wk, tokPick);
+    const wKey = weeksCacheKey(boardMetric, boardFriends());
     if (weeksCache.has(wKey)) boardWeeks = weeksCache.get(wKey);
 
     let quiet = !!live;
@@ -1563,8 +1567,8 @@ window.Cloud = (() => {
 
     const needWeeks = !weeksCache.has(wKey);
     const [r, w] = await Promise.all([
-      tokens() ? Social.tokens(boardBy, tokPick, boardFriends, wk) : Social.leaderboard(boardBy, boardFriends, wk),
-      needWeeks ? Social.weeks(boardMetric, boardFriends) : Promise.resolve(null),
+      tokens() ? Social.tokens(boardBy, tokPick, boardFriends(), wk) : Social.leaderboard(boardBy, boardFriends(), wk),
+      needWeeks ? Social.weeks(boardMetric, boardFriends()) : Promise.resolve(null),
     ]);
     if (seq !== boardSeq) return;
     clearTimeout(boardLoadTimer);
@@ -1611,8 +1615,8 @@ window.Cloud = (() => {
   function announceMove(me) {
     if (!me || !me.pos) return;
     if (tokens() && (tokPick.tool || tokPick.model || tokPick.effort)) return;
-    const which = `${tokens() ? 'tokens-' : ''}${boardBy}${boardFriends ? '-friends' : ''}`;
-    const where = (boardFriends ? 'among your friends ' : '') + (boardBy === 'all' ? 'of all time' : 'this week') + (tokens() ? ' in tokens' : '');
+    const which = `${tokens() ? 'tokens-' : ''}${boardBy}${boardFriends() ? '-friends' : ''}`;
+    const where = (boardFriends() ? 'among your friends ' : '') + (boardBy === 'all' ? 'of all time' : 'this week') + (tokens() ? ' in tokens' : '');
     const was = seenPos[which];
     seenPos[which] = me.pos;
     if (was && was !== me.pos) {
@@ -1721,7 +1725,7 @@ window.Cloud = (() => {
       `<button type="button" class="bd-all" data-set="when" data-v="all" aria-pressed="${!isWeek}" title="Everything since 26 Oct 2026">All time</button></div>` +
       (isWeek && !atLast ? '<button type="button" class="bd-glassbtn bd-now" data-now>Back to this week</button>' : '') +
       '</div>' +
-      seg('who', 'Who', [['everyone', 'Everyone', 'Everyone on Orbiterm'], ['friends', 'Friends', 'You and your friends']], boardFriends ? 'friends' : 'everyone') +
+      seg('who', 'Who', [['everyone', 'Everyone', picked() ? 'A picked AI or model shows you and your friends only' : 'Everyone on Orbiterm'], ['friends', 'Friends', 'You and your friends']], boardFriends() ? 'friends' : 'everyone') +
       '</div>'
     );
   }
@@ -1808,7 +1812,8 @@ window.Cloud = (() => {
       `<select class="bd-pick" data-pick="${k}" aria-label="${k === 'model' ? 'Model' : 'Effort'}"><option value="">${any}</option>${list.map((v) => `<option value="${esc(v)}"${tokPick[k] === v ? ' selected' : ''}>${esc(v)}</option>`).join('')}</select>`;
     return `<div class="bd-ais" role="radiogroup" aria-label="Which AI">${chip('', 'All AIs')}${chip('claude', 'Claude')}${chip('codex', 'Codex')}${chip('antigravity', 'Antigravity')}` +
       (tokPick.tool ? sel('model', `Any ${AI_NAMES[tokPick.tool] || tokPick.tool} model`, models) : '') +
-      (tokPick.tool && (tokPick.model || tokPick.effort) && efforts.length ? sel('effort', 'Any effort', efforts) : '') + '</div>';
+      (tokPick.tool && (tokPick.model || tokPick.effort) && efforts.length ? sel('effort', 'Any effort', efforts) : '') +
+      (picked() ? '<span class="bd-pick-note">Picked AI or model: you and your friends only</span>' : '') + '</div>';
   }
 
   function rankHTML(all, c) {
@@ -1835,12 +1840,12 @@ window.Cloud = (() => {
     const absent = me ? '' : tokens()
       ? `<p class="bd-foot">You'll show up here once your tokens${tokPick.tool || tokPick.model || tokPick.effort ? ' of this pick' : ''} are in. Orbiterm sends them every few minutes.</p>`
       : '<p class="bd-foot">You\'ll show up here once you have some XP.</p>';
-    const foot = boardFriends && all.length < 2
+    const foot = boardFriends() && all.length < 2
       ? '<p class="bd-foot">Add friends to race them here.</p>'
       : `${absent}<p class="bd-foot">${tokens() ? 'Tokens' : 'XP'}: ${note}${live ? ' · the week starts over on Monday' : boardBy === 'week' ? ' · final' : ''}</p>`;
     const aboveMe = me && me.pos > 1 ? all.find((x) => x.pos === me.pos - 1) : null;
     const dockGap = aboveMe ? (score(aboveMe) > score(me) ? ` · ${gapText(score(aboveMe) - score(me))} behind #${aboveMe.pos}` : ` · level with #${aboveMe.pos}`) : '';
-    const listLabel = `${boardFriends ? 'You and your friends' : 'Everyone'}, ${boardBy === 'all' ? 'all time' : weekName(activeWeekStart(), weekBounds().current)}`;
+    const listLabel = `${boardFriends() ? 'You and your friends' : 'Everyone'}, ${boardBy === 'all' ? 'all time' : weekName(activeWeekStart(), weekBounds().current)}`;
     return (
       '<div class="bd-rank"><div class="bd-scroll"><div class="bd-track">' +
       (tokens() ? tokensPickerHTML(c) : '') +
@@ -1914,7 +1919,7 @@ window.Cloud = (() => {
     const totalPeople = (board && !board.error && board.total) || all.length;
     const place = me ? `<span class="bd-chip${me.pos <= 3 ? ' gold' : ''}">#${me.pos} of ${Xp.num(totalPeople)}</span>` : '';
     const friendsCount = Math.max(0, (board?.circle?.people ?? totalPeople) - 1);
-    const whoLabel = boardFriends ? `You and ${friendsCount} ${friendsCount === 1 ? 'friend' : 'friends'}` : 'Everyone';
+    const whoLabel = boardFriends() ? `You and ${friendsCount} ${friendsCount === 1 ? 'friend' : 'friends'}` : 'Everyone';
     const wkList = (boardWeeks?.weeks || []).slice().sort((a, b) => a.week.localeCompare(b.week));
 
     let head = '', cards = '', strip = '';
@@ -1935,7 +1940,7 @@ window.Cloud = (() => {
       const mineTotal = sum(mine);
       head = `<div class="bd-eyebrow"><span>All time</span><small>since 26 Oct 2026 · ${wkList.length} ${wkList.length === 1 ? 'week' : 'weeks'}</small></div>`;
       cards =
-        `<section class="bd-wc"><div class="bd-wc-h"><span>${whoLabel}</span><small>${boardFriends ? '' : `${Xp.num(totalPeople)} hackers`}</small></div>` +
+        `<section class="bd-wc"><div class="bd-wc-h"><span>${whoLabel}</span><small>${boardFriends() ? '' : `${Xp.num(totalPeople)} hackers`}</small></div>` +
         `<div class="bd-big"><b>${tokens() ? tok(comTotal) : Xp.num(Math.round(comTotal / 3600))}</b><span>${tokens() ? 'tokens burned together' : 'h coded together'}</span></div>` +
         (chartWeeks.length ? chartHTML(com, { fmt: (v, long) => (tokens() ? `${tok(v)}${long ? ' tokens' : ''}` : `${Math.round(v / 3600)}h`), labels, today: todayIdx, jump }) : '') +
         '<p class="bd-note">A bar a week. Click one to open that week.</p></section>' +
@@ -1955,7 +1960,7 @@ window.Cloud = (() => {
       const leftText = live ? (sinceMonday === 7 ? 'starts over tonight at 00:00' : `${7 - sinceMonday} ${7 - sinceMonday === 1 ? 'day' : 'days'} left`) : wStart === bounds.first ? "final · Orbiterm's first week" : 'final';
       head = `<div class="bd-eyebrow"><span>${weekName(wStart, bounds.current)}${weekSub(wStart, bounds.current) ? ` · ${weekSub(wStart, bounds.current)}` : ''}</span><small>${leftText}</small></div>`;
       if (tokens()) {
-        const src = boardFriends && board?.circle ? board.circle : c;
+        const src = boardFriends() && board?.circle ? board.circle : c;
         const comDays = (src?.days || Array(7).fill(0)).slice(0, 7).map((v, i) => (live && i >= sinceMonday ? null : v));
         const comTotal = src?.tokens ?? comDays.reduce((a, b) => a + (b || 0), 0);
         const comTools = src?.tools || {};
@@ -1964,7 +1969,7 @@ window.Cloud = (() => {
         const myTotals = {};
         if (myByTool) for (const [k, arr] of Object.entries(myByTool)) myTotals[k] = (arr || []).reduce((a, b) => a + (b || 0), 0);
         const myDays = weekDaysArray(me?.days || Array(7).fill(0), me?.daysEnd, live);
-        const comHeadRight = boardFriends ? '' : `${Xp.num(src?.people || 0)} burned`;
+        const comHeadRight = boardFriends() ? '' : `${Xp.num(src?.people || 0)} burned`;
         cards =
           `<section class="bd-wc"><div class="bd-wc-h"><span>${whoLabel}</span><small>${comHeadRight}</small></div>` +
           `<div class="bd-big"><b>${tok(comTotal)}</b><span>tokens burned together</span></div>${stackHTML(comDays, src?.byTool, comTools, { today: todayIdx, labels })}${legendHTML(comTools)}</section>` +
@@ -1975,7 +1980,7 @@ window.Cloud = (() => {
       } else {
         let src = c;
         let fallbackPeople = null;
-        if (boardFriends) {
+        if (boardFriends()) {
           if (board?.circle) src = board.circle;
           else {
             const sums = Array(7).fill(0);
@@ -1992,16 +1997,16 @@ window.Cloud = (() => {
         }
         const comDays = (src?.days || Array(7).fill(0)).slice(0, 7).map((v, i) => (live && i >= sinceMonday ? null : v));
         const comTotal = src?.seconds ?? comDays.reduce((a, b) => a + (b || 0), 0);
-        const goal = !boardFriends && c?.goal ? c.goal : 0;
+        const goal = !boardFriends() && c?.goal ? c.goal : 0;
         const done = goal > 0 && comTotal >= goal;
-        const trend = !boardFriends && live && c?.lastWeekSoFar >= 3600 ? Math.round((100 * (comTotal - c.lastWeekSoFar)) / c.lastWeekSoFar) : null;
+        const trend = !boardFriends() && live && c?.lastWeekSoFar >= 3600 ? Math.round((100 * (comTotal - c.lastWeekSoFar)) / c.lastWeekSoFar) : null;
         const mineDays = weekDaysArray(me?.days || Array(7).fill(0), me?.daysEnd, live);
         const mineSum = mineDays.reduce((a, b) => a + (b || 0), 0);
         let best = 0;
         mineDays.forEach((v, i) => { if ((v || 0) > (mineDays[best] || 0)) best = i; });
         const active = mineDays.filter((v) => v >= 1800).length;
         const xp = me ? me.week : 0;
-        const comHeadRight = boardFriends ? (fallbackPeople || '') : `${Xp.num(c?.people || 0)} worked${live && board?.working ? ` · ${board.working} working now` : ''}`;
+        const comHeadRight = boardFriends() ? (fallbackPeople || '') : `${Xp.num(c?.people || 0)} worked${live && board?.working ? ` · ${board.working} working now` : ''}`;
         cards =
           `<section class="bd-wc"><div class="bd-wc-h"><span>${whoLabel}</span><small>${comHeadRight}</small></div>` +
           `<div class="bd-big"><b data-count="${Math.round(comTotal / 3600)}">${Xp.num(Math.round(comTotal / 3600))}</b><span>h coded together</span></div>` +
@@ -2018,7 +2023,7 @@ window.Cloud = (() => {
 
     if (wkList.length) {
       const recent = wkList.slice(-8).reverse();
-      cards += `<section class="bd-wc"><div class="bd-wc-h"><span>Your weeks</span><small>${boardFriends ? 'among friends' : ''}</small></div>` +
+      cards += `<section class="bd-wc"><div class="bd-wc-h"><span>Your weeks</span><small>${boardFriends() ? 'among friends' : ''}</small></div>` +
         recent.map((wk) => {
           const sel = boardBy === 'week' && wStart === wk.week;
           const wn = weekName(wk.week, bounds.current);
@@ -2072,7 +2077,7 @@ window.Cloud = (() => {
     if (mode === 'error') {
       return `<div class="bd-empty"><h2>Couldn't load the leaderboard</h2><p>${esc(errorText(board.error))}</p></div>`;
     }
-    if (boardFriends) {
+    if (boardFriends()) {
       return '<div class="bd-empty"><div class="bd-ghost"><i>2</i><i>1</i><i>3</i><span class="bd-ember"></span></div>' +
         '<h2>Race your friends here</h2><p>Add a friend and the two of you show up on this board, week after week.</p>' +
         '<button type="button" class="bd-primary" data-empty-act="friends">Add friends</button></div>';
@@ -2126,7 +2131,7 @@ window.Cloud = (() => {
     const all = boardAll();
     const raw = board && !board.error ? board.community : null;
     const c = raw && window.Community ? Community.goalView(raw) : raw;
-    const emptyFriends = !!(board && !board.error && boardFriends && (all.length === 0 || (all.length === 1 && all[0].me)) && isLiveWeek());
+    const emptyFriends = !!(board && !board.error && boardFriends() && (all.length === 0 || (all.length === 1 && all[0].me)) && isLiveWeek());
     const emptyAll = !!(board && !board.error && all.length === 0);
 
     let content = '';
@@ -2144,7 +2149,7 @@ window.Cloud = (() => {
     } else {
       content = rankHTML(all, c) + weekPaneHTML(all, c);
       const total = board.total || all.length;
-      metaText = `${Xp.num(total)} ${boardFriends ? 'of you' : 'hackers'} on the board`;
+      metaText = `${Xp.num(total)} ${boardFriends() ? 'of you' : 'hackers'} on the board`;
     }
 
     body.classList.toggle('bd-enter', boardEnter && !reduced());
@@ -2199,8 +2204,8 @@ window.Cloud = (() => {
         await loadBoard(false, true);
       } else if (key === 'who') {
         const friends = val === 'friends';
-        if (friends === boardFriends) return;
-        boardFriends = friends;
+        if (picked() || friends === friendsPref) return;
+        friendsPref = friends;
         try { localStorage.setItem('lb-who', friends ? 'friends' : 'everyone'); } catch {}
         boardWhole = false;
         await loadBoard(false, true);
