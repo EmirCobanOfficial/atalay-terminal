@@ -149,6 +149,30 @@ export function buildCore(R, glowTex, radius, theme) {
     occluder,
     draw,
     paint,
+    // How wide its pictures are, in pixels and on the map, and how far out its outermost marks (the arcs) reach.
+    px: S,
+    size: world,
+    reach: ((RC + 30 * k) / S) * world,
+    // The whole core as it looks at `now`, in one picture S wide (raid.js breaks it into pieces and puts it back
+    // together): the dark disc, the ticks and the arcs turned as they are then, and the body.
+    snapshot(x, now) {
+      x.setTransform(1, 0, 0, 1, 0, 0);
+      x.globalCompositeOperation = 'source-over';
+      x.clearRect(0, 0, S, S);
+      x.fillStyle = rgba(P.tint('#0d0805'));
+      x.beginPath();
+      x.arc(C, C, RC + 12 * k, 0, TAU);
+      x.fill();
+      x.globalCompositeOperation = 'lighter';
+      for (const [pic, turn] of [[tc, now / 14000], [ac, -now / 6000]]) {
+        x.setTransform(1, 0, 0, 1, C, C);
+        x.rotate(turn);
+        x.drawImage(pic, -C, -C);
+      }
+      x.setTransform(1, 0, 0, 1, 0, 0);
+      x.globalCompositeOperation = 'source-over';
+      x.drawImage(bc, 0, 0);
+    },
     update(now, heat) {
       ticks.material.rotation = -now / 14000;
       arcs.material.rotation = now / 6000;

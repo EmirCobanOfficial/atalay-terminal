@@ -10,7 +10,7 @@ window.Fire = (() => {
 precision mediump float;
 uniform vec2 res;
 uniform vec3 reach;
-uniform float t, k, scale;
+uniform float t, k, scale, mound;
 float hash(vec2 p) {
   p = fract(p * vec2(123.34, 456.21));
   p += dot(p, p + 45.32);
@@ -39,7 +39,8 @@ float tongues(vec2 q, float d, float speed) {
 void main() {
   vec2 px = gl_FragCoord.xy;
   float d = 9.0;
-  if (reach.x > 0.0) d = min(d, px.y / reach.x);
+  // A mound (1) is a fire of its own, not a burning edge: tallest in the middle of the canvas, down to nothing at its sides.
+  if (reach.x > 0.0) d = min(d, px.y / (reach.x * mix(1.0, max(pow(max(sin(3.14159 * px.x / res.x), 0.0), 0.7), 0.001), mound)));
   if (reach.y > 0.0) d = min(d, min(px.x, res.x - px.x) / reach.y);
   if (reach.z > 0.0) d = min(d, (res.y - px.y) / reach.z);
   if (d > 1.5) {
@@ -101,15 +102,16 @@ void main() {
     gl.enableVertexAttribArray(at);
     gl.vertexAttribPointer(at, 2, gl.FLOAT, false, 0, 0);
     const u = (name) => gl.getUniformLocation(prog, name);
-    G = { gl, canvas, uRes: u('res'), uReach: u('reach'), uT: u('t'), uK: u('k'), uScale: u('scale') };
+    G = { gl, canvas, uRes: u('res'), uReach: u('reach'), uT: u('t'), uK: u('k'), uScale: u('scale'), uMound: u('mound') };
     return G;
   }
 
   // Lights `canvas` until it leaves the page or the returned stop is called. reach: how far flames rise from the
   // bottom, the sides and the top, in CSS px (0: that edge doesn't burn), or a function giving them each frame;
   // scale: the size of the flames' detail (CSS px); life: ms until it has died down (0: it burns on); res: canvas
-  // pixels per CSS px.
-  function burn(canvas, { reach, scale, life = 0, res = Math.min(2, devicePixelRatio || 1) }) {
+  // pixels per CSS px; mound: true for a fire tallest in the middle of the canvas and nothing at its sides (a friend's
+  // spaceship attack, attack.js), instead of one along the whole edge.
+  function burn(canvas, { reach, scale, life = 0, res = Math.min(2, devicePixelRatio || 1), mound = false }) {
     const ctx = canvas.getContext('2d');
     if (!ctx || !shared()) return () => {};
     live++;
@@ -151,6 +153,7 @@ void main() {
       gl.clear(gl.COLOR_BUFFER_BIT);
       gl.uniform2f(g.uRes, w, h);
       gl.uniform3f(g.uReach, r[0] * res, r[1] * res, r[2] * res);
+      gl.uniform1f(g.uMound, mound ? 1 : 0);
       gl.uniform1f(g.uT, seed + ms / 1000);
       gl.uniform1f(g.uK, k);
       gl.uniform1f(g.uScale, scale * res);

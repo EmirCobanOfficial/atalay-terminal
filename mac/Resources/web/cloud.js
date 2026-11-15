@@ -1154,7 +1154,8 @@ window.Cloud = (() => {
           : `<div class="pf-stats">${stat('LAST 24H', x.last24 == null ? '—' : Xp.dur(x.last24))}${stat('THIS WEEK', `${x.week}/3 days`)}${stat('TOTAL', Xp.hours(x.total))}</div>` +
             (x.days ? `<div class="hk-h">LAST 7 DAYS</div>${Xp.week(x.days, r.color, x.daysEnd)}` : '')) +
         (window.Badges ? `<div class="hk-h">BADGES</div><div class="bdg-friend" data-id="${esc(f.id)}"></div>` : '') +
-        '<div class="mn-ask-btns"><button type="button" class="mn-btn go" data-ans="chat">✉ message</button></div></div>',
+        // A spaceship at them, for fun (attack.js).
+        `<div class="mn-ask-btns">${window.Attack?.button ? window.Attack.button(f) : ''}<button type="button" class="mn-btn go" data-ans="chat">✉ message</button></div></div>`,
     );
     window.Badges?.mountFriend(fq('.fr-host .bdg-friend'), f.id);
   }

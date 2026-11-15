@@ -428,8 +428,8 @@ window.Sfx = (() => {
   }
 
   return {
-    /** Loads a recorded sound ahead, so it starts on time. */
-    preload: (name) => void buffer(name),
+    /** Loads a recorded sound ahead, so it starts on time (a promise of it, for a picture that must start with it). */
+    preload: (name) => buffer(name),
     /** Where in the recorded sound its moment is, in ms. */
     hit: (name) => Math.round(1000 * (SAMPLES[name] || 0)),
     /** Plays a recorded sound from the start, or from `from` s in (yours: do not disturb doesn't silence it). */

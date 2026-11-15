@@ -277,6 +277,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             MessagePanel.notices.clash(["key": key, "file": msg["file"] as? String ?? "", "path": msg["path"] as? String ?? "",
                                         "chats": msg["chats"] as? [String] ?? []])
         case "clashOver": if let key = msg["key"] as? String { MessagePanel.notices.clashOver(key) }
+        // A friend's spaceship attack (attack.js): its DANGER banner, over whatever is in front.
+        case "attack": MessagePanel.notices.attack(msg)
         default: break
         }
     }
