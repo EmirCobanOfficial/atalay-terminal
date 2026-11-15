@@ -647,7 +647,7 @@ function powerTip() {
       (saved < full ? row('resolution', `${full}×`, `${saved}× · ${Math.round(100 * (1 - (saved / full) ** 2))}% fewer pixels`) : '') +
       row('camera tour', 'when you\'re away', 'never') +
       `<div class="d gap">the same either way: ${Q.behind.fps} fps at ${Q.behind.dpr}× behind another window, ${Q.front.fps} fps while you drag or the camera flies, nothing drawn while the dashboard is hidden</div>` +
-      `<div class="d">${s.auto ? `on by itself below ${s.threshold}% on battery and in ${saverName(s)}` : 'never on by itself'} · Settings · POWER</div>` +
+      `<div class="d">${s.auto ? `on by itself below ${s.threshold}% on battery and in ${saverName(s)}` : 'never on by itself'} · Settings · General</div>` +
       `<div class="d">click to turn it ${s.on ? 'off' : 'on'}</div>`,
   );
 }
@@ -667,7 +667,7 @@ function setDiscord(s) {
 // The top bar is every AI's, whichever chat is in front: the Windows app still reports that chat, and nothing here
 // follows it.
 function connect() {
-  window.__radar = { init: handleInit, state: handleState, events: (list) => list.forEach(onEvent), visibility: setVisibility, power: (on) => map('power', on), powerSave: setPowerSave, discord: setDiscord, activeSession: () => {}, cloud: (c) => window.Cloud?.render(c), social: (ev) => window.Social?.event(ev), terminals: (list) => { TERMS = list; map('terminals', Streamer.terminals(list)); }, terminalGone: (id) => map('terminalGone', id), idle: (s) => { map('idle', s); setIdle(Number(s)); }, openUpdate: () => window.Cloud?.openUpdate(), openProfile: () => window.Cloud?.openMenu('profile'), openView: (v) => window.GitView?.view(v), runaways: (list) => { RUNS = list; const runs = Streamer.runaways(list); window.Danger?.update(runs); map('runaways', runs); }, openDanger: () => window.Danger?.open() };
+  window.__radar = { init: handleInit, state: handleState, events: (list) => list.forEach(onEvent), visibility: setVisibility, power: (on) => map('power', on), powerSave: setPowerSave, discord: setDiscord, activeSession: () => {}, cloud: (c) => window.Cloud?.render(c), social: (ev) => window.Social?.event(ev), terminals: (list) => { TERMS = list; map('terminals', Streamer.terminals(list)); }, terminalGone: (id) => map('terminalGone', id), idle: (s) => { map('idle', s); setIdle(Number(s)); }, openUpdate: () => window.Cloud?.openUpdate(), openProfile: () => window.Cloud?.openProfile(), openFriend: (id) => window.Cloud?.openFriend(id), openView: (v) => window.GitView?.view(v), runaways: (list) => { RUNS = list; const runs = Streamer.runaways(list); window.Danger?.update(runs); map('runaways', runs); }, openDanger: () => window.Danger?.open() };
   native({ type: 'ready' });
   // A reloaded page in streamer mode: the app's chats list and windows stay in it too.
   native({ type: 'streamer', on: Streamer.on });
@@ -1107,6 +1107,7 @@ function renderTop() {
 const LIMIT_ROWS = [['fiveHour', '5h', '5-hour'], ['week', 'week', 'weekly']];
 // The engine's list. The Windows app's engine still sends Claude's limits apart and Codex's on its chats.
 function limitsByAI() {
+  if (!STATE) return [];
   if (STATE.limitsByAI) return STATE.limitsByAI;
   const list = [];
   if (STATE.limits) list.push({ id: 'claude', name: 'claude', tool: 'Claude Code', ...STATE.limits });

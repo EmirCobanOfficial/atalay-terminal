@@ -1,7 +1,7 @@
 import AppKit
 import WebKit
 
-/// The keyboard shortcuts the user can change (the dashboard's main menu → SHORTCUTS): the menu's actions with the keys
+/// The keyboard shortcuts the user can change (the dashboard's Settings › Shortcuts): the menu's actions with the keys
 /// they come with (iTerm2's, mostly) or the ones the user set. Kept in UserDefaults ("shortcuts": action id → combo),
 /// a combo being "cmd+shift+t" (modifiers, then the key); "" takes the key off the action. The shortcut wheel can take a
 /// mouse button instead of a key: "ctrl+mouse2" (NSEvent.buttonNumber 2, the middle one). The system's own (Quit,
@@ -50,6 +50,9 @@ enum Shortcuts {
         Action(id: "smallerText", group: "View", title: "Smaller text", combo: "cmd+-"),
         Action(id: "defaultText", group: "View", title: "Default text size", combo: "cmd+0"),
         Action(id: "fullScreen", group: "View", title: "Full screen", combo: "cmd+return"),
+        // Every shortcut at a glance (Help → Keyboard Shortcuts, web/cheatsheet.js): no key of its own, it's clicked
+        // (Atalay, 2026-11-15); one can be set in Settings › Shortcuts. Never ⌘?, the system's (it opens the Help menu).
+        Action(id: "keyboardShortcuts", group: "View", title: "Keyboard shortcuts", combo: ""),
         // iTerm2's own: find in the terminal, clear it, move through its history.
         Action(id: "find", group: "Terminal", title: "Find", combo: "cmd+f"),
         Action(id: "findNext", group: "Terminal", title: "Find next", combo: "cmd+g"),
@@ -280,7 +283,8 @@ enum Shortcuts {
     }
 }
 
-/// The settings page's shortcut requests (web/cloud.js, SHORTCUTS): the list, recording keys, setting and resetting.
+/// The settings page's shortcut requests (web/cloud.js, Settings › Shortcuts): the list, recording keys, setting and
+/// resetting. The list of every shortcut (web/cheatsheet.js) reads the list too.
 final class KeysBridge: NSObject, WKScriptMessageHandlerWithReply {
     func userContentController(_ ucc: WKUserContentController, didReceive message: WKScriptMessage,
                                replyHandler: @escaping @MainActor @Sendable (Any?, String?) -> Void) {

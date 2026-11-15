@@ -1917,7 +1917,7 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
         if tabs.count > 1 { tabBar.show(titles: tabs.indices.map(tabTitle), active: activeTab) }
     }
 
-    func setFont(_ size: CGFloat) { for tv in allTerminals { tv.font = Theme.mono(size) } }
+    func setFont(_ size: CGFloat) { for tv in allTerminals { tv.font = TerminalFont.font(size) } }
 
     /// The process that is Claude's parent: the shell inside the detached session, or our own shell.
     var shellPid: Int32 {

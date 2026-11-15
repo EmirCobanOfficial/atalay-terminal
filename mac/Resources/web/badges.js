@@ -1,8 +1,8 @@
 'use strict';
 
-// Badges on the dashboard (the API: badges.ts; the art: badge-art.js), as CS:GO's collectibles. Your inventory is in
-// the main menu's PROFILE tab: every badge, grey until earned, the next tier's progress under it, how rare it is; right
-// click one to display it. The displayed one shows beside your name wherever it's shown (the top bar, friends' lists,
+// Badges on the dashboard (the API: badges.ts; the art: badge-art.js), as CS:GO's collectibles. Your inventory is on
+// your profile (cloud.js renderMe): the ones you have, the next tier's progress on hover, how rare each is; click one
+// (or right click it) to display it. The displayed one shows beside your name wherever it's shown (the top bar, friends' lists,
 // the leaderboard), as CS:GO shows its one display item; a friend's card opens their whole inventory, as looking into a
 // Steam inventory. Signed-in accounts only: a guest sees the badges grey and a way to sign in. At level 60 a button
 // resets the level for that year's Service Medal (CS:GO's prestige): the medal is the year's it's taken in.
@@ -16,14 +16,19 @@ window.Badges = (() => {
   const Art = window.BadgeArt;
 
   let mine = null; // GET v1/badges
-  let host = null; // the PROFILE tab's inventory while the menu is open
-  let showEl = null, invEl = null; // your profile where the friends are: the displayed badge's slot, the inventory
+  let showEl = null, invEl = null; // profile: the displayed badge's slot, the inventory
+  let viewOwner = null; // null for self, or account id when viewing someone else
+  const boundEls = new WeakSet();
   const subs = new Set(); // told when your badges load or the displayed one changes (your card on the friends list)
   // A badge just put on display lands in its slot (and beside your name) for a moment: drawn with the landing until then.
   let landing = null, landingUntil = 0;
   const lands = (id) => landing === id && Date.now() < landingUntil;
   const changed = () => subs.forEach((f) => f());
   const friends = new Map(); // id -> { at, data }
+  // While your profile is being edited (profile-edit.js): the badge picked there and not saved yet shows in its slot
+  // (undefined: none picked, the saved one shows; null: none), and displaying one from the page picks it there too.
+  let preview, picker = null;
+  const shownId = () => (preview !== undefined ? preview : mine && mine.featured);
 
   const tierLine = (b) => Art.tierName(b.id, b.tier, b.tiers);
   const title = (b) => `${b.name}${b.tier ? ` · ${tierLine(b) || 'earned'}` : ''}`;
@@ -118,7 +123,6 @@ window.Badges = (() => {
     const r = await api('GET', 'v1/badges');
     if (!r || r.error) return mine;
     mine = r;
-    render();
     renderShowcase();
     paintTop();
     changed();
@@ -135,59 +139,67 @@ window.Badges = (() => {
     if (b && lands(b.id)) name.querySelector(':scope > .bdg-mini')?.classList.add('pop');
   }
 
-  function render() {
-    if (!host || !host.isConnected) return;
-    if (!mine) return setHTML(host, '<div class="mn-empty">loading…</div>');
-    const earned = mine.badges.filter((b) => b.tier);
-    const head = mine.signedIn
-      ? `<p class="bdg-sum">${earned.length ? `<b>${earned.length}</b> ${earned.length === 1 ? 'badge' : 'badges'} · right click one to display it beside your name` : 'no badges yet · they come as you work'}</p>`
-      : '<p class="bdg-sum bdg-guest"><b>Badges are for signed-in accounts.</b> Sign in (GitHub or e-mail) and what you\'ve done so far counts at once. <button type="button" class="mn-btn go" data-b="signin">sign in</button></p>';
-    const prestige = medalBanner();
-    // Only the ones you have, as CS:GO's inventory (what's left to earn isn't shown), the rarest first.
-    const order = earned.sort((a, b) => a.rare - b.rare);
-    setHTML(host, head + prestige + (order.length ? `<div class="bdg-grid">${order.map((b) => tile(b, true)).join('')}</div>` : ''));
+  /** Displays one of yours beside your name (`id`), or none (null); `quiet`: no toast (the profile's Save says it). */
+  async function feature(id, quiet) {
+    const b = id && mine && mine.badges.find((x) => x.id === id);
+    const r = await api('PUT', 'v1/badges/featured', { badge: id || null });
+    if (r.error) {
+      if (!quiet) say(r.error === 'not_yours' ? 'not earned yet' : "couldn't change it · try again");
+      return r;
+    }
+    // Put on display, as CS:GO's collectibles: a chain's hard landing that rings on (sounds/badge-equip, its hit
+    // 0.36 s in), the badge dropping into its slot to land on that hit.
+    if (r.featured) {
+      landing = r.featured;
+      landingUntil = Date.now() + 1300;
+      window.Sfx?.sample('badge-equip', 0.65); // about -20 LUFS, as the badge's reveal (messages.js)
+    }
+    if (mine) mine.featured = r.featured;
+    renderShowcase();
+    paintTop();
+    changed();
+    if (!quiet) say(r.featured ? `${b ? b.name : 'Your badge'} shows beside your name now` : 'no badge beside your name now');
+    return r;
   }
 
-  // Right click on one of yours: display it, or stop.
+  // One of yours clicked, or right clicked (the shortcut): display it, or stop. The menu opens where the right click
+  // was, or under the badge clicked.
   function contextMenu(e) {
-    const t = e.target.closest('.bdg[data-badge], .sc-item[data-badge]');
+    const t = e.target.closest('.bdg[data-badge], .sc-item[data-badge], .sc-slot[data-badge]');
     hideTip();
     document.querySelector('.bdg-ctx')?.remove();
-    if (!t || !mine) return;
+    if (!t || !mine || viewOwner) return;
     e.preventDefault();
     const b = mine.badges.find((x) => x.id === t.dataset.badge);
     if (!b) return;
     const m = document.createElement('div');
     m.className = 'mn-ctx bdg-ctx';
+    m.setAttribute('role', 'menu');
     m.style.position = 'fixed';
-    m.style.left = `${Math.min(e.clientX, innerWidth - 220)}px`;
-    m.style.top = `${Math.min(e.clientY, innerHeight - 90)}px`;
+    const at = e.type === 'contextmenu' ? { x: e.clientX, y: e.clientY } : (({ left, bottom }) => ({ x: left, y: bottom + 4 }))(t.getBoundingClientRect());
+    m.style.left = `${Math.max(8, Math.min(at.x, innerWidth - 240))}px`;
+    m.style.top = `${Math.max(8, Math.min(at.y, innerHeight - 60))}px`;
     m.innerHTML = !b.tier
       ? `<button type="button" disabled>🔒 not earned yet · ${esc(b.how)}</button>`
-      : mine.featured === b.id
-        ? '<button type="button" data-c="off">✕ stop displaying</button>'
-        : '<button type="button" data-c="on">★ display beside my name</button>';
-    m.onclick = async (ev) => {
+      : shownId() === b.id
+        ? '<button type="button" role="menuitem" data-c="off">✕ Stop displaying</button>'
+        : '<button type="button" role="menuitem" data-c="on">★ Display beside my name</button>';
+    m.onclick = (ev) => {
       const c = ev.target.closest('[data-c]');
       m.remove();
       if (!c) return;
-      const r = await api('PUT', 'v1/badges/featured', { badge: c.dataset.c === 'on' ? b.id : null });
-      if (r.error) return say(r.error === 'not_yours' ? 'not earned yet' : "couldn't change it · try again");
-      // Put on display, as CS:GO's collectibles: a chain's hard landing that rings on (sounds/badge-equip, its hit
-      // 0.36 s in), the badge dropping into its slot to land on that hit.
-      if (r.featured) {
-        landing = r.featured;
-        landingUntil = Date.now() + 1300;
-        window.Sfx?.sample('badge-equip');
-      }
-      mine.featured = r.featured;
-      render();
-      renderShowcase();
-      paintTop();
-      changed();
-      say(r.featured ? `${b.name} shows beside your name now` : 'no badge beside your name now');
+      const id = c.dataset.c === 'on' ? b.id : null;
+      if (picker) picker(id);
+      else feature(id);
+    };
+    m.onkeydown = (ev) => {
+      if (ev.key !== 'Escape') return;
+      ev.stopPropagation();
+      m.remove();
+      t.focus?.();
     };
     document.body.appendChild(m);
+    m.querySelector('button:not(:disabled)')?.focus();
     setTimeout(() => document.addEventListener('mousedown', function off(ev) {
       if (!m.contains(ev.target)) m.remove();
       document.removeEventListener('mousedown', off, true);
@@ -224,7 +236,6 @@ window.Badges = (() => {
     if (b.dataset.b === 'signin') return window.Cloud?.openSettings();
     if (b.dataset.b === 'prestige' || b.dataset.b === 'prestige-no') {
       asking = b.dataset.b === 'prestige';
-      render();
       return renderShowcase();
     }
     if (b.dataset.b === 'prestige-go') {
@@ -241,49 +252,73 @@ window.Badges = (() => {
     }
   }
 
-  /** The PROFILE tab gives its inventory section while the menu is open. */
-  function mountInventory(el) {
-    host = el;
-    if (!host) return;
-    host.addEventListener('contextmenu', contextMenu);
-    host.addEventListener('click', onClick);
-    render();
-    load();
-  }
-
-  // ---------- your profile where the friends are (cloud.js renderMe): CS:GO's inventory screen ----------
+  // ---------- your profile (cloud.js renderMe): CS:GO's inventory screen ----------
   // The badge you display in a slot at the top right, your badges under it as CS:GO's inventory: only the ones you have
   // (what's left to earn isn't shown), dark tiles of fixed colours with the badge's own colour along the bottom, a card on
-  // hover that says what each one is for and how far the next tier is.
-  const ORDER = (a, b) => a.rare - b.rare;
+  // hover that says what each one is for and how far the next tier is. A click on one offers to display it.
+  const ORDER = (a, b) => (a.rare ?? 100) - (b.rare ?? 100);
   const colour = (b) => (b.tier ? Art.glow(b.id, b.tier)[0] : '90, 95, 102');
+  const enrichBadge = (b) => {
+    const general = mine?.badges.find((x) => x.id === b.id) || null;
+    return {
+      ...b,
+      name: b.name || Art.name(b.id),
+      tiers: b.tiers ?? general?.tiers ?? 1,
+      how: b.how ?? general?.how ?? '',
+      rare: b.rare ?? b.rarity ?? general?.rare ?? null,
+    };
+  };
 
   function renderShowcase() {
+    if (viewOwner) {
+      const d = friends.get(viewOwner)?.data;
+      if (showEl && showEl.isConnected) {
+        const raw = d && !d.error && d.featured && d.badges?.find((x) => x.id === d.featured && x.tier);
+        const b = raw ? enrichBadge(raw) : null;
+        setHTML(showEl, b
+          ? `<div class="sc-slot on" style="--q:${colour(b)}" data-badge="${esc(b.id)}" title="The badge they display beside their name"><small>DISPLAYED</small>${Art.svg(b.id, b.tier, 112)}<b>${esc(b.name)}</b><span>${esc(tierLine(b) || 'earned')}</span></div>`
+          : '');
+      }
+      if (!invEl || !invEl.isConnected) return;
+      if (!d) return setHTML(invEl, '<div class="mn-empty">loading…</div>');
+      if (d.error) return setHTML(invEl, '<div class="mn-empty">badges unavailable</div>');
+      const list = (d.badges || []).filter((b) => b.tier).map(enrichBadge).sort(ORDER);
+      setHTML(invEl,
+        `<div class="sc-bar"><h2 class="sc-title">BADGES · ${list.length}</h2>${list.length ? '<span class="sc-count">the rarest first · hover one for what it is</span>' : ''}</div>` +
+        (list.length
+          ? `<div class="sc-grid">${list.map((b) => item(b, false, d.featured === b.id)).join('')}</div>`
+          : '<div class="mn-empty">no badges yet</div>'));
+      return;
+    }
     if (showEl && showEl.isConnected) {
-      const b = mine && mine.featured && mine.badges.find((x) => x.id === mine.featured && x.tier);
+      const id = shownId();
+      const b = id && mine && (mine.badges || []).find((x) => x.id === id && x.tier);
       setHTML(showEl, b
-        ? `<div class="sc-slot on${lands(b.id) ? ' land' : ''}" style="--q:${colour(b)}" data-badge="${esc(b.id)}"><small>DISPLAYED</small>${Art.svg(b.id, b.tier, 112)}<b>${esc(b.name)}</b><span>${esc(tierLine(b) || 'earned')}</span></div>`
-        : `<div class="sc-slot"><small>DISPLAYED</small><i>◆</i><span>${mine && !mine.signedIn ? 'sign in to earn badges' : 'right click a badge below to display it beside your name'}</span></div>`);
+        ? `<div class="sc-slot on${lands(b.id) ? ' land' : ''}" style="--q:${colour(b)}" data-badge="${esc(b.id)}" title="Displayed beside your name"><small>DISPLAYED</small>${Art.svg(b.id, b.tier, 112)}<b>${esc(b.name)}</b><span>${esc(tierLine(b) || 'earned')}</span></div>`
+        : `<div class="sc-slot"><small>DISPLAYED</small><i>◆</i><span>${mine && !mine.signedIn ? 'sign in to earn badges' : 'click one of your badges to display it beside your name'}</span></div>`);
     }
     if (!invEl || !invEl.isConnected) return;
     if (!mine) return setHTML(invEl, '<div class="mn-empty">loading…</div>');
-    const list = mine.badges.filter((b) => b.tier).sort(ORDER);
+    const list = (mine.badges || []).filter((b) => b.tier).sort(ORDER);
     const prestige = medalBanner();
     const guest = mine.signedIn ? '' : '<p class="bdg-sum bdg-guest"><b>Badges are for signed-in accounts.</b> Sign in (GitHub or e-mail) and what you\'ve done so far counts at once. <button type="button" class="mn-btn go" data-b="signin">sign in</button></p>';
     setHTML(invEl,
       guest + prestige +
-      `<div class="sc-bar"><span class="sc-title">INVENTORY</span><span class="sc-count"><b>${list.length}</b> ${list.length === 1 ? 'badge' : 'badges'}</span></div>` +
+      `<div class="sc-bar"><h2 class="sc-title">BADGES · ${list.length}</h2>${list.length && mine.signedIn ? '<span class="sc-count">click one to display it beside your name</span>' : ''}</div>` +
+      // The badges nearest their next tier, right over yours (profile-stats.js).
+      (window.ProfileStats?.next() || '') +
       (list.length
-        ? `<div class="sc-grid">${list.map(item).join('')}</div>`
+        ? `<div class="sc-grid">${list.map((b) => item(b, true, false)).join('')}</div>`
         : mine.signedIn ? '<div class="mn-empty">no badges yet · they come as you work, one at a time</div>' : ''));
   }
 
-  function item(b) {
-    const shown = mine.featured === b.id;
+  function item(b, own = true, isFeatured = false) {
+    const shown = own ? shownId() === b.id : isFeatured;
+    const interactive = own ? ` role="button" tabindex="0" aria-haspopup="menu" aria-label="${esc(`${b.name}, ${tierLine(b) || 'earned'}${shown ? ', displayed beside your name' : ''}`)}"` : '';
     return (
-      `<div class="sc-item${shown ? ' shown' : ''}${lands(b.id) ? ' just' : ''}" data-badge="${esc(b.id)}" style="--q:${colour(b)}">` +
+      `<div class="sc-item${shown ? ' shown' : ''}${own && lands(b.id) ? ' just' : ''}" data-badge="${esc(b.id)}" style="--q:${colour(b)}"${interactive}>` +
       `<div class="sc-art">${Art.svg(b.id, b.tier, 84)}</div><b>${esc(b.name)}</b><span>${esc(tierLine(b) || 'earned')}</span>` +
-      (shown ? '<em class="sc-flag">★</em>' : '') + (b.tier && b.rare <= 9 ? '<em class="sc-rare">RARE</em>' : '') +
+      (shown ? '<em class="sc-flag">★</em>' : '') + (b.tier && b.rare != null && b.rare <= 9 ? '<em class="sc-rare">RARE</em>' : '') +
       '<i class="sc-q"></i></div>'
     );
   }
@@ -293,26 +328,32 @@ window.Badges = (() => {
   let tip = null;
   function showTip(t) {
     const id = t.dataset.badge;
-    const b = id && mine && mine.badges.find((x) => x.id === id);
+    let b = null;
+    if (viewOwner) {
+      const raw = id && friends.get(viewOwner)?.data?.badges?.find((x) => x.id === id);
+      if (raw) b = enrichBadge(raw);
+    } else {
+      b = id && mine && mine.badges.find((x) => x.id === id);
+    }
     if (!b) return hideTip();
     if (!tip) {
       tip = document.createElement('div');
       tip.className = 'sc-tip';
       document.body.appendChild(tip);
     }
-    const p = b.progress;
+    const p = !viewOwner ? b.progress : null;
     const next = b.tier < b.tiers ? Art.tierName(b.id, b.tier + 1, b.tiers) : '';
     const steps = b.tiers > 1 && !b.id.startsWith('service-') ? `<span class="steps">${Array.from({ length: b.tiers }, (_, i) => `<i class="${i < b.tier ? 'on' : ''}"></i>`).join('')}</span>` : '';
     tip.style.setProperty('--q', colour(b));
     tip.innerHTML =
       `<b>${esc(b.name)}</b><span class="q">${esc(tierLine(b) || 'Earned')}${b.tiers > 1 && !b.id.startsWith('service-') ? ` · tier ${b.tier} of ${b.tiers}` : ''}</span>${steps}` +
-      `<p>${esc(b.how)}</p>` +
+      (b.how ? `<p>${esc(b.how)}</p>` : '') +
       (p && b.tier < b.tiers && !(b.tiers === 1 && p.next === 1)
         ? `<div class="tp-prog"><label>${next ? `to ${esc(next)}` : 'progress'}</label><i><i style="width:${Math.max(0, Math.min(100, (100 * p.value) / p.next)).toFixed(0)}%"></i></i><small>${esc(amount(p))}</small></div>`
         : '') +
-      `<small class="tp-rare${b.rare <= 9 ? ' rare' : ''}">${b.rare <= 9 ? 'Rare · ' : ''}${b.rare}% of players have it</small>` +
+      (b.rare != null ? `<small class="tp-rare${b.rare <= 9 ? ' rare' : ''}">${b.rare <= 9 ? 'Rare · ' : ''}${b.rare}% of players have it</small>` : '') +
       (b.earnedAt ? `<small>Earned ${esc(new Date(b.earnedAt).toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' }))}</small>` : '') +
-      (mine.signedIn ? `<em>${mine.featured === b.id ? '★ displayed beside your name · right click to stop' : 'right click to display it beside your name'}</em>` : '');
+      (!viewOwner && mine?.signedIn ? `<em>${shownId() === b.id ? '★ displayed beside your name · click to stop' : 'click to display it beside your name'}</em>` : '');
     const r = t.getBoundingClientRect();
     tip.classList.add('on');
     const w = tip.offsetWidth, h = tip.offsetHeight;
@@ -324,42 +365,58 @@ window.Badges = (() => {
     tip?.classList.remove('on');
   }
 
-  /** Your profile where the friends are: the displayed badge's slot and the inventory. */
-  function mountShowcase(slot, inv) {
+  /** Any profile: the displayed badge's slot and the inventory (`id`: account id or none/'me' for yours). */
+  function mountShowcase(slot, inv, id, opts) {
     showEl = slot;
     invEl = inv;
+    viewOwner = id && id !== 'me' ? id : null;
     if (!invEl) return;
-    invEl.addEventListener('contextmenu', contextMenu);
-    showEl?.addEventListener('contextmenu', contextMenu);
-    invEl.addEventListener('click', onClick);
-    invEl.addEventListener('mouseover', (e) => {
-      const t = e.target.closest('.sc-item');
-      if (t) showTip(t);
-    });
-    invEl.addEventListener('mouseout', (e) => {
-      if (!e.relatedTarget?.closest?.('.sc-item')) hideTip();
-    });
-    invEl.closest('.body')?.addEventListener('scroll', hideTip, { passive: true });
+    if (showEl && !boundEls.has(showEl)) {
+      boundEls.add(showEl);
+      showEl.addEventListener('contextmenu', contextMenu);
+    }
+    if (!boundEls.has(invEl)) {
+      boundEls.add(invEl);
+      invEl.addEventListener('contextmenu', contextMenu);
+      invEl.addEventListener('click', onClick);
+      // A click (or Return) on one: the same menu as the right click, under it (Apple: a context menu is a shortcut, what
+      // it does is somewhere in sight too).
+      invEl.addEventListener('click', (e) => {
+        if (!viewOwner && e.target.closest('.sc-item[data-badge]')) contextMenu(e);
+      });
+      invEl.addEventListener('keydown', (e) => {
+        if (!viewOwner && (e.key === 'Enter' || e.key === ' ') && e.target.closest?.('.sc-item[data-badge]')) contextMenu(e);
+      });
+      invEl.addEventListener('mouseover', (e) => {
+        const t = e.target.closest('.sc-item');
+        if (t) showTip(t);
+      });
+      invEl.addEventListener('mouseout', (e) => {
+        if (!e.relatedTarget?.closest?.('.sc-item')) hideTip();
+      });
+      invEl.closest('.body')?.addEventListener('scroll', hideTip, { passive: true });
+    }
     renderShowcase();
-    load();
+    if (viewOwner) {
+      if (opts?.skipFetch) return;
+      const owner = viewOwner;
+      const cached = friends.get(owner);
+      if (!cached || Date.now() - cached.at >= 60_000) {
+        api('GET', `v1/badges/${encodeURIComponent(owner)}`).then((d) => {
+          friends.set(owner, { at: Date.now(), data: d });
+          if (viewOwner === owner) renderShowcase();
+        });
+      }
+    } else {
+      load();
+    }
   }
 
-  /** A friend's card: their whole inventory (their displayed one first). */
-  async function mountFriend(el, id) {
-    if (!el) return;
-    const cached = friends.get(id);
-    const show = (d) => {
-      if (!el.isConnected) return;
-      if (!d || d.error) return setHTML(el, '');
-      if (!d.badges.length) return setHTML(el, '<p class="bdg-none">no badges yet</p>');
-      const list = [...d.badges].sort((a, b) => (b.id === d.featured) - (a.id === d.featured));
-      setHTML(el, `<div class="bdg-grid small">${list.map((b) => tile(b, false)).join('')}</div>`);
-    };
-    if (cached) show(cached.data);
-    if (cached && Date.now() - cached.at < 60_000) return;
-    const d = await api('GET', `v1/badges/${id}`);
-    friends.set(id, { at: Date.now(), data: d });
-    show(d);
+  /** Accepts badges already fetched by profile.js so we don't ask twice. */
+  function ingest(id, d) {
+    if (!id || id === 'me') return;
+    friends.set(id, { at: Date.now(), data: d || { error: 'unavailable' } });
+    if (viewOwner === id) renderShowcase();
   }
 
   window.Social?.on((ev) => {
@@ -367,5 +424,13 @@ window.Badges = (() => {
   });
   setTimeout(load, 3000);
 
-  return { small, mountInventory, mountShowcase, mountFriend, load, paintTop, mine: () => mine, on: (f) => subs.add(f) };
+  /** profile-edit.js: the badge picked and not saved yet (undefined: none picked), and who takes a pick from the page. */
+  function setPreview(id, onPick) {
+    preview = id;
+    picker = onPick || null;
+    renderShowcase();
+  }
+
+  // amount: "62 / 100 h", for your profile's UP NEXT (profile-stats.js).
+  return { small, mountShowcase, load, ingest, paintTop, feature, preview: setPreview, mine: () => mine, on: (f) => subs.add(f), amount };
 })();

@@ -62,12 +62,16 @@ final class Cloud {
         let board: Bool?
         /// A ceiling reached: "day" (16 hours today) or "week" (70 in the last 7 days); nil before the API had them.
         let full: String?
+        /// The flame on your card today (api/src/fire.ts): 0 none, 1 the orange one, 2 the hottest; nil before the API had it.
+        let fire: Int?
     }
 
     struct State: Equatable {
         var reachable = false
-        /// Nil until the API answered; false means the user still has to pick a hacker name.
+        /// Nil until the API answered; false means the user still has to pick a way in (the welcome screen, cloud.js).
         var registered: Bool?
+        /// Nil while registered too: the welcome screen got a token to sign in with (`begin`) and no account or name is
+        /// on it yet. The page keeps the welcome screen up until there's a name.
         var hackerName: String?
         /// Names repeat; name + tag (1–9999, shown as #0427) is unique, like Discord.
         var tag: Int?
@@ -152,7 +156,7 @@ final class Cloud {
         c.requestCachePolicy = .reloadIgnoringLocalCacheData
         return URLSession(configuration: c)
     }()
-    /// Which API this is (host and port), for what's kept per API: the token, the message keys (E2EE.swift).
+    /// Which API this is (host and port), for what's kept per API: the token, the old message keys (Unseal.swift).
     var apiName: String { (base.host ?? "api") + (base.port.map { "-\($0)" } ?? "") }
     private var client: [String: Any] {
         ["appVersion": version, "build": build, "osVersion": ProcessInfo.processInfo.operatingSystemVersionString]
@@ -185,6 +189,8 @@ final class Cloud {
 
     /// Nothing here waits on the network: the dashboard and the terminals work offline, the API catches up later.
     func start() {
+        // Tokens burned, read from the AI tools' own records (TokenLedger); they go out with the heartbeat.
+        TokenLedger.shared.start()
         Task { await beat() }
         let t = Timer(timeInterval: 60, repeats: true) { _ in Task { @MainActor in await Cloud.shared.beat() } }
         t.tolerance = 10
@@ -219,7 +225,8 @@ final class Cloud {
 
     /// Keeps this Mac online, says whether its user is working (XP), picks up updates and sends a name picked offline.
     private func heartbeat(_ token: String) async {
-        struct Answer: Decodable { let hackerName: String; let tag: Int; let online: Int; let update: Release?; let xp: XP?; let xpPaused: Bool? }
+        // No name (nor tag) yet: a token from `begin`, before signing in or picking one.
+        struct Answer: Decodable { let hackerName: String?; let tag: Int?; let online: Int; let update: Release?; let xp: XP?; let xpPaused: Bool? }
         // The theme too: the leaderboard shows someone's card in their theme, and anyone can take it.
         let work: [String: Any] = ["active": Activity.active, "tz": TimeZone.current.secondsFromGMT() / 60, "theme": ThemeStore.shared.chosenId,
                                    "tools": Activity.tools]
@@ -253,12 +260,41 @@ final class Cloud {
             state = s
             if let u = state.update { prepareUpdate(u) }
             maybeRestart()
+            // Without a name the API takes none yet (routes.ts UNNAMED_OK): they wait here for the account it signs in to.
+            // Not awaited: the first read of every transcript and the POSTs can take minutes, and the beat must stay free meanwhile.
+            if a.hackerName != nil { Task { await sendUsage(token) } }
         } catch Failure.status(401, _) {
             // The token isn't valid anymore: start over.
             self.token = nil
             await identify()
         } catch {
             state.reachable = false
+        }
+    }
+
+    /// Tokens burned (TokenLedger): the days that changed since they last went out, at most every five minutes, a few
+    /// hundred rows a call, each already as the API takes it (TokenLedger.makeBatch). The API keeps the larger of each
+    /// number, so a call that fails is simply made again. It takes each row on its own and names any it can't (`rejected`),
+    /// so one bad row never costs the others; a call it refuses whole as malformed isn't made again (it never would take it).
+    private var usageAt = Date.distantPast
+    private var sendingUsage = false
+    private func sendUsage(_ token: String) async {
+        guard !sendingUsage, Date().timeIntervalSince(usageAt) >= 290 else { return }
+        sendingUsage = true
+        defer { sendingUsage = false }
+        usageAt = Date()
+        struct Answer: Decodable { let stored: Int; let rejected: [Int]? }
+        for _ in 0..<8 {
+            guard let batch = await TokenLedger.shared.batch() else { return }
+            do {
+                let a: Answer = try await call("POST", "v1/usage", body: ["source": batch.source, "days": batch.rows], token: token)
+                if let r = a.rejected, !r.isEmpty { NSLog("Orbiterm: the API left out %d token rows of %d", r.count, batch.rows.count) }
+                TokenLedger.shared.sent(batch)
+            } catch Failure.status(400, _) {
+                TokenLedger.shared.sent(batch)
+            } catch {
+                return
+            }
         }
     }
 
@@ -317,13 +353,17 @@ final class Cloud {
         }
     }
 
-    /// Settings → Account: everything of the account is deleted on the server, on all its computers; this Mac starts
-    /// over as on its first launch (the page asks for a name again).
-    func deleteAccount() async -> String? {
+    /// Settings → Account: the account is deleted on the server (hidden at once, signed out on all its computers, erased
+    /// after the days the API keeps it); this Mac starts over as on its first launch (the welcome screen again).
+    /// `reason` and `text`: why they're leaving, if they said (account.js deleteData), kept with the deleted account.
+    func deleteAccount(reason: String? = nil, text: String? = nil) async -> String? {
         guard let token else { return "signed_out" }
         struct Answer: Decodable { let deleted: Bool }
+        var why: [String: Any] = [:]
+        if let reason, !reason.isEmpty { why["reason"] = String(reason.prefix(40)) }
+        if let text, !text.isEmpty { why["text"] = String(text.prefix(1000)) }
         do {
-            let _: Answer = try await call("DELETE", "v1/account", token: token)
+            let _: Answer = try await call("DELETE", "v1/account", body: why.isEmpty ? nil : why, token: token)
         } catch let Failure.status(_, code) {
             return code.isEmpty ? "failed" : code
         } catch {
@@ -343,31 +383,80 @@ final class Cloud {
     }
 
     func register(_ name: String) async -> Outcome {
-        struct Answer: Decodable { let hackerName: String; let tag: Int; let token: String }
-        do {
-            let a: Answer = try await call("POST", "v1/devices", body: client.merging(["deviceHash": DeviceID.hash, "hackerName": name]) { $1 })
-            token = a.token
-            if pendingName == name { pendingName = nil }
-            var s = state
-            s.reachable = true
-            s.registered = true
-            s.hackerName = a.hackerName
-            s.tag = a.tag
-            s.nameError = nil
-            state = s
-            await heartbeat(a.token)
-            return .done
-        } catch Failure.status(409, "device_exists") {
-            // Registered before (reinstall, erased disk): sign in and keep the name just picked.
-            pendingName = name
-            await identify()
-            return .done
-        } catch let Failure.status(_, code) {
-            return .failed(code.isEmpty ? "failed" : code)
-        } catch {
-            state.reachable = false
-            return keep(name)
+        await registerOnce(name)
+    }
+
+    /// The welcome screen's sign-in (cloud.js): signing in needs a token, so this Mac gets one without a name. Signing in
+    /// to an account then brings that account's name, XP and friends; a new account picks its name after (`register`).
+    /// The API keeps a Mac without a name out of sight meanwhile. Already has a token: nothing to do.
+    func begin() async -> Outcome {
+        await registerOnce(nil)
+    }
+
+    /// The one registration under way (`begin`, or `register` before there's a token): a second click, or a guest name
+    /// typed while a sign-in's `begin` is still on its way, waits for it and then goes on its token, instead of making
+    /// another device (which would take this Mac's hash from the first and leave a name behind).
+    private var registering: Task<Outcome, Never>?
+
+    private func registerOnce(_ name: String?) async -> Outcome {
+        // A waiter clears the finished task too: awaiting a finished task returns at once without yielding, so leaving it
+        // set would spin here forever and the first caller would never get to clear it.
+        while let r = registering {
+            _ = await r.value
+            if registering == r { registering = nil }
         }
+        // A token already (from `begin`: a sign-in started on the welcome screen, or a new account just signed in to):
+        // the name goes on it.
+        if token != nil {
+            guard let name else { return .done }
+            return await rename(name)
+        }
+        let t = Task { await self.create(name) }
+        registering = t
+        let outcome = await t.value
+        if registering == t { registering = nil }
+        // Online with its name at once. Not inside the task: a heartbeat that hears 401 registers again, and would wait
+        // on itself.
+        if case .done = outcome, name != nil, let token { await heartbeat(token) }
+        return outcome
+    }
+
+    /// POST /v1/devices, with a name or without one (`begin`). A token that came meanwhile is never replaced.
+    private func create(_ name: String?) async -> Outcome {
+        struct Answer: Decodable { let hackerName: String?; let tag: Int?; let token: String }
+        var body = client.merging(["deviceHash": DeviceID.hash]) { $1 }
+        if let name { body["hackerName"] = name }
+        for attempt in 0..<2 {
+            do {
+                let a: Answer = try await call("POST", "v1/devices", body: body)
+                guard token == nil else {
+                    if let name { return await rename(name) }
+                    return .done
+                }
+                token = a.token
+                if let name, pendingName == name { pendingName = nil }
+                var s = state
+                s.reachable = true
+                s.registered = true
+                s.hackerName = a.hackerName
+                s.tag = a.tag
+                s.nameError = nil
+                state = s
+                return .done
+            } catch Failure.status(409, "device_exists") where attempt == 0 {
+                // Another copy of the app registering this Mac at the same moment: once more (the API frees the hash).
+                continue
+            } catch let Failure.status(_, code) {
+                return .failed(code.isEmpty ? "failed" : code)
+            } catch {
+                state.reachable = false
+                if let name { return keep(name) }
+                return .failed("offline")
+            }
+        }
+        // Still taken: a name waits here and goes with the next heartbeat (identify registers it).
+        if let name { return keep(name) }
+        return .failed("device_exists")
     }
 
     func rename(_ name: String) async -> Outcome {
@@ -533,8 +622,6 @@ final class Cloud {
         var req = URLRequest(url: url, timeoutInterval: 15)
         req.httpMethod = method
         req.setValue("Bearer " + token, forHTTPHeaderField: "authorization")
-        // This app opens end-to-end encrypted messages (E2EE.swift): the API sends them sealed, as they are.
-        req.setValue("1", forHTTPHeaderField: "x-e2ee")
         if let body, method != "GET", JSONSerialization.isValidJSONObject(body) {
             req.httpBody = try? JSONSerialization.data(withJSONObject: body)
             req.setValue("application/json", forHTTPHeaderField: "content-type")
@@ -566,7 +653,6 @@ final class Cloud {
             req.setValue("application/json", forHTTPHeaderField: "content-type")
         }
         if let token { req.setValue("Bearer " + token, forHTTPHeaderField: "authorization") }
-        req.setValue("1", forHTTPHeaderField: "x-e2ee")
         ClientKey.sign(&req)
         let (data, response) = try await Cloud.session.data(for: req)
         ClientKey.learn(from: response)
@@ -609,7 +695,9 @@ final class CloudBridge: NSObject, WKScriptMessageHandlerWithReply {
         guard !path.contains("#"), !path.contains(";") else { return false }
         let routes = ["v1/me/status", "v1/me/activity", "v1/me/leaderboard", "v1/me/profile", "v1/me/avatar", "v1/feedback"]
         let trees = ["v1/social", "v1/friends", "v1/messages", "v1/leaderboard", "v1/notifications", "v1/roadmap", "v1/account", "v1/auth",
-                     "v1/settings", "v1/badges"]
+                     "v1/settings", "v1/badges", "v1/releases",
+                     // A whole screen in one answer (the API's screens.ts: a person's profile page).
+                     "v1/screens"]
         guard routes.contains(path) || trees.contains(where: { path == $0 || path.hasPrefix($0 + "/") || path.hasPrefix($0 + "?") }),
               let read = path.removingPercentEncoding?.lowercased().replacingOccurrences(of: "\\", with: "/")
                   .replacingOccurrences(of: "/+", with: "/", options: .regularExpression) else { return false }
@@ -633,6 +721,9 @@ final class CloudBridge: NSObject, WKScriptMessageHandlerWithReply {
                 replyHandler(cloud.json, nil)
             case "register":
                 replyHandler(Self.answer(await cloud.register(name)), nil)
+            // The welcome screen, before signing in: a token without a name.
+            case "begin":
+                replyHandler(Self.answer(await cloud.begin()), nil)
             case "rename":
                 replyHandler(Self.answer(await cloud.rename(name)), nil)
             case "update":
@@ -653,11 +744,7 @@ final class CloudBridge: NSObject, WKScriptMessageHandlerWithReply {
                     replyHandler(["error": "bad_path"], nil)
                     return
                 }
-                // Messages are sealed on the way out and opened on the way in (E2EE.swift).
-                replyHandler(await E2EE.shared.social(body["method"] as? String ?? "GET", path, body: body["body"]), nil)
-            case "e2ee":
-                // End-to-end encryption's own screens: the recovery key, approving a computer, a friend's security code.
-                replyHandler(await E2EE.shared.page(body), nil)
+                replyHandler(await cloud.social(body["method"] as? String ?? "GET", path, body: body["body"]), nil)
             case "openChat":
                 MessagePanel.openChat(friend: body["id"] as? String ?? "")
                 replyHandler(true, nil)
@@ -677,14 +764,20 @@ final class CloudBridge: NSObject, WKScriptMessageHandlerWithReply {
                 let error = await cloud.signOut()
                 replyHandler(["error": error.map { $0 as Any } ?? NSNull(), "state": cloud.json], nil)
             case "deleteAccount":
-                let error = await cloud.deleteAccount()
+                let error = await cloud.deleteAccount(reason: body["reason"] as? String, text: body["text"] as? String)
                 replyHandler(["error": error.map { $0 as Any } ?? NSNull(), "state": cloud.json], nil)
             // The terminals' text size, for Settings sync: read it, or set one from another computer.
             case "terminalFont":
                 guard let main = MainWindowController.shared else { return replyHandler(nil, nil) }
                 if let size = (body["size"] as? NSNumber)?.doubleValue { main.setFont(CGFloat(size)) }
+                // And their font (TerminalFont), "" back to the usual one: Settings (fonts.js) and Settings sync.
+                if let family = body["family"] as? String { main.setFontFamily(family) }
                 let font = main.terminalFont
-                replyHandler(["size": Double(font.size), "chosen": font.chosen], nil)
+                replyHandler(["size": Double(font.size), "chosen": font.chosen, "family": TerminalFont.picked,
+                              "current": TerminalFont.current, "usual": TerminalFont.usual, "iterm": ITermLook.current?.fontName != nil], nil)
+            // The Mac's monospaced fonts, for Settings' list.
+            case "terminalFonts":
+                replyHandler(["families": TerminalFont.families], nil)
             default:
                 replyHandler(nil, "unknown message")
             }

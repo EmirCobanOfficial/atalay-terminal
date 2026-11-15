@@ -2,6 +2,19 @@ import AppKit
 import WebKit
 import UniformTypeIdentifiers
 
+/// The dashboard's page. Its top bar works on the first click while a chat window is in front, like a title bar's
+/// buttons (the chat windows' header does the same): WebKit takes that click only to bring the window forward, so the
+/// brand (your profile), the gear and the update button did nothing until a second click. The top bar is the page's
+/// first 64 CSS px (about 56 drawn), at the app's text size (pageZoom).
+final class DashboardWebView: WKWebView {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        guard let event else { return super.acceptsFirstMouse(for: event) }
+        let p = convert(event.locationInWindow, from: nil)
+        let fromTop = isFlipped ? p.y : bounds.height - p.y
+        return fromTop < 64 * pageZoom || super.acceptsFirstMouse(for: event)
+    }
+}
+
 /// The animated radar page (Resources/web) in a WKWebView, fed by the engine through `window.__radar`.
 @MainActor
 final class RadarView: NSObject, WKScriptMessageHandler, WKNavigationDelegate, WKUIDelegate {
@@ -16,8 +29,12 @@ final class RadarView: NSObject, WKScriptMessageHandler, WKNavigationDelegate, W
         config.lockInspector()
         let ucc = WKUserContentController()
         ucc.addUserScript(WKUserScript(source: Self.terminalLook, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        // A note opened out of the dashboard goes in an app window of its own (NoteWindow), above the terminals.
+        ucc.addUserScript(WKUserScript(source: "window.__noteWindows = true;", injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        // The community feed is drawn by a panel of its own at the screen's corner (FeedPanel), not inside this page.
+        ucc.addUserScript(WKUserScript(source: "window.__nativeFeed = true;", injectionTime: .atDocumentStart, forMainFrameOnly: true))
         config.userContentController = ucc
-        webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 1200, height: 800), configuration: config)
+        webView = DashboardWebView(frame: NSRect(x: 0, y: 0, width: 1200, height: 800), configuration: config)
         webView.lockInspector()
         super.init()
         ThemeStore.shared.attach(webView, zooms: true)
@@ -39,7 +56,8 @@ final class RadarView: NSObject, WKScriptMessageHandler, WKNavigationDelegate, W
     /// as `window.__terminalLook`; their colours are the theme's (ThemeStore).
     static let terminalLook: String = {
         let look = ITermLook.current
-        let family = look?.fontName.flatMap { NSFont(name: $0, size: 13)?.familyName } ?? "Menlo"
+        // The font picked in Settings (TerminalFont) at launch; a pick made since, fonts.js passes on to them live.
+        let family = TerminalFont.chosen ?? look?.fontName.flatMap { NSFont(name: $0, size: 13)?.familyName } ?? "Menlo"
         let value: [String: Any] = ["font": family, "size": Double(look?.fontSize ?? 13)]
         let json = (try? JSONSerialization.data(withJSONObject: value)).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
         return "window.__terminalLook = \(json);"
@@ -100,6 +118,19 @@ final class RadarView: NSObject, WKScriptMessageHandler, WKNavigationDelegate, W
         webView.callAsyncJavaScript(js, arguments: [:], in: nil, in: .page) { _ in done() }
     }
 
+    /// The notes' one writer (notes.js) for the note windows (NoteWindow): `done` gets what `body` returns, nil when it
+    /// failed.
+    func callNotes(_ body: String, _ args: [String: Any], done: (@MainActor (Any?) -> Void)? = nil) {
+        webView.callAsyncJavaScript(body, arguments: args, in: nil, in: .page) { result in
+            switch result {
+            case .success(let value): done?(value)
+            case .failure(let error):
+                NSLog("dashboard page: notes call failed: %@", String(describing: error))
+                done?(nil)
+            }
+        }
+    }
+
     private func callPage(_ js: String, _ args: [String: Any] = [:]) {
         webView.callAsyncJavaScript(js, arguments: args, in: nil, in: .page) { result in
             if case .failure(let error) = result { NSLog("dashboard page: %@ failed: %@", js, String(describing: error)) }
@@ -144,14 +175,14 @@ final class RadarView: NSObject, WKScriptMessageHandler, WKNavigationDelegate, W
         webView.reload()
     }
 
-    /// An `<input type=file>` on the page (Settings → PROFILE's new picture, profile.js): WebKit leaves the panel to the
-    /// app, Electron opens its own on Windows. Pictures only, one at a time.
+    /// An `<input type=file>` on the page (your profile's "Choose…" picture, profile-edit.js): WebKit leaves the panel to
+    /// the app, Electron opens its own on Windows. Pictures only, one at a time; an iPhone's HEIC too, WebKit opens it.
     func webView(_ webView: WKWebView, runOpenPanelWith parameters: WKOpenPanelParameters, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping ([URL]?) -> Void) {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
         panel.canChooseFiles = true
-        panel.allowedContentTypes = [.png, .jpeg, .webP, .gif]
+        panel.allowedContentTypes = [.png, .jpeg, .webP, .gif, .heic, .heif]
         guard let window = webView.window else { return completionHandler(panel.runModal() == .OK ? panel.urls : nil) }
         panel.beginSheetModal(for: window) { completionHandler($0 == .OK ? panel.urls : nil) }
     }

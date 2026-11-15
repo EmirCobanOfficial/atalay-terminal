@@ -96,10 +96,13 @@ window.FileEditor = (() => {
       jsonDefaults.setDiagnosticsOptions({ ...jsonDefaults.diagnosticsOptions, validate: true, allowComments: true, comments: 'ignore', trailingCommas: 'warning', schemaValidation: 'ignore' });
       defineTheme(await TM().init());
       addEventListener('themechange', () => TM().init().then(defineTheme));
+      // The terminals' font picked in Settings (fonts.js).
+      addEventListener('terminallook', (e) => editor && editor.updateOptions({ fontFamily: e.detail.fontFamily }));
       editor = monaco.editor.create(codeEl, {
         model: null,
         theme: 'terminal',
-        fontFamily: `"${LOOK.font}", Menlo, monospace`,
+        // WebKit has no family named SF Mono; the system one is ui-monospace (as in fonts.js).
+        fontFamily: (LOOK.font === 'SF Mono' ? 'ui-monospace, "SF Mono"' : `"${LOOK.font}"`) + ', Menlo, monospace',
         fontSize: LOOK.size,
         wordWrap: 'on',
         rulers: [120],

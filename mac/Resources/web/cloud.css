@@ -1,5 +1,8 @@
 /* ===== hacker name (first launch), settings and app updates ===== */
 #cloudui { position: fixed; inset: 0; z-index: 2700; display: none; align-items: center; justify-content: center; background: rgba(0, 0, 0, 0.4); -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px); }
+/* The page starts right of the app's chat list (--side-x, its width, from MainWindowController): this puts the box in the
+   middle of the whole window, and where that leaves too little room, moves it only as far as it still fits (860 + 2 × 24). */
+#cloudui { padding-right: min(var(--side-x, 0px), max(0px, 100vw - 908px)); }
 #cloudui.on { display: flex; }
 #cloudui.first { background: rgba(var(--deep-rgb), 0.78); -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); }
 
@@ -53,6 +56,24 @@
 .pk-foot .pk-ok:disabled:hover { background: var(--accent); box-shadow: none; }
 .pk-foot .pk-sel.note { color: var(--dim); }
 
+/* first launch: the welcome (cloud.js openFirst), three ways in alike, none of them pushed */
+.pk.hk.wel { width: min(480px, 92vw); }
+.wel-ways { display: flex; flex-direction: column; gap: 8px; margin: 14px 0 6px; }
+.wel-way { display: flex; align-items: center; gap: 13px; width: 100%; min-height: 54px; padding: 8px 14px; border: 1px solid rgba(var(--glow), 0.4); border-radius: 8px; background: rgba(var(--glow), 0.06); color: var(--txt); font: inherit; text-align: left; cursor: pointer; transition: border-color 0.15s, background 0.15s, box-shadow 0.15s; }
+.wel-way:hover, .wel-way:focus-visible { border-color: var(--accent); background: rgba(var(--glow), 0.15); box-shadow: 0 0 16px rgba(var(--glow), 0.32); outline: none; }
+.wel-way > svg, .wel-way > i { flex: none; width: 18px; height: 18px; color: var(--accent); fill: currentColor; font: 700 17px/18px var(--font); font-style: normal; text-align: center; filter: drop-shadow(0 0 6px rgba(var(--glow), 0.6)); }
+.wel-way > span { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.wel-way b { color: var(--hi); font-size: 1.15em; }
+.wel-way small { color: var(--dim); font-size: 0.95em; }
+.wel-p { margin: 0 0 8px; color: var(--txt2); line-height: 1.5; }
+.wel-p b { color: var(--hi); }
+.wel-p svg { width: 13px; height: 13px; margin: 0 3px 0 4px; fill: currentColor; vertical-align: -2px; }
+.wel-p + .hk-field { margin-top: 4px; }
+.wel-link { padding: 0; border: 0; background: none; color: var(--accent-soft); font: inherit; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+.wel-link:hover { color: var(--hi); }
+.wel-other { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 12px; padding: 8px 10px; border: 1px solid rgba(var(--glow), 0.3); border-radius: 6px; background: rgba(var(--glow), 0.06); color: var(--txt2); line-height: 1.45; }
+.wel-other b { color: var(--hi); }
+
 /* top bar: the brand opens settings; an update shows up as a pulsing button */
 .brand { cursor: pointer; }
 .brand .stack b.long { font-size: 0.9em; letter-spacing: 0.06em; }
@@ -75,14 +96,10 @@
 @keyframes hk-shake { 20%, 60% { transform: translateX(-5px); } 40%, 80% { transform: translateX(5px); } }
 @keyframes hk-glow { 50% { box-shadow: 0 0 14px rgba(var(--green-rgb), 0.5); } }
 
-/* ===== main menu (the logo): friends, requests, settings, your status ===== */
+/* ===== Settings (the gear, ⌘,; cloud.js openMenu, settings.css) ===== */
 .pk.hk.menu { width: min(640px, 94vw); height: min(580px, 88vh); }
 .pk.hk.menu .pk-title { gap: 9px; overflow: visible; }
-.mn-me { position: relative; display: flex; align-items: center; gap: 7px; margin-left: auto; }
-.mn-handle { color: var(--hi); font-weight: 700; white-space: nowrap; }
-.mn-handle i { color: var(--accent-soft); font-style: normal; font-weight: 400; }
-.mn-copy, .mn-status { display: flex; align-items: center; gap: 6px; height: 22px; padding: 0 7px; border: 1px solid rgba(var(--glow), 0.35); border-radius: 11px; background: rgba(0, 0, 0, 0.3); color: var(--txt); font: inherit; cursor: pointer; }
-.mn-copy:hover, .mn-status:hover { border-color: var(--accent); color: var(--hi); }
+/* your status's choices (cloud.js statusMenu), in the account menu */
 .mn-pick { position: absolute; top: 28px; right: 0; z-index: 20; display: flex; flex-direction: column; width: 290px; padding: 6px; border: 1px solid rgba(var(--glow), 0.45); border-radius: 8px; background: rgba(var(--surface-rgb), var(--glass-a)); -webkit-backdrop-filter: blur(16px) saturate(1.4); backdrop-filter: blur(16px) saturate(1.4); box-shadow: 0 16px 40px rgba(0, 0, 0, 0.6), 0 0 20px rgba(var(--glow), 0.25); animation: slidein 0.16s ease-out; }
 .mn-pick button { display: flex; align-items: center; gap: 10px; padding: 7px 8px; border: 0; border-radius: 5px; background: transparent; color: var(--txt); font: inherit; text-align: left; cursor: pointer; }
 .mn-pick button:hover, .mn-pick button.on { background: rgba(var(--glow), 0.16); }
@@ -90,11 +107,6 @@
 .mn-pick b { color: var(--hi); font-weight: 700; }
 .mn-pick small { color: var(--dim); font-size: 0.88em; }
 
-.mn-tabs { display: flex; gap: 2px; flex: none; padding: 0 12px; border-bottom: 1px solid rgba(var(--glow), 0.3); background: rgba(0, 0, 0, 0.22); }
-.mn-tabs button { display: flex; align-items: center; gap: 6px; height: 34px; padding: 0 14px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--dim); font: inherit; font-weight: 700; letter-spacing: 0.14em; cursor: pointer; }
-.mn-tabs button:hover { color: var(--hi); }
-.mn-tabs button.on { border-bottom-color: var(--accent); color: var(--accent); text-shadow: 0 0 10px rgba(var(--glow), 0.6); }
-.mn-tabs .cnt[hidden] { display: none; }
 .mn-body { flex: 1; min-height: 0; overflow-y: auto; padding: 14px 18px; scrollbar-width: thin; scrollbar-color: var(--dim2) transparent; }
 .mn-page[hidden] { display: none; }
 .mn-add { margin-top: 0; }
@@ -149,6 +161,15 @@
 .up-bar { height: 6px; margin: 12px 0 4px; overflow: hidden; border-radius: 3px; background: rgba(var(--accent-rgb), 0.15); }
 .up-bar[hidden] { display: none; }
 .up-bar i { display: block; width: 0; height: 100%; border-radius: 3px; background: linear-gradient(90deg, var(--accent), var(--amber)); box-shadow: 0 0 10px rgba(var(--accent-rgb), 0.6); transition: width 0.3s ease; }
+/* what's new after it, and tips (cloud.js openWhatsNew, openTips; whatsnew.js): the Roadmap's mark as the notifications'
+   NEW, "all changes" as a plain link, a release in the notifications clickable, the dashboard's tip as power save's */
+.up-notes li[hidden] { display: none; }
+.wn-voted { margin-left: 4px; padding: 0 6px; background: var(--accent); color: var(--ink); font-size: 0.75em; font-style: normal; font-weight: 700; letter-spacing: 0.1em; white-space: nowrap; }
+.wn-more { margin: 0 0 0 16px; padding: 0; border: 0; background: none; color: var(--green); font: inherit; cursor: pointer; }
+.wn-more:hover { color: var(--hi); }
+.wn-tip { position: fixed; z-index: 2500; display: block; width: 300px; padding-right: 30px; pointer-events: auto; --glow: var(--accent-rgb); animation: slidein 0.14s ease-out; }
+.wn-tip[hidden] { display: none; }
+.wn-tip .mb-x { position: absolute; top: 5px; right: 5px; }
 
 /* ===== levels (xp.js): the top bar's rank and XP bar, your profile, a friend's card ===== */
 .brand .stack small.rk { color: rgb(var(--rc)); letter-spacing: 0.3em; text-shadow: 0 0 8px rgba(var(--rc), 0.6); }
@@ -157,7 +178,7 @@
 
 .pf-head { display: flex; align-items: center; gap: 18px; padding: 2px 4px 14px; }
 .pf-band { flex: none; width: 112px; }
-.pf-pic { flex: none; width: 88px; height: 88px; border: 2px solid rgba(var(--rc), 0.85); border-radius: 6px; box-shadow: 0 0 18px rgba(var(--rc), 0.4); object-fit: cover; }
+.pf-pic { flex: none; width: 88px; height: 88px; border: 2px solid rgba(var(--rc), 0.85); border-radius: 2px; box-shadow: 0 0 18px rgba(var(--rc), 0.4); object-fit: cover; }
 .pf-rank { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .pf-rank small { display: flex; align-items: center; gap: 6px; color: var(--dim); font-size: 0.8em; font-weight: 700; letter-spacing: 0.2em; }
 .pf-rank > b { color: rgb(var(--rc)); font-size: 1.9em; font-weight: 800; line-height: 1.1; letter-spacing: 0.08em; text-shadow: 0 0 16px rgba(var(--rc), 0.55); }
@@ -193,16 +214,6 @@
 .mn-name { display: flex; align-items: center; gap: 7px; min-width: 0; }
 .mn-today { flex: none; color: var(--dim); font-size: 0.9em; white-space: nowrap; }
 
-/* a friend's card (their level, a click on it or right-click → view profile) */
-.mn-ask.pf-card { width: 400px; border-color: rgba(var(--rc), 0.55); box-shadow: 0 18px 44px rgba(0, 0, 0, 0.65), 0 0 22px rgba(var(--rc), 0.2); }
-.pf-card .pf-head { padding: 0 0 12px; }
-.pf-card .pf-band { width: 92px; }
-.pf-card .pf-rank > b { color: var(--hi); font-size: 1.25em; text-shadow: none; }
-.pf-card .pf-rank > b i { color: var(--accent-soft); font-style: normal; font-weight: 400; }
-.pf-card .pf-rank span { color: rgb(var(--rc)); }
-.pf-card .pf-stats { grid-template-columns: repeat(3, 1fr); margin: 4px 0 14px; }
-.pf-card p { margin: 4px 0 14px; }
-
 /* settings: an on/off switch */
 .hk-row > span small { display: block; color: var(--dim2); font-size: 0.86em; }
 .hk-row .hk-sw { position: relative; flex: none; width: 34px; height: 18px; padding: 0; border: 1px solid rgba(var(--glow), 0.4); border-radius: 9px; background: rgba(0, 0, 0, 0.4); }
@@ -220,160 +231,56 @@
 .xw-d i { width: 64%; max-width: 26px; border-radius: 3px 3px 0 0; background: linear-gradient(180deg, rgb(var(--rc)), rgba(var(--rc), 0.4)); box-shadow: 0 0 8px rgba(var(--rc), 0.45); }
 .xw-d span { color: var(--dim); font-size: 0.8em; }
 .xw-d.today span { color: rgb(var(--rc)); font-weight: 700; }
-.pf-card .xw { height: 96px; margin-bottom: 14px; }
 .xw-d span { white-space: nowrap; }
 .xw-note { margin: -6px 0 12px; color: var(--dim); font-size: 0.86em; }
 
-/* ===== the leaderboard (the activity bar's trophy) =====
-   It reads as a scoreboard, not a terminal: words in the sans (--font-sans), numbers in the mono with figures of one
-   width, on one type scale from Apple's macOS text styles (HIG Typography: 11 · 12 · 13 · 15 · 17 · 22 · 28), three
-   weights, nothing under 11px. Labels name each part once (EVERYONE THIS WEEK, the columns), the most important number
-   is the largest, and the colours mean one thing each: orange is you, green is up and working, gold/silver/bronze are
-   the first three. */
-#board-view .body, #friends-view .body { font: 13px/18px var(--font-sans); }
-.lb-lbl { display: block; color: var(--dim); font: 600 11px/14px var(--font-sans); letter-spacing: 0.06em; text-transform: uppercase; }
-.lb-head { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+/* ===== shared social / settings / friends rules (the leaderboard itself lives in leaderboard.css) ===== */
+#friends-view .body { font: 13px/18px var(--font-sans); }
 .lb-seg { display: flex; flex: none; overflow: hidden; border: 1px solid rgba(var(--glow), 0.45); border-radius: 6px; }
 .lb-seg button { height: 26px; padding: 0 12px; border: 0; background: transparent; color: var(--dim); font: inherit; font-weight: 700; letter-spacing: 0.12em; cursor: pointer; }
 .lb-seg button:hover { color: var(--hi); }
 .lb-seg button.on { background: var(--accent); color: var(--ink); }
-#board-view .lb-seg button { height: 28px; font: 600 11px/1 var(--font-sans); letter-spacing: 0.06em; }
-/* Settings' interface font and text size, as the leaderboard's tabs. */
+/* Settings' interface font and text size. */
 .ui-seg { --glow: var(--accent-rgb); }
 .ui-seg button { height: 24px; padding: 0 10px; letter-spacing: 0.06em; }
-.lb-note { overflow: hidden; color: var(--txt3); font-size: 12px; white-space: nowrap; text-overflow: ellipsis; }
-.lb-near { display: inline-flex; flex: none; align-items: center; gap: 6px; height: 28px; padding: 0 11px; border: 1px solid rgba(var(--glow), 0.45); border-radius: 6px; background: transparent; color: var(--dim); font: 600 11px/1 var(--font-sans); letter-spacing: 0.06em; cursor: pointer; }
-.lb-near i { width: 8px; height: 8px; border: 1.5px solid currentColor; border-radius: 50%; }
-.lb-near:hover { color: var(--hi); }
-.lb-near.on { border-color: var(--accent); color: var(--accent); }
-.lb-near.on i { background: var(--accent); box-shadow: 0 0 6px rgba(var(--accent-rgb), 0.7); }
-.lb-near:disabled { opacity: 0.4; cursor: default; }
 
-/* Everyone's week together (cloud.js communityHTML). */
-.lb-com { margin: 0 0 14px; padding: 12px 16px 12px; border: 1px solid var(--line-soft); border-radius: 8px; background: linear-gradient(180deg, rgba(var(--accent-rgb), 0.09), rgba(var(--accent-rgb), 0.02)); }
-.lb-com-top { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; }
-.lb-big { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-.lb-big > div { display: flex; align-items: baseline; gap: 8px; margin-top: 2px; }
-.lb-big > div b { color: var(--hi); font: 700 28px/34px var(--font-mono); font-variant-numeric: tabular-nums; text-shadow: 0 0 18px rgba(var(--accent-rgb), 0.4); }
-.lb-big > div span { color: var(--txt2); font-size: 15px; font-weight: 600; }
-.lb-facts { display: flex; flex-wrap: wrap; align-items: center; margin: 0; color: var(--txt3); font-size: 12px; line-height: 16px; }
-.lb-sep { margin: 0 7px; color: var(--dim2); font-style: normal; }
-.lb-trend { font-weight: 600; font-variant-numeric: tabular-nums; }
-.lb-trend.up { color: var(--green); }
-.lb-trend.down { color: var(--red-soft); }
-.lb-cwrap { display: flex; flex: none; flex-direction: column; gap: 6px; }
-.lb-cdays { display: grid; grid-template-columns: repeat(7, 36px); gap: 4px; height: 78px; }
-.lb-cd { display: grid; grid-template-rows: 14px minmax(0, 1fr) 14px; justify-items: center; gap: 3px; min-width: 0; }
-.lb-cd em { color: var(--txt3); font: 500 11px/14px var(--font-mono); font-style: normal; font-variant-numeric: tabular-nums; white-space: nowrap; }
-.lb-cd b { display: flex; align-items: flex-end; width: 18px; height: 100%; overflow: hidden; border-radius: 3px 3px 0 0; background: rgba(var(--accent-rgb), 0.08); }
-.lb-cd b i { display: block; width: 100%; border-radius: 3px 3px 0 0; background: rgba(var(--accent-rgb), 0.55); }
-.lb-cd span { color: var(--dim); font-size: 11px; line-height: 14px; }
-.lb-cd.today b i { background: var(--accent); box-shadow: 0 0 10px rgba(var(--accent-rgb), 0.6); }
-.lb-cd.today em, .lb-cd.today span { color: var(--accent-soft); font-weight: 600; }
-.lb-cd.later b { border: 1px dashed var(--dim2); border-bottom: 0; background: transparent; }
-.lb-goal { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; align-items: center; gap: 12px; margin-top: 12px; }
-.lb-goal > i { height: 8px; overflow: hidden; border: 1px solid var(--line-soft); border-radius: 4px; background: rgba(0, 0, 0, 0.3); }
-.lb-goal > i > i { display: block; height: 100%; background: linear-gradient(90deg, var(--accent), var(--amber)); box-shadow: 0 0 8px rgba(var(--accent-rgb), 0.6); }
-.lb-goal span { color: var(--hi); font: 600 13px/18px var(--font-mono); font-variant-numeric: tabular-nums; }
-.lb-goal small { color: var(--txt3); font-size: 12px; }
-.lb-goal.done small { color: var(--green); font-weight: 600; }
-
-/* The first three: medals of real metal (gold, silver, bronze, each its own hue and its number on it, so the colour is
-   never the only cue), the first one taller. Bronze is a brown, not an orange, to stay apart from the accent. */
-.lb-disc { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: 50%; color: #2a1d08; font: 700 12px/1 var(--font-mono); font-style: normal; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.35), 0 1px 3px rgba(0, 0, 0, 0.5); }
-.lb-disc.m1 { background: linear-gradient(135deg, #7d5a30 0%, #c8a84b 40%, #fff4c7 58%, #c8a84b 100%); }
-.lb-disc.m2 { background: linear-gradient(135deg, #7c7c7c 0%, #c0c0c0 25%, #fafafa 50%, #c0c0c0 75%, #7c7c7c 100%); color: #26292d; }
-.lb-disc.m3 { background: linear-gradient(135deg, #6b4226 0%, #b08463 50%, #d9a27a 70%, #8a5a3a 100%); color: #24150a; }
-.lb-pod { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); align-items: end; gap: 10px; margin-bottom: 14px; }
-.lb-pod-c { --medal: 176, 132, 99; position: relative; display: flex; flex-direction: column; align-items: center; gap: 4px; min-width: 0; padding: 14px 10px 12px; border: 1px solid rgba(var(--medal), 0.5); border-radius: 8px; background: linear-gradient(180deg, rgba(var(--medal), 0.16), rgba(var(--medal), 0.03) 75%); text-align: center; cursor: pointer; }
-.lb-pod-c.p1 { --medal: 242, 201, 76; padding: 22px 10px 16px; box-shadow: 0 0 24px rgba(var(--medal), 0.14); }
-.lb-pod-c.p2 { --medal: 201, 209, 219; }
-.lb-pod-c:hover { background: linear-gradient(180deg, rgba(var(--medal), 0.24), rgba(var(--medal), 0.05) 75%); }
-.lb-pod-c.sel { border-color: rgb(var(--medal)); }
-.lb-pod-c.me { box-shadow: inset 0 -3px 0 var(--accent); }
-.lb-pod-c.anon { cursor: default; }
-.lb-pod-c.empty { visibility: hidden; }
-.lb-pod-c > .lb-disc { position: absolute; top: 8px; left: 9px; }
-.lb-pod-c > .lb-chev { position: absolute; top: 13px; right: 11px; }
-.lb-pod-art { display: flex; align-items: center; justify-content: center; height: 58px; }
-.lb-pod-c.p1 .lb-pod-art { height: 70px; }
-.lb-pod-art .bdg-mini { margin: 0; vertical-align: 0; }
-.lb-pod-hb { width: 88px; }
-/* A picture on the podium: 56px (64 for the first), the displayed badge on its corner. */
-.lb-pod-av { position: relative; display: inline-flex; }
-.lb-pod-av .fr-av { width: 56px; height: 56px; border-radius: 8px; box-shadow: 0 0 0 2px rgba(var(--medal), 0.75), 0 0 16px rgba(var(--medal), 0.3); }
-.lb-pod-av .fr-av img { border-radius: 8px; }
-.lb-pod-av .fr-av b { font-size: 24px; }
-.lb-pod-c.p1 .lb-pod-av .fr-av { width: 64px; height: 64px; }
-.lb-pod-av .bdg-mini { position: absolute; right: -14px; bottom: -8px; margin: 0; }
-.lb-pod-c .lb-l1 { justify-content: center; max-width: 100%; }
-.lb-pod-c small { color: var(--txt3); font-size: 12px; line-height: 16px; }
-.lb-pod-score { margin-top: 2px; color: var(--hi); font: 700 15px/20px var(--font-mono); font-variant-numeric: tabular-nums; }
-.lb-pod-c.p1 .lb-pod-score { color: rgb(var(--medal)); font-size: 17px; line-height: 22px; }
-.lb-pod-score i, .lb-score i { margin-left: 4px; color: var(--dim); font: 600 11px/1 var(--font-sans); font-style: normal; }
-
-/* The rows: place · who · last 7 days · score · what you can do (on hover). One meta line under the name. */
-.lb-list { display: flex; flex-direction: column; gap: 2px; }
-.lb-cols, .lb-row { display: grid; grid-template-columns: 32px 32px minmax(0, 1fr) 60px 104px 84px; align-items: center; gap: 12px; padding: 0 10px; }
-.lb-cols { padding-bottom: 6px; border-bottom: 1px solid var(--line-soft); margin-bottom: 4px; color: var(--dim); font: 600 11px/14px var(--font-sans); letter-spacing: 0.06em; }
-.lb-cols span:first-child, .lb-cols span:nth-child(4) { text-align: right; }
-.lb-row { min-height: 46px; padding-top: 4px; padding-bottom: 4px; border-radius: 6px; cursor: pointer; }
-.lb-row:hover { background: rgba(var(--glow), 0.08); }
-/* Yours stays in sight: pinned to the list's top or bottom edge while the rest scrolls under it. */
-.lb-row.me, .lb-row.me.fire { position: sticky; top: 0; bottom: 0; z-index: 2; background: linear-gradient(rgba(var(--glow), 0.16), rgba(var(--glow), 0.16)), rgb(var(--panel-rgb)); box-shadow: inset 3px 0 0 var(--accent); }
-.lb-gapx { color: var(--accent-soft); font-weight: 600; }
-.lb-pos { display: flex; align-items: center; justify-content: flex-end; gap: 3px; color: var(--txt3); font: 600 13px/18px var(--font-mono); font-variant-numeric: tabular-nums; }
-.lb-chev { flex: none; width: 10px; height: 10px; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
-.lb-chev.up { stroke: var(--green); }
-.lb-chev.down { stroke: var(--red-soft); }
-.lb-who { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
-.lb-l1 { display: flex; align-items: center; gap: 6px; min-width: 0; white-space: nowrap; }
-.lb-name { overflow: hidden; color: var(--hi); font-size: 13px; font-weight: 600; text-overflow: ellipsis; }
-.lb-tag { flex: none; color: var(--dim); font: 400 12px/16px var(--font-mono); font-style: normal; }
-.lb-l1 .bdg-mini { margin: 0 0 0 2px; vertical-align: 0; }
-.lb-who small { overflow: hidden; color: var(--txt3); font-size: 12px; line-height: 16px; white-space: nowrap; text-overflow: ellipsis; }
-/* working now (the API: at work in the last three minutes): a green dot by the name, and how many on the strip */
+/* working now (the API: at work in the last three minutes): a green dot by the name */
 .lb-live { display: inline-block; flex: none; width: 7px; height: 7px; margin-right: 6px; border-radius: 50%; background: var(--green); box-shadow: 0 0 6px rgba(var(--green-rgb), 0.8); vertical-align: middle; animation: lb-live 2s ease-in-out infinite; }
-.lb-l1 .lb-live { margin-right: 0; }
 @keyframes lb-live { 50% { opacity: 0.45; } }
-.lb-now { color: var(--green); font-weight: 600; }
 .lb-you { padding: 1px 5px; border-radius: 3px; background: var(--accent); color: var(--ink); font: 700 10px/14px var(--font-sans); font-style: normal; letter-spacing: 0.04em; text-transform: uppercase; }
-.lb-spark { display: flex; align-items: flex-end; gap: 2px; height: 16px; }
-.lb-spark i { flex: 1; min-height: 1px; border-radius: 1px; background: rgb(var(--rc)); box-shadow: 0 0 4px rgba(var(--rc), 0.5); }
-.lb-spark.off { border-bottom: 1px dashed var(--dim2); opacity: 0.5; }
-.lb-score { color: var(--hi); font: 600 13px/18px var(--font-mono); text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
-.lb-act { display: flex; justify-content: flex-end; }
-/* What you can do about someone shows on their row's hover (and while their card is open), not on every row at once. */
-#board-view .lb-row .lb-act > * { opacity: 0; transition: opacity 0.12s; }
-#board-view .lb-row:hover .lb-act > *, #board-view .lb-row.sel .lb-act > *, #board-view .lb-act > :focus-visible { opacity: 1; }
-.lb-state { color: var(--dim); font-size: 12px; white-space: nowrap; }
-.lb-gap { color: var(--dim2); text-align: center; letter-spacing: 0.3em; }
-.lb-foot { margin: 12px 0 0; color: var(--txt3); text-align: center; }
-.lb-row.anon { cursor: default; }
-.lb-row.anon:hover { background: transparent; }
-.lb-anon { color: var(--dim) !important; font-style: italic; font-weight: 600; }
 .lb-hid { padding: 1px 5px; border: 1px solid var(--dim2); border-radius: 3px; color: var(--dim); font-size: 10px; font-style: normal; font-weight: 700; text-transform: uppercase; }
-/* Someone who moved at a refresh lights up once while sliding to their place. */
-.lb-row.moved:not(.fire) { animation: lb-moved 0.6s ease-out; }
-@keyframes lb-moved { from { background-color: rgba(var(--accent-rgb), 0.3); } }
-/* On fire: five hours of work today. On the leaderboard and among friends, flames rise from the card's bottom behind
-   its text (fire.js) and its edge glows, as long as the day lasts. */
-.lb-row.fire, .mn-row.fire, .lb-pod-c.fire { position: relative; z-index: 0; box-shadow: 0 0 0 1px rgba(255, 128, 8, 0.85), 0 0 14px rgba(255, 90, 0, 0.55), inset 0 0 16px rgba(255, 100, 0, 0.2); animation: lb-heat 1.3s ease-in-out infinite alternate; }
+
+/* On fire: the card's flame today (the API's fire.ts) on friends and feed. */
+.mn-row.fire { position: relative; z-index: 0; box-shadow: 0 0 0 1px rgba(255, 128, 8, 0.85), 0 0 14px rgba(255, 90, 0, 0.55), inset 0 0 16px rgba(255, 100, 0, 0.2); animation: lb-heat 1.3s ease-in-out infinite alternate; text-shadow: 1px 1px 0 #000, -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 0 0 4px #000, 0 0 8px rgba(0, 0, 0, 0.85); }
 .fire-card { position: absolute; inset: 0; z-index: -1; width: 100%; height: 100%; border-radius: inherit; pointer-events: none; }
-/* Their text stays readable over the flames: a dark outline, and a dark backing for the week's bars. */
-.lb-row.fire, .mn-row.fire, .lb-pod-c.fire { text-shadow: 1px 1px 0 #000, -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 0 0 4px #000, 0 0 8px rgba(0, 0, 0, 0.85); }
-.lb-row.fire .lb-spark { border-radius: 3px; background: rgba(0, 0, 0, 0.5); box-shadow: 0 0 6px 3px rgba(0, 0, 0, 0.5); }
-.lb-row.fire .lvb, .lb-row.fire em, .lb-row.fire button, .lb-pod-c.fire .lvb, .lb-pod-c.fire em, .lb-pod-c.fire .lb-disc, .mn-row.fire .lvb, .mn-row.fire button, .mn-row.fire .cnt { text-shadow: none; }
+.mn-row.fire .lvb, .mn-row.fire button, .mn-row.fire .cnt { text-shadow: none; }
 @keyframes lb-heat { from { box-shadow: 0 0 0 1px rgba(255, 128, 8, 0.7), 0 0 10px rgba(255, 90, 0, 0.4), inset 0 0 12px rgba(255, 100, 0, 0.15); } to { box-shadow: 0 0 0 1px rgba(255, 170, 40, 0.95), 0 0 20px rgba(255, 90, 0, 0.7), inset 0 0 20px rgba(255, 120, 0, 0.28); } }
-.lb-inv-note { margin: 6px 0 0; font-size: 12px; }
+.mn-row.fire.f2 { box-shadow: 0 0 0 1px rgba(130, 190, 255, 0.9), 0 0 14px rgba(40, 120, 255, 0.55), inset 0 0 16px rgba(60, 140, 255, 0.2); animation-name: lb-heat-blue; }
+@keyframes lb-heat-blue { from { box-shadow: 0 0 0 1px rgba(110, 175, 255, 0.7), 0 0 10px rgba(40, 120, 255, 0.4), inset 0 0 12px rgba(60, 140, 255, 0.15); } to { box-shadow: 0 0 0 1px rgba(200, 230, 255, 0.95), 0 0 20px rgba(40, 120, 255, 0.7), inset 0 0 20px rgba(90, 160, 255, 0.28); } }
+/* Staging only (fire-test.js, social-test.js): test strips above the board. */
+.lb-tests { display: flex; flex-direction: column; gap: 6px; }
+.lb-tests:empty { display: none; }
+.lb-ft { display: flex; flex-basis: 100%; flex-wrap: wrap; align-items: center; gap: 8px; padding: 6px 8px; border: 1px dashed rgba(var(--glow), 0.45); border-radius: 6px; color: var(--dim); font: 600 11px/1 var(--font-sans); }
+.lb-ft b { color: var(--accent); letter-spacing: 0.06em; }
+.tk-ai { display: flex; flex-direction: column; gap: 4px; }
+.tk-t, .tk-m { display: grid; grid-template-columns: minmax(0, 150px) minmax(0, 1fr) 64px; align-items: center; gap: 10px; }
+.tk-t:not(:first-child) { margin-top: 8px; }
+.tk-t b { color: var(--hi); font: 600 13px/18px var(--font-sans); }
+.tk-m { padding-left: 14px; }
+.tk-m b { overflow: hidden; color: var(--txt2); font: 400 12px/16px var(--font-mono); white-space: nowrap; text-overflow: ellipsis; }
+.tk-t > i, .tk-m > i { height: 6px; overflow: hidden; border-radius: 3px; background: rgba(var(--rc), 0.12); }
+.tk-t > i > i, .tk-m > i > i { display: block; height: 100%; border-radius: 3px; background: rgb(var(--rc)); box-shadow: 0 0 6px rgba(var(--rc), 0.5); }
+.tk-m > i > i { background: rgba(var(--rc), 0.55); box-shadow: none; }
+.tk-t span, .tk-m span { color: var(--hi); font: 600 13px/18px var(--font-mono); text-align: right; font-variant-numeric: tabular-nums; }
+.tk-m span { color: var(--txt2); font-size: 12px; font-weight: 400; }
+.tk-e em { padding: 1px 6px; border: 1px solid var(--line-soft); border-radius: 3px; color: var(--txt3); font: 400 11px/16px var(--font-sans); font-style: normal; }
+.tk-e em b { color: var(--txt2); font: 600 11px/16px var(--font-mono); font-variant-numeric: tabular-nums; }
 /* Someone's card (the leaderboard's and a friend's) on the same scale: a label, the name, the level in the rank's colour,
    the stats' labels small and their numbers in the mono. */
 #board-view .hk-h, #friends-view .hk-h { margin: 18px 0 8px; font: 600 11px/14px var(--font-sans); letter-spacing: 0.06em; }
 #board-view .pf-rank small, #friends-view .pf-rank small { font: 600 11px/14px var(--font-sans); letter-spacing: 0.06em; text-transform: uppercase; }
 #board-view .pf-rank > b, #friends-view .pf-rank > b { color: var(--hi); font: 600 17px/22px var(--font-sans); letter-spacing: 0; text-shadow: none; }
 #board-view .pf-rank > b i, #friends-view .pf-rank > b i { color: var(--dim); font: 400 13px/18px var(--font-mono); font-style: normal; opacity: 1; }
-#friends-view .pf-card .pf-rank > b.pf-nick { font-size: 17px; }
-#friends-view .pf-card .pf-rank > em.pf-real { font: 400 12px/16px var(--font-mono); }
 #board-view .pf-rank span, #friends-view .pf-rank span { color: rgb(var(--rc)); font-size: 13px; }
 #board-view .pf-stats label, #friends-view .pf-stats label { font: 600 11px/14px var(--font-sans); letter-spacing: 0.06em; }
 #board-view .pf-stats b, #friends-view .pf-stats b { font: 600 15px/20px var(--font-mono); font-variant-numeric: tabular-nums; }
@@ -386,8 +293,8 @@
 .fr-sec { margin: 12px 0 4px; padding: 0 8px; color: var(--dim); font: 600 11px/14px var(--font-sans); letter-spacing: 0.06em; }
 .fr-sec:first-child { margin-top: 4px; }
 #friends-view .fr-row { gap: 12px; min-height: 48px; padding: 5px 10px; }
-.fr-av { position: relative; display: inline-flex; flex: none; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 6px; background: linear-gradient(135deg, rgba(var(--rc), 0.55), rgba(var(--rc), 0.2)); }
-.fr-av img { width: 100%; height: 100%; border-radius: 6px; object-fit: cover; }
+.fr-av { position: relative; display: inline-flex; flex: none; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 2px; background: linear-gradient(135deg, rgba(var(--rc), 0.55), rgba(var(--rc), 0.2)); }
+.fr-av img { width: 100%; height: 100%; border-radius: 2px; object-fit: cover; }
 .fr-av b { color: var(--hi); font: 700 15px/1 var(--font-sans); text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5); }
 .fr-av .pdot { position: absolute; right: -3px; bottom: -3px; width: 11px; height: 11px; box-sizing: border-box; outline: 2.5px solid rgb(var(--panel-rgb)); }
 .fr-row .mn-main { gap: 2px; }
@@ -438,37 +345,23 @@
 .cv { --glow: var(--accent-rgb); position: relative; grid-row: 2 / 4; grid-column: 2 / -1; display: none; gap: 8px; min-width: 0; min-height: 0; }
 .cv.on { display: flex; }
 .cv .body { overflow: auto; padding: 12px 14px; }
-/* notifications from the developer: a column of letters, the unread ones marked NEW */
-#notifications-view .cv-notes { flex: 1; }
-.nt-list { display: flex; flex-direction: column; gap: 10px; max-width: 860px; }
-.nt-item { padding: 12px 14px; border: 1px solid var(--line-soft); background: rgba(var(--surface-rgb), 0.55); }
-.nt-item.new { border-color: var(--line); box-shadow: inset 3px 0 0 var(--accent); }
-.nt-head { display: flex; align-items: baseline; gap: 10px; }
-.nt-head b { color: var(--hi); font-size: 1.12em; }
-.nt-head em { padding: 0 6px; background: var(--accent); color: var(--ink); font-size: 0.75em; font-style: normal; font-weight: 700; letter-spacing: 0.1em; }
-.nt-time { margin-left: auto; color: var(--dim); font-size: 0.85em; white-space: nowrap; }
-.nt-body { margin-top: 8px; color: var(--txt); line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+/* the notifications (the bell): notifications.css */
 /* Links and @GitHub names in release notes and notifications: their own colours, a click opens the browser. */
 .rt-link, .rt-user { cursor: pointer; text-decoration: none; overflow-wrap: anywhere; }
 .rt-link { color: var(--cyan); border-bottom: 1px solid rgba(var(--cyan-rgb), 0.45); }
 .rt-user { color: var(--violet); font-weight: 600; }
 .rt-link:hover, .rt-user:hover { text-decoration: underline; text-underline-offset: 2px; border-bottom-color: transparent; }
 #friends-view .cv-friends { flex: 1.3; }
-/* the right column: the picked friend's card, the requests under it */
+/* the right column: incoming and sent friend requests */
 #friends-view .cv-col { flex: 1; display: flex; flex-direction: column; gap: 8px; min-width: 0; min-height: 0; }
-#friends-view .cv-friend { flex: 1; }
-#friends-view .cv-requests { flex: 0 1 auto; max-height: 45%; }
+#friends-view .cv-requests { flex: 1; }
 #friends-view .mn-friends .mn-row { cursor: pointer; -webkit-user-select: none; user-select: none; }
 /* the picked one: a bar on its left and a tint, as backgrounds, so a burning row keeps its glow (a box-shadow) */
 #friends-view .mn-friends .mn-row.sel { background: linear-gradient(var(--accent), var(--accent)) left / 3px 100% no-repeat, rgba(var(--glow), 0.1); }
-/* Your profile where the friends are (cloud.js renderMe): the whole view, as CS:GO's inventory screen */
-#friends-view .cv-me { display: none; flex: 1; }
-#friends-view.me > .cv-friends, #friends-view.me > .cv-col { display: none; }
-#friends-view.me > .cv-me { display: flex; }
 /* you at the top of your friends, as on Steam: a click opens your profile and your badges */
 .me-card { position: relative; display: flex; align-items: center; gap: 14px; margin: 0 0 12px; padding: 10px 14px; overflow: hidden; border: 1px solid rgba(var(--rc), 0.45); border-radius: 6px; background: linear-gradient(100deg, rgba(var(--rc), 0.2), rgba(0, 0, 0, 0.3) 55%); cursor: pointer; transition: border-color 0.15s, background 0.15s; }
 .me-card:hover, .me-card:focus-visible { outline: none; border-color: rgb(var(--rc)); background: linear-gradient(100deg, rgba(var(--rc), 0.3), rgba(0, 0, 0, 0.25) 60%); }
-.me-card-pic { flex: none; width: 48px; height: 48px; border: 2px solid rgba(var(--rc), 0.8); border-radius: 5px; object-fit: cover; }
+.me-card-pic { flex: none; width: 48px; height: 48px; border: 2px solid rgba(var(--rc), 0.8); border-radius: 2px; object-fit: cover; }
 .me-card-band { flex: none; width: 64px; }
 .me-card-who { display: flex; flex: 1; flex-direction: column; gap: 3px; min-width: 0; }
 .me-card-who .mn-name b { color: var(--hi); font-size: 1.2em; font-weight: 800; }
@@ -483,21 +376,6 @@
 .me-card-go { flex: none; padding-left: 12px; border-left: 1px solid rgba(var(--rc), 0.3); color: rgb(var(--rc)); font-weight: 700; letter-spacing: 0.06em; white-space: nowrap; }
 .cv-hbtn { position: relative; z-index: 1; flex: none; height: 100%; padding: 0 10px; border: 0; border-left: 1px solid var(--line-soft); background: transparent; color: var(--accent-soft); font: inherit; font-size: 0.9em; font-weight: 700; letter-spacing: 0.04em; cursor: pointer; }
 .cv-hbtn:hover { background: rgba(var(--accent-rgb), 0.15); color: var(--hi); }
-.me-hero { position: relative; display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr) 230px; gap: 16px; margin-bottom: 18px; padding: 16px; border: 1px solid rgba(var(--rc), 0.35); background: linear-gradient(110deg, rgba(var(--rc), 0.16), rgba(0, 0, 0, 0.25) 45%, rgba(0, 0, 0, 0.35)); }
-.me-id { display: flex; align-items: center; gap: 14px; min-width: 0; }
-.me-pic { flex: none; width: 96px; height: 96px; border: 2px solid rgba(var(--rc), 0.8); border-radius: 6px; box-shadow: 0 0 18px rgba(var(--rc), 0.4); object-fit: cover; }
-.me-band { flex: none; width: 96px; }
-.me-who { display: flex; flex: 1; flex-direction: column; gap: 4px; min-width: 0; }
-.me-who > b { overflow: hidden; color: var(--hi); font-size: 1.9em; font-weight: 800; line-height: 1.1; letter-spacing: 0.03em; white-space: nowrap; text-overflow: ellipsis; }
-.me-who > b i { margin-left: 4px; color: var(--dim); font-size: 0.55em; font-style: normal; font-weight: 600; }
-.me-rank { color: rgb(var(--rc)); font-weight: 700; letter-spacing: 0.06em; }
-.me-who .pf-bar { max-width: 340px; height: 8px; margin: 4px 0 2px; }
-.me-who small { color: var(--dim); }
-.me-who small.me-acct { color: var(--accent-soft); }
-.me-stats { display: grid; grid-template-columns: repeat(2, 1fr); align-content: center; gap: 8px; }
-.me-stats > div { display: flex; flex-direction: column; gap: 2px; padding: 8px 12px; border: 1px solid rgba(var(--rc), 0.22); border-radius: 6px; background: rgba(0, 0, 0, 0.3); }
-.me-stats label { color: var(--dim); font-size: 0.78em; font-weight: 700; letter-spacing: 0.16em; }
-.me-stats b { color: var(--hi); font-size: 1.45em; font-weight: 800; }
 /* The badges keep their own colours whatever the theme, as CS:GO's items: fixed greys, the badge's colour (--q) on top. */
 .sc-slot { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; height: 100%; min-height: 176px; padding: 10px; border: 1px dashed rgba(255, 255, 255, 0.18); border-radius: 6px; background: rgba(0, 0, 0, 0.3); color: #8b929b; text-align: center; }
 .sc-slot small { color: #8b929b; font-size: 0.72em; font-weight: 700; letter-spacing: 0.25em; }
@@ -572,12 +450,7 @@
 .sc-tip .tp-prog small { color: #e6e8eb; }
 .sc-tip .tp-rare.rare { color: #ffd23f; font-weight: 700; }
 .sc-tip em { margin-top: 3px; color: #6b7179; font-size: 0.88em; font-style: normal; }
-#board-view .cv-list { flex: 1.3; }
-#board-view .cv-card { flex: 1; }
-#board-view .lb-row { cursor: pointer; }
-#board-view .lb-row.sel { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); }
-/* Someone's card, in their theme (cloud.js boardCard sets its colours on .cv-card). */
-.pf-card .pf-note { color: var(--dim); }
+/* Someone's card, in their theme. */
 .pf-theme { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 16px 0 12px; padding: 10px 12px; border: 1px solid var(--line); background: rgba(var(--accent-rgb), 0.07); }
 .pf-theme span { display: flex; flex-direction: column; gap: 2px; }
 .pf-theme label { color: var(--dim); font-size: 0.78em; font-weight: 700; letter-spacing: 0.1em; }
@@ -607,7 +480,8 @@
 .th-card.on .th-name, .th-card:hover .th-name, .th-card.hot .th-name { color: var(--hi); }
 .th-name em { color: var(--accent); font-size: 9px; font-style: normal; letter-spacing: 0.1em; }
 
-/* main menu → SHORTCUTS (cloud.js): an action per row, its keys on a key cap to click */
+/* Settings › Shortcuts (cloud.js renderKeys; its Settings look in settings.css): an action per row, its keys on a key
+   cap to click */
 .ks-note { margin: 0 0 6px; color: var(--dim); font-size: 0.92em; }
 .ks-msg { display: none; margin: 0 0 8px; color: var(--red); }
 .ks-msg.on { display: block; }
@@ -712,11 +586,6 @@
 #activity .acct-dot[hidden] { display: none; }
 /* its menu, beside the icon (account.js menu) */
 .acct-menu { --glow: var(--accent-rgb); position: fixed; z-index: 2600; width: 280px; padding: 6px; border: 1px solid rgba(var(--accent-rgb), 0.55); border-radius: 8px; background: rgba(var(--surface-rgb), 0.96); box-shadow: 0 14px 40px rgba(0, 0, 0, 0.6), 0 0 20px rgba(var(--accent-rgb), 0.18); font-size: 1.05em; }
-.acct-menu-who { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px 10px; border-bottom: 1px solid rgba(var(--accent-rgb), 0.2); margin-bottom: 4px; }
-.acct-menu-who b { color: var(--hi); }
-.acct-menu-who b i { color: var(--accent-soft); font-style: normal; font-weight: 400; }
-.acct-menu-who small { color: var(--dim); }
-.acct-menu-who .acct-ok { align-self: flex-start; margin-bottom: 3px; }
 .acct-menu button { display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 10px; border: 0; border-radius: 5px; background: none; color: var(--txt); font: inherit; text-align: left; cursor: pointer; }
 .acct-menu button:hover { background: rgba(var(--accent-rgb), 0.14); color: var(--hi); }
 .acct-menu button .vs-ci, .acct-menu button svg { width: 16px; font-size: 16px; color: var(--accent-soft); text-align: center; }
@@ -725,19 +594,37 @@
 .acct-menu hr { margin: 4px 2px; border: 0; border-top: 1px solid rgba(var(--accent-rgb), 0.2); }
 .acct-menu button.danger, .acct-menu button.danger .vs-ci { color: var(--red); }
 .acct-menu button.danger:hover { background: rgba(var(--red-rgb), 0.14); }
+/* its top: your picture (square, as on Steam), name#tag and how you're signed in, a click away from your profile; ⧉
+   beside it copies the name#tag */
+.acct-menu { width: 300px; }
+.acct-me { display: flex; align-items: center; gap: 4px; margin-bottom: 4px; padding-bottom: 4px; border-bottom: 1px solid rgba(var(--accent-rgb), 0.2); }
+.acct-menu .acct-me-open { flex: 1; min-width: 0; gap: 10px; padding: 8px; }
+.acct-me-pic { display: flex; flex: none; }
+.acct-me-pic img.acct-avatar, .acct-me-letter { box-sizing: border-box; width: 36px; height: 36px; border: 1px solid rgba(var(--accent-rgb), 0.6); border-radius: 2px; object-fit: cover; }
+.acct-me-letter { display: flex; align-items: center; justify-content: center; background: rgba(var(--accent-rgb), 0.16); color: var(--accent); font: 700 16px/1 var(--font); }
+.acct-me-txt { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.acct-me-txt b { overflow: hidden; color: var(--hi); white-space: nowrap; text-overflow: ellipsis; }
+.acct-me-txt b i { color: var(--accent-soft); font-style: normal; font-weight: 400; }
+.acct-me-txt small { color: var(--dim); line-height: 1.35; }
+.acct-ok-t { color: var(--green); font-weight: 700; }
+.acct-menu .acct-copy { flex: none; justify-content: center; width: 30px; height: 30px; padding: 0; border: 1px solid rgba(var(--accent-rgb), 0.35); border-radius: 6px; color: var(--txt); }
+.acct-menu .acct-copy:hover { border-color: var(--accent); }
+/* your status (online, away, do not disturb, invisible), its choices beside it as a submenu (cloud.js statusMenu) */
+.acct-st { position: relative; }
+.acct-menu .acct-st .pdot { margin: 0 3.5px; }
+.acct-menu .acct-st > button[aria-expanded="true"] { background: rgba(var(--accent-rgb), 0.14); color: var(--hi); }
+.acct-menu .acct-st .mn-pick { top: -7px; right: auto; left: calc(100% + 11px); width: 280px; }
 /* the account section's last row: sign out, delete */
 .acct-end { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 2px; }
-/* end-to-end encrypted messages (account.js keysHTML) */
-.acct-e2ee { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border: 1px solid rgba(var(--amber-rgb), 0.3); border-radius: 6px; background: rgba(var(--amber-rgb), 0.04); }
-.acct-e2ee-h { display: flex; flex-direction: column; gap: 2px; }
-.acct-e2ee-h b { color: var(--amber); }
-.acct-e2ee-h small { color: var(--dim); line-height: 1.4; }
-.acct-e2ee .hk-row small { display: block; color: var(--dim); }
-.acct-rk { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.acct-rk code { flex: 1; min-width: 0; padding: 4px 8px; border: 1px solid rgba(var(--amber-rgb), 0.45); border-radius: 4px; background: rgba(0, 0, 0, 0.4); color: var(--hi); font: 12px/1.4 var(--font); letter-spacing: 0.04em; user-select: all; -webkit-user-select: all; overflow-wrap: anywhere; }
-.acct-rk-btns { display: flex; gap: 6px; flex: none; }
-.acct-rk-new small { color: var(--amber) !important; }
+/* the line on where messages are kept (account.js msgsLine) */
+.acct-msgs { color: var(--dim); }
 .acct-del { color: var(--red); border-color: rgba(var(--red-rgb), 0.5); }
+/* Settings' last section (account.js paintDanger): set apart in red, its button never the prominent one. */
+.mn-settings .hk-h.danger-h { margin-top: 26px; color: var(--red); }
+.danger-zone { padding: 2px 12px; border: 1px solid rgba(var(--red-rgb), 0.4); border-radius: 6px; background: rgba(var(--red-rgb), 0.05); }
+.danger-zone .hk-row { min-height: 40px; gap: 16px; }
+.danger-zone .hk-row button.acct-del { flex: none; border-color: rgba(var(--red-rgb), 0.55); color: var(--red); }
+.danger-zone .hk-row button.acct-del:hover { background: rgba(var(--red-rgb), 0.16); color: var(--red); box-shadow: 0 0 12px rgba(var(--red-rgb), 0.35); }
 .acct-ask .acct-warn { margin: 10px 0 14px; padding: 10px 12px; border: 1px solid rgba(var(--red-rgb), 0.45); border-radius: 6px; background: rgba(var(--red-rgb), 0.08); color: var(--txt); line-height: 1.55; }
 .acct-ask.danger { border-color: rgba(var(--red-rgb), 0.6); }
 .acct-menu .vs-ci { display: inline-block; font: normal normal normal 16px/1 codicon; }
@@ -746,15 +633,10 @@
 
 /* nicknames (cloud.js nickBox): the list shows yours for them, their card both */
 .mn-main b.mn-nick { color: var(--hi); }
-.pf-card .pf-rank > b.pf-nick { color: var(--hi); font-size: 1.25em; }
-.pf-card .pf-rank > em.pf-real { color: var(--dim); font-style: normal; font-size: 0.92em; }
-.pf-card .pf-rank > em.pf-real b { color: var(--txt2); font-size: 1em; font-weight: 600; }
 .nick-ask { width: 380px; border-color: rgba(var(--accent-rgb), 0.55); }
 .nick-ask .hk-field { margin: 4px 0 14px; }
 /* the GitHub picture in place of the account icon */
 #activity .vs-ab-acct img.acct-avatar { width: 28px; height: 28px; border: 1px solid rgba(var(--accent-rgb), 0.55); border-radius: 50%; object-fit: cover; }
-.acct-menu-who { position: relative; }
-.acct-menu-who img.acct-avatar { position: absolute; top: 10px; right: 10px; width: 36px; height: 36px; border: 1px solid rgba(var(--accent-rgb), 0.6); border-radius: 50%; }
 #activity .vs-ci[hidden] { display: none; }
 .mn-main .mn-name i.mn-real { margin-left: 6px; color: var(--dim); font-style: normal; font-size: 0.88em; }
 .nick-ask { width: 420px; }
@@ -839,27 +721,52 @@
 .pf-link i { display: inline-flex; align-items: center; justify-content: center; min-width: 14px; color: rgb(var(--rc, var(--accent-rgb))); font-style: normal; font-weight: 800; font-size: 0.86em; }
 .pf-link i svg { width: 13px; height: 13px; fill: currentColor; }
 .pf-link span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.me-hero .pf-links { margin: 10px 0 0; }
 
 /* a picture on a card opens big: across the view, the card's rank colour around it; a click or Esc closes it */
 img.pf-pic, img.me-pic { cursor: zoom-in; }
 .pic-zoom { position: fixed; inset: 0; z-index: 9000; display: flex; align-items: center; justify-content: center; background: rgba(0, 0, 0, 0.72); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); cursor: zoom-out; opacity: 0; transition: opacity 0.16s ease; }
 .pic-zoom.on { opacity: 1; }
-.pic-zoom img { width: min(480px, 80vw, 80vh); height: min(480px, 80vw, 80vh); border: 2px solid rgba(var(--rc, var(--accent-rgb)), 0.9); border-radius: 10px; box-shadow: 0 24px 60px rgba(0, 0, 0, 0.7), 0 0 36px rgba(var(--rc, var(--accent-rgb)), 0.35); object-fit: cover; transform: scale(0.94); transition: transform 0.16s ease; }
+.pic-zoom img { width: min(480px, 80vw, 80vh); height: min(480px, 80vw, 80vh); border: 2px solid rgba(var(--rc, var(--accent-rgb)), 0.9); border-radius: 3px; box-shadow: 0 24px 60px rgba(0, 0, 0, 0.7), 0 0 36px rgba(var(--rc, var(--accent-rgb)), 0.35); object-fit: cover; transform: scale(0.94); transition: transform 0.16s ease; }
 .pic-zoom.on img { transform: scale(1); }
 @media (prefers-reduced-motion: reduce) { .pic-zoom, .pic-zoom img { transition: none; } }
 
-/* Settings → PROFILE */
-.prof-picrow { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 4px 0 10px; }
-.prof-pic { flex: none; width: 56px; height: 56px; border: 1px solid rgba(var(--accent-rgb), 0.55); border-radius: 6px; object-fit: cover; }
-.prof-pic.none { display: inline-flex; align-items: center; justify-content: center; color: var(--dim); font-weight: 700; }
-.prof-picwhy { display: flex; flex: 1 1 200px; flex-direction: column; gap: 2px; color: var(--txt2); line-height: 1.4; }
-.prof-picwhy small { color: var(--dim); }
-.prof-picbtns { display: flex; gap: 8px; }
-.prof-links .hk-field { height: 36px; margin: 0 0 6px; }
-.prof-links .hk-field input { flex: 1; min-width: 0; border: 0; background: transparent; color: var(--hi); font: inherit; outline: none; }
-.prof-links .hk-field.bad { border-color: rgba(var(--red-rgb), 0.7); box-shadow: 0 0 10px rgba(var(--red-rgb), 0.25); }
-.prof-links .hk-field.bad .prof-glyph { color: var(--red); text-shadow: none; }
-.prof-glyph { display: inline-flex; justify-content: center; min-width: 18px; }
-.prof-glyph svg { width: 14px; height: 14px; fill: currentColor; }
-.prof-end { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 4px; }
+/* Deleting the account (account.js deleteData): what happens, plainly, then "why are you leaving?" (optional, one answer;
+   "Something else" opens a field under it). Sentences in the sans and a little larger: the monospace reads slowly. */
+.acct-ask.acct-leave { width: 500px; max-width: calc(100vw - 32px); max-height: calc(100vh - 32px); overflow-y: auto; font: calc(var(--fs) + 1.5px)/1.5 var(--font-sans); }
+.acct-leave > b { display: block; font-size: 1.3em; }
+.leave-facts { display: flex; flex-direction: column; gap: 8px; margin: 12px 0 16px; padding: 0; list-style: none; }
+.leave-facts li { padding: 8px 12px 9px 13px; border-left: 3px solid rgba(var(--accent-rgb), 0.75); border-radius: 0 6px 6px 0; background: rgba(var(--accent-rgb), 0.08); color: var(--txt); }
+.leave-facts em { display: block; color: var(--accent-soft); font-style: normal; font-weight: 700; }
+.leave-facts .leave-end { border-left-color: var(--red); background: rgba(var(--red-rgb), 0.09); }
+.leave-facts .leave-end em { color: var(--red-soft); }
+.leave-why { min-width: 0; margin: 0 0 12px; padding: 10px 10px 8px; border: 1px solid rgba(var(--accent-rgb), 0.25); border-radius: 8px; background: rgba(0, 0, 0, 0.22); }
+.leave-why legend { padding: 0 6px; color: var(--hi); font-weight: 700; }
+.leave-why legend small { margin-left: 6px; padding: 1px 8px; border-radius: 9px; background: rgba(var(--accent-rgb), 0.15); color: var(--accent-soft); font-size: 0.82em; font-weight: 600; }
+.leave-opt { display: flex; align-items: center; gap: 10px; min-height: 32px; padding: 4px 8px; border: 1px solid transparent; border-radius: 6px; color: var(--txt); cursor: pointer; }
+.leave-opt:hover { background: rgba(var(--accent-rgb), 0.09); }
+.leave-opt:has(input:checked) { border-color: rgba(var(--accent-rgb), 0.75); background: rgba(var(--accent-rgb), 0.14); color: var(--hi); }
+.leave-opt input { flex: none; width: 16px; height: 16px; margin: 0; border: 1.5px solid rgba(var(--accent-rgb), 0.6); border-radius: 50%; background: rgba(0, 0, 0, 0.3); -webkit-appearance: none; appearance: none; cursor: pointer; }
+.leave-opt input:checked { border-color: var(--accent); background: radial-gradient(circle, var(--accent) 0 3.5px, rgba(0, 0, 0, 0.3) 4.5px); }
+.leave-opt input:focus-visible { outline: 2px solid var(--accent-soft); outline-offset: 2px; }
+.leave-more { display: flex; flex-direction: column; gap: 5px; margin: 4px 0 2px 34px; }
+.leave-more[hidden] { display: none; }
+.leave-more label { color: var(--txt2); font-size: 0.92em; }
+.leave-more textarea { min-height: 64px; padding: 8px 10px; border: 1px solid rgba(var(--accent-rgb), 0.45); border-radius: 6px; outline: 0; background: rgba(0, 0, 0, 0.35); color: var(--hi); font: inherit; resize: vertical; }
+.leave-more textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.22); }
+.acct-leave .leave-note { margin: 8px 8px 2px; color: var(--txt3); font-size: 0.9em; }
+.acct-leave .leave-keep { margin: 0 0 14px; color: var(--txt3); }
+.acct-leave .mn-ask-btns .mn-btn { height: 30px; padding: 0 14px; font: inherit; }
+
+@keyframes cf-in { from { opacity: 0; transform: translateY(5px); } }
+/* The weekly goal reached: once a week the bar fills with flame (and a short sound plays). */
+.lb-goal { position: relative; }
+.lb-goal.moment > i { border-color: rgba(255, 150, 40, 0.9); box-shadow: 0 0 16px rgba(255, 100, 0, 0.75); }
+.lb-goal.moment > i > i { background: linear-gradient(90deg, #ff3d00, #f88008 55%, #ffd23f); animation: lb-goal-fill 1.4s cubic-bezier(0.2, 0.8, 0.25, 1) both; }
+@keyframes lb-goal-fill { from { width: 0; } }
+.lb-goal.moment small { animation: cf-in 0.8s 0.9s ease-out both; }
+.lb-goal-fire { position: absolute; z-index: 1; height: 40px; pointer-events: none; }
+@media (prefers-reduced-motion: reduce) {
+  .lb-goal.moment > i > i, .lb-goal.moment small { animation: none; }
+}
+/* Staging only (social-test.js, to delete with it): the social test's strip under the fire test's. */
+.lb-st { border-style: dotted; }

@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Orbiterm · note</title>
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="notes.css">
+<link rel="stylesheet" href="themes/mur47.css">
+<style>
+  /* A note in an app window of its own (NoteWindow.swift): only the note's box, on a see-through window. The icon font
+     the dashboard has from git.css. */
+  @font-face { font-family: codicon; src: url("codicon.ttf") format("truetype"); font-display: block; }
+  html, body { height: 100%; margin: 0; overflow: hidden; background: transparent !important; }
+  body::before, body::after { display: none; }
+</style>
+</head>
+<body>
+<section class="np-win np-native" id="p-notes" role="dialog" aria-label="Note">
+  <div class="npw-bar"><span class="tag npw-name"></span><span class="npw-meta"></span>
+    <button type="button" class="npw-top" title="Keep on top" aria-label="Keep on top" aria-pressed="false"><i class="np-glyph" aria-hidden="true">&#xEB2B;</i></button>
+    <button type="button" class="npw-del" title="Delete note" aria-label="Delete note"><i class="np-glyph" aria-hidden="true">&#xEA81;</i></button>
+    <button type="button" class="npw-x" title="Close: back to its place in the dashboard" aria-label="Close the window">×</button></div>
+  <div class="npw-body" id="notes"></div>
+</section>
+<script src="notes.js"></script>
+</body>
+</html>

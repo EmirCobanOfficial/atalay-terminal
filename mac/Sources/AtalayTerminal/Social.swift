@@ -19,30 +19,18 @@ final class Social {
     private var away = false
     private var awayTimer: Timer?
 
-    /// Live events go through E2EE (messages opened, key changes taken in) one at a time, in the order they came.
-    private var delivering: Task<Void, Never>?
-
-    init() {
-        // What changes in the message keys reaches the pages the way live events do.
-        E2EE.shared.onState = { [weak self] json in self?.onEvent?(json) }
-    }
-
-    /// Cloud's state changed: keep the line open while signed in and the API answers.
+    /// Cloud's state changed: keep the line open while signed in and the API answers. Not before there's a name: a token
+    /// from the welcome screen (Cloud.begin) reaches no friends or messages yet.
     func sync(_ s: Cloud.State) {
-        signedIn = s.registered == true
-        if signedIn, s.reachable {
-            open()
-            E2EE.shared.wake()
-        }
+        signedIn = s.registered == true && s.hackerName != nil
+        if signedIn, s.reachable { open() }
         if !signedIn { close() }
     }
 
     private func deliver(_ json: String) {
-        let before = delivering
-        delivering = Task { @MainActor in
-            await before?.value
-            for out in await E2EE.shared.incoming(json) { self.onEvent?(out) }
-        }
+        onEvent?(json)
+        // The line (re)connected: the messages sealed end to end before, opened if this Mac still has their keys.
+        if ((try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [String: Any])?["type"] as? String == "hello" { Unseal.run() }
     }
 
     /// The network came back or the Mac woke up: a line opened before may be dead without anyone noticing (no
