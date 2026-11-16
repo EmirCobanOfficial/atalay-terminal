@@ -478,6 +478,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         for c in chats.values {
             let b = list.first(where: { $0.tab == c.id }) ?? c.sessionId.flatMap { briefs[$0] }
             c.apply(b)
+            c.applyHosted(list.filter { $0.tab == c.id && $0.live })
         }
         let live = list.filter(\.live)
         runaways.liveSessions = live.compactMap { b in

@@ -26,7 +26,7 @@ enum Shortcuts {
         // Its second way to open (the first is the trackpad's four-finger click): keys, or a mouse button with modifiers.
         Action(id: "shortcutsWheel", group: "Chats", title: "Shortcut wheel", combo: "ctrl+mouse2"),
         Action(id: "copyReply", group: "Chats", title: "Copy Claude's last reply", combo: "shift+cmd+c"),
-        Action(id: "closePane", group: "Chats", title: "Close the tab or pane", combo: "cmd+w"),
+        Action(id: "closePane", group: "Chats", title: "Close the terminal in front (what runs in it ends)", combo: "cmd+w"),
         Action(id: "closeWindow", group: "Chats", title: "Close the terminal window", combo: "shift+cmd+w"),
         Action(id: "undoClose", group: "Chats", title: "Undo close", combo: "shift+cmd+t"),
         Action(id: "nextTab", group: "Tabs and panes", title: "Next tab", combo: "shift+cmd+]"),
