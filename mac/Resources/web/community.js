@@ -64,7 +64,7 @@ window.Community = (() => {
         const b = l.badge || {};
         const bname = (window.BadgeArt && BadgeArt.name(b.id)) || b.name || 'a badge';
         const tier = window.BadgeArt ? BadgeArt.tierName(b.id, b.tier, b.tiers) : '';
-        return `${name} unlocked <b>${esc(bname)}${tier ? ` · ${esc(tier)}` : ''}</b> · ${esc(b.rare)}% have it`;
+        return `${name} unlocked <b>${esc(bname)}${tier ? ` · ${esc(tier)}` : ''}</b> · ${esc(b.rare)}% have ${b.tiers > 1 ? 'this tier' : 'it'}`;
       }
       case 'top':
         return l.mine ? '<b>You</b> took #1 this week' : `${name} took #1 this week`;

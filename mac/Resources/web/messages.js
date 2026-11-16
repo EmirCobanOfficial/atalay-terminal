@@ -671,9 +671,17 @@ window.Messages = (() => {
 
   // A badge's reveal again, asked for (the bell's "Replay animation", inbox.js, through Swift): the same takeover for
   // that badge and tier, now, even on do not disturb; nothing is awarded, counted or marked seen. Not over another one.
-  function replayBadge(id, tier) {
+  // Founder asks the inventory for its number first ("#4 of the first 1,000"), as its first reveal showed it.
+  async function replayBadge(id, tier) {
     if (!NOTICES || !id || takeover) return;
-    takeover = showReveal({ badge: { id: String(id), tier: Math.max(1, Math.floor(Number(tier)) || 1) }, quiet: false, n: 1, of: 1, cont: false });
+    const badge = { id: String(id), tier: Math.max(1, Math.floor(Number(tier)) || 1) };
+    if (badge.id === 'founder') {
+      const r = await window.webkit.messageHandlers.cloud.postMessage({ type: 'social', method: 'GET', path: 'v1/badges' }).catch(() => null);
+      const no = r && r.badges && r.badges.find((b) => b.id === 'founder')?.no;
+      if (no) badge.no = no;
+      if (takeover) return;
+    }
+    takeover = showReveal({ badge, quiet: false, n: 1, of: 1, cont: false });
     sizeNotes();
   }
 
@@ -692,7 +700,8 @@ window.Messages = (() => {
     const main = c.badge;
     const grand = Art.grand(main.id, main.tier);
     const [rc, rs] = Art.glow(main.id, main.tier);
-    const tier = Art.tierName(main.id, main.tier);
+    // Founder tells its number ("#4 of the first 1,000"; badges.ts sends it).
+    const tier = main.no ? `#${main.no} of the first 1,000` : Art.tierName(main.id, main.tier);
     const kicker = (main.id.startsWith('service-') ? 'MEDAL EARNED' : main.tier > 1 ? 'BADGE UPGRADED' : 'BADGE UNLOCKED') +
       (c.of > 1 ? ` · ${c.n} OF ${c.of}` : '');
     // The moment the badge shows: the impact's burst.
@@ -1003,7 +1012,9 @@ window.Messages = (() => {
         const all = new Map((badgesWaiting ? badgesWaiting.badges : []).map((b) => [b.id, b]));
         for (const b of ev.badges) if (!all.has(b.id) || all.get(b.id).tier < b.tier) all.set(b.id, b);
         badgesWaiting = { badges: [...all.values()], quiet: (!badgesWaiting || badgesWaiting.quiet) && !!ev.quiet, seen: badgesWaiting?.seen || 0 };
-        play();
+        // One the catalog doesn't know yet (a hidden one nobody had, a new one): its name and picture first.
+        if (ev.badges.some((b) => !window.BadgeArt.known(b.id))) window.BadgeArt.refresh().then(play);
+        else play();
         return;
       }
       case 'status':

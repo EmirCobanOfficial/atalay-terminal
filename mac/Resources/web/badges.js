@@ -47,7 +47,7 @@ window.Badges = (() => {
     if (!b) return '';
     const t = Art.tierName(b.id, b.tier);
     // An empty title keeps a row's own tooltip off the badge, where its card shows instead.
-    return `<span class="bdg-mini" title="" aria-label="${esc(Art.name(b.id))}${t ? ` · ${esc(t)}` : ''}" data-bid="${esc(b.id)}" data-bt="${b.tier}"${owner ? ` data-owner="${esc(owner)}"` : ''}>${Art.svg(b.id, b.tier, size)}</span>`;
+    return `<span class="bdg-mini" title="" aria-label="${esc(b.name || Art.name(b.id))}${t ? ` · ${esc(t)}` : ''}" data-bid="${esc(b.id)}" data-bt="${b.tier}"${owner ? ` data-owner="${esc(owner)}"` : ''}>${Art.svg(b.id, b.tier, size)}</span>`;
   }
 
   // ---------- a badge beside a name, on hover: its card, big ----------
@@ -81,10 +81,10 @@ window.Badges = (() => {
       ? `<span class="steps">${Array.from({ length: b.tiers }, (_, i) => `<i class="${i < b.tier ? 'on' : ''}"></i>`).join('')}</span>` : '';
     card.style.setProperty('--q', Art.glow(b.id, b.tier)[0]);
     card.innerHTML =
-      `<div class="bh-top"><div class="bh-art">${Art.svg(b.id, b.tier, 96)}</div><div class="bh-name"><b>${esc(Art.name(b.id))}</b>` +
+      `<div class="bh-top"><div class="bh-art">${Art.svg(b.id, b.tier, 96)}</div><div class="bh-name"><b>${esc(b.name || Art.name(b.id))}</b>` +
       `<span class="q">${esc(tierText || 'Earned')}${b.tiers > 1 && !b.id.startsWith('service-') ? ` · tier ${b.tier} of ${b.tiers}` : ''}</span>${steps}</div></div>` +
       (b.how ? `<p>${esc(b.how)}</p>` : '') +
-      (b.rare != null ? `<small class="tp-rare${b.rare <= 9 ? ' rare' : ''}">${b.rare <= 9 ? 'Rare · ' : ''}${b.rare}% of players have it</small>` : '') +
+      (b.rare != null ? `<small class="tp-rare${b.rare <= 9 ? ' rare' : ''}">${b.rare <= 9 ? 'Rare · ' : ''}${b.rare}% of players have ${b.tiers > 1 ? 'this tier' : 'it'}</small>` : '') +
       (b.earnedAt ? `<small>Earned ${esc(new Date(b.earnedAt).toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' }))}</small>` : '');
     const r = el.getBoundingClientRect();
     card.classList.add('on');
@@ -113,7 +113,7 @@ window.Badges = (() => {
       `<div class="bdg${b.tier ? '' : ' locked'}${own && mine && mine.featured === b.id ? ' shown' : ''}${own && lands(b.id) ? ' just' : ''}" data-badge="${esc(b.id)}" title="${esc(b.how)}">` +
       `${Art.svg(b.id, b.tier, own ? 64 : 48)}<b>${esc(b.name)}</b><small>${esc(b.tier ? tierLine(b) || 'earned' : 'locked')}</small>` +
       (own && p && b.tier < b.tiers && !(b.tiers === 1 && p.next === 1) ? `<i class="bdg-bar"><i style="width:${pct.toFixed(0)}%"></i></i><em>${esc(amount(p))}</em>` : '') +
-      (b.tier ? `<span class="bdg-rare${b.rare && b.rare <= 9 ? ' rare' : ''}">${b.rare <= 9 ? 'rare · ' : ''}${b.rare}% have it</span>` : '') +
+      (b.tier ? `<span class="bdg-rare${b.rare && b.rare <= 9 ? ' rare' : ''}">${b.rare <= 9 ? 'rare · ' : ''}${b.rare}% have ${b.tiers > 1 ? 'this tier' : 'it'}</span>` : '') +
       (own && mine && mine.featured === b.id ? '<span class="bdg-flag">displayed</span>' : '') +
       '</div>'
     );
@@ -351,7 +351,7 @@ window.Badges = (() => {
       (p && b.tier < b.tiers && !(b.tiers === 1 && p.next === 1)
         ? `<div class="tp-prog"><label>${next ? `to ${esc(next)}` : 'progress'}</label><i><i style="width:${Math.max(0, Math.min(100, (100 * p.value) / p.next)).toFixed(0)}%"></i></i><small>${esc(amount(p))}</small></div>`
         : '') +
-      (b.rare != null ? `<small class="tp-rare${b.rare <= 9 ? ' rare' : ''}">${b.rare <= 9 ? 'Rare · ' : ''}${b.rare}% of players have it</small>` : '') +
+      (b.rare != null ? `<small class="tp-rare${b.rare <= 9 ? ' rare' : ''}">${b.rare <= 9 ? 'Rare · ' : ''}${b.rare}% of players have ${b.tiers > 1 ? 'this tier' : 'it'}</small>` : '') +
       (b.earnedAt ? `<small>Earned ${esc(new Date(b.earnedAt).toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' }))}</small>` : '') +
       (!viewOwner && mine?.signedIn ? `<em>${shownId() === b.id ? '★ displayed beside your name · click to stop' : 'click to display it beside your name'}</em>` : '');
     const r = t.getBoundingClientRect();
