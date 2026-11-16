@@ -71,9 +71,10 @@ const scene = new THREE.Scene();
 scene.background = new THREE.Color();
 const camera = new THREE.PerspectiveCamera(40, 1, 2, 12000);
 // Each frame used to walk the scene graph twice: once in composer.render() and once in labels.render() right after.
-// Disable the renderers' own walk and run one scene.updateMatrixWorld() in frame() ahead of them both.
+// The renderers skip their own walk and frame() runs one scene.updateMatrixWorld() ahead of them both. Only the scene
+// (never moved, so its own matrix stays identity): the flag also stops updateMatrixWorld() from computing the
+// object's own world matrix, and on the camera it froze the view.
 scene.matrixWorldAutoUpdate = false;
-camera.matrixWorldAutoUpdate = false;
 
 const ambient = new THREE.AmbientLight(0xffffff, 0.75);
 const sunLight = new THREE.PointLight(0xffffff, 4.2, 0, 0);
@@ -1828,10 +1829,19 @@ function poke(ms = 1500) {
   ACT.until = performance.now() + ms;
   wake();
 }
-// A frame still in the queue, as either an animation frame or (in throttled modes) a setTimeout waking it up.
+// In throttled modes the loop sleeps on a timer between frames instead of an animation frame.
 let frameTimer = 0;
+function nextFrame() {
+  frameTimer = 0;
+  if (!rafId && ACT.visible && !document.hidden) rafId = requestAnimationFrame(frame);
+}
 function wake() {
-  if (rafId || frameTimer || !ACT.visible || document.hidden) return;
+  // A sleeping loop (an interaction raised the rate): its frame comes now. lastFrame stays, or the frame would wait again.
+  if (frameTimer) {
+    clearTimeout(frameTimer);
+    return nextFrame();
+  }
+  if (rafId || !ACT.visible || document.hidden) return;
   lastFrame = performance.now();
   rafId = requestAnimationFrame(frame);
 }
@@ -1844,13 +1854,12 @@ document.addEventListener('visibilitychange', wake);
 function frame(now) {
   rafId = 0;
   if (!ACT.visible || document.hidden) return;
-  // In throttled modes (behind a chat, saver, Low Power) rescheduling with rAF still wakes the main thread at the
-  // display's refresh rate (60–120 Hz) and WindowServer composites every one. Below ~30 fps budget, wait with
-  // setTimeout instead so the main loop sleeps — Codex's trick for burning less CPU while the eye sees the same FPS.
+  // Throttled (behind a chat, power save): an animation frame each display refresh only to skip it kept the main thread
+  // awake at 60–120 Hz. A frame more than ~1.5 refreshes away sleeps on a timer instead. At 60 fps it stays on rAF.
   const target = 1000 / targetFps(now);
   const dueIn = target - (now - lastFrame) - 2;
-  if (dueIn > 4) {
-    frameTimer = setTimeout(() => { frameTimer = 0; wake(); }, dueIn);
+  if (dueIn > 12) {
+    frameTimer = setTimeout(nextFrame, dueIn);
     return;
   }
   rafId = requestAnimationFrame(frame);
@@ -1917,12 +1926,13 @@ function frame(now) {
   }
   if (textTick) refreshCore();
 
-  // One matrix traversal for both renderers (their own auto-update is off).
+  // One scene traversal for both renderers (the scene's auto-update is off).
   scene.updateMatrixWorld();
-  camera.updateMatrixWorld();
   composer.render();
   labels.render(scene, camera);
-  if (now - lastMinimap > 120) {
+  // 4 Hz: drawMinimap() traces each orbit with 40 applyQuaternion steps and a full-DPR clearRect. 8 Hz was overkill for
+  // a corner widget — 4 still tracks hover and session moves without lag.
+  if (now - lastMinimap > 250) {
     lastMinimap = now;
     drawMinimap();
   }
