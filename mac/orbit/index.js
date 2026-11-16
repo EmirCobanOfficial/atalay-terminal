@@ -70,6 +70,10 @@ let THEME = readTheme();
 const scene = new THREE.Scene();
 scene.background = new THREE.Color();
 const camera = new THREE.PerspectiveCamera(40, 1, 2, 12000);
+// Each frame used to walk the scene graph twice: once in composer.render() and once in labels.render() right after.
+// Disable the renderers' own walk and run one scene.updateMatrixWorld() in frame() ahead of them both.
+scene.matrixWorldAutoUpdate = false;
+camera.matrixWorldAutoUpdate = false;
 
 const ambient = new THREE.AmbientLight(0xffffff, 0.75);
 const sunLight = new THREE.PointLight(0xffffff, 4.2, 0, 0);
@@ -134,10 +138,13 @@ composer.addPass(new OutputPass());
 // switch on the map, a low battery or Low Power Mode on the Mac; on battery on Windows) it never goes past `saver`, in
 // front either, and the cinematic camera doesn't start on its own.
 // Dragging the view, or the camera flying somewhere, gets the front rate anywhere.
+// At Retina the renderer and the bloom pipeline run at pixelRatio × canvas pixels; DPR 2 is 4× the fragment work of
+// DPR 1, and bloom's five-level mip chain pays that cost every frame. 1.5 keeps stylised low-poly looking the same
+// (fine rings and text barely soften) while cutting compositor and GPU load on macOS WindowServer.
 const QUALITY = {
-  front: { fps: 60, dpr: 2 },
+  front: { fps: 60, dpr: 1.5 },
   behind: { fps: 20, dpr: 1.25 },
-  saver: { fps: 30, dpr: 1.5 },
+  saver: { fps: 30, dpr: 1.25 },
 };
 // What the app reports through activity() and power(); a hidden page also stops on its own.
 const ACT = { visible: true, focused: true, saver: false, until: 0 };
@@ -1821,8 +1828,10 @@ function poke(ms = 1500) {
   ACT.until = performance.now() + ms;
   wake();
 }
+// A frame still in the queue, as either an animation frame or (in throttled modes) a setTimeout waking it up.
+let frameTimer = 0;
 function wake() {
-  if (rafId || !ACT.visible || document.hidden) return;
+  if (rafId || frameTimer || !ACT.visible || document.hidden) return;
   lastFrame = performance.now();
   rafId = requestAnimationFrame(frame);
 }
@@ -1835,8 +1844,17 @@ document.addEventListener('visibilitychange', wake);
 function frame(now) {
   rafId = 0;
   if (!ACT.visible || document.hidden) return;
+  // In throttled modes (behind a chat, saver, Low Power) rescheduling with rAF still wakes the main thread at the
+  // display's refresh rate (60–120 Hz) and WindowServer composites every one. Below ~30 fps budget, wait with
+  // setTimeout instead so the main loop sleeps — Codex's trick for burning less CPU while the eye sees the same FPS.
+  const target = 1000 / targetFps(now);
+  const dueIn = target - (now - lastFrame) - 2;
+  if (dueIn > 4) {
+    frameTimer = setTimeout(() => { frameTimer = 0; wake(); }, dueIn);
+    return;
+  }
   rafId = requestAnimationFrame(frame);
-  if (now - lastFrame < 1000 / targetFps(now) - 2) return;
+  if (now - lastFrame < target - 2) return;
   const dt = Math.min(0.05, Math.max(0, (now - lastFrame) / 1000));
   lastFrame = now;
   if (!SIZE.w) return;
@@ -1899,6 +1917,9 @@ function frame(now) {
   }
   if (textTick) refreshCore();
 
+  // One matrix traversal for both renderers (their own auto-update is off).
+  scene.updateMatrixWorld();
+  camera.updateMatrixWorld();
   composer.render();
   labels.render(scene, camera);
   if (now - lastMinimap > 120) {
