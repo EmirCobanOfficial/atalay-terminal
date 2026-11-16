@@ -638,6 +638,8 @@ window.Cloud = (() => {
 
     q('.hk-sw.act').onclick = toggleActivity;
     q('.hk-sw.brd').onclick = toggleBoard;
+    q('.hk-sw.tkn').onclick = () => toggleTokens('tokensName');
+    q('.hk-sw.tkd').onclick = () => toggleTokens('tokensDetail');
     window.Community?.mountSettings(q('.mn-settings'));
     window.Account?.mount(q('.acct-host'));
     window.Account?.mountDanger?.(q('.danger-host'));
@@ -1364,7 +1366,9 @@ window.Cloud = (() => {
   }
 
   function renderActivity() {
-    for (const [cls, on] of [['act', S.xp ? S.xp.show !== false : true], ['brd', S.xp ? S.xp.board !== false : true]]) {
+    const pf = window.Social ? Social.prefs() : { tokensName: true, tokensDetail: true };
+    for (const [cls, on] of [['act', S.xp ? S.xp.show !== false : true], ['brd', S.xp ? S.xp.board !== false : true],
+      ['tkn', pf.tokensName !== false], ['tkd', pf.tokensDetail !== false]]) {
       const sw = q(`.hk-sw.${cls}`);
       if (!sw) continue;
       sw.classList.toggle('on', on);
@@ -1417,6 +1421,21 @@ window.Cloud = (() => {
     toast(show ? 'your name shows on the leaderboard again' : "you're Anonymous on the leaderboard · only you see your name there");
   }
 
+  // Settings · the Tokens board: your name on it, and whether friends see which AI and model your tokens went to
+  // (synced settings, the API's feed.ts and usage.ts).
+  async function toggleTokens(key) {
+    const show = Social.prefs()[key] === false;
+    const r = await Social.setPref(key, show);
+    if (r.error) return toast(errorText(r.error));
+    renderActivity();
+    board = null;
+    boardCache.clear();
+    if (shown === 'board') loadBoard();
+    toast(key === 'tokensName'
+      ? (show ? 'your name shows on the Tokens board again' : "you're Anonymous on the Tokens board · only you see your name there")
+      : (show ? 'friends can see which AI and model you use again' : 'only your total shows now · nobody sees which AI or model'));
+  }
+
   // ---------- the leaderboard: two panes under one floating glass bar (ranking + the week day by day) ----------
   let boardBy = 'week'; // 'week' | 'all'
   let friendsPref = false; // what the Everyone/Friends control was set to
@@ -1455,9 +1474,10 @@ window.Cloud = (() => {
   } catch {}
   const tokPick = { tool: '', model: '', effort: '' };
   const tokens = () => boardMetric === 'tokens';
-  // A picked AI, model or effort: the server then shows only you and your friends (picking one by one would give away a
-  // stranger's per-model numbers), so the board is the friends one whatever the control was left on.
-  const picked = () => tokens() && !!(tokPick.tool || tokPick.model || tokPick.effort);
+  // A picked model or effort: the server then shows only you and your friends (picking one by one would give away a
+  // stranger's per-model numbers), so the board is the friends one whatever the control was left on. One AI picked
+  // stays everyone's.
+  const picked = () => tokens() && !!(tokPick.model || tokPick.effort);
   const boardFriends = () => friendsPref || picked();
   const tok = (n) => {
     n = Math.max(0, Math.floor(n || 0));
@@ -1725,7 +1745,7 @@ window.Cloud = (() => {
       `<button type="button" class="bd-all" data-set="when" data-v="all" aria-pressed="${!isWeek}" title="Everything since 26 Oct 2026">All time</button></div>` +
       (isWeek && !atLast ? '<button type="button" class="bd-glassbtn bd-now" data-now>Back to this week</button>' : '') +
       '</div>' +
-      seg('who', 'Who', [['everyone', 'Everyone', picked() ? 'A picked AI or model shows you and your friends only' : 'Everyone on Orbiterm'], ['friends', 'Friends', 'You and your friends']], boardFriends() ? 'friends' : 'everyone') +
+      seg('who', 'Who', [['everyone', 'Everyone', picked() ? 'A picked model shows you and your friends only' : 'Everyone on Orbiterm'], ['friends', 'Friends', 'You and your friends']], boardFriends() ? 'friends' : 'everyone') +
       '</div>'
     );
   }
@@ -1813,7 +1833,7 @@ window.Cloud = (() => {
     return `<div class="bd-ais" role="radiogroup" aria-label="Which AI">${chip('', 'All AIs')}${chip('claude', 'Claude')}${chip('codex', 'Codex')}${chip('antigravity', 'Antigravity')}` +
       (tokPick.tool ? sel('model', `Any ${AI_NAMES[tokPick.tool] || tokPick.tool} model`, models) : '') +
       (tokPick.tool && (tokPick.model || tokPick.effort) && efforts.length ? sel('effort', 'Any effort', efforts) : '') +
-      (picked() ? '<span class="bd-pick-note">Picked AI or model: you and your friends only</span>' : '') + '</div>';
+      (picked() ? '<span class="bd-pick-note">Picked model: you and your friends only</span>' : '') + '</div>';
   }
 
   function rankHTML(all, c) {

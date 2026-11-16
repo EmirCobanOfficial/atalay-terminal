@@ -114,7 +114,9 @@ window.Settings = (() => {
     const privacy =
       group('friends and leaderboard',
         row('show my active time to friends', 'today, this week and in total · your level shows either way', sw('act', 'Show my active time to friends', true)) +
-        row('show my name on the leaderboard', 'off: you show as Anonymous, and nobody can add you from there', sw('brd', 'Show my name on the leaderboard', true))) +
+        row('show my name on the leaderboard', 'off: you show as Anonymous, and nobody can add you from there', sw('brd', 'Show my name on the leaderboard', true)) +
+        row('show my name on the Tokens board', 'off: Anonymous on the Tokens board only · your total still counts', sw('tkn', 'Show my name on the Tokens board', true)) +
+        row('let friends see which AI and model I use', 'opening your row on the Tokens board · off: only your total shows, to everyone', sw('tkd', 'Let friends see which AI and model I use', true))) +
       (dc
         ? group('discord',
             row("show what I'm doing on Discord", { cls: 'dc-note', text: '…' }, sw('dc-on', "Show what I'm doing on Discord", false)) +

@@ -161,10 +161,11 @@ window.Social = (() => {
     emit(ev);
   }
 
-  // Settings' "community feed" (the API's feed.ts): on unless turned off, kept with the account's synced settings
-  // (social.feed).
-  const prefs = () => ({ feed: true, ...((S && S.me && S.me.prefs) || {}) });
-  const prefsFrom = (set) => ('social.feed' in set ? { feed: set['social.feed'] !== false } : {});
+  // Settings' "community feed" and the Tokens board's two switches (the API's feed.ts): on unless turned off, kept with
+  // the account's synced settings (social.feed, social.tokensName, social.tokensDetail).
+  const prefs = () => ({ feed: true, tokensName: true, tokensDetail: true, ...((S && S.me && S.me.prefs) || {}) });
+  const prefsFrom = (set) => Object.fromEntries(['feed', 'tokensName', 'tokensDetail']
+    .filter((k) => `social.${k}` in set).map((k) => [k, set[`social.${k}`] !== false]));
 
   return {
     PRESENCE,
