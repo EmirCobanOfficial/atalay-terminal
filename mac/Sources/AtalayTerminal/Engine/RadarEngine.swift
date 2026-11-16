@@ -814,6 +814,9 @@ final class RadarEngine {
             }
             emit(ev("turn", ts, S, nil, ["d": ms]), today)
         } else if subtype == "compact_boundary" {
+            // Claude just replaced the running context with a summary: the old `ctx` from the last usage is stale (a
+            // 180k/200k bar for a 5k context). Drop it to 0, and the next assistant usage writes the summary's size.
+            if A == nil { S.ctx = 0 }
             emit(ev("sys", ts, S, nil, ["l": "context compacted"]), today)
         } else if rec["level"] as? String == "error" || subtype == "api_error" {
             emit(ev("sys", ts, S, nil, ["l": clip(redact((rec["content"] as? String) ?? subtype), 100), "err": true]), today)

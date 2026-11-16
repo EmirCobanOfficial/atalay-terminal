@@ -25,6 +25,11 @@ final class ChatHUD: ObservableObject {
     /// A second screen on a chat another build of the app runs: closing it leaves the chat running.
     var mirror = false
     @Published var chips: [TickerChip] = []
+    /// Tabs open in this window right now: the HUD's End Session button hides when there are two or more, so the per-tab
+    /// × on each chip ends only its own tab and nothing else can.
+    @Published var tabCount = 1
+    /// Starred in the sidebar: the HUD's star icon fills in.
+    @Published var isFavorite = false
     /// False while the window is hidden, so its clocks stop ticking.
     @Published var visible = false
     /// The dashboard's streamer mode (Streamer.swift): the header and the footer show made-up names.
@@ -90,9 +95,9 @@ struct ChatHeaderView: View {
     @ObservedObject var hud: ChatHUD
     @ObservedObject var theme = ThemeStore.shared
     let onTogglePin: () -> Void
-    let onDashboard: () -> Void
     let onEnd: () -> Void
     let onCopyReply: () -> Void
+    let onToggleFavorite: () -> Void
 
     var body: some View {
         // Clocks tick once a second. Per-frame effects here kept the main thread busy and froze the
@@ -105,7 +110,8 @@ struct ChatHeaderView: View {
                 VStack(alignment: .leading, spacing: 0) {
                     TitleRow(hud: hud, now: tl.date, status: status, hex: hex)
                         .frame(height: 32)
-                    HUDRow(hud: hud, now: tl.date, hex: hex, onTogglePin: onTogglePin, onDashboard: onDashboard, onEnd: onEnd, onCopyReply: onCopyReply)
+                    HUDRow(hud: hud, now: tl.date, hex: hex, onTogglePin: onTogglePin, onEnd: onEnd,
+                           onCopyReply: onCopyReply, onToggleFavorite: onToggleFavorite)
                         .frame(height: 30)
                 }
             }
@@ -203,9 +209,9 @@ private struct HUDRow: View {
     let now: Date
     let hex: UInt32
     let onTogglePin: () -> Void
-    let onDashboard: () -> Void
     let onEnd: () -> Void
     let onCopyReply: () -> Void
+    let onToggleFavorite: () -> Void
 
     var body: some View {
         HStack(spacing: 14) {
@@ -235,14 +241,21 @@ private struct HUDRow: View {
                 HUDButton(symbol: "doc.on.doc", active: false,
                           help: "Copy Claude's last reply, all of it, even past what fits the window (⇧⌘C)", hex: hex, action: onCopyReply)
             }
+            HUDButton(symbol: hud.isFavorite ? "star.fill" : "star", active: hud.isFavorite,
+                      help: hud.isFavorite ? "Starred. Click to take it out of the sidebar's favourites."
+                          : "Star this chat in the sidebar's favourites list.",
+                      hex: ThemeStore.shared.hex("--amber"), action: onToggleFavorite)
             HUDButton(symbol: hud.onTop ? "pin.fill" : "pin", active: hud.onTop,
                       help: hud.onTop ? "Pinned on top of every app, on any desktop. Click to put it back above the dashboard."
                           : "Pin on top of every app (Discord, Chrome…). It leaves the dashboard, even a full-screen one.",
                       hex: hex, action: onTogglePin)
-            HUDButton(symbol: "square.grid.2x2", active: false, help: "Back to the dashboard (this chat keeps running)", hex: hex, action: onDashboard)
-            HUDButton(symbol: "power", active: false,
-                      help: hud.mirror ? "End this chat (it runs in the other app, and ends there too)" : hud.status == "terminal" ? "Close this terminal" : "End this chat",
-                      hex: ThemeStore.shared.hex("--red"), action: onEnd)
+            // With two or more tabs the HUD's End Session ended the window, not the tab in front: ambiguous. The × on
+            // each tab chip ends that tab, so the HUD button hides in multi-tab mode.
+            if hud.tabCount <= 1 {
+                HUDButton(symbol: "power", active: false,
+                          help: hud.mirror ? "End this chat (it runs in the other app, and ends there too)" : hud.status == "terminal" ? "Close this terminal" : "End this chat",
+                          hex: ThemeStore.shared.hex("--red"), action: onEnd)
+            }
         }
         .font(.mono(10.5))
         .lineLimit(1)
@@ -831,9 +844,9 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
         let header = HeaderHostingView(rootView: ChatHeaderView(
             hud: hud,
             onTogglePin: { [weak self] in self?.togglePin() },
-            onDashboard: { [weak self] in self?.manager?.showDashboard() },
             onEnd: { [weak self] in self?.endChat() },
-            onCopyReply: { [weak self] in self?.copyLastReply() }))
+            onCopyReply: { [weak self] in self?.copyLastReply() },
+            onToggleFavorite: { [weak self] in self?.toggleFavorite() }))
         let ticker = NSHostingView(rootView: ChatTickerView(hud: hud))
         glowing = [header, ticker, paneArea, tabBar]
 
@@ -1072,6 +1085,24 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
     }
 
     // MARK: actions
+
+    /// Star this chat in the sidebar's favourites. No sessionId yet (Claude hasn't opened its transcript): a beep —
+    /// nothing to star. A terminal with no Claude in it is not a chat either.
+    func toggleFavorite() {
+        guard let sid = sessionId, let sidebar = manager?.sidebar else { return NSSound.beep() }
+        if sidebar.favorites.remove(sid) == nil {
+            sidebar.favorites.insert(sid)
+            if sidebar.archived.contains(sid) { sidebar.archived.remove(sid) }
+        }
+        hud.isFavorite = sidebar.favorites.contains(sid)
+    }
+
+    /// The star in the HUD syncs with the sidebar: the session id came in late (a new chat) or changed (a resume), or
+    /// the sidebar was changed from its own row. Called on every brief update and once per sidebar favourites change.
+    func syncFavorite() {
+        let sid = sessionId
+        hud.isFavorite = sid.map { manager?.sidebar.favorites.contains($0) ?? false } ?? false
+    }
 
     /// The pin: on top of every app's windows (Discord, Chrome…), on any desktop. A window rides above the dashboard
     /// by default, as its child, and goes behind other apps with it; pinned, it leaves the dashboard (a child takes
@@ -1637,6 +1668,7 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
 
     private func refreshPanes() {
         let many = tabs.count > 1
+        hud.tabCount = tabs.count
         tabBar.isHidden = !many
         if many {
             paneTop.isActive = false
@@ -1899,6 +1931,7 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
         }
         if hud.terminalDir != nil, brief?.live != true { sessionId = nil }
         border.setStatus(hud.status)
+        syncFavorite()
     }
 
     /// The window's title (Mission Control's, the Window menu's, its first tab's): made up in streamer mode.
