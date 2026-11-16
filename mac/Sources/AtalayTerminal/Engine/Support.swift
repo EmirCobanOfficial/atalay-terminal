@@ -118,6 +118,20 @@ func catOf(_ name: String) -> String {
     return "plan"
 }
 
+/// A Bash command that invokes another AI CLI (Codex, Antigravity, Gemini) runs as Claude's subagent: a drone on the
+/// orbit while it works, as a Task would. nil for anything else.
+func externalAISubAgentTool(_ cmd: String) -> String? {
+    for part in cmd.split(whereSeparator: { $0.isWhitespace }) {
+        if part.contains("=") { continue }
+        let bin = (String(part) as NSString).lastPathComponent
+        switch bin {
+        case "codex", "agy", "antigravity", "gemini": return bin == "antigravity" ? "agy" : bin
+        default: return nil
+        }
+    }
+    return nil
+}
+
 // MARK: - value helpers
 
 func int(_ v: Any?) -> Int {

@@ -33,6 +33,9 @@ final class RadarEngine {
     /// Session of every record uuid seen. A session repeating another one's records continues that chat.
     private var recOwner: [String: String] = [:]
     private var agentHints: [String: (desc: String, type: String)] = [:]
+    /// Bash tool uses that spawn another AI CLI (Codex, Antigravity, Gemini): tool_use id → the SubAgent holding the
+    /// drone on the orbit, so the pending clears and the drone retires on the tool's result.
+    private var externalBashAgent: [String: SubAgent] = [:]
     private var log: [LogEntry] = []
     private var logIndex: [String: LogEntry] = [:]
     private var outbox: [[String: Any]] = []
@@ -651,6 +654,22 @@ final class RadarEngine {
             var r: [String: Any] = ["id": id, "t": ts, "s": S.id, "l": sm.label, "cmd": sm.cmd ?? "", "ok": NSNull(), "d": NSNull()]
             if let A { r["a"] = A.id }
             ringPush(&G.shells, r, 40)
+            // Claude running another AI CLI (codex, agy, gemini) in a shell: treat the shell as a subagent of this
+            // session so a drone orbits it while it works, just as a Task would. A nested subagent (already inside one)
+            // is not given its own.
+            if A == nil, let cmd = sm.cmd, let tool = externalAISubAgentTool(cmd) {
+                let aid = "ext-\(tool)-\(id.prefix(16))"
+                let X = agent(S.id, aid)
+                if X.firstTs == 0 { X.firstTs = ts }
+                X.lastTs = ts
+                X.desc = tool
+                X.type = tool
+                if X.model.isEmpty { X.model = tool }
+                X.bg = false
+                X.endTurn = false
+                X.pendingSet(id, Pending(n: tool, c: "agent", l: clip(sm.label, 70), t: ts))
+                externalBashAgent[id] = X
+            }
         }
         if let file = sm.file { touchFile(file, name, sid: S.id, aid: A?.id, ts) }
         if name == "Agent" || name == "Task", let input = b["input"] as? [String: Any] {
@@ -726,6 +745,13 @@ final class RadarEngine {
         S.pendingRemove(id)
         let ok = (b["is_error"] as? Bool) != true
         let d: Double? = p.map { ts > 0 ? max(0, ts - $0.t) : 0 }
+        // External-AI shell (Codex, agy, Gemini run as a Bash subagent): its drone retires on the result.
+        if let X = externalBashAgent.removeValue(forKey: id) {
+            X.pendingRemove(id)
+            X.lastTs = max(X.lastTs, ts)
+            X.endTurn = true
+            if !ok { X.errors += 1 }
+        }
         var meta = ""
         var hosts: [String] = []
         if let tr = rec["toolUseResult"] as? [String: Any] {
