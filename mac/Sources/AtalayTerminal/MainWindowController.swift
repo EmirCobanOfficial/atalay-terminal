@@ -85,6 +85,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
         runaways.start()
         observeVisibility()
+        Mascot.shared.bind(manager: self)
         PowerSaver.shared.onChange = { [weak self] in self?.pushPower() }
         PowerSaver.shared.start()
         DiscordPresence.shared.onChange = { [weak self] in self?.pushDiscord() }
@@ -101,7 +102,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 self?.pushTerminals()
                 // How long since the last input anywhere on the Mac: the orbit's cinematic camera waits for five
                 // minutes of it, and typing in a terminal window counts.
-                self?.radar.push("idle", String(format: "%.1f", Social.idleSeconds()))
+                let idle = Social.idleSeconds()
+                self?.radar.push("idle", String(format: "%.1f", idle))
+                Mascot.shared.updateIdle(idle)
             }
         }
         t.tolerance = 0.5
@@ -127,8 +130,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         window.contentView = root
 
         let side = NSHostingView(rootView: SidebarView(model: sidebar, actions: SidebarActions(
-            open: { [weak self] in self?.openSession($0) },
-            fork: { [weak self] in self?.openSession($0, fork: true) },
+            open: { [weak self] in self?.userOpenSession($0) },
+            fork: { [weak self] in self?.userOpenSession($0, fork: true) },
             newTerminal: { [weak self] in self?.newTerminal(in: $0) },
             reveal: { NSWorkspace.shared.open(URL(fileURLWithPath: $0)) },
             copyId: {
@@ -189,6 +192,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             self?.radar.push("social", json)
             MessagePanel.notices.push(json)
             MessagePanel.pushToChats(json)
+            Mascot.shared.onSocialJSON(json)
             if json.contains(#""type":"xp""#) { Cloud.shared.apply(xpEvent: json) }
         }
         // The "update available" notice was clicked: the dashboard in front, on its "what's new" screen.
@@ -273,8 +277,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         case "discordPresence": DiscordPresence.shared.setEnabled(msg["on"] as? Bool == true)
         case "discordProject": DiscordPresence.shared.setShowProject(msg["on"] as? Bool == true)
         case "discordActive": DiscordPresence.shared.setShowActive(msg["on"] as? Bool == true)
-        case "open": if let sid = msg["sid"] as? String { openSession(sid) }
-        case "fork": if let sid = msg["sid"] as? String { openSession(sid, fork: true) }
+        case "open": if let sid = msg["sid"] as? String { userOpenSession(sid) }
+        case "fork": if let sid = msg["sid"] as? String { userOpenSession(sid, fork: true) }
         case "newTerminal": overlay.showNewTerminal()
         case "openTerminal": if let id = msg["id"] as? String { openTerminal(id) }
         case "endLeftover":
@@ -331,6 +335,18 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         // of the version that came by itself were opened (the notifications stop counting them).
         case "whatsNew": pushWhatsNew()
         case "whatsNewRead": UserDefaults.standard.removeObject(forKey: Self.whatsNewKey)
+        case "mascotThemeGuard":
+            Mascot.shared.onThemeChooserOpened()
+        case "mascotEnabled":
+            Mascot.isEnabled = (msg["on"] as? NSNumber)?.boolValue ?? false
+        case "mascotMischief":
+            Mascot.shared.setMischief((msg["level"] as? NSNumber)?.intValue ?? 3)
+        case "mascotPanels":
+            Mascot.shared.updateWebPanels(
+                msg["panels"] as? [[String: Any]] ?? [],
+                friends: msg["friends"] as? [String: Any],
+                nav: msg["nav"] as? [[String: Any]] ?? []
+            )
         default: break
         }
     }
@@ -341,6 +357,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         let web = radar.webView
         let px = Int((web.frame.minX / web.pageZoom).rounded())
         web.evaluateJavaScript("document.documentElement.style.setProperty('--side-x','\(px)px'); true", completionHandler: nil)
+        Mascot.shared.refreshPlatforms()
     }
 
     /// Darkens the chat list as the page's backdrop darkens the dashboard (cloud.css #cloudui), so the open menu is the
@@ -505,9 +522,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         if sidebar.openInTabs != open { sidebar.openInTabs = open }
         pushWinOpen()
         pushActiveSession()
+        Mascot.shared.updateSessions(list)
     }
 
     private func route(_ events: [NativeEvent]) {
+        Mascot.shared.onNativeEvents(events)
         for e in events {
             let target = briefs[e.sid].flatMap { chat(for: $0) } ?? chats.values.first(where: { $0.sessionId == e.sid })
             target?.hud.push(e)
@@ -725,6 +744,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// Settings · DISCORD shows its switches and whether Discord answers (DiscordPresence).
     private func pushDiscord() {
         radar.push("discord", DiscordPresence.shared.json)
+        Mascot.shared.pushMischiefToPage()
     }
 
     // MARK: chats
@@ -805,6 +825,14 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
         NSApp.activate(ignoringOtherApps: true)
         openSession(sid)
+    }
+
+    /// A card click (the page's or the sidebar's): the one thing that may reopen a window the mascot just closed.
+    var userOpenDepth = 0
+    private func userOpenSession(_ sid: String, fork: Bool = false) {
+        userOpenDepth += 1
+        defer { userOpenDepth -= 1 }
+        openSession(sid, fork: fork)
     }
 
     /// Opens a saved or running conversation in its own window, in its project folder.
@@ -1196,18 +1224,21 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         syncShells()
         pushWinOpen()
         pushActiveSession()
+        Mascot.shared.pushTerminalsNow()
     }
 
     func chatProcessEnded(_ id: String) {
         syncShells()
         pushWinOpen()
         pushActiveSession()
+        Mascot.shared.pushTerminalsNow()
     }
 
     func chatVisibilityChanged() {
         if let id = activeTerminalWindow, chats[id]?.isShown != true { activeTerminalWindow = activeChat?.id }
         pushWinOpen()
         pushActiveSession()
+        Mascot.shared.pushTerminalsNow()
     }
 
     private func syncShells() {
@@ -1371,6 +1402,110 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         a.alertStyle = style
         for b in buttons { a.addButton(withTitle: b) }
         return a.runModal().rawValue - NSApplication.ModalResponse.alertFirstButtonReturn.rawValue
+    }
+
+    func mascotTerminalSnapshots() -> [[String: Any]] {
+        guard let dw = window else { return [] }
+        let df = dw.frame
+        return chats.values.compactMap { c in
+            guard c.isShown, let tw = c.window else { return nil }
+            let tf = tw.frame
+            let status = c.sessionId.flatMap { briefs[$0]?.status } ?? "idle"
+            var item: [String: Any] = [
+                "canClose": c.closeOnlyHides,
+                "id": c.id,
+                "sid": c.sessionId ?? "",
+                "wn": tw.windowNumber,
+                "x": Int((tf.minX - df.minX).rounded()),
+                "y": Int((df.maxY - tf.maxY).rounded()),
+                "w": Int(tf.width.rounded()),
+                "h": Int(tf.height.rounded()),
+                "status": status,
+            ]
+            // The close (X) button, dashboard-relative like the rest; only when pressing it just hides the window.
+            if c.closeOnlyHides, let r = c.closeButtonScreenRect {
+                item["cx"] = Int((r.minX - df.minX).rounded())
+                item["cy"] = Int((df.maxY - r.maxY).rounded())
+                item["cw"] = Int(r.width.rounded())
+                item["ch"] = Int(r.height.rounded())
+            }
+            return item
+        }
+    }
+
+    func mascotWebOriginAndZoom() -> (origin: CGPoint, zoom: CGFloat)? {
+        guard let dw = window else { return nil }
+        let web = radar.webView
+        let wr = web.convert(web.bounds, to: nil)
+        return (CGPoint(x: wr.minX, y: dw.frame.height - wr.maxY), web.pageZoom)
+    }
+
+    func mascotSidebarFrame() -> CGRect? {
+        guard let dw = window, !sidebarHost.isHidden, sidebarHost.frame.width > 8 else { return nil }
+        let sr = sidebarHost.convert(sidebarHost.bounds, to: nil)
+        return CGRect(x: sr.minX, y: dw.frame.height - sr.maxY, width: sr.width, height: sr.height)
+    }
+
+    func mascotPageEval(_ js: String) {
+        radar.webView.evaluateJavaScript("\(js); true", completionHandler: nil)
+    }
+
+    func mascotOpenView(_ view: String) {
+        guard ["dash", "board", "notes", "friends", "themes", "notifications", "roadmap", "git"].contains(view) else { return }
+        radar.push("openView", "\"\(view)\"")
+    }
+
+    func mascotNavTap(_ id: String) {
+        if id.hasPrefix("fold:") {
+            let cwd = String(id.dropFirst(5))
+            guard sidebar.cards.contains(where: { $0.cwd == cwd }) else { return }
+            sidebar.toggleFold(cwd)
+            return
+        }
+        guard let data = try? JSONEncoder().encode(id), let arg = String(data: data, encoding: .utf8) else { return }
+        radar.webView.evaluateJavaScript("window.__mascotNav?.(\(arg)); true", completionHandler: nil)
+    }
+
+    /// She walked to the terminal's X button and pressed it. The X only hides the window (windowShouldClose), so the
+    /// real button is clicked when that is so; otherwise it is only highlighted and the window is hidden the same way
+    /// as before. A session is never ended and the typed text stays. Idle sessions only.
+    /// Returns false only when keyboard focus could not be parked (nothing was closed then).
+    @discardableResult
+    func mascotPressClose(_ id: String) -> Bool {
+        // Live chats only: a dead (exited) chat or a mirror does something else on close, so she never touches those.
+        guard let chat = chats[id], chat.isShown, !chat.isHiding, chat.closeOnlyHides else { return true }
+        let status = chat.sessionId.flatMap { briefs[$0]?.status } ?? "idle"
+        guard status == "idle" else { return true }
+        guard mascotParkKey() else { return false }
+        chat.mascotShieldUntil = Date().addingTimeInterval(1.5)
+        guard let btn = chat.window?.standardWindowButton(.closeButton), !btn.isHidden else {
+            return mascotHideTerminal(id)
+        }
+        btn.performClick(nil)
+        return true
+    }
+
+    /// Before she hides a terminal the dashboard takes the keyboard (and no field), so keys still in flight go nowhere
+    /// instead of landing in another terminal that AppKit would otherwise make key.
+    /// True only if the dashboard is visible, not miniaturized, and really became key.
+    private func mascotParkKey() -> Bool {
+        guard let dw = window, dw.isVisible, !dw.isMiniaturized else { return false }
+        dw.makeKey()
+        guard dw.isKeyWindow else { return false }
+        dw.makeFirstResponder(nil)
+        return true
+    }
+
+    /// Returns false only when keyboard focus could not be parked (nothing was hidden then).
+    @discardableResult
+    func mascotHideTerminal(_ id: String) -> Bool {
+        guard let chat = chats[id], chat.isShown, !chat.isHiding, chat.closeOnlyHides else { return true }
+        let status = chat.sessionId.flatMap { briefs[$0]?.status } ?? "idle"
+        guard status == "idle" else { return true }
+        guard mascotParkKey() else { return false }
+        chat.mascotShieldUntil = Date().addingTimeInterval(1.5)
+        if chat.hide() { closed(id) }
+        return true
     }
 }
 

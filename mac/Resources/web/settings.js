@@ -26,6 +26,13 @@ window.Settings = (() => {
 
   // Line icons, drawn like the top bar's gear (16×16, stroked in the text's colour).
   const svg = (d) => `<svg class="st-ico" viewBox="0 0 16 16" aria-hidden="true">${d}</svg>`;
+  // Her on/off switch: native keeps it and sets window.__mascotEnabled (then fires 'mascotchange').
+  const mascotOn = () => window.__mascotEnabled === true;
+  const MISCHIEF_NAMES = ['Calm', 'Playful', 'Naughty', 'Crazy'];
+  const mischiefLevel = () => {
+    const n = Number(window.__mascotMischief);
+    return Number.isInteger(n) && n >= 0 && n <= 3 ? n : 3;
+  };
   const PANES = [
     { id: 'account', name: 'Account', icon: svg('<circle cx="8" cy="5.4" r="2.7"/><path d="M2.6 14c.6-2.8 2.8-4.3 5.4-4.3s4.8 1.5 5.4 4.3"/>') },
     { id: 'appearance', name: 'Appearance', icon: svg('<path d="M8 1.8a6.2 6.2 0 1 0 0 12.4c.9 0 1.3-.6 1.3-1.2 0-.9-.8-1.2-.8-2 0-.7.6-1.2 1.3-1.2h1.6c1.7 0 2.8-1.1 2.8-2.7C14.2 4.1 11.4 1.8 8 1.8z"/><circle cx="4.9" cy="7.4" r=".9"/><circle cx="6.9" cy="4.6" r=".9"/><circle cx="10.2" cy="4.8" r=".9"/>') },
@@ -72,6 +79,16 @@ window.Settings = (() => {
 
     const appearance =
       group('colours', row('theme', 'the colours of the whole app', '<span class="st-val"><b class="st-theme-name">…</b><button type="button" class="st-btn st-theme">change…</button></span>')) +
+      // Viktoria has her own switch (any theme; the app keeps it, Mascot.swift). Mischief (mascot.js MISCHIEF table; the app
+      // keeps the level) and the credits show only while she is on.
+      group('mascot',
+        row('Viktoria', 'An anime companion who walks around your screen', sw('st-mascot' + (mascotOn() ? ' on' : ''), 'Show Viktoria', mascotOn())) +
+        `<div class="st-mascot-more"${mascotOn() ? '' : ' hidden'}>` +
+        row('Mischief', 'How often Viktoria clicks around and wanders',
+          `<span class="lb-seg ui-seg st-mischief">${MISCHIEF_NAMES.map((n, i) => `<button type="button" data-level="${i}" class="${i === mischiefLevel() ? 'on' : ''}">${n}</button>`).join('')}</span>`) +
+        '</div>') +
+      // Credits the licences ask for (VRoid: that exact phrase; WalkLoop: its readme's credit format), and the model's.
+      `<p class="st-note st-mascot-more"${mascotOn() ? '' : ' hidden'}>Model: Mei Sakuraniwa © ProjectCorelinjp<br>Character animation credits to pixiv Inc.'s VRoid Project<br>モーション：WalkLoop_v1_MotionDa／AirisuAsbel（だらてん） https://daraten.booth.pm/<br>Motions: Sachi (sachi2222, CC0), rerofumi (CC0), Maron Yatsuhashi, miracorabo</p>` +
       (c.ui
         ? group('dashboard text',
             row('size', 'the dashboard and messages, for text too small to read', '<span class="lb-seg ui-seg ui-scale"></span>') +
@@ -168,6 +185,20 @@ window.Settings = (() => {
     if (main) main.scrollTop = 0;
   }
 
+  // Her switch, and the blocks that only make sense while she is on (Mischief, credits).
+  function paintMascot() {
+    if (!page) return;
+    const on = mascotOn();
+    const b = page.querySelector('.st-mascot');
+    if (b) {
+      b.classList.toggle('on', on);
+      b.setAttribute('aria-checked', String(on));
+    }
+    page.querySelectorAll('.st-mascot-more').forEach((el) => (el.hidden = !on));
+    page.querySelectorAll('.st-mischief button').forEach((x) => x.classList.toggle('on', Number(x.dataset.level) === mischiefLevel()));
+  }
+  window.addEventListener('mascotchange', paintMascot);
+
   function paintSound() {
     const b = page && page.querySelector('.st-sound');
     if (!b || !window.__sound) return;
@@ -213,6 +244,22 @@ window.Settings = (() => {
     if (th) th.onclick = () => {
       window.Cloud?.close();
       window.GitView?.view('themes');
+    };
+    const mas = page.querySelector('.st-mascot');
+    if (mas) mas.onclick = () => {
+      const on = !mascotOn();
+      window.__mascotEnabled = on;
+      window.dispatchEvent(new Event('mascotchange')); // repaints this page and the Themes view's copy
+      window.webkit?.messageHandlers?.radar?.postMessage({ type: 'mascotEnabled', on });
+    };
+    const mis = page.querySelector('.st-mischief');
+    if (mis) mis.onclick = (e) => {
+      const b = e.target.closest('button[data-level]');
+      if (!b) return;
+      const level = Number(b.dataset.level);
+      window.__mascotMischief = level;
+      window.dispatchEvent(new Event('mascotchange'));
+      window.webkit?.messageHandlers?.radar?.postMessage({ type: 'mascotMischief', level });
     };
     show(current);
     paintSound();

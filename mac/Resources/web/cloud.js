@@ -2394,6 +2394,51 @@ window.Cloud = (() => {
     ';--panel:rgba(var(--panel-rgb),var(--glass-a));--line:rgba(var(--accent-rgb),0.32);--line-soft:rgba(var(--accent-rgb),0.13);color:var(--txt)';
   let themeAt = -1; // the card the arrow keys are on
 
+  // Viktoria's own switch and Mischief level, above the theme cards (any theme). Native keeps both (Mascot.swift) and sets
+  // window.__mascotEnabled / __mascotMischief, then fires 'mascotchange'; Settings > Appearance shows the same two.
+  const MISCHIEF_NAMES = ['Calm', 'Playful', 'Naughty', 'Crazy'];
+  const mascotIsOn = () => window.__mascotEnabled === true;
+  const mascotLevel = () => {
+    const n = Number(window.__mascotMischief);
+    return Number.isInteger(n) && n >= 0 && n <= 3 ? n : 3;
+  };
+  const mascotPost = (msg) => window.webkit?.messageHandlers?.radar?.postMessage(msg);
+  function mascotRow() {
+    const on = mascotIsOn();
+    return (
+      '<div class="th-mascot"><div class="th-mas-main"><span class="th-mas-l"><b>Viktoria</b><small>An anime companion who walks around your screen</small></span>' +
+      `<button type="button" class="hk-sw th-mas-sw${on ? ' on' : ''}" role="switch" aria-checked="${on}" title="Show Viktoria"><i></i></button></div>` +
+      `<div class="th-mas-more"${on ? '' : ' hidden'}><span class="th-mas-l"><b>Mischief</b><small>How often Viktoria clicks around and wanders</small></span>` +
+      `<span class="lb-seg ui-seg th-mischief">${MISCHIEF_NAMES.map((n, i) => `<button type="button" data-level="${i}" class="${i === mascotLevel() ? 'on' : ''}">${n}</button>`).join('')}</span>` +
+      `<small class="th-mas-credit">Model: Mei Sakuraniwa © ProjectCorelinjp</small></div></div>`
+    );
+  }
+  function mascotPaint() {
+    const on = mascotIsOn();
+    document.querySelectorAll('.th-mas-sw').forEach((b) => {
+      b.classList.toggle('on', on);
+      b.setAttribute('aria-checked', String(on));
+    });
+    document.querySelectorAll('.th-mas-more').forEach((el) => (el.hidden = !on));
+    document.querySelectorAll('.th-mischief button').forEach((b) => b.classList.toggle('on', Number(b.dataset.level) === mascotLevel()));
+  }
+  window.addEventListener('mascotchange', mascotPaint);
+  document.addEventListener('click', (e) => {
+    if (e.target.closest?.('.th-mas-sw')) {
+      const on = !mascotIsOn();
+      window.__mascotEnabled = on;
+      window.dispatchEvent(new Event('mascotchange'));
+      mascotPost({ type: 'mascotEnabled', on });
+      return;
+    }
+    const b = e.target.closest?.('.th-mischief button[data-level]');
+    if (!b) return;
+    const level = Number(b.dataset.level);
+    window.__mascotMischief = level;
+    window.dispatchEvent(new Event('mascotchange'));
+    mascotPost({ type: 'mascotMischief', level });
+  });
+
   function themeCard(t, kept) {
     const k = t.tokens, a = (i) => k[`--a${i}`];
     const vars = {
@@ -2408,7 +2453,8 @@ window.Cloud = (() => {
       `<span class="th-term"><span><b style="color:${a(2)}">❯</b> git status</span><span style="color:${a(1)}">  modified: app.js</span>` +
       `<span style="color:${a(2)}">  new file: themes.json</span><span><b style="color:${a(4)}">~/repo</b> <b style="color:${a(5)}">main</b> <i class="cur"></i></span></span>` +
       `<span class="th-pal">${Array.from({ length: 16 }, (_, i) => `<i style="background:${a(i)}"></i>`).join('')}</span></span>` +
-      `<span class="th-name">${esc(t.name)}<em>${t.id === kept ? 'ACTIVE' : ''}</em></span></button>`
+      `<span class="th-name">${esc(t.name)}<em>${t.id === kept ? 'ACTIVE' : ''}</em></span>` +
+      '</button>'
     );
   }
 
@@ -2422,6 +2468,7 @@ window.Cloud = (() => {
     if (!list || !list.themes) return setHTML(el, `<section class="panel cv-themes"><header><span class="tag">themes</span></header><div class="mn-empty">themes didn't load</div></section>`);
     el.innerHTML =
       `<section class="panel cv-themes"><header><span class="tag">themes</span><span class="meta">${list.themes.length} themes · point to try · click to keep${MACHINE === 'PC' ? ' · the orbit map keeps its colours' : ''}</span></header>` +
+      mascotRow() +
       `<div class="body th-grid">${list.themes.map((t) => themeCard(t, list.chosen)).join('')}</div></section>`;
     const cards = [...el.querySelectorAll('.th-card')];
     let timer = 0;

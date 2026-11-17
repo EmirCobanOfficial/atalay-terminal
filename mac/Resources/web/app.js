@@ -1957,3 +1957,130 @@ connect();
   const kpis = document.querySelector('#top .kpis');
   if (kpis) new ResizeObserver(() => kpis.classList.toggle('clip', kpis.scrollWidth > kpis.clientWidth + 1)).observe(kpis);
 })();
+
+// Mascot (Viktoria, own on/off switch, any theme): report visible dashboard panel rects and allowlisted navigation targets at ~4 Hz while active.
+(() => {
+  const appEl = document.getElementById('app');
+  if (!appEl) return;
+  // Native keeps her switch (UserDefaults mascotEnabled) and sets window.__mascotEnabled, then fires 'mascotchange'.
+  const isAnime = () => window.__mascotEnabled === true;
+  const NAV_VIEWS = new Set(['dash', 'git', 'notes', 'roadmap', 'friends', 'board', 'themes', 'notifications']);
+  const SPEND_RANGES = new Set(['today', '7d', '30d', '12w', '12m']);
+  const SETTINGS_PANES = new Set(['appearance', 'chats', 'shortcuts', 'general']);
+  const SCROLL_IDS = new Set(['log', 'research', 'files', 'workers', 'call']);
+  let lastAt = 0;
+  let timer = 0;
+  let lastKey = '';
+
+  function rectOf(el) {
+    if (!el || el.hidden || el.offsetParent === null) return null;
+    const cs = getComputedStyle(el);
+    if (cs.display === 'none' || cs.visibility === 'hidden') return null;
+    const r = el.getBoundingClientRect();
+    if (r.width <= 0 || r.height <= 0) return null;
+    return { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) };
+  }
+
+  function sendNow() {
+    timer = 0;
+    if (!isAnime()) return;
+    lastAt = performance.now();
+    const onDash = !appEl.classList.contains('cloud-mode') && !appEl.classList.contains('git-mode');
+    const panels = [];
+    const nav = [];
+    if (onDash) {
+      document.querySelectorAll('section.panel').forEach((el) => {
+        const r = rectOf(el);
+        if (r) panels.push({ id: el.id || '', ...r });
+      });
+      document.querySelectorAll('#spend-tabs button[data-r]').forEach((el) => {
+        if (!SPEND_RANGES.has(el.dataset.r)) return;
+        const r = rectOf(el);
+        if (r) nav.push({ id: `spend:${el.dataset.r}`, ...r });
+      });
+      SCROLL_IDS.forEach((sid) => {
+        const el = document.getElementById(sid);
+        if (!el || el.scrollHeight <= el.clientHeight + 8) return;
+        const r = rectOf(el);
+        if (r) nav.push({ id: `scroll:${sid}`, ...r });
+      });
+    }
+    document.querySelectorAll('.vs-ab[data-view]').forEach((el) => {
+      const v = el.dataset.view;
+      if (!NAV_VIEWS.has(v)) return;
+      const r = rectOf(el);
+      if (r) nav.push({ id: `view:${v}`, ...r });
+    });
+    const gear = rectOf(document.getElementById('settings'));
+    if (gear) nav.push({ id: 'settings:open', ...gear });
+
+    let friends = null;
+    const fb = nav.find((n) => n.id === 'view:friends');
+    if (fb) friends = { x: fb.x, y: fb.y, w: fb.w, h: fb.h };
+
+    const key = JSON.stringify([panels, nav]);
+    if (key === lastKey) return;
+    lastKey = key;
+    native({ type: 'mascotPanels', panels, friends, nav });
+  }
+
+  function schedule(force = false) {
+    if (!isAnime()) return;
+    if (force) lastKey = '';
+    const wait = Math.max(0, 250 - (performance.now() - lastAt));
+    if (wait === 0) {
+      if (timer) { clearTimeout(timer); timer = 0; }
+      sendNow();
+    } else if (!timer) {
+      timer = setTimeout(sendNow, wait);
+    }
+  }
+
+  // Explicit allowlist of read-only navigation actions the mascot may trigger.
+  // The user (a real click, not her own synthesized one) opens the theme chooser or Settings > Appearance: the mascot may sulk (Mascot.swift).
+  document.addEventListener('click', (e) => {
+    if (!e.isTrusted || !isAnime()) return;
+    if (e.target.closest?.('.vs-ab[data-view="themes"], .st-theme, .st-nav button[data-pane="appearance"]')) native({ type: 'mascotThemeGuard' });
+    // The gear opens the category used last: when that is Appearance (her switch lives there), she sulks too.
+    else if (e.target.closest?.('#settings')) {
+      setTimeout(() => {
+        if (document.querySelector('#cloudui .mn-settings .st-nav button.on[data-pane="appearance"]')) native({ type: 'mascotThemeGuard' });
+      }, 200);
+    }
+  }, true);
+
+  window.__mascotNav = (id) => {
+    if (typeof id !== 'string') return;
+    if (id.startsWith('view:')) {
+      const v = id.slice(5);
+      if (NAV_VIEWS.has(v)) document.querySelector(`.vs-ab[data-view="${v}"]`)?.click();
+    } else if (id.startsWith('spend:')) {
+      const r = id.slice(6);
+      if (SPEND_RANGES.has(r)) document.querySelector(`#spend-tabs button[data-r="${r}"]`)?.click();
+    } else if (id === 'settings:open') {
+      document.getElementById('settings')?.click();
+      // Never show the remembered pane (it may be Account): switch to Appearance at once.
+      document.querySelector('#cloudui .mn-settings .st-nav button[data-pane="appearance"]')?.click();
+    } else if (id.startsWith('settings:pane:')) {
+      const p = id.slice(14);
+      if (SETTINGS_PANES.has(p)) document.querySelector(`#cloudui .mn-settings .st-nav button[data-pane="${p}"]`)?.click();
+    } else if (id === 'settings:close') {
+      document.querySelector('#cloudui .menu .l-close')?.click();
+    } else if (id.startsWith('scroll:')) {
+      const sid = id.slice(7);
+      if (!SCROLL_IDS.has(sid)) return;
+      const el = document.getElementById(sid);
+      if (el) el.scrollBy({ top: el.scrollTop > 40 ? -60 : 60, behavior: 'smooth' });
+    }
+  };
+
+  const ro = new ResizeObserver(() => schedule());
+  ro.observe(appEl);
+  document.querySelectorAll('section.panel').forEach((el) => ro.observe(el));
+  new MutationObserver(() => schedule()).observe(appEl, { attributes: true, attributeFilter: ['class'] });
+  addEventListener('resize', () => schedule());
+  addEventListener('scroll', () => schedule(), true);
+  addEventListener('themechange', () => schedule(true));
+  addEventListener('mascotchange', () => schedule(true));
+  if (isAnime()) schedule(true);
+})();

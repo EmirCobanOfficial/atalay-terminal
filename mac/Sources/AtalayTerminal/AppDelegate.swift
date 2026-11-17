@@ -256,6 +256,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         add(view, "Dashboard", #selector(showDashboard), "", target: self)
         keyed(view, "reloadDashboard", "Reload Dashboard", #selector(reloadDashboard), target: self)
         keyed(view, "chatsList", "Chats List", #selector(toggleSidebar), target: self)
+        // Viktoria's own switch (the same flag as Settings > Appearance); the checkmark is set in validateMenuItem.
+        add(view, "Show Viktoria", #selector(toggleViktoria), "", target: self)
         view.addItem(.separator())
         keyed(view, "biggerText", "Bigger Text", #selector(fontBigger), target: self)
         keyed(view, "smallerText", "Smaller Text", #selector(fontSmaller), target: self)
@@ -307,6 +309,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.helpMenu = help
     }
 
+    @objc private func toggleViktoria() { Mascot.isEnabled.toggle() }
+    /// The checkmark of View > Show Viktoria; every other item of this delegate stays enabled as before.
+    @objc func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        if item.action == #selector(toggleViktoria) { item.state = Mascot.isEnabled ? .on : .off }
+        return true
+    }
     @objc private func newTerminal() { controller.overlay.showNewTerminal() }
     @objc private func newFile() { controller.newFile() }
     @objc private func newTab() { controller.newTab() }

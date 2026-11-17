@@ -459,6 +459,25 @@
 
 /* the themes view: each theme as a small picture of the app in its own colours */
 #themes-view .cv-themes { flex: 1; }
+.th-mascot { display: flex; flex-direction: column; gap: 10px; padding: 12px 18px; border-bottom: 1px solid var(--line-soft); }
+/* Viktoria's row: its own complete switch and segmented control (the shared ones are styled only inside .hk-row and the
+   Settings page, which this view is not). Nothing here is absolutely placed except the knob, inside its relative track. */
+.th-mas-main { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.th-mas-more { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+.th-mas-more[hidden] { display: none; }
+.th-mascot .th-mas-sw { position: relative; display: block; flex: none; box-sizing: border-box; width: 38px; height: 20px; margin: 0; padding: 0; border: 1px solid rgba(var(--accent-rgb), 0.5); border-radius: 10px; background: rgba(var(--accent-rgb), 0.1); cursor: pointer; transition: background 0.18s, border-color 0.18s; }
+.th-mascot .th-mas-sw:hover { border-color: var(--accent); box-shadow: none; }
+.th-mascot .th-mas-sw i { position: absolute; left: 2px; top: 2px; width: 14px; height: 14px; margin: 0; border-radius: 50%; background: var(--dim); transform: none; box-shadow: none; transition: transform 0.18s, background 0.18s; }
+.th-mascot .th-mas-sw.on, .th-mascot .th-mas-sw[aria-checked="true"] { border-color: var(--accent); background: rgba(var(--accent-rgb), 0.28); }
+.th-mascot .th-mas-sw.on i, .th-mascot .th-mas-sw[aria-checked="true"] i { background: var(--accent); box-shadow: 0 0 6px rgba(var(--accent-rgb), 0.7); transform: translateX(18px); }
+.th-mascot .th-mischief { display: inline-flex; flex: none; overflow: hidden; border: 1px solid rgba(var(--accent-rgb), 0.5); border-radius: 6px; }
+.th-mascot .th-mischief button { box-sizing: border-box; height: 26px; margin: 0; padding: 0 12px; border: 0; border-radius: 0; background: transparent; color: var(--dim); font: inherit; font-size: 11px; font-weight: 700; letter-spacing: 0.06em; cursor: pointer; }
+.th-mascot .th-mischief button + button { border-left: 1px solid rgba(var(--accent-rgb), 0.25); }
+.th-mascot .th-mischief button:hover { color: var(--txt); background: rgba(var(--accent-rgb), 0.12); }
+.th-mascot .th-mischief button.on { background: var(--accent); color: var(--ink); }
+.th-mas-l { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.th-mas-l b { color: var(--txt); font-size: 12px; font-weight: 600; }
+.th-mas-l small { color: var(--dim); font-size: 11px; }
 .th-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); align-content: start; overflow-y: auto; gap: 20px 16px; padding: 16px 18px; }
 .th-card { display: flex; flex-direction: column; gap: 6px; min-width: 0; padding: 0; border: 0; background: none; color: var(--txt); font: 11px var(--font); text-align: left; cursor: pointer; }
 .th-shot { display: grid; grid-template-columns: 28% minmax(0, 1fr); grid-template-rows: 15px minmax(0, 1fr) 8px; gap: 5px; height: 150px; padding: 5px; border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 6px; background: var(--t-bg); overflow: hidden; transition: border-color 0.15s, box-shadow 0.15s, transform 0.15s; }
@@ -479,6 +498,7 @@
 .th-name { display: flex; align-items: baseline; gap: 6px; padding: 0 2px; color: var(--txt); font-size: 12px; font-weight: 600; }
 .th-card.on .th-name, .th-card:hover .th-name, .th-card.hot .th-name { color: var(--hi); }
 .th-name em { color: var(--accent); font-size: 9px; font-style: normal; letter-spacing: 0.1em; }
+.th-mascot .th-mas-credit { color: var(--dim); font-size: 10px; line-height: 1.25; }
 
 /* Settings › Shortcuts (cloud.js renderKeys; its Settings look in settings.css): an action per row, its keys on a key
    cap to click */

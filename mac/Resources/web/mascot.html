@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Viktoria</title>
+<link rel="stylesheet" href="mascot/mascot.css">
+</head>
+<body>
+<div id="stage"></div>
+<div id="fx" aria-hidden="true"></div>
+<div id="bubble" class="hidden" role="status" aria-live="polite"></div>
+<script type="importmap">
+{
+  "imports": {
+    "three": "./mascot/vendor/three/three.module.min.js",
+    "three/addons/": "./mascot/vendor/three/jsm/",
+    "@pixiv/three-vrm": "./mascot/vendor/three-vrm/three-vrm.module.min.js",
+    "@pixiv/three-vrm-animation": "./mascot/vendor/three-vrm/three-vrm-animation.module.min.js"
+  }
+}
+</script>
+<script src="hooks.js"></script>
+<script type="module" src="mascot/mascot.js"></script>
+</body>
+</html>

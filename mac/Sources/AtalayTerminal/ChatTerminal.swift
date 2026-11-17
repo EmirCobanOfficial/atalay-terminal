@@ -295,6 +295,8 @@ final class ChatTerminalView: LocalProcessTerminalView {
     /// Everything typed or pasted goes out through here: typing in a chat or terminal is work (Activity, for XP).
     override func send(source: TerminalView, data: ArraySlice<UInt8>) {
         Activity.work()
+        // Real keystrokes only (the terminal's own replies to the program come through here too): the mascot may notice.
+        if let ev = NSApp.currentEvent, ev.type == .keyDown, ev.window === window { Mascot.shared.onTyping(chatId) }
         super.send(source: source, data: data)
     }
 

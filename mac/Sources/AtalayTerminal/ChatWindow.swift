@@ -961,8 +961,17 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
 
     // MARK: show / hide with the old-TV effect
 
+    /// Set when the mascot closes this window: until then only a user's own click on a card may bring it back (a show()
+    /// during the 0.55 s power-off would set `reopenAfterHide` and the window would flicker back open).
+    var mascotShieldUntil = Date.distantPast
+    var isHiding: Bool { hiding }
+
     func show() {
         guard let w = window else { return }
+        if Date() < mascotShieldUntil {
+            if (manager?.userOpenDepth ?? 0) == 0 { return }
+            mascotShieldUntil = .distantPast
+        }
         if hiding {
             reopenAfterHide = true
             return
@@ -996,6 +1005,16 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
         runPowerOn()
         manager?.chatVisibilityChanged()
     }
+
+    /// For the mascot: the close (X) button's frame in screen coordinates (nil while it is hidden by an animation).
+    var closeButtonScreenRect: CGRect? {
+        guard let w = window, isShown, let b = w.standardWindowButton(.closeButton), !b.isHidden else { return nil }
+        return w.convertToScreen(b.convert(b.bounds, to: nil))
+    }
+
+    /// Whether pressing the X only hides the window (windowShouldClose's last branch). A mirror or an exited chat
+    /// does something else, so the mascot never presses the real button then.
+    var closeOnlyHides: Bool { !hud.mirror && !hud.exited }
 
     /// Powers the window off and orders it out; false when it can't (hidden already, or still animating).
     @discardableResult
