@@ -703,6 +703,21 @@ final class Cloud {
 
     // MARK: HTTP
 
+    /// A client-signed GET with no Authorization header (works before a device is registered): for the app's own public
+    /// reads, such as Viktoria's download address. The JSON object, or nil.
+    func publicGet(_ path: String) async -> [String: Any]? {
+        guard let url = URL(string: path, relativeTo: base) else { return nil }
+        var req = URLRequest(url: url, timeoutInterval: 15)
+        req.httpMethod = "GET"
+        ClientKey.sign(&req)
+        guard let (data, response) = try? await Cloud.session.data(for: req) else { return nil }
+        ClientKey.learn(from: response)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        if status == 426 { UpdateWatch.shared.checkNow() }
+        guard (200..<300).contains(status) else { return nil }
+        return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+    }
+
     private enum Failure: Error { case status(Int, String) }
 
     private func call<T: Decodable>(_ method: String, _ path: String, body: [String: Any]? = nil, token: String? = nil) async throws -> T {

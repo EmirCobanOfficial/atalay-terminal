@@ -172,9 +172,6 @@ async function freshKey(keyFile, token) {
 
 (async () => {
   if (process.platform !== 'win32') fail('Windows builds are made on Windows');
-  // Viktoria's model and motions (loose files that git doesn't carry): without them the build would ship her broken. Checked
-  // before any key is made or any network call is, so a stop here uses nothing up.
-  require('./mascotfiles')(fail);
   const keyFile = path.join(os.homedir(), '.atalay-terminal', 'client-key-windows');
   // A key given in ATALAY_CLIENT_KEY (the Mac's windows/scripts/new-key.sh) is saved first, with its decoys; else a real
   // release makes its own with the admin token (a dry run and npm run dist build with the key there is).

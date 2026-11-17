@@ -6,8 +6,8 @@
 // this file is its native side. The window list and the cursor warp come from deskhelper.js.
 //
 // Units: the overlay sits on a display's work area in DIPs (Electron's). Her page is in CSS px, DIP / z where z is the
-// overlay page's zoom (all file:// pages share one zoom, so the dashboard's text size reaches her too: she is never
-// zoomed by us, her coordinates are scaled instead). A panel px is (DIP - work area origin) / z.
+// overlay page's zoom (she has a session of her own, so the dashboard's text size no longer reaches her; zoom() is still
+// read, and she is never zoomed by us, her coordinates are scaled instead). A panel px is (DIP - work area origin) / z.
 //
 // What she may do to the app is small and checked here, since her page is the only thing that talks to this side:
 // - her window can load her own page only (will-navigate, will-redirect, no new windows);
@@ -19,6 +19,10 @@
 const path = require('path');
 const { fileURLToPath } = require('url');
 const { createDesk } = require('./deskhelper');
+const { session } = require('electron');
+
+// Her overlay's own session (kept on disk, so her localStorage survives restarts): viktoria://pak is served there and nowhere else.
+const PARTITION = 'persist:viktoria';
 
 const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
 const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
@@ -86,17 +90,20 @@ function createMascot(o) {
   const lastTypingSent = new Map(), lastTypedAt = new Map();
 
   // ---------- her switch and her mischief (0 Calm, 1 Playful, 2 Naughty, 3 Crazy) ----------
-  const enabled = () => {
+  // What the user chose (the switch); on its own it doesn't bring her up: without the downloaded pak no overlay is made.
+  const stored = () => {
     const v = settings.get('mascotEnabled');
     return typeof v === 'boolean' ? v : !!o.defaultEnabled;
   };
+  // Whether she is up: switched on AND downloaded.
+  const enabled = () => stored() && o.asset.isReady();
   const mischief = () => {
     const v = settings.get('mascotMischief');
     return clamp(typeof v === 'number' && Number.isFinite(v) ? Math.round(v) : o.defaultMischief, 0, 3);
   };
 
   function setEnabled(on) {
-    if (on === enabled()) return;
+    if (on === stored()) return;
     settings.set('mascotEnabled', on);
     releaseCursor();
     refresh();
@@ -114,6 +121,25 @@ function createMascot(o) {
   function pushToPages() {
     const js = `window.__mascotEnabled = ${enabled()}; window.__mascotMischief = ${mischief()}; window.dispatchEvent(new Event('mascotchange'))`;
     for (const v of [o.dashView(), o.chatsView()]) o.run(v, js);
+    pushAsset();
+  }
+
+  // The download's state (window.__mascotAsset = {state, got, total, reason}) and the 'mascotasset' event, on every change.
+  function pushAsset() {
+    const js = `window.__mascotAsset = ${o.asset.json()}; window.dispatchEvent(new Event('mascotasset'))`;
+    for (const v of [o.dashView(), o.chatsView()]) o.run(v, js);
+  }
+
+  // The pak was downloaded, removed or found damaged ("ready" flipped), or only its progress moved.
+  function assetChanged(readinessChanged) {
+    if (readinessChanged) {
+      releaseCursor();
+      refresh();
+      pushToPages();
+      if (o.onSwitch) o.onSwitch();
+    } else {
+      pushAsset();
+    }
   }
 
   // ---------- the overlay ----------
@@ -149,6 +175,7 @@ function createMascot(o) {
 
   function ensureWindow() {
     if (alive() || stopped) return;
+    o.asset.attach(session.fromPartition(PARTITION));
     const d = pickInitialDisplay();
     currentId = d.id;
     const wa = d.workArea;
@@ -157,7 +184,8 @@ function createMascot(o) {
       frame: false, transparent: true, backgroundColor: '#00000000', hasShadow: false, show: false,
       focusable: false, skipTaskbar: true, alwaysOnTop: true, resizable: false, movable: false, minimizable: false,
       maximizable: false, fullscreenable: false,
-      webPreferences: o.webPrefs(),
+      // Her own session: viktoria://pak is registered there only (the other windows can't read the pak).
+      webPreferences: { ...o.webPrefs(), partition: PARTITION },
     });
     win = w;
     loaded = false;
@@ -433,7 +461,7 @@ function createMascot(o) {
       pollT = setInterval(() => {
         if (!shown || asleep) return;
         applyDisplay();
-        // The dashboard's text size is hers too (one zoom for every file:// page): she hears of a change.
+        // A change of her page's zoom: she hears of it.
         if (zoom() !== lastZ) {
           lastZ = zoom();
           lastPlatformsJSON = lastTerminalsJSON = '';
@@ -774,6 +802,10 @@ function createMascot(o) {
     // Her actions on the app (views, taps, closing terminals) stop the moment she is switched off or hidden.
     if (['openView', 'navTap', 'closeTerminal', 'hideTerminal'].includes(body.type) && (!enabled() || !shown)) return true;
     switch (body.type) {
+      // Her page couldn't read the pak: it is deleted and the user can download it again.
+      case 'loadFailed':
+        o.asset.loadFailed();
+        return true;
       case 'hitRect': {
         const r = body.rect;
         const x = num(r && r.x), y = num(r && r.y), w = num(r && r.w), h = num(r && r.h);
@@ -944,7 +976,7 @@ function createMascot(o) {
   }
 
   return {
-    enabled, setEnabled, mischief, setMischief, pushToPages, refresh, stop, appMouse,
+    enabled, stored, setEnabled, mischief, setMischief, pushToPages, pushAsset, assetChanged, refresh, stop, appMouse,
     has: (wc) => alive() && win.webContents === wc,
     handle, dashboardChanged, terminalsChanged: dashboardChanged, onDisplaysChanged, focusChanged, setAsleep,
     onThemeChooserOpened, updateWebPanels, updateSidebarRects, updateSessions, onEvents, onSocial, onTyping, updateIdle,

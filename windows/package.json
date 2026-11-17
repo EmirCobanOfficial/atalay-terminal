@@ -50,7 +50,8 @@
         "to": "web",
         "filter": [
           "**/*",
-          "!mascot/live2d/**"
+          "!mascot/live2d/**",
+          "!mascot/vrm/**"
         ]
       },
       {

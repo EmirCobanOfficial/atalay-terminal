@@ -971,7 +971,24 @@ function createCloud(opts = {}) {
     open();
   }
 
-  return { start, stop, kick, json, handle };
+  // The app's own call to a path it wrote (mascotasset.js: v1/assets/viktoria): not one the pages may reach.
+  // Client-signed, no Authorization header: works before a device is registered (the API's route needs no device).
+  const api = async (method, p) => {
+    if (method !== 'GET' || p !== 'v1/assets/viktoria') return { error: 'bad_path' };
+    try {
+      const r = await request('GET', new URL(p, base), undefined, null);
+      let json = null;
+      try {
+        json = JSON.parse(r.text);
+      } catch {}
+      if (r.status >= 200 && r.status < 300) return json ?? {};
+      return { error: json && typeof json.error === 'string' ? json.error : `http_${r.status}` };
+    } catch {
+      return { error: 'offline' };
+    }
+  };
+
+  return { start, stop, kick, json, handle, api };
 }
 
 module.exports = { createCloud };

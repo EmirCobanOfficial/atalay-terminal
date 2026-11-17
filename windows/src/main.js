@@ -4,7 +4,7 @@
 // (engine.js, cloud.js, git.js, themes.js, terminals.js), the keys and the updates.
 const {
   app, BaseWindow, BrowserWindow, WebContentsView, webContents, ipcMain, dialog, Menu, shell, screen, powerMonitor, nativeTheme, net,
-  clipboard, nativeImage, safeStorage,
+  clipboard, nativeImage, safeStorage, protocol,
 } = require('electron');
 const path = require('path');
 const fs = require('fs');
@@ -39,12 +39,8 @@ const builtFiles = (() => {
     return null;
   }
 })();
-// Every file under `dir` and its SHA-256 the same as `want` (path under `dir`, with forward slashes).
-// Viktoria's model and motions (web/mascot/vrm: about 34 MB of data, no code) are hashed once, and again only when a
-// file's size or modified time changes: the pages are checked before every load, and hashing those each time would
-// cost a few hundred ms. Every other file (all the code) is hashed in full every time.
-const dataHashes = new Map(); // path under the folder -> { stamp: size + mtime, hash }
-const DATA_FILES = 'mascot/vrm/';
+// Every file under `dir` and its SHA-256 the same as `want` (path under `dir`, with forward slashes). Viktoria's model and
+// motions are not in the install any more (one pak, downloaded on demand: mascotasset.js), so every file is code or small.
 function sameFiles(dir, want) {
   if (!want) return false;
   const got = {};
@@ -56,16 +52,6 @@ function sameFiles(dir, want) {
         const rel = path.relative(dir, p).split(path.sep).join('/');
         if (!e.isFile()) {
           got[rel] = '?';
-        } else if (rel.startsWith(DATA_FILES)) {
-          const st = fs.statSync(p);
-          const stamp = `${st.size}:${st.mtimeMs}`;
-          const seen = dataHashes.get(`${dir}|${rel}`);
-          if (seen && seen.stamp === stamp) got[rel] = seen.hash;
-          else {
-            const hash = crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex');
-            dataHashes.set(`${dir}|${rel}`, { stamp, hash });
-            got[rel] = hash;
-          }
         } else {
           got[rel] = crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex');
         }
@@ -113,6 +99,7 @@ const { createFeedPanel } = require('./feedpanel');
 const { createChatTrash } = require('./chattrash');
 const { createTermFont } = require('./termfont');
 const { createMascot } = require('./mascot');
+const { createMascotAsset } = require('./mascotasset');
 const vendor = require('./vendor');
 
 let autoUpdater = null;
@@ -140,6 +127,8 @@ if (process.platform !== 'win32') app.setPath('userData', path.join(app.getPath(
 const DATA = path.join(app.getPath('appData'), app.getName().replace(/^Orbiterm/, "Atalay's Terminal"));
 if (process.platform === 'win32' && !app.commandLine.hasSwitch('user-data-dir')) app.setPath('userData', DATA);
 if (!app.requestSingleInstanceLock()) return app.quit();
+// viktoria:// (her downloaded pak, served to her overlay's own session only: mascotasset.js). Before the app is ready.
+protocol.registerSchemesAsPrivileged([{ scheme: 'viktoria', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } }]);
 // Sounds (the turn-finished chime when sound is on, the notices' pings) play without a click on the page first, as on the Mac.
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 nativeTheme.themeSource = 'dark';
@@ -493,8 +482,16 @@ const runaways = createRunaways({
 // ---------- Viktoria, the roaming mascot (mascot.js, the Mac's Mascot.swift) ----------
 // Her own switch is on at once in a staging build and in a run from the sources, off in a release until the user turns it
 // on. Her mischief (0 Calm … 3 Crazy) starts at 3 in staging only, 1 otherwise, as on the Mac.
+// Her model and motions: one pak, downloaded the first time the user asks for her (the Mac's MascotAsset). Plain http to
+// this PC only in a staging build or a run from the sources.
+const mascotAsset = createMascotAsset({
+  app, net, cloud, settings, staging: STAGING,
+  localOk: STAGING || !RELEASE,
+  enable: (on) => settings.set('mascotEnabled', on),
+  onChange: (readinessChanged) => mascot.assetChanged(readinessChanged),
+});
 const mascot = createMascot({
-  BrowserWindow, screen, WEB, webPrefs, checkPages, settings,
+  BrowserWindow, screen, WEB, webPrefs, checkPages, settings, asset: mascotAsset,
   defaultEnabled: STAGING || (!RELEASE && !PROBE),
   defaultMischief: STAGING ? 3 : 1,
   run,
@@ -576,7 +573,10 @@ function mascotTerminals() {
 // View > Show Viktoria follows her switch, whichever way it was flipped.
 function syncViktoriaMenu() {
   const item = Menu.getApplicationMenu()?.getMenuItemById('viktoria');
-  if (item) item.checked = mascot.enabled();
+  if (!item) return;
+  // Not downloaded yet: "Get Viktoria…" (opens Themes, where the download is); downloaded: her switch.
+  item.label = mascotAsset.isReady() ? 'Show Viktoria' : 'Get Viktoria…';
+  item.checked = mascot.enabled();
 }
 
 // ---------- pushing to the pages ----------
@@ -1309,6 +1309,13 @@ function handleRadar(msg) {
     // click on the theme chooser (she may sulk at the cursor).
     case 'mascotEnabled':
       return mascot.setEnabled(msg.on === true), true;
+    // The pak's download (cloud.js, settings.js): start, stop, and remove it (her switch off, the file deleted).
+    case 'mascotGet':
+      return mascotAsset.get(), true;
+    case 'mascotCancel':
+      return mascotAsset.cancel(), true;
+    case 'mascotRemove':
+      return mascotAsset.remove(), true;
     case 'mascotMischief':
       return mascot.setMischief(typeof msg.level === 'number' && Number.isFinite(msg.level) ? msg.level : 3), true;
     case 'mascotThemeGuard':
@@ -2599,7 +2606,7 @@ function notesOf(n) {
 // ---------- the pages' calls ----------
 ipcMain.on('atl:boot', (e) => {
   // Viktoria's window asks for nothing: no theme, no fonts.
-  e.returnValue = mascot.has(e.sender) ? { mascot: true } : boots.get(e.sender.id) || { css: themes.css() };
+  e.returnValue = mascot.has(e.sender) ? { mascot: true, pak: mascotAsset.isReady() } : boots.get(e.sender.id) || { css: themes.css() };
 });
 
 ipcMain.handle('atl:post', async (e, name, body) => {
@@ -2753,7 +2760,15 @@ function buildMenu() {
           },
         },
         // Viktoria, the anime companion who walks around the screen (her switch is also in Settings > Appearance).
-        { id: 'viktoria', label: 'Show Viktoria', type: 'checkbox', checked: mascot.enabled(), click: () => mascot.setEnabled(!mascot.enabled()) },
+        {
+          id: 'viktoria', label: mascotAsset.isReady() ? 'Show Viktoria' : 'Get Viktoria…', type: 'checkbox', checked: mascot.enabled(),
+          click: () => {
+            if (mascotAsset.isReady()) return mascot.setEnabled(!mascot.stored());
+            showDashboard();
+            mascotOpenView('themes');
+            syncViktoriaMenu(); // a click flips a checkbox by itself
+          },
+        },
         { label: 'Reload Dashboard', accelerator: 'CmdOrCtrl+R', click: () => dashView && dashView.webContents.reload() },
         // The page that has the keys: the dashboard window's two are views, which the role doesn't reach. Development
         // only: a released app has no DevTools.
@@ -2790,6 +2805,7 @@ app.on('second-instance', () => showDashboard());
 
 app.whenReady().then(() => {
   if (PROBE && app.dock) app.dock.hide();
+  mascotAsset.init(); // the pak from an earlier run is hashed (off the main thread) before she may come up
   buildMenu();
   createDashboard();
   // Only the app's usual profile hooks Claude Code's and Codex's settings: a profile of its own (npm run staging) leaves

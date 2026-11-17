@@ -72,10 +72,22 @@ final class MascotAsset {
     }
 
     /// The mascot page couldn't use the pak (mascot.js posts loadFailed): delete it, she goes down, Try again shows.
+    /// Only if the file no longer matches: when it still does (the page failed for another reason, e.g. no GPU) she stays
+    /// ready, just not drawn, and downloading again would change nothing.
     func loadFailed() {
-        guard isReady else { return }
-        discardPak()
-        set(.failed("unreadable"))
+        guard isReady, !verifying else { return }
+        let size = UserDefaults.standard.object(forKey: Self.sizeKey) as? Int
+        let sha = UserDefaults.standard.string(forKey: Self.shaKey)
+        verifying = true
+        Task { [weak self] in
+            let ok: Bool
+            if let size, let sha { ok = await Task.detached { Self.verify(Self.pakURL, size: Int64(size), sha: sha) }.value } else { ok = false }
+            guard let self, self.verifying else { return }
+            self.verifying = false
+            guard self.isReady, !ok else { return }
+            self.discardPak()
+            self.set(.failed("unreadable"))
+        }
     }
 
     /// The pak's bytes for the mascot page's `viktoria://pak`; nil unless she is ready.
@@ -144,9 +156,9 @@ final class MascotAsset {
 
     private func fetch(_ id: Int) async {
         // 1. Where is it? (the API's /v1/assets/viktoria, signed like its other calls)
-        let answer = await Cloud.shared.social("GET", "v1/assets/viktoria", body: nil)
+        let answer = await Cloud.shared.publicGet("v1/assets/viktoria") // signed by the app, no device token needed
         guard id == runID else { return }
-        guard let a = answer as? [String: Any], a["error"] == nil,
+        guard let a = answer, a["error"] == nil,
               let sha = a["sha256"] as? String, sha.count == 64,
               let size = (a["size"] as? NSNumber)?.int64Value, size > 0,
               let s = a["url"] as? String, let url = URL(string: s), Self.allowed(url) else {

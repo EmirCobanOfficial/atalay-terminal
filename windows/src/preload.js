@@ -26,6 +26,8 @@ if (boot.look) contextBridge.executeInMainWorld({ func: (look) => { window.__ter
 if (boot.termFont) contextBridge.exposeInMainWorld('__termFont', boot.termFont);
 // Its font family when one is picked in Settings (termfont.js); empty, the page's own stack.
 if (boot.termFamily) contextBridge.exposeInMainWorld('__termFamily', boot.termFamily);
+// Her page learns where her downloaded pak is only when it is there (mascotasset.js serves it to her window alone).
+if (boot.mascot && boot.pak) contextBridge.exposeInMainWorld('__viktoriaPak', 'viktoria://pak');
 if (boot.role) contextBridge.exposeInMainWorld('__MESSAGES_ROLE__', boot.role);
 if (boot.friend) contextBridge.exposeInMainWorld('__MESSAGES_FRIEND__', boot.friend);
 // Only the dashboard's page: its notes open in windows of their own and its community feed is drawn by a window of its own.

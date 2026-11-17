@@ -36,9 +36,6 @@ function writePrivate(file, text) {
 }
 
 (async () => {
-  // A packaged build ships Viktoria's model and motions (loose files that git doesn't carry): checked before any key is
-  // registered with the API.
-  if (packaged) require('./mascotfiles')(fail);
   const health = await fetch(`${API}/health`).then((r) => r.ok, () => false);
   if (!health) fail(`no local API at ${API}: start it with \`docker compose up -d\` in api/ (Docker Desktop running)`);
   const token = ((fs.existsSync(envFile) ? fs.readFileSync(envFile, 'utf8') : '').match(/^ADMIN_TOKEN=(.+)$/m) || [])[1];
