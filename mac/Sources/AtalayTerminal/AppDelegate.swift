@@ -256,7 +256,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         add(view, "Dashboard", #selector(showDashboard), "", target: self)
         keyed(view, "reloadDashboard", "Reload Dashboard", #selector(reloadDashboard), target: self)
         keyed(view, "chatsList", "Chats List", #selector(toggleSidebar), target: self)
-        // Viktoria's own switch (the same flag as Settings > Appearance); the checkmark is set in validateMenuItem.
+        // Viktoria's own switch (the same flag as Settings > Appearance); the checkmark and the title ("Get Viktoria…"
+        // until she is downloaded) are set in validateMenuItem.
         add(view, "Show Viktoria", #selector(toggleViktoria), "", target: self)
         view.addItem(.separator())
         keyed(view, "biggerText", "Bigger Text", #selector(fontBigger), target: self)
@@ -309,10 +310,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.helpMenu = help
     }
 
-    @objc private func toggleViktoria() { Mascot.isEnabled.toggle() }
+    /// Not downloaded yet: opens the Themes view, where "Get Viktoria" is. Downloaded: her switch.
+    @objc private func toggleViktoria() {
+        if MascotAsset.shared.isReady { Mascot.isEnabled.toggle() } else { controller.showDashboard(); controller.mascotOpenView("themes") }
+    }
     /// The checkmark of View > Show Viktoria; every other item of this delegate stays enabled as before.
     @objc func validateMenuItem(_ item: NSMenuItem) -> Bool {
-        if item.action == #selector(toggleViktoria) { item.state = Mascot.isEnabled ? .on : .off }
+        if item.action == #selector(toggleViktoria) {
+            let ready = MascotAsset.shared.isReady
+            item.title = ready ? "Show Viktoria" : "Get Viktoria…"
+            item.state = ready && Mascot.isEnabled ? .on : .off
+        }
         return true
     }
     @objc private func newTerminal() { controller.overlay.showNewTerminal() }

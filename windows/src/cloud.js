@@ -178,7 +178,9 @@ class Failure extends Error {
 // - isActive(): is the user working right now, for XP (on the Mac, Activity.swift: input in the last five minutes and a
 //   sign of work in the last five: a busy Claude session, a job using the CPU, typing in a chat or terminal)
 // - idleSeconds(): seconds since the last key, mouse or touch input anywhere on the PC, for "away"
-// - theme(): the chosen theme's id; onChange(state): the page's state changed (`json()`); onSocial(text): a live event
+// - theme(): the chosen theme's id
+// - mascot(): -1 when the Viktoria mascot is off, else her Mischief level (0..3), for the profile
+// - onChange(state): the page's state changed (`json()`); onSocial(text): a live event
 // - tools(): the AI tools at work since the last heartbeat (claude, codex, gemini, antigravity), for their badges
 // - protect: { seal(text), open(bytes) }, both async: text sealed by Windows for this user (Electron's safeStorage); only
 //   `open` is used, to read the keys the old end-to-end encrypted messages were sealed with (unseal.js). Without it
@@ -191,6 +193,7 @@ function createCloud(opts = {}) {
   const toolsAtWork = opts.tools || (() => []);
   const idleSeconds = opts.idleSeconds || (() => 0);
   const theme = opts.theme || (() => 'atalay');
+  const mascot = opts.mascot || (() => -1);
   const onChange = opts.onChange || (() => {});
   const onSocial = opts.onSocial || (() => {});
   // How calls go out: Node's fetch by default; the app passes Electron's net.fetch, which goes through Windows' proxy
@@ -342,6 +345,9 @@ function createCloud(opts = {}) {
     const body = { ...client(), active: !!ask(isActive, false), tz: -Math.round(new Date().getTimezoneOffset()) };
     const th = ask(theme, '');
     if (typeof th === 'string' && THEME.test(th)) body.theme = th;
+    // Viktoria too: -1 when she is off, else her Mischief level (0..3); a profile shows it.
+    const mc = ask(mascot, -1);
+    if (Number.isInteger(mc) && mc >= -1 && mc <= 3) body.mascot = mc;
     // Which AI tools were at work, for their badges (hours with each).
     const tools = ask(toolsAtWork, []);
     body.tools = Array.isArray(tools) ? [...new Set(tools)].filter((t) => TOOLS.has(t)).sort() : [];

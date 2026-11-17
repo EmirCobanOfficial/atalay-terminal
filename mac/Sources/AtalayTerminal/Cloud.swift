@@ -236,6 +236,8 @@ final class Cloud {
         struct Answer: Decodable { let hackerName: String?; let tag: Int?; let online: Int; let update: Release?; let xp: XP?; let xpPaused: Bool? }
         // The theme too: the leaderboard shows someone's card in their theme, and anyone can take it.
         let work: [String: Any] = ["active": Activity.active, "tz": TimeZone.current.secondsFromGMT() / 60, "theme": ThemeStore.shared.chosenId,
+                                   // Viktoria: -1 when she is off, else her Mischief level (0..3); a profile shows it.
+                                   "mascot": Mascot.isEnabled ? Mascot.shared.mischief : -1,
                                    "tools": Activity.tools]
         do {
             let a: Answer = try await call("POST", "v1/heartbeat", body: client.merging(work) { $1 }, token: token)

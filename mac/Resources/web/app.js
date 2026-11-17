@@ -1963,7 +1963,8 @@ connect();
   const appEl = document.getElementById('app');
   if (!appEl) return;
   // Native keeps her switch (UserDefaults mascotEnabled) and sets window.__mascotEnabled, then fires 'mascotchange'.
-  const isAnime = () => window.__mascotEnabled === true;
+  // Not downloaded yet (window.__mascotAsset, MascotAsset.swift) counts as off; without it (Windows) she is just on or off.
+  const isAnime = () => window.__mascotEnabled === true && (window.__mascotAsset?.state ?? 'ready') === 'ready';
   const NAV_VIEWS = new Set(['dash', 'git', 'notes', 'roadmap', 'friends', 'board', 'themes', 'notifications']);
   const SPEND_RANGES = new Set(['today', '7d', '30d', '12w', '12m']);
   const SETTINGS_PANES = new Set(['appearance', 'chats', 'shortcuts', 'general']);
@@ -2082,5 +2083,6 @@ connect();
   addEventListener('scroll', () => schedule(), true);
   addEventListener('themechange', () => schedule(true));
   addEventListener('mascotchange', () => schedule(true));
+  addEventListener('mascotasset', () => schedule(true));
   if (isAnime()) schedule(true);
 })();

@@ -551,13 +551,26 @@ window.Profile = (() => {
       ? (look ? links({ links: look.links }) : (A?.signedIn ? links(A) : ''))
       : links({ links: prof?.links || src.links });
 
-    let themeRow = '';
+    // THEME and, when they have Viktoria switched on, VIKTORIA with her Mischief level (prof.mascot: null unknown,
+    // -1 off, 0..3 on). Side by side; each is its own cell so a narrow window wraps them under each other.
+    let themeCell = '';
     if (!isSelf && themeId && themesCache?.themes) {
       const t = themesCache.themes.find((x) => x.id === themeId) || themesCache.themes[0];
       if (t) {
-        themeRow = `<div class="pv-theme"><span><label>THEME</label><b>${esc(t.name)}</b></span>${t.id === themesCache.chosen ? '<em>you use it too</em>' : ''}</div>`;
+        themeCell = `<div class="pv-cell"><span><label>THEME</label><b>${esc(t.name)}</b></span>${t.id === themesCache.chosen ? '<em>you use it too</em>' : ''}</div>`;
       }
     }
+    let mascotCell = '';
+    const mascotLevel = prof?.mascot;
+    if (!isSelf && Number.isInteger(mascotLevel) && mascotLevel >= 0 && mascotLevel <= 3) {
+      const lvlName = ['Calm', 'Playful', 'Naughty', 'Crazy'][mascotLevel];
+      const dots = [0, 1, 2, 3].map((i) => `<i class="${i <= mascotLevel ? 'on' : ''}"></i>`).join('');
+      const same = window.__mascotEnabled === true && window.__mascotMischief === mascotLevel;
+      const label = `Mischief: ${lvlName} (${mascotLevel + 1} of 4)`;
+      mascotCell = `<div class="pv-cell" title="${esc(label)}"><span><label>VIKTORIA</label><b>${esc(lvlName)}</b></span>` +
+        `<span class="pv-dots" aria-hidden="true">${dots}</span><span class="pv-sr">Mischief ${mascotLevel + 1} of 4</span>${same ? '<em>same as you</em>' : ''}</div>`;
+    }
+    const themeRow = themeCell || mascotCell ? `<div class="pv-theme">${themeCell}${mascotCell}</div>` : '';
 
     const joinedStr = formatDate(prof?.joined);
     const sinceStr = formatDate(prof?.friendsSince);

@@ -339,6 +339,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             Mascot.shared.onThemeChooserOpened()
         case "mascotEnabled":
             Mascot.isEnabled = (msg["on"] as? NSNumber)?.boolValue ?? false
+        // Viktoria's download (Themes row, Settings > Appearance): get, stop, or remove her files.
+        case "mascotGet": MascotAsset.shared.get()
+        case "mascotCancel": MascotAsset.shared.cancel()
+        case "mascotRemove": MascotAsset.shared.remove()
         case "mascotMischief":
             Mascot.shared.setMischief((msg["level"] as? NSNumber)?.intValue ?? 3)
         case "mascotPanels":

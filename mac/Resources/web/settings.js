@@ -27,7 +27,7 @@ window.Settings = (() => {
   // Line icons, drawn like the top bar's gear (16×16, stroked in the text's colour).
   const svg = (d) => `<svg class="st-ico" viewBox="0 0 16 16" aria-hidden="true">${d}</svg>`;
   // Her on/off switch: native keeps it and sets window.__mascotEnabled (then fires 'mascotchange').
-  const mascotOn = () => window.__mascotEnabled === true;
+  const mascotOn = () => window.__mascotEnabled === true && (window.MascotUI ? window.MascotUI.ready() : true);
   const MISCHIEF_NAMES = ['Calm', 'Playful', 'Naughty', 'Crazy'];
   const mischiefLevel = () => {
     const n = Number(window.__mascotMischief);
@@ -82,11 +82,14 @@ window.Settings = (() => {
       // Viktoria has her own switch (any theme; the app keeps it, Mascot.swift). Mischief (mascot.js MISCHIEF table; the app
       // keeps the level) and the credits show only while she is on.
       group('mascot',
-        row('Viktoria', 'An anime companion who walks around your screen', sw('st-mascot' + (mascotOn() ? ' on' : ''), 'Show Viktoria', mascotOn())) +
+        row('Viktoria', 'An anime companion who walks around your screen',
+          (window.MascotUI?.slot() ?? '') + sw('st-mascot mas-when-ready' + (mascotOn() ? ' on' : ''), 'Show Viktoria', mascotOn(), window.MascotUI?.ready() === false ? ' hidden' : '')) +
         `<div class="st-mascot-more"${mascotOn() ? '' : ' hidden'}>` +
         row('Mischief', 'How often Viktoria clicks around and wanders',
           `<span class="lb-seg ui-seg st-mischief">${MISCHIEF_NAMES.map((n, i) => `<button type="button" data-level="${i}" class="${i === mischiefLevel() ? 'on' : ''}">${n}</button>`).join('')}</span>`) +
-        '</div>') +
+        '</div>' +
+        // The downloaded files can go again (a quiet button, only while she is downloaded: cloud.js MascotUI).
+        `<div class="mas-rm-wrap" hidden><button type="button" class="mas-remove">Remove download (<span class="mas-mb">34</span> MB)</button></div>`) +
       // Credits the licences ask for (VRoid: that exact phrase; WalkLoop: its readme's credit format), and the model's.
       `<p class="st-note st-mascot-more"${mascotOn() ? '' : ' hidden'}>Model: Mei Sakuraniwa © ProjectCorelinjp<br>Character animation credits to pixiv Inc.'s VRoid Project<br>モーション：WalkLoop_v1_MotionDa／AirisuAsbel（だらてん） https://daraten.booth.pm/<br>Motions: Sachi (sachi2222, CC0), rerofumi (CC0), Maron Yatsuhashi, miracorabo</p>` +
       (c.ui
@@ -196,8 +199,10 @@ window.Settings = (() => {
     }
     page.querySelectorAll('.st-mascot-more').forEach((el) => (el.hidden = !on));
     page.querySelectorAll('.st-mischief button').forEach((x) => x.classList.toggle('on', Number(x.dataset.level) === mischiefLevel()));
+    window.MascotUI?.paint();
   }
   window.addEventListener('mascotchange', paintMascot);
+  window.addEventListener('mascotasset', paintMascot);
 
   function paintSound() {
     const b = page && page.querySelector('.st-sound');
@@ -264,6 +269,7 @@ window.Settings = (() => {
     show(current);
     paintSound();
     paintTheme();
+    paintMascot();
   }
 
   // What takes the keys when Settings shows (cloud.js showTab): in Account the e-mail sign-in's field if it's open,

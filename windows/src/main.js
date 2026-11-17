@@ -389,6 +389,8 @@ const cloud = createCloud({
   isActive: () => powerMonitor.getSystemIdleTime() < 300 && (terminals.busySince(300_000) || engine.live().some((s) => s.status === 'busy')),
   idleSeconds: () => powerMonitor.getSystemIdleTime(),
   theme: () => themes.chosenId(),
+  // Viktoria: -1 when she is off, else her Mischief level (0..3). `mascot` is created further down, before any heartbeat runs.
+  mascot: () => (mascot.enabled() ? mascot.mischief() : -1),
   tools: () => toolsAtWork(),
   // The keys the old end-to-end encrypted messages were sealed with (read by unseal.js) are kept sealed by Windows for this
   // user, as the notes' key is; the app only opens them now.

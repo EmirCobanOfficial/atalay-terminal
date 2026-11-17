@@ -2397,7 +2397,104 @@ window.Cloud = (() => {
   // Viktoria's own switch and Mischief level, above the theme cards (any theme). Native keeps both (Mascot.swift) and sets
   // window.__mascotEnabled / __mascotMischief, then fires 'mascotchange'; Settings > Appearance shows the same two.
   const MISCHIEF_NAMES = ['Calm', 'Playful', 'Naughty', 'Crazy'];
-  const mascotIsOn = () => window.__mascotEnabled === true;
+  // Viktoria is downloaded on demand (Mascot.swift, MascotAsset): native sets window.__mascotAsset = {state, got, total,
+  // reason}, state none | downloading | failed | ready, and fires 'mascotasset'. Without it (Windows, for now) she
+  // counts as ready and nothing below shows. The same states paint the Themes row and Settings > Appearance (.mas-slot).
+  const MAS_MB = 34;
+  let masTotalSeen = 0;
+  const masAsset = () => window.__mascotAsset || { state: 'ready' };
+  const masReady = () => masAsset().state === 'ready';
+  const masMB = (b) => Math.round(b / 1048576);
+  const masSize = () => (masTotalSeen > 0 ? masMB(masTotalSeen) : MAS_MB);
+  function masProg() {
+    const s = masAsset();
+    const total = Number(s.total) > 0 ? Number(s.total) : 0;
+    if (total) masTotalSeen = total;
+    const got = Math.max(0, Number(s.got) || 0);
+    const pct = total ? Math.min(100, (got / total) * 100) : 0;
+    return { pct, text: `${Math.floor(got / 1048576)} / ${masSize()} MB` };
+  }
+  const MAS_MARKUP = {
+    none: () => `<button type="button" class="mas-btn mas-go">Get Viktoria \u00b7 ${masSize()} MB</button>`,
+    downloading: () => {
+      const p = masProg();
+      return (
+        `<span class="mas-prog"><span class="mas-bar" role="progressbar" aria-label="Downloading Viktoria" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(p.pct)}"><i style="width:${p.pct}%"></i></span>` +
+        `<span class="mas-num">${p.text}</span><button type="button" class="mas-x" aria-label="Cancel download">\u2715</button></span>`
+      );
+    },
+    failed: () => `<span class="mas-fail"><span>Couldn't download. Check your connection.</span><button type="button" class="mas-btn mas-go">Try again</button></span>`,
+  };
+  const masStateOf = () => masAsset().state;
+  const masSlotHTML = () => {
+    const st = masStateOf();
+    return `<span class="mas-slot" data-st="${st}">${MAS_MARKUP[st] ? MAS_MARKUP[st]() : ''}</span>`;
+  };
+  let masLast = null;
+  function masAnnounce(st) {
+    if (masLast === null || st === masLast) { masLast = st; return; }
+    masLast = st;
+    const text = { downloading: 'Downloading Viktoria', ready: 'Viktoria is ready', failed: "Couldn't download Viktoria" }[st];
+    if (!text) return;
+    const live = masLiveEl();
+    if (live) live.textContent = text;
+  }
+  // The live region is in the page from load, empty, so a screen reader is watching it when its text changes.
+  function masLiveEl() {
+    let live = document.getElementById('mas-live');
+    if (!live && document.body) {
+      live = document.createElement('div');
+      live.id = 'mas-live';
+      live.className = 'sr-only';
+      live.setAttribute('aria-live', 'polite');
+      document.body.appendChild(live);
+    }
+    return live;
+  }
+  masLiveEl();
+  document.addEventListener('DOMContentLoaded', masLiveEl);
+  let masFocusRoot = null; // after Remove: the Settings group whose Get button takes the focus
+  // Repaints every slot: its markup only when the state changes (so focus stays put), its numbers on every tick.
+  function masPaint() {
+    const st = masStateOf();
+    let refocus = null;
+    document.querySelectorAll('.mas-slot').forEach((slot) => {
+      if (slot.dataset.st !== st) {
+        const had = slot.contains(document.activeElement);
+        slot.dataset.st = st;
+        slot.innerHTML = MAS_MARKUP[st] ? MAS_MARKUP[st]() : '';
+        if (had) refocus = slot;
+      } else if (st === 'downloading') {
+        const p = masProg();
+        const bar = slot.querySelector('.mas-bar');
+        if (bar) {
+          bar.setAttribute('aria-valuenow', String(Math.round(p.pct)));
+          bar.firstElementChild.style.width = `${p.pct}%`;
+        }
+        const num = slot.querySelector('.mas-num');
+        if (num) num.textContent = p.text;
+      }
+    });
+    document.querySelectorAll('.mas-when-ready').forEach((el) => (el.hidden = !masReady()));
+    document.querySelectorAll('.mas-rm-wrap').forEach((el) => {
+      el.hidden = !(window.__mascotAsset && masReady());
+      const mb = el.querySelector('.mas-mb');
+      if (mb) mb.textContent = String(masSize());
+    });
+    // Focus follows the control that stood where the pressed one was: Get/Cancel to the next button, or to the ready
+    // switch once she is downloaded; after Remove, to the Get button.
+    if (refocus) {
+      const root = refocus.closest('.th-mascot, .st-group') || document;
+      (refocus.querySelector('button') || (st === 'ready' ? root.querySelector('.th-mas-sw, .st-mascot') : null))?.focus();
+    }
+    if (masFocusRoot && st === 'none') {
+      masFocusRoot.querySelector('.mas-go')?.focus();
+      masFocusRoot = null;
+    }
+    masAnnounce(st);
+  }
+  window.MascotUI = { slot: masSlotHTML, ready: masReady, paint: masPaint };
+  const mascotIsOn = () => window.__mascotEnabled === true && masReady();
   const mascotLevel = () => {
     const n = Number(window.__mascotMischief);
     return Number.isInteger(n) && n >= 0 && n <= 3 ? n : 3;
@@ -2407,7 +2504,7 @@ window.Cloud = (() => {
     const on = mascotIsOn();
     return (
       '<div class="th-mascot"><div class="th-mas-main"><span class="th-mas-l"><b>Viktoria</b><small>An anime companion who walks around your screen</small></span>' +
-      `<button type="button" class="hk-sw th-mas-sw${on ? ' on' : ''}" role="switch" aria-checked="${on}" title="Show Viktoria"><i></i></button></div>` +
+      `${masSlotHTML()}<button type="button" class="hk-sw th-mas-sw mas-when-ready${on ? ' on' : ''}" role="switch" aria-checked="${on}" title="Show Viktoria"${masReady() ? '' : ' hidden'}><i></i></button></div>` +
       `<div class="th-mas-more"${on ? '' : ' hidden'}><span class="th-mas-l"><b>Mischief</b><small>How often Viktoria clicks around and wanders</small></span>` +
       `<span class="lb-seg ui-seg th-mischief">${MISCHIEF_NAMES.map((n, i) => `<button type="button" data-level="${i}" class="${i === mascotLevel() ? 'on' : ''}">${n}</button>`).join('')}</span>` +
       `<small class="th-mas-credit">Model: Mei Sakuraniwa © ProjectCorelinjp</small></div></div>`
@@ -2421,9 +2518,27 @@ window.Cloud = (() => {
     });
     document.querySelectorAll('.th-mas-more').forEach((el) => (el.hidden = !on));
     document.querySelectorAll('.th-mischief button').forEach((b) => b.classList.toggle('on', Number(b.dataset.level) === mascotLevel()));
+    masPaint();
   }
   window.addEventListener('mascotchange', mascotPaint);
+  window.addEventListener('mascotasset', mascotPaint);
   document.addEventListener('click', (e) => {
+    // The download's buttons (here and in Settings > Appearance): native does the work and reports back; the page
+    // shows the next state at once.
+    const asset = (state, msg) => {
+      window.__mascotAsset = { state, got: 0, total: 0 };
+      window.dispatchEvent(new Event('mascotasset'));
+      mascotPost({ type: msg });
+    };
+    if (e.target.closest?.('.mas-go')) return asset('downloading', 'mascotGet');
+    if (e.target.closest?.('.mas-x')) return asset('none', 'mascotCancel');
+    if (e.target.closest?.('.mas-remove')) {
+      window.__mascotEnabled = false;
+      masFocusRoot = e.target.closest('.st-group');
+      asset('none', 'mascotRemove');
+      window.dispatchEvent(new Event('mascotchange'));
+      return;
+    }
     if (e.target.closest?.('.th-mas-sw')) {
       const on = !mascotIsOn();
       window.__mascotEnabled = on;

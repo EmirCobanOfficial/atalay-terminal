@@ -61,6 +61,9 @@ import { VRMAnimationLoaderPlugin, createVRMAnimationClip } from '@pixiv/three-v
   // this line). Layout: "ORBP", u32 count, then per entry u8 keyLen, key, u32 offset, u32 length.
   const PAK_URL = 'mascot/vrm/anims.pak';
   const PAK_KEY = 'orbiterm-viktoria-motion-pack-1';
+  // The app (Mac) serves her ONE downloaded pak (model, FBX clips and motions) at window.__viktoriaPak; without it
+  // (Windows for now) every file is loaded loose from mascot/vrm as before. Fetched once, freed after parsing.
+  let viktoriaPak = null;
   // start / end: the window of the clip that is played, in seconds (end is clipped to the clip length; the clip
   // durations are printed to the console once at load). hold: freeze on the frame at `end` for that long (finger heart).
   // rate: playback speed (default 1). idle: an idle variant, never started as a one-shot. loop: keeps playing until
@@ -1414,13 +1417,19 @@ import { VRMAnimationLoaderPlugin, createVRMAnimationClip } from '@pixiv/three-v
     await Promise.all(
       ANIM_NAMES.map(async (name) => {
         try {
-          const res = await fetch(`${ANIMS_DIR}${name}.fbx`);
-          // WebKit answers file:// fetches with status 0 (three's FileLoader accepts it too).
-          if (!(res.ok || res.status === 0)) {
-            console.warn('mascot: clip http status', name, res.status);
-            return;
+          let buf;
+          if (viktoriaPak) {
+            buf = viktoriaPak['fbx:' + name];
+            if (!buf) return;
+          } else {
+            const res = await fetch(`${ANIMS_DIR}${name}.fbx`);
+            // WebKit answers file:// fetches with status 0 (three's FileLoader accepts it too).
+            if (!(res.ok || res.status === 0)) {
+              console.warn('mascot: clip http status', name, res.status);
+              return;
+            }
+            buf = await res.arrayBuffer();
           }
-          const buf = await res.arrayBuffer();
           if (!buf.byteLength) {
             console.warn('mascot: clip empty', name);
             return;
@@ -1515,13 +1524,16 @@ import { VRMAnimationLoaderPlugin, createVRMAnimationClip } from '@pixiv/three-v
 
   async function loadMotionClips(vrmModel) {
     try {
-      const res = await fetch(PAK_URL);
-      // WebKit answers file:// fetches with status 0 (three's FileLoader accepts it too).
-      if (!(res.ok || res.status === 0)) {
-        console.warn('mascot: motion pack http status', res.status);
-        return;
+      let pak = viktoriaPak;
+      if (!pak) {
+        const res = await fetch(PAK_URL);
+        // WebKit answers file:// fetches with status 0 (three's FileLoader accepts it too).
+        if (!(res.ok || res.status === 0)) {
+          console.warn('mascot: motion pack http status', res.status);
+          return;
+        }
+        pak = readPak(new Uint8Array(await res.arrayBuffer()));
       }
-      const pak = readPak(new Uint8Array(await res.arrayBuffer()));
       const loader = new GLTFLoader();
       loader.register((p) => new VRMAnimationLoaderPlugin(p));
       for (const [key, spec] of Object.entries(MOTIONS)) {
@@ -2341,7 +2353,18 @@ import { VRMAnimationLoaderPlugin, createVRMAnimationClip } from '@pixiv/three-v
 
       const gltfLoader = new GLTFLoader();
       gltfLoader.register((p) => new VRMLoaderPlugin(p));
-      const gltf = await gltfLoader.loadAsync(MODEL_URL);
+      let gltf;
+      if (window.__viktoriaPak) {
+        const res = await fetch(window.__viktoriaPak);
+        // WebKit answers custom-scheme and file:// fetches with status 0 on some versions.
+        if (!(res.ok || res.status === 0)) throw new Error(`download http ${res.status}`);
+        viktoriaPak = readPak(new Uint8Array(await res.arrayBuffer()));
+        if (!viktoriaPak.model) throw new Error('no model in the download');
+        gltf = await gltfLoader.parseAsync(viktoriaPak.model, '');
+        delete viktoriaPak.model;
+      } else {
+        gltf = await gltfLoader.loadAsync(MODEL_URL);
+      }
 
       vrm = gltf.userData.vrm;
       VRMUtils.removeUnnecessaryVertices(gltf.scene);
@@ -2378,6 +2401,7 @@ import { VRMAnimationLoaderPlugin, createVRMAnimationClip } from '@pixiv/three-v
       mixer = new THREE.AnimationMixer(vrm.scene);
       await loadMixamoClips(vrm);
       await loadMotionClips(vrm);
+      viktoriaPak = null; // the big buffers go
 
       const p = clampPos(W * 0.72, bottomY());
       pos.x = pos.tx = p.x;
@@ -2395,6 +2419,10 @@ import { VRMAnimationLoaderPlugin, createVRMAnimationClip } from '@pixiv/three-v
       console.warn('mascot: failed to load VRM model', err);
       vrm = null;
       post({ type: 'hitRect', rect: null });
+      // The downloaded pak can't be used: native deletes it and offers the download again.
+      if (window.__viktoriaPak) post({ type: 'loadFailed' });
+    } finally {
+      viktoriaPak = null;
     }
   }
 

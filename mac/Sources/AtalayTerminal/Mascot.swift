@@ -24,18 +24,32 @@ final class Mascot: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
     /// switch, the saved value wins in both builds.
     private static let defaultEnabled = Bundle.main.bundleIdentifier?.hasSuffix(".staging") == true
 
-    static var isEnabled: Bool {
+    /// What the user chose (the switch); on its own it doesn't bring her up: without her download there is no Viktoria.
+    static var storedEnabled: Bool {
         get { UserDefaults.standard.object(forKey: enabledKey) as? Bool ?? defaultEnabled }
         set {
-            guard newValue != isEnabled else { return }
+            guard newValue != storedEnabled else { return }
             UserDefaults.standard.set(newValue, forKey: enabledKey)
             NotificationCenter.default.post(name: changed, object: nil)
         }
     }
 
+    /// Whether she is up: switched on AND downloaded (MascotAsset). Everything (the panel, the heartbeat's `mascot`, the
+    /// pages) goes by this, so a missing download counts as off.
+    static var isEnabled: Bool {
+        get { storedEnabled && MascotAsset.shared.isReady }
+        set { storedEnabled = newValue }
+    }
+
     /// Tells the dashboard's web pages (Settings' switch and Mischief block, the panel reporting in app.js).
     func pushEnabledToPage() {
-        manager?.mascotPageEval("window.__mascotEnabled = \(Self.isEnabled); window.dispatchEvent(new Event('mascotchange'))")
+        manager?.mascotPageEval("window.__mascotEnabled = \(Self.isEnabled); \(assetJS)window.dispatchEvent(new Event('mascotchange'))")
+    }
+
+    /// The download's state for the pages: `window.__mascotAsset = {state, got, total, reason}` and a `mascotasset` event.
+    private var assetJS: String { "window.__mascotAsset = \(MascotAsset.shared.json); " }
+    func pushAssetToPage() {
+        manager?.mascotPageEval("\(assetJS)window.dispatchEvent(new Event('mascotasset'))")
     }
 
     private struct CGWin {
@@ -100,7 +114,7 @@ final class Mascot: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
 
     /// Tells the settings page (the dashboard's web view) the level, for its Mischief control.
     func pushMischiefToPage() {
-        manager?.mascotPageEval("window.__mascotMischief = \(mischief); window.__mascotEnabled = \(Self.isEnabled); window.dispatchEvent(new Event('mascotchange'))")
+        manager?.mascotPageEval("window.__mascotMischief = \(mischief); window.__mascotEnabled = \(Self.isEnabled); \(assetJS)window.dispatchEvent(new Event('mascotchange'))")
     }
 
     // MARK: - Screens
@@ -307,7 +321,10 @@ final class Mascot: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
         config.lockInspector()
         let ucc = WKUserContentController()
         ucc.add(WeakMessageHandler(self), name: "mascot")
+        // Her downloaded pak reaches the page only as viktoria://pak (the page fetches it once); no other view gets this scheme.
+        ucc.addUserScript(WKUserScript(source: "window.__viktoriaPak = 'viktoria://pak';", injectionTime: .atDocumentStart, forMainFrameOnly: true))
         config.userContentController = ucc
+        config.setURLSchemeHandler(ViktoriaSchemeHandler(), forURLScheme: "viktoria")
 
         let wv = MascotWebView(frame: NSRect(origin: .zero, size: frame.size), configuration: config)
         wv.unregisterDraggedTypes() // nothing can be dropped onto her
@@ -368,6 +385,9 @@ final class Mascot: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
                 self?.refresh()
                 self?.pushEnabledToPage()
             }
+        })
+        observers.append(nc.addObserver(forName: MascotAsset.changed, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.pushAssetToPage() }
         })
         observers.append(nc.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.releaseCursor() }
@@ -680,6 +700,9 @@ final class Mascot: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
         // Her actions on the app (views, taps, closing terminals) stop the moment she is switched off or hidden.
         if ["openView", "navTap", "closeTerminal", "hideTerminal"].contains(type), !Self.isEnabled || !shown { return }
         switch type {
+        case "loadFailed":
+            // The page couldn't read her download (mascot.js): the file goes, the UI offers Try again.
+            MascotAsset.shared.loadFailed()
         case "hitRect":
             if let r = body["rect"] as? [String: Any],
                let x = (r["x"] as? NSNumber)?.doubleValue,
