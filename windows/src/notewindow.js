@@ -119,7 +119,7 @@ function createNoteWindows({ BrowserWindow, screen, dialog, WEB, settings, webPr
     win.webContents.on('did-finish-load', () => !win.isDestroyed() && win.webContents.setZoomFactor(uiScale()));
     // Its page's process died: loaded again, it asks the dashboard for its note anew.
     win.webContents.on('render-process-gone', () => setTimeout(() => !n.finished && !win.isDestroyed() && win.webContents.reload(), 500));
-    // Its × in the system menu or Ctrl+W (the app menu's Close Window): closed as the page's × does, what was typed kept.
+    // Its × in the system menu, Ctrl+W or Ctrl+Shift+W (the app menu's Close items): closed as the page's × does, what was typed kept.
     win.on('close', (e) => {
       // Quitting closes it as it is, still marked open: it comes back at the next launch.
       if (n.finished || quitting()) return;

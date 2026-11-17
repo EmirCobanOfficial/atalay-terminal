@@ -932,6 +932,8 @@ function handleChats(msg) {
       return true;
     case 'favorite':
       chatlist.toggleFavorite(String(msg.id || ''));
+      // The star on its window's strip follows.
+      pushChatInfos();
       break;
     case 'archive':
       chatlist.toggleArchived(String(msg.id || ''));
@@ -1291,11 +1293,23 @@ function chatInfo(id, c) {
   // Streamer mode: the made-up project and folder the dashboard shows, and frosted glass over the terminal (what it
   // prints can't be swapped for made-up text).
   const on = streamer.on;
+  // The AI session running in it (Claude, else Codex or Antigravity): its star in the chats list, its context and today's
+  // counts on the strip, as each tab's chip shows them on the Mac. A plain terminal has neither.
+  const ai = s || tool;
+  const fav = favoriteIds(s, tool).some((x) => chatlist.isFavorite(x));
   return {
     title: on ? streamer.name(title) : title, status: status === 'shell' ? 'idle' : status, cwd: on ? streamer.folder(c.cwd) : tildify(c.cwd),
-    tool: tool ? tool.name : null, streamer: on,
+    tool: tool ? tool.name : null, streamer: on, chat: !!ai, fav,
+    stats: ai ? { ctx: ai.ctx || 0, ctxMax: ai.ctxMax || 0, tools: ai.tools || 0, web: ai.web || 0, errors: ai.errors || 0 } : null,
   };
 }
+
+// The ids a chat window's star can mean in the chats list: Claude's session, or another AI tool's conversation (listed
+// by it once saved) or its live session.
+const favoriteIds = (s, tool) => (s ? [s.sessionId] : tool ? [tool.convId, tool.sessionId].filter(Boolean) : []);
+const pushChatInfos = () => {
+  for (const [id, c] of chats) send(c.win, 'term:info', chatInfo(id, c));
+};
 
 const tildify = (p) => (p && p.startsWith(os.homedir()) ? '~' + p.slice(os.homedir().length) : p || '');
 
@@ -1377,7 +1391,7 @@ function openChatWindow({ id = crypto.randomUUID(), cwd, claudeArgs, claude = !!
   win.on('restore', () => !c.steppedAside && pinToDash(win));
   // Once its first seconds are over a chat says what it is even if nothing else changes (chatInfo).
   if (claude) setTimeout(() => chats.get(id) === c && send(win, 'term:info', chatInfo(id, c)), 15_500);
-  // Closing a window (Ctrl+W, its ×) only hides it, as on the Mac: what runs in it goes on, Claude as a session on the
+  // Closing a window (Ctrl+Shift+W, its ×) only hides it, as on the Mac: what runs in it goes on, Claude as a session on the
   // orbit and a terminal as the same car it was (no blast), and a click there brings the window back. End Session ends
   // it. Quitting closes them all: their sessions were seen to just before (the host's go on).
   win.on('close', (e) => {
@@ -1641,6 +1655,21 @@ ipcMain.on('term:resize', (e, { cols, rows }) => {
 ipcMain.on('term:end', (e) => {
   const found = chatOf(e);
   if (found) endTerminal(found[0]);
+});
+// The strip's star: the AI session in this window in or out of the chats list's favourites, as its row's star does
+// (the Mac's toggleFavorite). Nothing to star in a plain terminal.
+ipcMain.on('term:favorite', (e) => {
+  const found = chatOf(e);
+  if (!found) return;
+  const [id, c] = found;
+  const live = engine.live();
+  const s = live.find((x) => !x.ai && (x.tab === id || (c.sessionId && x.sessionId === c.sessionId)));
+  const ids = favoriteIds(s, live.find((x) => x.ai && x.tab === id));
+  const pick = ids.find((x) => chatlist.isFavorite(x)) || ids.find((x) => chatlist.listed(x));
+  if (!pick) return;
+  chatlist.toggleFavorite(pick);
+  pushChats(true);
+  pushChatInfos();
 });
 ipcMain.on('term:copy', (e, text) => {
   if (chatOf(e) && typeof text === 'string' && text) clipboard.writeText(text);
@@ -2492,6 +2521,14 @@ ipcMain.handle('atl:post', async (e, name, body) => {
 // ---------- menu and keys ----------
 function buildMenu() {
   const focusedChat = () => [...chats.entries()].find(([, c]) => c.win && !c.win.isDestroyed() && c.win.isFocused());
+  // The window in front closes: a terminal's only hides (what runs in it goes on), the messages and the overlay theirs.
+  const closeFocused = () => {
+    const w = BrowserWindow.getFocusedWindow();
+    if (!w || w === dash || w === panels.notices) return;
+    if (w === over) return hideOverlay();
+    if ([...panels.chats.values()].includes(w)) return runPanel(w, 'window.__messages && __messages.close && __messages.close()');
+    w.close();
+  };
   Menu.setApplicationMenu(Menu.buildFromTemplate([
     {
       label: 'File',
@@ -2507,16 +2544,19 @@ function buildMenu() {
         // The dashboard's Settings, on the category used last (the Mac keeps it in the app menu; no key, as there).
         { label: 'Settings…', click: () => openSettings() },
         { type: 'separator' },
+        // Ctrl+W, as a tab closes in Chrome (the Mac's ⌘W): the terminal in front ends at once, whatever runs in it
+        // (Claude, Codex, Antigravity, a shell); its planet or car leaves the orbit and its window goes, as End does.
+        // Any other window closes as before.
         {
-          label: 'Close Window', accelerator: 'CmdOrCtrl+W',
+          label: 'Close the Terminal in Front', accelerator: 'CmdOrCtrl+W',
           click: () => {
-            const w = BrowserWindow.getFocusedWindow();
-            if (!w || w === dash || w === panels.notices) return;
-            if (w === over) return hideOverlay();
-            if ([...panels.chats.values()].includes(w)) return runPanel(w, 'window.__messages && __messages.close && __messages.close()');
-            w.close();
+            const found = focusedChat();
+            if (found && terminals.has(found[0])) return endTerminal(found[0]);
+            closeFocused();
           },
         },
+        // Ctrl+Shift+W (the Mac's ⇧⌘W): the window only closes, what runs in it goes on, a click on the orbit brings it back.
+        { label: 'Close Window', accelerator: 'CmdOrCtrl+Shift+W', click: () => closeFocused() },
         { role: 'quit', label: 'Quit', accelerator: 'CmdOrCtrl+Q' },
       ],
     },

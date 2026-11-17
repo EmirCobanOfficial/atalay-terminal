@@ -195,16 +195,25 @@
       term.clearSelection();
       return false;
     }
-    // Ctrl+N (a new file in Source Control's editor), Ctrl+Shift+N (a new terminal), Ctrl+K (the shortcut wheel) and
-    // Ctrl+W (close the window: what runs in it goes on) are the app's, as ⌘N, ⇧⌘N, ⌘K and ⌘W are on the Mac: left
-    // unhandled, they reach its menu instead of the shell. Antigravity approves its subagents' steps with Ctrl+K, so
-    // while it runs here the key is its own (the wheel is still Ctrl and the middle mouse button away).
+    // Ctrl+N (a new file in Source Control's editor), Ctrl+Shift+N (a new terminal), Ctrl+K (the shortcut wheel), Ctrl+W
+    // (end this terminal) and Ctrl+Shift+W (close the window: what runs in it goes on) are the app's, as ⌘N, ⇧⌘N, ⌘K,
+    // ⌘W and ⇧⌘W are on the Mac: left unhandled, they reach its menu instead of the shell. Antigravity approves its
+    // subagents' steps with Ctrl+K, so while it runs here the key is its own (the wheel is still Ctrl and the middle
+    // mouse button away).
     if (k === 'k' && tool === 'Antigravity') return true;
-    if (k === 'n' || (!e.shiftKey && (k === 'k' || k === 'w'))) return false;
+    if (k === 'n' || k === 'w' || (!e.shiftKey && k === 'k')) return false;
     return k !== 'v';
   });
   atl.on('term:data', (data) => term.write(data));
   atl.on('term:exit', () => term.write('\r\n\x1b[2m[ended]\x1b[0m\r\n'));
+  // Tokens as the Mac's strip writes them: 950, 9.5k, 95k, 1.2M.
+  const fmtTok = (n) => {
+    n = Math.max(0, Math.trunc(Number(n) || 0));
+    if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
+    if (n >= 1e4) return `${Math.round(n / 1e3)}k`;
+    if (n >= 1e3) return `${(n / 1e3).toFixed(1)}k`;
+    return String(n);
+  };
   const STATUS = { busy: ['WORKING', '--accent'], idle: ['YOUR TURN', '--cyan'], waiting: ['NEEDS YOU', '--warn'], terminal: ['TERMINAL', '--cyan'], ended: ['ENDED', '--ended'] };
   atl.on('term:info', (i) => {
     tool = i.tool || null;
@@ -216,11 +225,25 @@
     document.body.style.setProperty('--st', `var(${color})`);
     // Streamer mode: the names above are made up already; the terminal itself goes behind frosted glass.
     document.getElementById('veil').hidden = !i.streamer;
+    // The AI session in it: the star (in the chats list's favourites or not), its context and today's counts.
+    const star = document.getElementById('star');
+    star.hidden = !i.chat;
+    star.classList.toggle('on', !!i.fav);
+    star.title = i.fav ? "Starred. Click to take it out of the chats list's favourites." : "Star this chat in the chats list's favourites.";
+    const st = i.stats;
+    const ctxEl = document.getElementById('ctx');
+    const countsEl = document.getElementById('counts');
+    ctxEl.hidden = countsEl.hidden = !st;
+    if (st) {
+      ctxEl.querySelector('.bar span').style.width = `${st.ctxMax > 0 ? Math.min(1, st.ctx / st.ctxMax) * 100 : 0}%`;
+      ctxEl.querySelector('.n').textContent = fmtTok(st.ctx) + (st.ctxMax > 0 ? ` / ${fmtTok(st.ctxMax)}` : '');
+      countsEl.innerHTML = `<b>${st.tools}</b><i> tools · </i><b>${st.web}</b><i> web · </i><b${st.errors > 0 ? ' class="err"' : ''}>${st.errors}</b><i> err</i>`;
+    }
   });
   document.getElementById('hud').addEventListener('mousedown', (e) => e.preventDefault());
-  document.getElementById('dash').onclick = () => {
+  document.getElementById('star').onclick = () => {
     term.focus();
-    atl.send('term:dashboard');
+    atl.send('term:favorite');
   };
   document.getElementById('end').onclick = () => atl.send('term:end');
   term.focus();

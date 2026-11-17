@@ -254,6 +254,10 @@ function createChatList({ settings, trashOps, onErased }) {
       changed();
     },
 
+    /** Starred in the list (a chat window's star, terminal.js). */
+    isFavorite: (id) => favorites.has(id),
+    /** Whether the list has this chat (a saved conversation, or a live one not saved yet). */
+    listed: (id) => !!find(id),
     toggleFavorite(id) {
       const item = find(id);
       if (!item) return;
