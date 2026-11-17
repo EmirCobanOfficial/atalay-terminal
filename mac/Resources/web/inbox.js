@@ -14,6 +14,8 @@
 // and a week of badges.
 window.Inbox = (() => {
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+  // A badge's rarity, how many in a hundred have it, as a number whatever the API sent.
+  const pct = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
   const read = (k, d) => {
     try {
       const v = JSON.parse(localStorage.getItem(k));
@@ -265,7 +267,7 @@ window.Inbox = (() => {
       case 'badge': {
         const b = l.badge || {};
         const mine = window.Badges?.mine()?.badges?.find((x) => x.id === b.id);
-        return (mine && mine.how) || (b.rare != null ? `${b.rare}% of players have it` : '');
+        return (mine && mine.how) || (b.rare != null ? `${pct(b.rare)}% of players have it` : '');
       }
       case 'fire': {
         if (l.tier === 2) return '5 days on fire this week';
@@ -320,7 +322,7 @@ window.Inbox = (() => {
       }
       case 'update': return 'Restart to update · your chats keep running';
       case 'dev': return String(it.note.body || '').split(/\n\s*\n/)[0];
-      case 'badge': return it.b.rare != null ? `${rare(it.b.rare) ? 'Rare · ' : ''}${it.b.rare}% of players have it` : it.b.how || '';
+      case 'badge': return it.b.rare != null ? `${rare(it.b.rare) ? 'Rare · ' : ''}${pct(it.b.rare)}% of players have it` : it.b.how || '';
       case 'level': {
         const nx = nextRank(it.lv.level);
         return nx ? `Next rank: ${nx.name} at level ${nx.from}` : `${rankOf(it.lv.level).name}, the top rank`;
@@ -441,7 +443,7 @@ window.Inbox = (() => {
     return eyebrow(it, 'Badge earned') +
       `<div class="nf-hero"><canvas aria-hidden="true"></canvas>${art(b.id, b.tier, 160).replace('alt=""', `alt="${esc(badgeName(b))}${tn ? `, ${esc(tn)}` : ''}"`)}</div>` +
       `<h2 class="nf-big">${esc(badgeName(b))}${tn ? ` · <span>${esc(tn)}</span>` : ''}</h2>` +
-      `<div class="nf-line">${rare(b.rare) ? `<span class="nf-pill">${STAR}Rare</span>` : ''}<span>${b.rare != null ? `${b.rare}% of players have it · ` : ''}${esc(b.how || '')}</span></div>` +
+      `<div class="nf-line">${rare(b.rare) ? `<span class="nf-pill">${STAR}Rare</span>` : ''}<span>${b.rare != null ? `${pct(b.rare)}% of players have it · ` : ''}${esc(b.how || '')}</span></div>` +
       track + next +
       `<div class="nf-actions"><button class="nf-btn primary" type="button" data-act="feature" data-badge="${esc(b.id)}"${shown ? ' disabled' : ''}>${shown ? 'Shown beside your name' : 'Show beside my name'}</button>` +
       `${button('glass', 'inventory', 'All my badges')}` +
@@ -484,7 +486,7 @@ window.Inbox = (() => {
       pic = art(b.id, b.tier, 56);
       text = `<b>${esc(p.name)}</b> earned <span>${esc(badgeName(b))}${tn ? ` · ${esc(tn)}` : ''}</span>`;
       const how = friendPrev(it);
-      small = [how && !/% of players/.test(how) ? how : '', b.rare != null ? `${rare(b.rare) ? 'rare, ' : ''}${b.rare}% have it` : ''].filter(Boolean).join(' · ');
+      small = [how && !/% of players/.test(how) ? how : '', b.rare != null ? `${rare(b.rare) ? 'rare, ' : ''}${pct(b.rare)}% have it` : ''].filter(Boolean).join(' · ');
     } else {
       pic = `<span class="nf-glyph" aria-hidden="true">${it.what === 'fire' ? '🔥' : it.what === 'top' ? '🏆' : '🤝'}</span>`;
       text = `<b>${esc(titleOf(it))}</b>`;

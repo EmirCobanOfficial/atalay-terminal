@@ -90,6 +90,11 @@ window.BadgeArt = (() => {
   // yet shows the latest before it. Kept for the next start, so pictures show at once; the files stay in the web view's
   // HTTP cache (they never change: a new picture is a new file name).
   const KEY = 'badgeCatalog';
+  // Where badge pictures may come from: the files bucket's badges folder, nowhere else, and only a file named by its
+  // hash. Whatever a catalog says (one kept from before too), a picture outside these is drawn instead: a picture's
+  // address goes into the page's HTML, and a host of anyone's choosing would see who looks at which badge.
+  const ART_BASES = ['https://orbiterm-files.s3.eu-central-1.amazonaws.com/public/badges/'];
+  const ART_FILE = /^[0-9a-f]{8,64}\.webp$/;
   let cat = null;
   try { cat = JSON.parse(localStorage.getItem(KEY) || 'null'); } catch { cat = null; }
   let loading = null;
@@ -111,6 +116,8 @@ window.BadgeArt = (() => {
   /** The badge's picture (its address in the files bucket), or '' when it's drawn. */
   function src(id, tier) {
     if (!cat) return '';
+    id = cleanId(id);
+    tier = cleanTier(tier);
     let key = id;
     if (id.startsWith('season-')) key = 'season';
     else if (id.startsWith('service-')) {
@@ -119,18 +126,30 @@ window.BadgeArt = (() => {
       key = `service-${[...years].reverse().find((x) => x <= y) ?? years[0]}`;
     }
     const t = Math.max(1, tier || 1);
-    const file = cat.art[`${key}-${t}`] || (!tier && cat.art[`${key}-1`]);
-    return file ? cat.base + file : '';
+    const file = cat.art?.[`${key}-${t}`] || (!tier && cat.art?.[`${key}-1`]);
+    if (typeof file !== 'string' || !ART_FILE.test(file) || !ART_BASES.includes(cat.base)) return '';
+    return cat.base + file;
   }
+
+  // What comes from the API (a badge event, a profile, the catalog) as a badge's id, tier and size, made safe for the
+  // HTML they go into: an id of letters, digits and dashes, a tier and a size as whole numbers.
+  const cleanId = (id) => String(id ?? '').toLowerCase().replace(/[^a-z0-9-]/g, '').slice(0, 64);
+  const cleanTier = (tier) => Math.max(0, Math.min(99, Math.trunc(Number(tier)) || 0));
+  const cleanSize = (size) => Math.max(1, Math.min(1024, Math.trunc(Number(size)) || 48));
 
   /** The badge `id` at `tier` (0: not earned, grey), `size` px square: its picture, or drawn when it has none. */
   function svg(id, tier, size = 48) {
+    id = cleanId(id);
+    tier = cleanTier(tier);
+    size = cleanSize(size);
     const pic = src(id, tier);
     if (pic) return img(pic, tier, size);
     return draw(id, tier, size);
   }
+  // An attribute's value, escaped (src() already lets only the bucket's own addresses through).
+  const attr = (s) => String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   const img = (pic, tier, size) =>
-    `<img class="badge-art${tier ? '' : ' locked'}" src="${pic}" width="${size}" height="${size}" alt="" draggable="false">`;
+    `<img class="badge-art${tier ? '' : ' locked'}" src="${attr(pic)}" width="${Number(size) || 48}" height="${Number(size) || 48}" alt="" draggable="false">`;
 
   // Drawn while the catalog was on its way: swapped for the pictures once it's here.
   function upgrade() {
@@ -143,8 +162,8 @@ window.BadgeArt = (() => {
   /** A gleam crossing the badge in its own shape: a brightened copy of its picture, seen through a moving stripe (the
    *  page's CSS moves it, class `cls` + `gleam`); nothing for a drawn one. */
   function gleam(id, tier, cls) {
-    const pic = src(id, tier);
-    return pic ? `<img class="gleam ${cls}" src="${pic}" alt="" draggable="false">` : '';
+    const pic = src(cleanId(id), cleanTier(tier));
+    return pic ? `<img class="gleam ${attr(cls)}" src="${attr(pic)}" alt="" draggable="false">` : '';
   }
 
   function draw(id, tier, size) {
@@ -196,6 +215,8 @@ window.BadgeArt = (() => {
   const name = (id) => cat?.names?.[id] || (id.startsWith('season-') ? 'Season Medal' : id.startsWith('service-') ? 'Service Medal' : '');
   /** "Gold", a medal's level, a named step ("1 year"), or nothing for a one-off. */
   function tierName(id, tier, tiers) {
+    id = cleanId(id);
+    tier = cleanTier(tier);
     if (id.startsWith('service-')) return `Level ${tier} · ${id.slice(8)}`;
     if (id.startsWith('season-')) return `${TIER[tier] || ''} · ${id.slice(7, 11)} Q${id.slice(12)}`;
     if (NAMED[id]) return NAMED[id][tier] || '';

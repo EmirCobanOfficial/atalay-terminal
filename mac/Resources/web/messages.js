@@ -1008,12 +1008,16 @@ window.Messages = (() => {
         return ignite();
       case 'badge': {
         // Its reveal waits for the app in front and do not disturb's end, as a level-up; what comes meanwhile joins it.
-        if (!ev.badges || !ev.badges.length) return;
+        if (!Array.isArray(ev.badges) || !ev.badges.length) return;
         const all = new Map((badgesWaiting ? badgesWaiting.badges : []).map((b) => [b.id, b]));
-        for (const b of ev.badges) if (!all.has(b.id) || all.get(b.id).tier < b.tier) all.set(b.id, b);
+        // Ids and tiers as the reveal needs them (letters, digits and dashes; a whole number), whatever came.
+        const came = ev.badges.filter((b) => b && typeof b.id === 'string' && /^[a-z0-9-]{1,64}$/.test(b.id))
+          .map((b) => ({ ...b, tier: Math.max(0, Math.trunc(Number(b.tier)) || 0), tiers: Math.max(1, Math.trunc(Number(b.tiers)) || 1) }));
+        if (!came.length) return;
+        for (const b of came) if (!all.has(b.id) || all.get(b.id).tier < b.tier) all.set(b.id, b);
         badgesWaiting = { badges: [...all.values()], quiet: (!badgesWaiting || badgesWaiting.quiet) && !!ev.quiet, seen: badgesWaiting?.seen || 0 };
         // One the catalog doesn't know yet (a hidden one nobody had, a new one): its name and picture first.
-        if (ev.badges.some((b) => !window.BadgeArt.known(b.id))) window.BadgeArt.refresh().then(play);
+        if (came.some((b) => !window.BadgeArt.known(b.id))) window.BadgeArt.refresh().then(play);
         else play();
         return;
       }
