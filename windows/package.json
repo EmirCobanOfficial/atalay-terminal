@@ -47,7 +47,11 @@
     "extraResources": [
       {
         "from": "../mac/Resources/web",
-        "to": "web"
+        "to": "web",
+        "filter": [
+          "**/*",
+          "!mascot/live2d/**"
+        ]
       },
       {
         "from": "../mac/Resources/caveman",

@@ -40,6 +40,11 @@ const builtFiles = (() => {
   }
 })();
 // Every file under `dir` and its SHA-256 the same as `want` (path under `dir`, with forward slashes).
+// Viktoria's model and motions (web/mascot/vrm: about 34 MB of data, no code) are hashed once, and again only when a
+// file's size or modified time changes: the pages are checked before every load, and hashing those each time would
+// cost a few hundred ms. Every other file (all the code) is hashed in full every time.
+const dataHashes = new Map(); // path under the folder -> { stamp: size + mtime, hash }
+const DATA_FILES = 'mascot/vrm/';
 function sameFiles(dir, want) {
   if (!want) return false;
   const got = {};
@@ -48,7 +53,22 @@ function sameFiles(dir, want) {
       const p = path.join(d, e.name);
       if (e.isDirectory()) walk(p);
       else if (e.name !== '.DS_Store') {
-        got[path.relative(dir, p).split(path.sep).join('/')] = e.isFile() ? crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex') : '?';
+        const rel = path.relative(dir, p).split(path.sep).join('/');
+        if (!e.isFile()) {
+          got[rel] = '?';
+        } else if (rel.startsWith(DATA_FILES)) {
+          const st = fs.statSync(p);
+          const stamp = `${st.size}:${st.mtimeMs}`;
+          const seen = dataHashes.get(`${dir}|${rel}`);
+          if (seen && seen.stamp === stamp) got[rel] = seen.hash;
+          else {
+            const hash = crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex');
+            dataHashes.set(`${dir}|${rel}`, { stamp, hash });
+            got[rel] = hash;
+          }
+        } else {
+          got[rel] = crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex');
+        }
       }
     }
   };
@@ -92,6 +112,7 @@ const { createNoteWindows } = require('./notewindow');
 const { createFeedPanel } = require('./feedpanel');
 const { createChatTrash } = require('./chattrash');
 const { createTermFont } = require('./termfont');
+const { createMascot } = require('./mascot');
 const vendor = require('./vendor');
 
 let autoUpdater = null;
@@ -283,8 +304,12 @@ const engine = createEngine({
     pushWinOpen();
     pushChats();
     discord.update(engine.live());
+    mascot.updateSessions(engine.live());
   },
-  onEvents: (json) => toDash(`events(${json})`),
+  onEvents(json) {
+    toDash(`events(${json})`);
+    mascot.onEvents(json);
+  },
   // The saved conversations, for the chats list.
   onHistory(items) {
     chatlist.setItems(items);
@@ -386,6 +411,7 @@ const cloud = createCloud({
   onSocial(text) {
     toDash(`social(${text})`);
     toNotices(`event(${text})`);
+    mascot.onSocial(text);
     for (const p of panels.chats.values()) runPanel(p, `window.__messages && __messages.event(${text})`);
   },
 });
@@ -461,6 +487,95 @@ const runaways = createRunaways({
     pushTerminals();
   },
 });
+
+// ---------- Viktoria, the roaming mascot (mascot.js, the Mac's Mascot.swift) ----------
+// Her own switch is on at once in a staging build and in a run from the sources, off in a release until the user turns it
+// on. Her mischief (0 Calm … 3 Crazy) starts at 3 in staging only, 1 otherwise, as on the Mac.
+const mascot = createMascot({
+  BrowserWindow, screen, WEB, webPrefs, checkPages, settings,
+  defaultEnabled: STAGING || (!RELEASE && !PROBE),
+  defaultMischief: STAGING ? 3 : 1,
+  run,
+  dash: () => dash, dashView: () => dashView, chatsView: () => chatsView,
+  terminals: mascotTerminals,
+  inFront: () => appInFront(),
+  openView: mascotOpenView,
+  navTap: mascotNavTap,
+  closeTerminal: mascotHideTerminal,
+  hideTerminal: mascotHideTerminal,
+  onSwitch: syncViktoriaMenu,
+});
+
+// The dashboard views she may open: the same list the Mac allows.
+const MASCOT_VIEWS = ['dash', 'board', 'notes', 'friends', 'themes', 'notifications', 'roadmap', 'git'];
+function mascotOpenView(view) {
+  if (MASCOT_VIEWS.includes(view)) toDash(`openView(${JSON.stringify(view)})`);
+}
+
+// A tap of hers on a tab or the like (app.js's __mascotNav allows its own list); a folder's fold is the chats list's.
+function mascotNavTap(id) {
+  if (typeof id !== 'string' || !id || id.length > 400) return;
+  if (id.startsWith('fold:')) run(chatsView, `window.__mascotFold && __mascotFold(${JSON.stringify(id.slice(5))})`);
+  else run(dashView, `window.__mascotNav && __mascotNav(${JSON.stringify(id)})`);
+}
+
+// Before she hides a terminal the dashboard takes the keys (and no field), so keys still in flight go nowhere instead of
+// landing in another terminal that Windows would make the one in front. Every key in the app's windows is dropped for the
+// next 0.4 s as well. True only if the dashboard is visible, not minimized, and really has the keys now.
+let keysShutUntil = 0;
+function parkKeys() {
+  if (!dash || dash.isDestroyed() || !dash.isVisible() || dash.isMinimized()) return false;
+  keysShutUntil = Date.now() + 400;
+  dash.focus();
+  if (!dash.isFocused()) {
+    keysShutUntil = 0;
+    return false;
+  }
+  const blur = 'document.activeElement && document.activeElement.blur && document.activeElement.blur()';
+  pageOf(dashView)?.focus();
+  run(dashView, blur);
+  run(chatsView, blur);
+  return true;
+}
+
+// A terminal's status as she judges it: chatInfo calls a window with Codex or Antigravity in it a plain 'terminal', so
+// the AI's own status counts then (a busy Codex is never idle).
+function mascotStatus(id, c) {
+  const status = chatInfo(id, c).status;
+  const tool = status === 'terminal' ? engine.live().find((x) => x.ai && x.tab === id) : null;
+  return tool ? tool.status : status;
+}
+
+// She walked to a terminal's close button and pressed it (or her page asked to hide it). The close only hides the window
+// (openChatWindow's close handler): what runs in it goes on, a session is never ended and the typed text stays. Idle
+// ones only: a shell or Claude waiting for the user. False only when the keys couldn't be parked (nothing was hidden then).
+function mascotHideTerminal(id) {
+  const c = chats.get(id);
+  if (!c || !c.win || c.win.isDestroyed() || !c.win.isVisible() || c.win.isMinimized() || !terminals.has(id)) return true;
+  const status = mascotStatus(id, c);
+  if (status !== 'idle' && status !== 'terminal') return true;
+  if (!parkKeys()) return false;
+  c.win.close();
+  return true;
+}
+
+// The terminal windows on screen, for her to walk on: only those whose close just hides them can be closed by her.
+function mascotTerminals() {
+  const out = [];
+  for (const [id, c] of chats) {
+    if (!c.win || c.win.isDestroyed() || !c.win.isVisible() || c.win.isMinimized()) continue;
+    const live = terminals.has(id);
+    const status = live ? mascotStatus(id, c) : 'ended';
+    out.push({ id, sid: c.sessionId || '', canClose: live, status: status === 'idle' || status === 'busy' || status === 'waiting' ? status : 'idle', win: c.win });
+  }
+  return out;
+}
+
+// View > Show Viktoria follows her switch, whichever way it was flipped.
+function syncViktoriaMenu() {
+  const item = Menu.getApplicationMenu()?.getMenuItemById('viktoria');
+  if (item) item.checked = mascot.enabled();
+}
 
 // ---------- pushing to the pages ----------
 // A window's page, or a view's (the dashboard window's two).
@@ -617,13 +732,34 @@ function ownPage(url) {
   });
 }
 app.on('web-contents-created', (_e, contents) => {
+  // The keys Viktoria's hide of a terminal might still have in flight go nowhere (parkKeys).
+  contents.on('before-input-event', (e, input) => {
+    if (input.type === 'keyDown' && Date.now() < keysShutUntil) e.preventDefault();
+  });
+  // A mouse button down in any of the app's pages (not Viktoria's own window): no cursor hold starts, and a running one
+  // ends (mascot.appMouse), as the Mac's "never move a cursor that is dragging something".
+  contents.on('input-event', (_e, input) => {
+    if (mascot.has(contents)) return;
+    if (input.type === 'mouseDown') mascot.appMouse(true);
+    else if (input.type === 'mouseUp') mascot.appMouse(false);
+  });
   contents.on('will-navigate', (e, url) => {
+    // Her window never goes anywhere else (mascot.js stops it), and a link out of it opens nothing either.
+    if (mascot.has(contents)) return;
     if (ownPage(url)) return;
     e.preventDefault();
     if (/^https?:/i.test(url)) shell.openExternal(url).catch(() => {});
     else if (/^vscode:/i.test(url)) askToOpen(url);
   });
 });
+
+// A window of the app being dragged by its title bar or resized by an edge holds a button down too (the pages see none of
+// it): the same flag for Viktoria's cursor hold, until the move or resize ends.
+function watchMoves(w) {
+  for (const ev of ['will-move', 'will-resize']) w.on(ev, () => mascot.appMouse(true));
+  for (const ev of ['moved', 'resized']) w.on(ev, () => mascot.appMouse(false));
+}
+app.on('browser-window-created', (_e, w) => watchMoves(w));
 
 // Another app's link: that app opens it once the user says so. Nothing on this PC opens it: nothing happens.
 async function askToOpen(url) {
@@ -651,6 +787,7 @@ function createDashboard() {
     ...(PROBE ? { x: -32000, y: -32000, frame: false, width: 1480, height: 900 } : {}),
   });
   const win = dash;
+  watchMoves(win);
   // The app's menu and its keys (Ctrl+N, Ctrl+K, Ctrl+Q…), as the other windows have them.
   if (process.platform !== 'darwin' && Menu.getApplicationMenu()) win.setMenu(Menu.getApplicationMenu());
   dashView = new WebContentsView({ webPreferences: webPrefs() });
@@ -712,6 +849,10 @@ function createDashboard() {
   for (const ev of ['focus', 'blur', 'minimize', 'restore', 'show', 'hide']) win.on(ev, () => setImmediate(visibility));
   for (const ev of ['focus', 'restore', 'show']) win.on(ev, pinAllToDash);
   for (const ev of ['focus', 'restore', 'show']) win.on(ev, () => noteWindows.pinAll());
+  // Viktoria walks on the dashboard's surfaces: where it is, how big and whether it shows are hers to know.
+  for (const ev of ['move', 'resize', 'minimize', 'restore', 'maximize', 'unmaximize', 'show', 'hide', 'enter-full-screen', 'leave-full-screen']) {
+    win.on(ev, () => mascot.dashboardChanged());
+  }
   // The level-up waits for the app to be in front (the notices' "focus"): the app's focus events are BrowserWindows'.
   win.on('focus', tellFocus);
   win.on('blur', () => setImmediate(tellFocus));
@@ -731,6 +872,7 @@ function createDashboard() {
     winOpenJSON = '';
     badged = 0;
     stepAside(false);
+    mascot.dashboardChanged();
     quitIfIdle();
   });
 }
@@ -901,7 +1043,11 @@ function handleChats(msg) {
     case 'ready':
       pushChats(true);
       pushActiveSession(true);
+      mascot.pushToPages();
       return true;
+    // The rects in the list Viktoria walks on (pages/chats.js reports them while she is on).
+    case 'mascotRects':
+      return mascot.updateSidebarRects(msg.rects), true;
     case 'open':
       return openSession(String(msg.id || ''), false);
     case 'fork':
@@ -1155,7 +1301,18 @@ function handleRadar(msg) {
       pushActiveSession(true);
       pushPower(true);
       pushDiscord();
+      mascot.pushToPages();
       return true;
+    // Viktoria (app.js, cloud.js, settings.js): her switch and mischief, the dashboard's surfaces she walks on, and a real
+    // click on the theme chooser (she may sulk at the cursor).
+    case 'mascotEnabled':
+      return mascot.setEnabled(msg.on === true), true;
+    case 'mascotMischief':
+      return mascot.setMischief(typeof msg.level === 'number' && Number.isFinite(msg.level) ? msg.level : 3), true;
+    case 'mascotThemeGuard':
+      return mascot.onThemeChooserOpened(), true;
+    case 'mascotPanels':
+      return mascot.updateWebPanels(msg.panels, msg.nav), true;
     // Power save: the switch on the map, and Settings' "on by itself at low battery".
     case 'powerSave':
       return power.choose(msg.on === true), true;
@@ -1361,6 +1518,13 @@ function openChatWindow({ id = crypto.randomUUID(), cwd, claudeArgs, claude = !!
   const c = { win, sessionId, cwd, claude, claudeArgs, title: title || path.basename(cwd || os.homedir()), startedAt: Date.now(), steppedAside: false };
   chats.set(id, c);
   win.on('focus', () => touchTerminal(id));
+  // Real keys only (a modifier alone isn't typing): Viktoria may notice, and may come to hide this terminal.
+  const MODIFIER_KEYS = ['Control', 'Shift', 'Alt', 'AltGraph', 'Meta', 'CapsLock', 'NumLock', 'ScrollLock', 'OS'];
+  win.webContents.on('before-input-event', (_e, input) => {
+    if (input.type === 'keyDown' && !MODIFIER_KEYS.includes(input.key)) mascot.onTyping(id);
+  });
+  // Where this window is and whether it shows decide where she can stand on it.
+  for (const ev of ['move', 'resize', 'show', 'hide', 'minimize', 'restore', 'closed']) win.on(ev, () => mascot.terminalsChanged());
   win.loadFile(path.join(__dirname, '..', 'pages', 'terminal.html'));
   win.once('ready-to-show', () => {
     if (!show) return;
@@ -1624,7 +1788,8 @@ function commandLabel(cmd) {
 }
 
 // The terminal pages' lines to their shells.
-const chatOf = (e) => [...chats.entries()].find(([, c]) => c.win && !c.win.isDestroyed() && c.win.webContents === e.sender);
+// Viktoria's window has no line to any of these (the preload gives it none either, but it is refused here too).
+const chatOf = (e) => !mascot.has(e.sender) && [...chats.entries()].find(([, c]) => c.win && !c.win.isDestroyed() && c.win.webContents === e.sender);
 ipcMain.on('term:ready', (e, { cols, rows }) => {
   const found = chatOf(e);
   if (!found) return;
@@ -1674,7 +1839,9 @@ ipcMain.on('term:favorite', (e) => {
 ipcMain.on('term:copy', (e, text) => {
   if (chatOf(e) && typeof text === 'string' && text) clipboard.writeText(text);
 });
-ipcMain.on('term:dashboard', () => showDashboard());
+ipcMain.on('term:dashboard', (e) => {
+  if (!mascot.has(e.sender)) showDashboard();
+});
 // The folder a terminal's relative paths are from: its shell's (or Claude's) own, else the one it started in.
 function termCwd(id, c) {
   const pid = terminals.list().find((t) => t.id === id)?.pid;
@@ -1700,8 +1867,8 @@ ipcMain.on('term:openFile', (e, q) => {
   }
   openTerminalFile(linkTarget(q, cwd, os.homedir()), cwd);
 });
-ipcMain.on('term:open', (_e, uri) => {
-  if (typeof uri !== 'string') return;
+ipcMain.on('term:open', (e, uri) => {
+  if (mascot.has(e.sender) || typeof uri !== 'string') return;
   const clean = uri.trim().replace(/^['"<]+|['">.,;:!?)]+$/g, '');
   if (/^https?:\/\//i.test(clean)) shell.openExternal(clean).catch(() => {});
 });
@@ -1748,7 +1915,9 @@ function showShortcuts() {
   return showOverlay(`Overlay.shortcuts(${Math.round((p.x - d.bounds.x) / z)}, ${Math.round((p.y - d.bounds.y) / z)})`);
 }
 // Ctrl and the middle button in any of the app's windows (preload.js).
-ipcMain.on('atl:wheel', () => showShortcuts());
+ipcMain.on('atl:wheel', (e) => {
+  if (!mascot.has(e.sender)) showShortcuts();
+});
 
 // ---------- what's new and the tips ----------
 // What's new is off on Windows (whatsnew.js), so the page never asks; kept as on the Mac for when it's turned on. Windows
@@ -1820,6 +1989,9 @@ function tellFocus() {
 app.on('browser-window-focus', tellFocus);
 // Going from one of the app's windows to another blurs the first before the second has focus.
 app.on('browser-window-blur', () => setImmediate(tellFocus));
+// Viktoria greets when the app comes to the front and lets go of the cursor when it leaves.
+app.on('browser-window-focus', () => setImmediate(() => mascot.focusChanged()));
+app.on('browser-window-blur', () => setImmediate(() => mascot.focusChanged()));
 
 // ---------- a chat that needs you ----------
 // A chat waiting for the user (an approval, a question) while the app is behind other windows: a notice in the corner
@@ -2424,7 +2596,8 @@ function notesOf(n) {
 
 // ---------- the pages' calls ----------
 ipcMain.on('atl:boot', (e) => {
-  e.returnValue = boots.get(e.sender.id) || { css: themes.css() };
+  // Viktoria's window asks for nothing: no theme, no fonts.
+  e.returnValue = mascot.has(e.sender) ? { mascot: true } : boots.get(e.sender.id) || { css: themes.css() };
 });
 
 ipcMain.handle('atl:post', async (e, name, body) => {
@@ -2433,11 +2606,16 @@ ipcMain.handle('atl:post', async (e, name, body) => {
   body = body || {};
   if (noteWindows.has(e.sender) && name !== 'noteWindow') throw new Error('refused');
   if (feedPanel.has(e.sender) && name !== 'feed') throw new Error('refused');
+  // Viktoria's window speaks on her own line and no other, and no other page speaks on hers.
+  if (mascot.has(e.sender) !== (name === 'mascot')) throw new Error('refused');
   const win = BrowserWindow.fromWebContents(e.sender);
   try {
     switch (name) {
       case 'radar':
         return handleRadar(body);
+      // Her page's messages (checked above: only her window sends them); mascot.js checks every number.
+      case 'mascot':
+        return mascot.handle(body);
       // The spend panel's history tabs (web/app.js), from the engine's ledger (ledger.js).
       case 'spend':
         if (body.type !== 'history') throw new Error('unknown request');
@@ -2572,6 +2750,8 @@ function buildMenu() {
             toggleChats();
           },
         },
+        // Viktoria, the anime companion who walks around the screen (her switch is also in Settings > Appearance).
+        { id: 'viktoria', label: 'Show Viktoria', type: 'checkbox', checked: mascot.enabled(), click: () => mascot.setEnabled(!mascot.enabled()) },
         { label: 'Reload Dashboard', accelerator: 'CmdOrCtrl+R', click: () => dashView && dashView.webContents.reload() },
         // The page that has the keys: the dashboard window's two are views, which the role doesn't reach. Development
         // only: a released app has no DevTools.
@@ -2632,6 +2812,7 @@ app.whenReady().then(() => {
   // The orbit's cinematic camera waits for minutes without input; the terminals ride the orbit as cars.
   setInterval(() => {
     toDash(`idle(${powerMonitor.getSystemIdleTime().toFixed(1)})`);
+    mascot.updateIdle(powerMonitor.getSystemIdleTime());
     noteToolsAtWork();
     pushTerminals();
     // A chat window opened or ended between the engine's states: the list says "in a window" or stops saying it.
@@ -2648,6 +2829,13 @@ app.whenReady().then(() => {
   savers.autoStart();
   if (!PROBE) aiColors.autoStart();
   powerMonitor.on('resume', () => cloud.kick());
+  // Viktoria rests while the PC is locked or asleep (the Mac's display sleep), and lets go of the cursor at once.
+  powerMonitor.on('lock-screen', () => mascot.setAsleep('lock', true));
+  powerMonitor.on('unlock-screen', () => mascot.setAsleep('lock', false));
+  powerMonitor.on('suspend', () => mascot.setAsleep('suspend', true));
+  powerMonitor.on('resume', () => mascot.setAsleep('suspend', false));
+  // A display plugged in, unplugged or changed: she moves to one that is there and learns its edges.
+  for (const ev of ['display-added', 'display-removed', 'display-metrics-changed']) screen.on(ev, () => mascot.onDisplaysChanged());
   // Power save comes on by itself on a low battery (power.js), and goes off again on the adapter.
   powerMonitor.on('on-battery', () => power.update());
   powerMonitor.on('on-ac', () => power.update());
@@ -2696,6 +2884,7 @@ app.on('before-quit', (e) => {
 // Quitting for good: the chats running in the session host go on, the parts stop.
 function leave() {
   quitting = true;
+  mascot.stop();
   terminals.detachAll();
   engine.stop();
   runaways.stop();

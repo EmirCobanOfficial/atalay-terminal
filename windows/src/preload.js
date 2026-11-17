@@ -7,8 +7,13 @@ const { contextBridge, ipcRenderer, webFrame } = require('electron');
 
 const boot = ipcRenderer.sendSync('atl:boot') || {};
 
+// Viktoria's window (main.js's atl:boot says so) gets her own line and nothing else: no other handler, no terminal
+// channels, no shortcut wheel.
+const full = !boot.mascot;
 const handlers = {};
-for (const name of ['radar', 'cloud', 'git', 'theme', 'overlay', 'messages', 'savers', 'chats', 'archive', 'trash', 'spend', 'files', 'notes', 'noteWindow', 'feed']) {
+for (const name of full
+  ? ['radar', 'cloud', 'git', 'theme', 'overlay', 'messages', 'savers', 'chats', 'archive', 'trash', 'spend', 'files', 'notes', 'noteWindow', 'feed']
+  : ['mascot']) {
   handlers[name] = { postMessage: (body) => ipcRenderer.invoke('atl:post', name, body) };
 }
 contextBridge.exposeInMainWorld('webkit', { messageHandlers: handlers });
@@ -34,12 +39,14 @@ if (boot.role === 'chat') contextBridge.exposeInMainWorld('__CHAT_SIZE__', boot.
 
 // A terminal window's line to its shell (pages/terminal.js): only its own channels.
 const TERM = /^term:/;
-contextBridge.exposeInMainWorld('atl', {
-  send: (channel, data) => TERM.test(channel) && ipcRenderer.send(channel, data),
-  on: (channel, fn) => TERM.test(channel) && ipcRenderer.on(channel, (_e, data) => fn(data)),
-  // A question with an answer (which of a line's pieces are files).
-  ask: (channel, data) => (TERM.test(channel) ? ipcRenderer.invoke(channel, data) : Promise.reject(new Error('not a terminal channel'))),
-});
+if (full) {
+  contextBridge.exposeInMainWorld('atl', {
+    send: (channel, data) => TERM.test(channel) && ipcRenderer.send(channel, data),
+    on: (channel, fn) => TERM.test(channel) && ipcRenderer.on(channel, (_e, data) => fn(data)),
+    // A question with an answer (which of a line's pieces are files).
+    ask: (channel, data) => (TERM.test(channel) ? ipcRenderer.invoke(channel, data) : Promise.reject(new Error('not a terminal channel'))),
+  });
+}
 
 // The shortcut wheel: Ctrl and the middle mouse button, anywhere in the app's windows (the Mac opens it with the middle
 // button; Ctrl+K still does here too). Neither the page nor the terminal under the pointer gets that press: no orbit
@@ -49,16 +56,18 @@ const swallow = (e) => {
   e.preventDefault();
   e.stopImmediatePropagation();
 };
-window.addEventListener('pointerdown', (e) => {
-  wheelPress = e.button === 1 && e.ctrlKey;
-  if (!wheelPress) return;
-  swallow(e);
-  ipcRenderer.send('atl:wheel');
-}, true);
-for (const type of ['mousedown', 'pointerup', 'mouseup', 'auxclick']) {
-  window.addEventListener(type, (e) => {
-    if (e.button === 1 && wheelPress) swallow(e);
+if (full) {
+  window.addEventListener('pointerdown', (e) => {
+    wheelPress = e.button === 1 && e.ctrlKey;
+    if (!wheelPress) return;
+    swallow(e);
+    ipcRenderer.send('atl:wheel');
   }, true);
+  for (const type of ['mousedown', 'pointerup', 'mouseup', 'auxclick']) {
+    window.addEventListener(type, (e) => {
+      if (e.button === 1 && wheelPress) swallow(e);
+    }, true);
+  }
 }
 
 // WKWebView draws the Mac's thin overlay scrollbars; Chromium on Windows draws wide light ones, which glare in a dark
