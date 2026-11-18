@@ -304,6 +304,61 @@ function createNoteWindows({ BrowserWindow, screen, dialog, WEB, settings, webPr
 
   const has = (webContents) => [...open.values()].some((n) => !n.win.isDestroyed() && n.win.webContents === webContents);
 
+  // ---------- for the AI tools (notestools.js, the Mac's NoteWindow.liveView and places) ----------
+  // The page that holds a note's live text: its own window's when the note is out (that page knows what is being typed, so
+  // an AI's change goes to it and never over the user's typing), else null (the dashboard's page has it).
+  function liveView(id) {
+    const n = typeof id === 'string' ? open.get(id) : null;
+    if (!n || !n.loaded || n.finished || n.closing || n.win.isDestroyed()) return null;
+    const wc = n.win.webContents;
+    return wc && !wc.isDestroyed() ? wc : null;
+  }
+
+  // Where the notes out in windows are: whether the window floats above every app (Keep on top) or rides above the
+  // dashboard, and whether it is on screen now.
+  function places() {
+    const out = {};
+    for (const [id, n] of open) out[id] = { onTop: n.onTop, visible: n.loaded && !n.finished && !n.win.isDestroyed() && n.win.isVisible() };
+    return out;
+  }
+
+  // The dashboard on screen (not closed, hidden or minimized): the note its panel shows is then in sight too (the Mac's
+  // NoteWindow.dashboard isVisible and not miniaturized).
+  function dashboardShown() {
+    const d = dashWin();
+    return !!d && d.isVisible() && !d.isMinimized();
+  }
+
+  // An AI tool's call into the page that has the note live: `owner`'s window when that note is out, else the dashboard's
+  // (the Mac's NotesTools.page). `body` is an async function body that has `N` (window.Notes) and the named args; the args
+  // reach it through JSON.parse, never as code, whatever text an AI sent. Answers the page's object (an array as { list }),
+  // { error: 'no_page' } when there's no page to ask (the dashboard is closed: Windows destroys its page then), or null
+  // when the call failed or took longer than `timeout` ms (what the page started may still land, as on the Mac).
+  async function agentCall(owner, body, args = {}, timeout = 20000) {
+    const wc = (owner && liveView(owner)) || dashPage();
+    if (!wc) return { error: 'no_page' };
+    const names = Object.keys(args).filter((k) => /^[A-Za-z_]\w*$/.test(k));
+    const js =
+      `(async () => { const { ${names.join(', ')} } = JSON.parse(${JSON.stringify(JSON.stringify(args))}); ` +
+      `const N = window.Notes; if (!N || !N.agentList) return { error: 'loading' }; ${body} })()`;
+    let timer = null;
+    try {
+      const r = await Promise.race([
+        wc.executeJavaScript(js),
+        new Promise((resolve) => {
+          timer = setTimeout(() => resolve(undefined), timeout);
+        }),
+      ]);
+      if (Array.isArray(r)) return { list: r };
+      return r && typeof r === 'object' ? r : null;
+    } catch (e) {
+      console.error('notes page: AI tool call failed:', e.message);
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   // The dashboard page's messages for the note windows ("radar" handler).
   function radar(msg) {
     switch (msg.type) {
@@ -436,7 +491,7 @@ function createNoteWindows({ BrowserWindow, screen, dialog, WEB, settings, webPr
     return r && typeof r === 'object' ? r : { error: "the dashboard didn't answer" };
   }
 
-  return { radar, handle, has, pinAll, stepAside, setStreamer, flushAll, closeKey, setBackground };
+  return { radar, handle, has, pinAll, stepAside, setStreamer, flushAll, closeKey, setBackground, liveView, places, dashboardShown, agentCall };
 }
 
 module.exports = { createNoteWindows };

@@ -11,9 +11,10 @@ const boot = ipcRenderer.sendSync('atl:boot') || {};
 // channels, no Ring.
 const full = !boot.mascot;
 const handlers = {};
-// `mcp`: Settings > Claude, the local MCP server (mcp.js); main.js answers it for the dashboard's page only.
+// `mcp`: Settings > Claude, the local MCP server (mcp.js); `notesai`: Settings > Privacy > AI tools and my notes
+// (notesai.js). main.js answers both for the dashboard's page only.
 for (const name of full
-  ? ['radar', 'cloud', 'git', 'theme', 'overlay', 'messages', 'savers', 'chats', 'archive', 'trash', 'spend', 'files', 'notes', 'noteWindow', 'feed', 'mcp']
+  ? ['radar', 'cloud', 'git', 'theme', 'overlay', 'messages', 'savers', 'chats', 'archive', 'trash', 'spend', 'files', 'notes', 'noteWindow', 'feed', 'mcp', 'notesai']
   : ['mascot']) {
   handlers[name] = { postMessage: (body) => ipcRenderer.invoke('atl:post', name, body) };
 }

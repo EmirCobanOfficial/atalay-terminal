@@ -82,7 +82,7 @@ const { createCloud } = require('./cloud');
 const { createTokenLedger } = require('./tokenledger');
 const { createThemes } = require('./themes');
 const { createAIColors } = require('./aicolors');
-const { createTerminals, which } = require('./terminals');
+const { createTerminals, which, childEnvironment } = require('./terminals');
 const { createOverlay } = require('./overlay');
 const { createRunaways } = require('./runaways');
 const { createPowerSaver } = require('./power');
@@ -96,6 +96,7 @@ const { createMcp } = require('./mcp');
 const { createNotesStore } = require('./notesstore');
 const { createStreamer } = require('./streamer');
 const { createNoteWindows } = require('./notewindow');
+const { createNotesAI } = require('./notesai');
 const { createFeedPanel } = require('./feedpanel');
 const { createChatTrash } = require('./chattrash');
 const { createTermFont } = require('./termfont');
@@ -635,6 +636,16 @@ const noteWindows = createNoteWindows({
   opacity: () => WINDOW_OPACITY, editMenu,
 });
 const feedPanel = createFeedPanel({ BrowserWindow, WEB, webPrefs, bootFor, checkPages, home: () => chatHome() });
+// AI tools and my notes (notesai.js, notestools.js; the Mac's NotesAI.swift and NotesTools.swift): Settings > Privacy's
+// switch, and the notes' six tools on the local MCP server (`mcp`, mcp.js), which keeps its pipe open while
+// notesAI.access() says so. Asked for lazily: the server is made elsewhere, and a build without it has none (null).
+const notesAI = createNotesAI({
+  settings, dialog, parent: () => dash, notesStore, noteWindows, terminals, dataDir: app.getPath('userData'), which, childEnvironment,
+  // Never from a development check, nor from a run on a Mac (the three tools' settings there are the Mac app's).
+  usable: process.platform === 'win32' && !PROBE,
+  mcp: () => mcp,
+});
+
 // The local MCP server (mcp.js, the Mac's Mcp.swift): Claude Desktop and Claude Code on this PC see the AI sessions in the
 // app's terminals and, if allowed, type a prompt into one. One per build, as the session host is: the installed app's
 // `orbiterm`, a staging one's (packaged, or run from the sources with a profile of its own) `orbiterm-s`, a development
@@ -645,7 +656,8 @@ const mcp = createMcp({
   chatWindow: (id) => chats.get(id)?.win || null,
   parentWindow: () => dash,
   push: (json) => toDash(`mcp(${json})`),
-  notesAccess: () => false,
+  // Asked only once the app runs (start, refresh), after notesAI is made.
+  notesAccess: () => notesAI.access(),
 });
 
 // The chat of the terminal window touched last is the one the chat list marks. Prefer a working/waiting nested AI (Codex,
@@ -2737,6 +2749,11 @@ ipcMain.handle('atl:post', async (e, name, body) => {
       case 'noteWindow':
         if (!noteWindows.has(e.sender)) throw new Error('not this page');
         return await noteWindows.handle(e.sender, body);
+      // Settings > Privacy > AI tools and my notes (web/cloud.js): the dashboard's page only, as the Mac's NotesAIBridge.
+      // Turning it on asks natively (notesai.js); a note window, the feed and Viktoria were refused above.
+      case 'notesai':
+        if (e.sender !== pageOf(dashView)) throw new Error('not this page');
+        return await notesAI.handle(body);
       case 'feed':
         return feedPanel.handle(e.sender, body);
       case 'theme':
@@ -2941,6 +2958,9 @@ app.whenReady().then(() => {
   }
   // The token savers this build ships go on by themselves the first time (Settings turns them off).
   savers.autoStart();
+  // The notes' tools join the MCP server, and the three AI tools get it or lose it as the notes' switch says (the Mac's
+  // NotesAI.autoStart).
+  notesAI.autoStart();
   if (!PROBE) aiColors.autoStart();
   powerMonitor.on('resume', () => cloud.kick());
   // Viktoria rests while the PC is locked or asleep (the Mac's display sleep), and lets go of the cursor at once.

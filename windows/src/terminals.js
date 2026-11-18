@@ -276,4 +276,5 @@ function createTerminals({ onData, onExit, host, extraPath }) {
   };
 }
 
-module.exports = { createTerminals, which };
+// childEnvironment too: notesai.js runs the AI tools' own `mcp add` with it.
+module.exports = { createTerminals, which, childEnvironment };
