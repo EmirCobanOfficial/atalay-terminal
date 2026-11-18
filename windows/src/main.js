@@ -586,9 +586,27 @@ function pageOf(win) {
   const wc = win.webContents;
   return wc && !wc.isDestroyed() ? wc : null;
 }
+// executeJavaScript on a page that is still loading waits for it with a 'did-stop-loading' listener of its own, one per
+// call: the burst of pushes at startup piled up past Node's limit of 10 (MaxListenersExceededWarning). So a loading page
+// gets one listener, and the scripts wait in line behind it, in order.
+const loadingQueue = new WeakMap();
 function run(win, js) {
   const wc = pageOf(win);
-  if (wc) wc.executeJavaScript(`${js}; true`).catch(() => {});
+  if (!wc) return;
+  const queued = loadingQueue.get(wc);
+  if (queued) return void queued.push(js);
+  // Electron waits too before the first navigation (no URL yet), so that counts as loading.
+  if (!wc.getURL() || wc.isLoadingMainFrame()) {
+    const lines = [js];
+    loadingQueue.set(wc, lines);
+    wc.once('did-stop-loading', () => {
+      loadingQueue.delete(wc);
+      if (wc.isDestroyed()) return;
+      for (const line of lines) wc.executeJavaScript(`${line}; true`).catch(() => {});
+    });
+    return;
+  }
+  wc.executeJavaScript(`${js}; true`).catch(() => {});
 }
 function send(win, channel, data) {
   const wc = pageOf(win);
@@ -858,6 +876,9 @@ function createDashboard() {
   // The level-up waits for the app to be in front (the notices' "focus"): the app's focus events are BrowserWindows'.
   win.on('focus', tellFocus);
   win.on('blur', () => setImmediate(tellFocus));
+  // Likewise Viktoria's: coming back to the dashboard greets her, leaving it lets go of the cursor.
+  win.on('focus', () => setImmediate(() => mascot.focusChanged()));
+  win.on('blur', () => setImmediate(() => mascot.focusChanged()));
   // Closing the dashboard leaves the chats and terminals open: let them go before it closes, or Windows closes its
   // child windows with it.
   win.on('close', () => {

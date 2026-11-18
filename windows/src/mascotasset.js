@@ -1,8 +1,8 @@
 'use strict';
 // Viktoria is not in the app: her model, clips and motions are ONE obfuscated pak (ai-character/pack-viktoria.py) that the
 // app downloads the first time the user asks for her (the repo is public and the licenses forbid raw files in it). The Mac's
-// MascotAsset.swift, same states and same rules. The file lives in <userData>/viktoria/viktoria.pak; without it no overlay
-// is made. Her overlay reads it as viktoria://pak, served on the overlay's own session only (attach).
+// MascotAsset.swift, same states and same rules. The file lives in %LOCALAPPDATA%\<userData's folder name> <hash of its
+// path>\viktoria\viktoria.pak; without it no overlay is made. Her overlay reads it as viktoria://pak, served on the overlay's own session only (attach).
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
@@ -19,7 +19,15 @@ const HEX64 = /^[0-9a-f]{64}$/;
  */
 function createMascotAsset(o) {
   const { net, settings } = o;
-  const folder = path.join(o.app.getPath('userData'), o.staging ? 'viktoria (staging)' : 'viktoria');
+  // userData is the ROAMING profile on Windows: on a domain PC with roaming profiles a 34 MB file there would sync at every
+  // logon and logoff. So the pak lives under %LOCALAPPDATA%, in a folder named like userData's own plus a short hash of
+  // userData's full path (release, staging and --user-data-dir test profiles each get their own pak and never delete each
+  // other's, even when two profiles in different places end in the same folder name).
+  const userData = o.app.getPath('userData');
+  const sub = o.staging ? 'viktoria (staging)' : 'viktoria';
+  const oldFolder = path.join(userData, sub);
+  const profileKey = `${path.basename(userData)} ${crypto.createHash('sha256').update(path.resolve(userData).toLowerCase()).digest('hex').slice(0, 8)}`;
+  const folder = path.join(process.env.LOCALAPPDATA || path.join(o.app.getPath('appData'), '..', 'Local'), profileKey, sub);
   const pakFile = path.join(folder, 'viktoria.pak');
 
   let state = 'none'; // none | downloading | failed | ready
@@ -59,43 +67,108 @@ function createMascotAsset(o) {
     forget();
   }
 
-  // Size and SHA-256 of a file, read in pieces (never the whole 34 MB in memory).
+  // An earlier version kept the pak in the roaming userData folder. Move it over once (a rename; across drives, e.g. a
+  // roaming AppData redirected to a share, it is copied to a .part in the new folder and renamed into place; if even that
+  // fails the file is simply dropped: the user can download again, and the stored size and SHA then match no file, which
+  // init handles), then remove the old folder. Never throws.
+  function migrate() {
+    try {
+      // Windows paths are case-insensitive: the same folder in other letters is still the same folder, and must not be deleted.
+      if (path.resolve(oldFolder).toLowerCase() === path.resolve(folder).toLowerCase()) return;
+      const old = path.join(oldFolder, 'viktoria.pak');
+      // A move that failed only for now (antivirus on the file) leaves the old folder for the next launch to try again.
+      let keepOld = false;
+      if (fs.existsSync(old)) {
+        let part = null;
+        try {
+          fs.mkdirSync(folder, { recursive: true });
+          if (!fs.existsSync(pakFile)) {
+            try {
+              fs.renameSync(old, pakFile);
+            } catch (e) {
+              if (!e || e.code !== 'EXDEV') throw e;
+              part = path.join(folder, `viktoria-${crypto.randomUUID()}.part`);
+              fs.copyFileSync(old, part);
+              fs.renameSync(part, pakFile);
+              part = null;
+            }
+          }
+        } catch (e) {
+          keepOld = !!e && TRANSIENT.has(e.code);
+          if (part) {
+            try {
+              fs.rmSync(part, { force: true });
+            } catch {}
+          }
+        }
+      }
+      if (!keepOld) fs.rmSync(oldFolder, { recursive: true, force: true });
+    } catch {}
+  }
+
+  // Errors that say "not now" (antivirus or another process has the file), not "this file is bad".
+  const TRANSIENT = new Set(['EBUSY', 'EPERM', 'EACCES', 'EMFILE', 'ENFILE']);
+
+  // Size and SHA-256 of a file, read in pieces (never the whole 34 MB in memory). Resolves 'ok', 'bad' (missing, wrong size
+  // or wrong hash) or 'busy' (a transient error: nothing is known about the file, so it must not be judged).
   function verify(file, size, sha) {
     return new Promise((resolve) => {
+      const fromErr = (e) => resolve(e && TRANSIENT.has(e.code) ? 'busy' : 'bad');
       let n;
       try {
         n = fs.statSync(file).size;
-      } catch {
-        return resolve(false);
+      } catch (e) {
+        return fromErr(e);
       }
-      if (n !== size) return resolve(false);
+      if (n !== size) return resolve('bad');
       const h = crypto.createHash('sha256');
       const s = fs.createReadStream(file);
       s.on('data', (c) => h.update(c));
-      s.on('error', () => resolve(false));
-      s.on('end', () => resolve(h.digest('hex') === sha));
+      s.on('error', fromErr);
+      s.on('end', () => resolve(h.digest('hex') === sha ? 'ok' : 'bad'));
     });
   }
 
   // The pak from an earlier run is hashed once, asynchronously, before she may come up: a changed or damaged file is
-  // deleted and the user is offered the download again.
+  // deleted and the user is offered the download again. A transient read error (the file locked for a moment) is not that:
+  // the file and the settings stay, she is just not ready yet, and the check is tried again a few seconds later.
+  const VERIFY_TRIES = 6, VERIFY_WAIT = 5000;
+  let retryTimer = null; // the pending wait between two checks; get() or remove() clears it
+  function stopRetry() {
+    clearTimeout(retryTimer);
+    retryTimer = null;
+  }
+  function checkPak(size, sha, tries) {
+    verifying = true;
+    verify(pakFile, size, sha).then((r) => {
+      if (!verifying) return;
+      if (r === 'busy') {
+        if (tries < VERIFY_TRIES) {
+          retryTimer = setTimeout(() => {
+            retryTimer = null;
+            if (verifying) checkPak(size, sha, tries + 1);
+          }, VERIFY_WAIT);
+        } else verifying = false; // gave up for this launch: not ready, but the pak is kept
+        return;
+      }
+      verifying = false;
+      if (r === 'ok') set('ready');
+      else {
+        discardPak();
+        set('failed', 'checksum');
+      }
+    });
+  }
+
   function init() {
+    migrate();
     sweep();
     const size = settings.get(SIZE_KEY), sha = settings.get(SHA_KEY);
     if (!Number.isInteger(size) || size <= 0 || typeof sha !== 'string' || !HEX64.test(sha) || !fs.existsSync(pakFile)) {
       if (fs.existsSync(pakFile)) discardPak(); // a pak nobody remembers: not trusted, not kept
       return;
     }
-    verifying = true;
-    verify(pakFile, size, sha).then((ok) => {
-      if (!verifying) return;
-      verifying = false;
-      if (ok) set('ready');
-      else {
-        discardPak();
-        set('failed', 'checksum');
-      }
-    });
+    checkPak(size, sha, 0);
   }
 
   // The page couldn't use the pak (mascot.js posts loadFailed): deleted, she goes down, Try again shows.
@@ -106,10 +179,11 @@ function createMascotAsset(o) {
     if (!isReady() || checking) return;
     const size = settings.get(SIZE_KEY), sha = settings.get(SHA_KEY);
     checking = true;
-    const ok = Number.isInteger(size) && typeof sha === 'string' && (await verify(pakFile, size, sha));
+    const r = Number.isInteger(size) && typeof sha === 'string' ? await verify(pakFile, size, sha) : 'bad';
     checking = false;
     if (!isReady()) return;
-    if (ok) {
+    if (r === 'busy') return; // can't tell right now: neither deleted nor blamed
+    if (r === 'ok') {
       if (!loadFailedLogged) {
         loadFailedLogged = true;
         console.warn("viktoria: her page couldn't start (graphics unavailable?); the pak is intact, so it is kept");
@@ -128,6 +202,12 @@ function createMascotAsset(o) {
   }
 
   function get() {
+    // The user asked while the launch check is only waiting to retry (the UI shows 'none'): drop that check; the download
+    // replaces the old file atomically. A check that is actually reading the file right now is still waited for.
+    if (retryTimer) {
+      stopRetry();
+      verifying = false;
+    }
     if (state === 'downloading' || state === 'ready' || verifying) return;
     const id = ++runId;
     set('downloading');
@@ -158,19 +238,29 @@ function createMascotAsset(o) {
 
   // Turns her off, deletes the file; nothing downloaded.
   function remove() {
-    runId++;
+    const id = ++runId;
     verifying = false;
+    stopRetry();
     stopCurrent();
     o.enable(false); // her window goes first, then the file
     const wasReady = isReady();
     state = 'none';
     reason = '';
     got = total = 0;
+    forget();
+    o.onChange(wasReady); // this tears the overlay down, which lets go of the pak (an open viktoria:// read blocks the delete)
+    dropFolder(id, 0);
+  }
+
+  // Deletes the folder; if something still holds it, tries again a few times. A get() in between (runId changed) owns the
+  // folder again, so the late retry must leave it alone.
+  function dropFolder(id, tries) {
     try {
       fs.rmSync(folder, { recursive: true, force: true });
+      return;
     } catch {}
-    forget();
-    o.onChange(wasReady);
+    if (tries >= 5) return;
+    setTimeout(() => id === runId && dropFolder(id, tries + 1), 500);
   }
 
   function fail(why) {
@@ -217,13 +307,18 @@ function createMascotAsset(o) {
 
     // 3. In place (a rename within one folder replaces any old pak atomically), remembered, and she is switched on: the
     // user asked for her.
-    try {
-      fs.renameSync(part, pakFile);
-    } catch {
+    const moved = await moveIn(id, part);
+    if (id !== runId) {
       try {
         fs.rmSync(part, { force: true });
       } catch {}
-      return fail('disk');
+      return;
+    }
+    if (moved) {
+      try {
+        fs.rmSync(part, { force: true });
+      } catch {}
+      return fail(moved);
     }
     current = null;
     try {
@@ -233,6 +328,22 @@ function createMascotAsset(o) {
     settings.set(SIZE_KEY, size);
     o.enable(true);
     set('ready');
+  }
+
+  // Windows Defender scans a file right after it is closed and can hold it for a moment, so the rename may fail with
+  // EPERM/EBUSY/EACCES although nothing is wrong: retried with a growing wait (about 3 s in all), only for those codes, and
+  // dropped as soon as the run is cancelled. Resolves null when moved, else a short reason.
+  async function moveIn(id, part) {
+    for (let i = 0; ; i++) {
+      try {
+        fs.renameSync(part, pakFile);
+        return null;
+      } catch (e) {
+        if (!e || !['EPERM', 'EBUSY', 'EACCES'].includes(e.code) || i >= 9) return 'disk';
+      }
+      await new Promise((r) => setTimeout(r, Math.min(100 * (i + 1), 400)));
+      if (id !== runId) return 'cancelled';
+    }
   }
 
   // Resolves null on success (the file at `part`, size and SHA-256 matched while it streamed), else a short reason.
@@ -331,12 +442,14 @@ function createMascotAsset(o) {
         res.on('error', () => finish('network'));
         res.on('end', () => {
           if (done || bad) return;
-          out.end((err) => {
-            if (err) return finish('disk');
+          // 'close', not end()'s callback ('finish'): only now is the file handle released, so the rename can't hit our own.
+          out.once('close', () => {
+            if (done) return; // the error handler above already answered
             if (id !== runId) return finish('cancelled');
             if (n !== size || hash.digest('hex') !== sha) return finish('checksum');
             finish(null);
           });
+          out.end();
         });
       });
       req.end();

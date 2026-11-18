@@ -30,6 +30,8 @@ const intersects = (a, b) => a.x < b.x + b.width && a.x + a.width > b.x && a.y <
 const inside = (b, p) => p.x >= b.x && p.x < b.x + b.width && p.y >= b.y && p.y < b.y + b.height;
 // The close button of a terminal's frame: 46 DIP wide, as Windows draws it.
 const CLOSE_W = 46;
+// The longest she may be held: a drag main still believes in after this (a release nobody saw) ends, she drops.
+const DRAG_MAX_MS = 15_000;
 
 // A window's HWND as a number (Electron hands it as a little-endian buffer).
 function handleOf(w) {
@@ -82,6 +84,9 @@ function createMascot(o) {
   let currentId = null; // the display she is on
   let appliedKey = '', lastScale = 0, lastZ = 1;
   let hitRect = null, ignoring = true, isDragging = false, dragCrossed = false, dragCrossedAt = 0;
+  // When the drag main believes in began, its 'dragging' messages counted (a check's answer older than the last one is
+  // stale), and the page's last check.
+  let dragSince = 0, dragGen = 0, dragCheckAt = 0, dragChecking = false, dragMisses = 0;
   let wins = [], winsOk = false, polling = false; // other windows on screen, front to back: { hwnd, own, rect (DIP) }
   let overlayHwnd = 0;
   let lastStatus = new Map(), lastTerminalsJSON = '', lastPlatformsJSON = '', lastIdleSent = -1, hasAppearedOnce = false;
@@ -221,9 +226,12 @@ function createMascot(o) {
         }
       }
     });
-    // A crashed page starts over (the other pages do).
+    // A crashed page starts over (the other pages do). The new page holds nothing: no drag, no rect of hers, no cursor
+    // hold, so nothing of the old one may keep the overlay taking clicks.
     wc.on('render-process-gone', () => {
+      if (win !== w) return;
       loaded = false;
+      resetPointer();
       setTimeout(() => win === w && !w.isDestroyed() && wc.reload(), 800);
     });
     w.on('closed', () => {
@@ -231,6 +239,7 @@ function createMascot(o) {
       win = null;
       loaded = false;
       shown = false;
+      resetPointer();
       stopTimers();
     });
     o.checkPages();
@@ -428,9 +437,66 @@ function createMascot(o) {
     setIgnore(!(x >= hitRect.x - 8 && x <= hitRect.x + hitRect.w + 8 && y >= hitRect.y - 8 && y <= hitRect.y + hitRect.h + 8));
   }
 
+  // Main's own drag ends, whatever her page says (it may say nothing: a release it never got, a page that started over).
+  // While main believes in a drag the overlay takes every click on its display and follows the cursor to other displays,
+  // so that belief must never outlive the page's own drag.
+  function endDragState() {
+    isDragging = false;
+    dragCrossed = false;
+    updateHitTest();
+  }
+
+  // Her page gone or new: nothing it held is held any more.
+  function resetPointer() {
+    isDragging = false;
+    dragCrossed = false;
+    hitRect = null;
+    releaseCursor();
+    ignoring = true;
+    if (alive()) win.setIgnoreMouseEvents(true);
+  }
+
+  // Is her page still holding her? Its stage has the 'dragging' class from the press (set before it says so) to the end
+  // of its drag. A page that says no or isn't loaded ends main's drag at once; one that fails or doesn't answer within 1 s
+  // (a hung renderer answers never) ends it on the second miss in a row, so one slow answer (the main process busy for a
+  // moment) doesn't drop a real drag. An answer from before her page's last 'dragging' message is dropped.
+  function checkPageDrag() {
+    if (dragChecking || !alive()) return;
+    if (!loaded) return endDragState();
+    const w = win, gen = dragGen;
+    dragChecking = true;
+    let settled = false;
+    const settle = (still) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(t);
+      dragChecking = false;
+      if (win !== w || !isDragging || gen !== dragGen) return;
+      if (still === true) dragMisses = 0;
+      else if (still === false || ++dragMisses >= 2) endDragState();
+    };
+    const t = setTimeout(() => settle(null), 1000);
+    try {
+      w.webContents
+        .executeJavaScript("document.getElementById('stage')?.classList.contains('dragging') === true")
+        .then((v) => settle(v === true), () => settle(null));
+    } catch {
+      settle(null);
+    }
+  }
+
   // While she is held, the display under the cursor decides where the overlay is (60 times a second).
   function dragTick() {
-    if (!isDragging || !shown || !alive()) return;
+    if (!isDragging) return;
+    if (!shown || !alive()) return endDragState();
+    // Never held for long: past DRAG_MAX_MS she drops where the cursor is (a release nobody saw), and every 300 ms her
+    // page is asked whether it still holds her.
+    if (Date.now() - dragSince > DRAG_MAX_MS) return endCrossedDrag();
+    if (Date.now() - dragCheckAt >= 300) {
+      dragCheckAt = Date.now();
+      checkPageDrag();
+      if (!isDragging) return;
+    }
     const c = screen.getCursorScreenPoint();
     const d = screen.getDisplayNearestPoint(c);
     if (d && d.id !== currentId) {
@@ -448,11 +514,13 @@ function createMascot(o) {
   }
 
   // Fallback when her page may not have got the button's release after the overlay moved under it: drop her at the cursor.
+  // Main's drag ends here too, not only when her page answers (a page no longer dragging ignores dragEnd and says nothing).
   function endCrossedDrag() {
-    if (!alive() || !panelB) return;
-    const p = screen.getCursorScreenPoint(), z = zoom();
-    dragCrossed = false;
-    sendEvent({ type: 'dragEnd', x: Math.round((p.x - panelB.x) / z), y: Math.round((p.y - panelB.y) / z) });
+    if (alive() && panelB) {
+      const p = screen.getCursorScreenPoint(), z = zoom();
+      sendEvent({ type: 'dragEnd', x: Math.round((p.x - panelB.x) / z), y: Math.round((p.y - panelB.y) / z) });
+    }
+    endDragState();
   }
 
   // ---------- timers ----------
@@ -819,11 +887,19 @@ function createMascot(o) {
         updateHitTest();
         return true;
       }
-      case 'dragging':
-        isDragging = body.on === true;
+      case 'dragging': {
+        const on = body.on === true;
+        dragGen++;
+        if (on && !isDragging) {
+          dragSince = Date.now();
+          dragCheckAt = Date.now();
+          dragMisses = 0;
+        }
+        isDragging = on;
         dragCrossed = false;
         updateHitTest();
         return true;
+      }
       case 'crossScreen': {
         const dir = num(body.dir), y = num(body.y);
         if (dir != null && y != null) crossScreen(dir, y);
