@@ -629,7 +629,7 @@ const toNotices = (call) => runPanel(panels.notices, `window.__messages && __mes
 const noteWindows = createNoteWindows({
   BrowserWindow, screen, dialog, WEB, settings, webPrefs, bootFor, checkPages, ownerView: () => dashView, getDash: () => dash,
   pin: pinToDash, uiScale: () => themes.uiScale(), streamerOn: () => streamer.on, quitting: () => quitting, bg: () => themes.color('--bg'),
-  opacity: () => WINDOW_OPACITY,
+  opacity: () => WINDOW_OPACITY, editMenu,
 });
 const feedPanel = createFeedPanel({ BrowserWindow, WEB, webPrefs, bootFor, checkPages, home: () => chatHome() });
 
@@ -814,6 +814,28 @@ async function askToOpen(url) {
   if (r.response === 0) shell.openExternal(url).catch(() => {});
 }
 
+// A right click on text: Cut, Copy, Paste and Select All, the menu the Mac's system opens there. Electron has none of
+// its own, and the pages leave text to the system (notes.js and app.js's panelMenu open nothing there). A page that
+// opens its own menu (e.g. "Copy" on selected note blocks) stops the event, so this one doesn't come. The items call the
+// page directly: a role doesn't reach the dashboard's page, a view in its window. `win` is the window the menu opens on.
+function editMenu(wc, win) {
+  wc.on('context-menu', (_e, params) => {
+    const selected = !!(params.selectionText && params.selectionText.trim());
+    if (!params.isEditable && !selected) return;
+    const f = params.editFlags || {};
+    const live = () => !wc.isDestroyed();
+    const items = [
+      ...(params.isEditable ? [{ label: 'Cut', accelerator: 'CmdOrCtrl+X', enabled: !!f.canCut, click: () => live() && wc.cut() }] : []),
+      { label: 'Copy', accelerator: 'CmdOrCtrl+C', enabled: !!f.canCopy, click: () => live() && wc.copy() },
+      ...(params.isEditable ? [{ label: 'Paste', accelerator: 'CmdOrCtrl+V', enabled: !!f.canPaste, click: () => live() && wc.paste() }] : []),
+      { type: 'separator' },
+      { label: 'Select All', accelerator: 'CmdOrCtrl+A', enabled: f.canSelectAll !== false, click: () => live() && wc.selectAll() },
+    ];
+    const w = typeof win === 'function' ? win() : win;
+    Menu.buildFromTemplate(items).popup({ ...(w && !w.isDestroyed() ? { window: w } : {}), frame: params.frame || undefined });
+  });
+}
+
 function bootFor(webContents, extra = {}) {
   const look = { font: termFont.current(), size: 13 };
   boots.set(webContents.id, { css: themes.css(), look, ...extra });
@@ -853,6 +875,7 @@ function createDashboard() {
       }
     });
   }
+  editMenu(dashView.webContents, () => dash);
   // The clicks and keys Windows delivers to the dashboard's page (userInput, for files.js).
   dashView.webContents.on('input-event', (_e, input) => {
     const now = Date.now();

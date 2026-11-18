@@ -11,7 +11,7 @@ const KEY = 'noteWindows';
 const NAME = /^[A-Za-z0-9-]{1,100}$/;
 const FLUSH = 'return window.Notes && Notes.flush ? await Notes.flush() : true';
 
-function createNoteWindows({ BrowserWindow, screen, dialog, WEB, settings, webPrefs, bootFor, checkPages, ownerView, getDash, pin, uiScale, streamerOn, quitting, bg, opacity }) {
+function createNoteWindows({ BrowserWindow, screen, dialog, WEB, settings, webPrefs, bootFor, checkPages, ownerView, getDash, pin, uiScale, streamerOn, quitting, bg, opacity, editMenu }) {
   const open = new Map(); // note id -> its window's record
   let restored = false;
   let watching = false;
@@ -118,6 +118,8 @@ function createNoteWindows({ BrowserWindow, screen, dialog, WEB, settings, webPr
     bootFor(win.webContents, { noteWindow: { id, onTop: n.onTop, streamer: streamerOn() } });
     win.setMenuBarVisibility(false);
     win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+    // A right click on its text: Cut, Copy, Paste, Select All (main.js's editMenu).
+    if (editMenu) editMenu(win.webContents, win);
     win.webContents.on('did-finish-load', () => !win.isDestroyed() && win.webContents.setZoomFactor(uiScale()));
     // Its page's process died: loaded again, it asks the dashboard for its note anew.
     win.webContents.on('render-process-gone', () => setTimeout(() => !n.finished && !win.isDestroyed() && win.webContents.reload(), 500));
