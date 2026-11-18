@@ -11,7 +11,7 @@ const KEY = 'noteWindows';
 const NAME = /^[A-Za-z0-9-]{1,100}$/;
 const FLUSH = 'return window.Notes && Notes.flush ? await Notes.flush() : true';
 
-function createNoteWindows({ BrowserWindow, screen, dialog, WEB, settings, webPrefs, bootFor, checkPages, ownerView, getDash, pin, uiScale, streamerOn, quitting, bg }) {
+function createNoteWindows({ BrowserWindow, screen, dialog, WEB, settings, webPrefs, bootFor, checkPages, ownerView, getDash, pin, uiScale, streamerOn, quitting, bg, opacity }) {
   const open = new Map(); // note id -> its window's record
   let restored = false;
   let watching = false;
@@ -108,7 +108,9 @@ function createNoteWindows({ BrowserWindow, screen, dialog, WEB, settings, webPr
     const frame = startFrame(saved.frame);
     const win = new BrowserWindow({
       // Opaque: Electron leaves WS_THICKFRAME off a transparent frameless window on Windows, so that one can't be resized.
+      // See-through all the same, as a terminal window is (main.js's WINDOW_OPACITY): the whole window, not pixel by pixel.
       ...frame, minWidth: 280, minHeight: 160, frame: false, transparent: false, resizable: true, show: false,
+      opacity: (opacity && opacity()) || 1,
       hasShadow: true, backgroundColor: (bg && bg()) || '#000000', title: 'Note', autoHideMenuBar: true, minimizable: false, maximizable: false,
       fullscreenable: false, skipTaskbar: false, webPreferences: webPrefs(),
     });

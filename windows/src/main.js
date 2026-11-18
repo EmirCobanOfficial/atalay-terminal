@@ -626,6 +626,7 @@ const toNotices = (call) => runPanel(panels.notices, `window.__messages && __mes
 const noteWindows = createNoteWindows({
   BrowserWindow, screen, dialog, WEB, settings, webPrefs, bootFor, checkPages, ownerView: () => dashView, getDash: () => dash,
   pin: pinToDash, uiScale: () => themes.uiScale(), streamerOn: () => streamer.on, quitting: () => quitting, bg: () => themes.color('--bg'),
+  opacity: () => WINDOW_OPACITY,
 });
 const feedPanel = createFeedPanel({ BrowserWindow, WEB, webPrefs, bootFor, checkPages, home: () => chatHome() });
 
@@ -1534,12 +1535,17 @@ const samePath = (a, b) => !!a && !!b && path.resolve(a).toLowerCase() === path.
  * that outlived the app attaches to it instead (`claude`: whether it was started as a chat), hidden unless `show`.
  */
 let chatCascade = 0;
+// How much of what's behind shows through a terminal or note window: 90% opaque, no frost, as the Mac's
+// (ChatWindowController.windowOpacity). Windows can't make a framed window see-through pixel by pixel (Electron's
+// `transparent` needs a frameless one, which can't be resized), so the whole window is 90% opaque, its text and title bar
+// too, where the Mac keeps the text solid.
+const WINDOW_OPACITY = 0.9;
 function openChatWindow({ id = crypto.randomUUID(), cwd, claudeArgs, claude = !!claudeArgs, sessionId, title, show = true }) {
   const home = chatHome(), area = home.workArea;
   const cascade = (chatCascade++ % 6) * 28;
   const place = wholeOnDisplay({ x: area.x + 120 + cascade, y: area.y + 80 + cascade, width: 960, height: 640 }, home);
   const win = new BrowserWindow({
-    ...place, minWidth: 560, minHeight: 360,
+    ...place, minWidth: 560, minHeight: 360, opacity: WINDOW_OPACITY,
     title: title || 'Orbiterm', backgroundColor: themes.color('--code-bg'), show: false, autoHideMenuBar: true,
     ...(PROBE ? { x: -32000, y: -32000, frame: false } : {}),
     webPreferences: webPrefs(),
