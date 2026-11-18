@@ -1855,6 +1855,23 @@ function raidStage(radius) {
   resetView();
   return true;
 }
+// Where the core is on the map, in px of the map's box, and its radius (attack.js draws the lock-on reticle onto it); null
+// when the map isn't drawn or the core is behind the eye.
+function corePoint() {
+  if (!SIZE.w || !ACT.visible) return null;
+  toScreen(tmp.p.set(0, 0, 0), _stage);
+  if (_stage.z >= 1) return null;
+  return { x: _stage.x, y: _stage.y, r: K.CORE_R * pxPerUnit(tmp.p) };
+}
+// Where a friend's raiding ship is on the map, in px of the map's box, and half its length there (attack.js keeps its
+// taunt over it); null when there's none drawn or it's behind the eye.
+function shipPoint() {
+  const s = raid.ship();
+  if (!s || !SIZE.w || !ACT.visible) return null;
+  toScreen(tmp.p.copy(s.at), _stage);
+  if (_stage.z >= 1) return null;
+  return { x: _stage.x, y: _stage.y, r: 0.5 * s.length * pxPerUnit(tmp.p) };
+}
 // The blast of the core blowing up reaches the rest of the map, harmlessly: the stations flash and the sessions hurry
 // on a moment.
 function raidJolt() {
@@ -2015,5 +2032,5 @@ function focusRunaway(pid) {
 }
 setCinematic(cineOn);
 // QUALITY too: the power save switch's tooltip (app.js) gives its numbers.
-window.Orbit = { quality: QUALITY, state: onState, event: onEvent, status: onStatus, seed, activity, power, terminals: syncShips, terminalGone: shipGone, cinematic: startCinematic, idle: systemIdle, runaways: syncBoxes, focusRunaway, blowUp, relabel, attack: raid.start };
+window.Orbit = { quality: QUALITY, state: onState, event: onEvent, status: onStatus, seed, activity, power, terminals: syncShips, terminalGone: shipGone, cinematic: startCinematic, idle: systemIdle, runaways: syncBoxes, focusRunaway, blowUp, relabel, attack: raid.start, corePoint, shipPoint };
 for (const [fn, args] of R.MAPQ.splice(0)) window.Orbit[fn](...args);

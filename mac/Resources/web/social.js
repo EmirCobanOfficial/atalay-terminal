@@ -111,6 +111,19 @@ window.Social = (() => {
       case 'status':
         S.me.status = ev.status;
         break;
+      // A friend's spaceship-attack switch or shield changed (or yours: your shield; attack.js greys the buttons).
+      case 'attack_state': {
+        if (ev.id === S.me.id) {
+          if ('shieldUntil' in ev) S.me.shieldUntil = ev.shieldUntil;
+          break;
+        }
+        const f = friend(ev.id);
+        if (!f) break;
+        f.attack = { ...(f.attack || {}) };
+        if ('off' in ev) f.attack.off = !!ev.off;
+        if ('shieldUntil' in ev) f.attack.shieldUntil = ev.shieldUntil;
+        break;
+      }
       case 'message': {
         const f = friend(ev.with);
         if (!f) break;

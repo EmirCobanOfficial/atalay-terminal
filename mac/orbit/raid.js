@@ -232,8 +232,8 @@ export function makeRaid(c) {
   }
 
   /** Starts one. Null when the map can't show it now (not drawn, or one is already on); else when its moments come,
-   *  in ms from now: the shots, the core blowing up, the ship leaving, the pieces starting back, the core whole again,
-   *  the end. */
+   *  in ms from now: the ship on its orbit, the shots, the core blowing up, the ship leaving and out of sight, the
+   *  pieces starting back, the core whole again, the end. */
   function start() {
     if (run || !c.SIZE.w || !c.ACT.visible || document.hidden) return null;
     // Its orbit is laid out for the eye: for the view as it is, or for the default one when the camera goes there.
@@ -265,7 +265,7 @@ export function makeRaid(c) {
       shook: false, jolted: false, drawn: 0,
     };
     c.poke(2600);
-    return { fire: T.FIRE, boom: T.BOOM, leave: T.LEAVE, reform: T.REFORM, whole: T.WHOLE, end: T.END };
+    return { enter: T.ENTER, fire: T.FIRE, boom: T.BOOM, leave: T.LEAVE, gone: T.GONE, reform: T.REFORM, whole: T.WHOLE, end: T.END };
   }
 
   // Everything the raid made goes, and what it touched is as it was: the core in sight at its own size, the map's light.
@@ -549,5 +549,8 @@ export function makeRaid(c) {
     }
   }
 
-  return { start, update, draw, active: () => !!run };
+  // The ship now, while it's drawn: where it is and its length (attack.js puts its taunt over it).
+  const ship = () => (run && run.ship.group.visible ? { at: run.ship.group.position, length: run.size * RAIDER_LENGTH } : null);
+
+  return { start, update, draw, ship, active: () => !!run };
 }

@@ -142,6 +142,42 @@
 .mn-ctx button { padding: 6px 9px; border: 0; border-radius: 4px; background: transparent; color: var(--txt); font: inherit; text-align: left; cursor: pointer; }
 .mn-ctx button:hover { background: rgba(var(--glow), 0.16); color: var(--hi); }
 .mn-ctx button.danger { color: var(--red); }
+/* A spaceship at a friend (attack.js): dimmed, still reachable by keyboard, while they can't be fired at (the reason is on it). */
+.mn-ctx button.atk-off, .mn-ctx button.atk-off:hover, .atk-fire.atk-off, .atk-fire.atk-off:hover, .atk-pv.atk-off, .atk-pv.atk-off:hover { opacity: 0.45; background: transparent; color: var(--txt); cursor: not-allowed; }
+.atk-fire { min-width: 28px; min-height: 28px; }
+.atk-fire.locking, .atk-pv.locking, .mn-ctx button.locking { width: auto; padding-inline: 10px; color: var(--hi); font-size: 12px; white-space: nowrap; }
+.fr-row:has(.atk-fire.locking) .fr-btns { opacity: 1; }
+.atk-fire:focus-visible, .atk-pv:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* Your shield after an attack: small and calm, on your card and your profile. */
+.atk-shield { display: inline-flex; align-items: center; gap: 5px; margin-left: 8px; color: var(--accent-pale, var(--txt2)); font: 600 12px/16px var(--font-mono); font-variant-numeric: tabular-nums; vertical-align: middle; }
+.atk-shield[hidden] { display: none; }
+.atk-shield svg { width: 13px; height: 13px; fill: rgba(var(--accent-rgb), 0.16); stroke: currentColor; stroke-width: 1.4; stroke-linejoin: round; }
+.atk-shield b { font-weight: 600; }
+/* The reticle closing onto the map's centre while a lock builds (attack.js reticle()): four corner brackets, orange while
+   closing, amber once locked, steady until the blast; no flashing. Warm fixed colours, as the DANGER strip's. */
+#atk-ret { position: fixed; z-index: 47; transform: translate(-50%, -50%); pointer-events: none; }
+#atk-ret .rt { position: absolute; inset: 0; --c: #ff6a1a; transform: scale(1.4); animation: atk-close 1s cubic-bezier(0.2, 0.7, 0.3, 1) backwards; }
+#atk-ret.locked .rt { --c: #ffb020; animation: atk-seat 0.2s ease-out; }
+#atk-ret .rt i { position: absolute; width: 24%; height: 24%; border: 0 solid var(--c); transition: border-color 0.2s; filter: drop-shadow(0 0 4px rgba(255, 120, 20, 0.6)); }
+#atk-ret .b1 { left: 0; top: 0; border-width: 3px 0 0 3px; }
+#atk-ret .b2 { right: 0; top: 0; border-width: 3px 3px 0 0; }
+#atk-ret .b3 { right: 0; bottom: 0; border-width: 0 3px 3px 0; }
+#atk-ret .b4 { left: 0; bottom: 0; border-width: 0 0 3px 3px; }
+@keyframes atk-close { from { transform: scale(3); opacity: 0.2; } to { transform: scale(1.4); opacity: 1; } }
+@keyframes atk-seat { from { transform: scale(1.52); } to { transform: scale(1.4); } }
+#atk-ret.still .rt { animation: none; }
+@media (prefers-reduced-motion: reduce) { #atk-ret .rt { animation: none; } }
+/* The raiding ship's taunt (attack.js taunt()): a comic speech bubble kept over the ship, its tail pointing down at it.
+   The DANGER strip's dark plate, orange edge and cream words, slanted a little; it pops up once, then holds still. */
+#atk-taunt { position: fixed; z-index: 47; transform: translate(-50%, -100%); pointer-events: none; }
+#atk-taunt[hidden] { display: none; }
+#atk-taunt span { position: relative; display: block; padding: 7px 14px 8px; border: 2px solid #ff6a1a; border-radius: 14px; background: rgba(18, 7, 2, 0.94); color: #fff1de; font: 800 15px/1.2 var(--font-sans); letter-spacing: 0.02em; white-space: nowrap; transform: rotate(-3deg); box-shadow: 0 0 16px rgba(255, 96, 20, 0.35), 0 8px 22px rgba(0, 0, 0, 0.55); animation: atk-pop 0.26s cubic-bezier(0.3, 1.6, 0.5, 1) backwards; }
+#atk-taunt span::after { content: ''; position: absolute; left: 50%; bottom: -9px; width: 14px; height: 14px; margin-left: -7px; border: solid #ff6a1a; border-width: 0 2px 2px 0; border-bottom-right-radius: 3px; background: rgba(18, 7, 2, 0.94); transform: rotate(45deg); }
+#atk-taunt.out span { opacity: 0; transform: rotate(-3deg) scale(0.85); transition: opacity 0.25s, transform 0.25s; }
+@keyframes atk-pop { from { opacity: 0; transform: rotate(-3deg) scale(0.4); } }
+#atk-taunt.still span { animation: none; }
+#atk-taunt.still.out span { transition: none; }
+@media (prefers-reduced-motion: reduce) { #atk-taunt span { animation: none; } #atk-taunt.out span { transition: none; } }
 .mn-ctx button.danger:hover { background: rgba(var(--red-rgb), 0.14); }
 .mn-ctx hr { width: 100%; margin: 4px 0; border: 0; border-top: 1px solid rgba(var(--glow), 0.2); }
 .mn-confirm { position: absolute; inset: 0; z-index: 40; display: flex; align-items: center; justify-content: center; border-radius: 12px; background: rgba(var(--deep-rgb), 0.6); -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px); animation: slidein 0.14s ease-out; }
@@ -666,6 +702,11 @@
 .badge-art.locked { filter: grayscale(1) brightness(0.42) contrast(0.95); }
 .bdg-mini { display: inline-flex; align-items: center; margin: 0 4px 0 6px; vertical-align: -4px; }
 .bdg-mini .badge-art { filter: drop-shadow(0 0 3px rgba(0, 0, 0, 0.6)); }
+/* The Orb, the app's money, after your name and badge in the top bar (cloud.js). */
+.brand b .orb-chip { display: inline-flex; align-items: center; gap: 3px; margin-left: 8px; vertical-align: -3px; }
+.brand b .bdg-mini + .orb-chip { margin-left: 4px; }
+.brand b .orb-chip img { width: 18px; height: 18px; filter: drop-shadow(0 0 3px rgba(0, 0, 0, 0.6)); }
+.brand b .orb-n { color: var(--hi); font-size: 0.62em; font-weight: 700; letter-spacing: 0.04em; font-variant-numeric: tabular-nums; text-shadow: 0 0 8px rgba(255, 40, 60, 0.45); }
 .bdg-sum { margin: 0 0 10px; color: var(--txt2); line-height: 1.5; }
 .bdg-sum b { color: var(--hi); }
 .bdg-guest { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 10px 12px; border: 1px dashed rgba(var(--accent-rgb), 0.45); border-radius: 8px; }
@@ -810,3 +851,25 @@ img.pf-pic, img.me-pic { cursor: zoom-in; }
 .mas-rm-wrap[hidden] { display: none; }
 .mas-remove { margin: 0; padding: 0.25rem 0; border: 0; background: transparent; color: var(--dim); font: 500 0.8125rem/1.2 var(--font-sans); text-decoration: underline; text-underline-offset: 0.2em; cursor: pointer; box-shadow: none; }
 .mas-remove:hover { color: var(--txt); background: transparent; box-shadow: none; }
+
+/* Damage on the cards (attack.js damage()): cracked glass drawn over them, a glitch, then it seals. Warm cream cracks with
+   a dark edge, a faint amber glass tint; glitch edges in amber and a muted teal. A box that takes no clicks, under the
+   banner. Only transform and opacity move. */
+#atk-dmg { position: fixed; inset: 0; z-index: 49; pointer-events: none; overflow: hidden; }
+.atk-hit { position: fixed; overflow: hidden; opacity: 0; background: radial-gradient(circle at var(--ix) var(--iy), rgba(255, 190, 110, 0.14), rgba(255, 150, 60, 0.04) 60%, transparent 80%);
+  animation: atk-hit-in 0.12s linear var(--wait) forwards, atk-hit-out var(--fade) ease-in calc(var(--wait) + var(--end)) forwards; }
+.atk-hit svg { position: absolute; inset: 0; width: 100%; height: 100%; fill: none; stroke-linecap: round; stroke-linejoin: round; }
+.atk-hit .dk { stroke: rgba(10, 4, 1, 0.85); stroke-width: 3; stroke-dasharray: 1; stroke-dashoffset: 1; animation: atk-crack var(--crack) ease-out var(--wait) forwards; }
+.atk-hit .lt { stroke: #ffe9cc; stroke-width: 1.1; stroke-dasharray: 1; stroke-dashoffset: 1; animation: atk-crack var(--crack) ease-out var(--wait) forwards; }
+.atk-hit .fx { position: absolute; inset: 0; opacity: 0; }
+.atk-hit .rg { position: absolute; inset: 0; border: 2px solid; mix-blend-mode: screen; }
+.atk-hit .rg.a { border-color: rgba(255, 120, 30, 0.7); }
+.atk-hit .rg.b { border-color: rgba(70, 190, 200, 0.55); }
+.atk-hit .sl { position: absolute; left: 0; right: 0; background: rgba(255, 200, 140, 0.16); border-top: 1px solid rgba(255, 150, 60, 0.5); }
+@keyframes atk-hit-in { to { opacity: 1; } }
+@keyframes atk-hit-out { from { opacity: 1; } to { opacity: 0; } }
+@keyframes atk-crack { to { stroke-dashoffset: 0; } }
+/* Less motion asked: the cracks just fade in and out. */
+.atk-hit.still { animation: atk-hit-in var(--still) linear var(--wait) forwards, atk-hit-out var(--still) linear calc(var(--wait) + var(--end)) forwards; }
+.atk-hit.still .dk, .atk-hit.still .lt { animation: none; stroke-dashoffset: 0; }
+@media (prefers-reduced-motion: reduce) { .atk-hit .dk, .atk-hit .lt { animation: none; stroke-dashoffset: 0; } }

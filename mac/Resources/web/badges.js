@@ -137,7 +137,9 @@ window.Badges = (() => {
     if (!name) return;
     name.querySelector(':scope > .bdg-mini')?.remove();
     const b = mine && mine.featured && mine.badges.find((x) => x.id === mine.featured);
-    if (b && b.tier) name.insertAdjacentHTML('beforeend', small(b, 18));
+    // Before the Orb (cloud.js) when it's there: name, badge, then the money.
+    const orb = name.querySelector(':scope > .orb-chip');
+    if (b && b.tier) (orb || name).insertAdjacentHTML(orb ? 'beforebegin' : 'beforeend', small(b, 18));
     if (b && lands(b.id)) name.querySelector(':scope > .bdg-mini')?.classList.add('pop');
   }
 

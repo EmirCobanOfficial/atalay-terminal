@@ -508,6 +508,8 @@ window.Profile = (() => {
       ? `<button type="button" class="pp-edit" data-me="edit" aria-expanded="${!!look}">${PV_ICONS.pen}<span>Edit profile</span></button>`
       : '<div class="pv-acts">' + (isFriend
         ? `<button type="button" class="bd-primary" data-pv-act="msg">${PV_ICONS.msg}Message</button>` +
+          // A spaceship at them (attack.js): secondary, dimmed with its reason when they can't be fired at.
+          `${window.Attack?.button && f ? window.Attack.button(f, 'pv') : ''}` +
           `<button type="button" class="bd-glassbtn pv-more" data-pv-act="more" aria-label="More: set a nickname, remove friend" title="More">${PV_ICONS.more}</button>`
         : relation === 'requested'
           ? '<span class="pv-state">Request sent</span>'
@@ -587,7 +589,7 @@ window.Profile = (() => {
       `${acts}<div class="pp-who">${nameHTML}` +
       `<p class="pp-rank"><span class="pp-dl"><span>${esc(r.name.toUpperCase())}</span><span>LEVEL ${level}</span></span></p>` +
       `<div class="pf-bar pp-bar" role="progressbar" aria-label="XP in this level" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(pct)}"><i style="width:${pct.toFixed(1)}%"></i></div>` +
-      `${xpLine}${fireChip}</div>${standHTML}<div class="me-show"></div>` +
+      `${xpLine}${fireChip}${isSelf && window.Attack?.shieldChip ? window.Attack.shieldChip() : ''}</div>${standHTML}<div class="me-show"></div>` +
       (!isHidden ? (window.ProfileStats?.ai(targetKey) || '') : '') +
       (linksHTML ? `<div class="pp-links">${linksHTML}</div>` : '') +
       `${themeRow}${statusHTML}</section>`;
