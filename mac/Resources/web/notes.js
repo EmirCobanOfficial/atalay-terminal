@@ -719,8 +719,9 @@ window.Notes = (() => {
   let sel = [0, 0];
   let firstA = null; // the block a first Ctrl+A selected the text of: the next one selects every block
 
-  // The blocks as Markdown: what a copy of all of them gives, and what pasting it back makes into the same blocks.
-  function toText(list) {
+  // The blocks as Markdown: what a copy of all of them gives, and what pasting it back makes into the same blocks. Those
+  // from `from` on: the ones before only count, so on Windows a numbered list's items keep the numbers they show.
+  function toText(list, from = 0) {
     const counts = [];
     return list
       .map((b) => {
@@ -738,6 +739,7 @@ window.Notes = (() => {
         if (b.type === 'divider') return '---';
         return pad + b.text;
       })
+      .slice(from)
       .join('\n');
   }
 
@@ -771,7 +773,7 @@ window.Notes = (() => {
     allSel = true;
     sel = mark(i, j);
     ed.classList.add('blocksel');
-    clip.value = toText(blocks.slice(sel[0], sel[1] + 1));
+    clip.value = MAC ? toText(blocks.slice(sel[0], sel[1] + 1)) : toText(blocks.slice(0, sel[1] + 1), sel[0]);
     clip.focus({ preventScroll: true });
     clip.select();
   }
@@ -804,7 +806,10 @@ window.Notes = (() => {
 
   // A drag that leaves its block for another selects whole blocks, the way Notion does: the browser's own selection
   // can't go from one block's editor into the next. Back in the block it began in, it's the text selection again.
-  function dragFrom(start) {
+  // On Windows a press in the empty space under the last block (`start` past the blocks) drags from there: up over a
+  // block, the blocks from that one to the last are selected; let go without one, it's the click it was (`click`).
+  function dragFrom(start, click) {
+    const under = start >= blocks.length;
     let at = start;
     const move = (ev) => {
       if (!(ev.buttons & 1)) return up();
@@ -813,8 +818,11 @@ window.Notes = (() => {
       let i = over && over.parentElement === ed ? idx(over.dataset.id) : -1;
       if (i < 0) {
         const r = ed.getBoundingClientRect();
+        const end = !MAC && ed.lastElementChild ? ed.lastElementChild.getBoundingClientRect().bottom : Infinity;
         if (ev.clientY < r.top) i = 0;
-        else if (ev.clientY > r.bottom) i = blocks.length - 1;
+        // Under the last block (out under the page; on Windows in the page's space below it too): the last block, so a
+        // quick drag down past it still takes it; or nothing, for a drag that began there.
+        else if (ev.clientY > r.bottom || ev.clientY >= end) i = under ? start : blocks.length - 1;
         else return;
       }
       at = i;
@@ -829,7 +837,8 @@ window.Notes = (() => {
     const up = () => {
       removeEventListener('mousemove', move, true);
       removeEventListener('mouseup', up, true);
-      if (at !== start) selectBlocks(start, at);
+      if (at !== start) selectBlocks(Math.min(start, blocks.length - 1), at);
+      else if (click) click();
     };
     addEventListener('mousemove', move, true);
     addEventListener('mouseup', up, true);
@@ -1038,12 +1047,18 @@ window.Notes = (() => {
     const lastEl = ed.lastElementChild;
     if (lastEl && e.clientY < lastEl.getBoundingClientRect().bottom) return;
     e.preventDefault();
-    const last = blocks[blocks.length - 1];
-    if (last.type === 'p' && !last.text) return place(textEl(last.id), 0);
-    record('op');
-    const n = mk('p');
-    blocks.push(n);
-    changed({ id: n.id, at: 0 });
+    const under = () => {
+      const last = blocks[blocks.length - 1];
+      if (last.type === 'p' && !last.text) return place(textEl(last.id), 0);
+      record('op');
+      const n = mk('p');
+      blocks.push(n);
+      changed({ id: n.id, at: 0 });
+    };
+    // On Windows a drag up from under the last block selects the blocks it goes over (no fresh line made for it); a
+    // click there puts the cursor under them once it's let go.
+    if (!MAC && e.button === 0 && !e.shiftKey) dragFrom(blocks.length, under);
+    else under();
   });
 
   ed.addEventListener('focusout', () => {
