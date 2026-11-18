@@ -4,7 +4,7 @@
 // (engine.js, cloud.js, git.js, themes.js, terminals.js), the keys and the updates.
 const {
   app, BaseWindow, BrowserWindow, WebContentsView, webContents, ipcMain, dialog, Menu, shell, screen, powerMonitor, nativeTheme, net,
-  clipboard, nativeImage, safeStorage, protocol,
+  clipboard, nativeImage, safeStorage, protocol, session,
 } = require('electron');
 const path = require('path');
 const fs = require('fs');
@@ -755,6 +755,24 @@ function ownPage(url) {
     return rel && !rel.startsWith('..') && !path.isAbsolute(rel);
   });
 }
+
+// Permissions. Electron grants every one a page asks for unless the app decides: a script that got into a page could take
+// the camera, the microphone or the location without a word, or hand a link to another app's handler from a frame
+// will-navigate never sees. The Mac's WKWebView refuses them all. Here too: only the clipboard (the copy buttons, the
+// editor's Paste), only for the app's own pages; Viktoria's window gets nothing, and neither does anything without a page
+// (a worker). USB, HID, serial and Bluetooth devices: never. Every session the app makes (hers too) gets this.
+const PERMITTED = new Set(['clipboard-sanitized-write', 'clipboard-read']);
+function permitted(wc, permission, url) {
+  if (!PERMITTED.has(permission) || !wc || wc.isDestroyed() || mascot.has(wc)) return false;
+  return ownPage(url || wc.getURL());
+}
+function guardSession(ses) {
+  ses.setPermissionRequestHandler((wc, permission, callback, details) => callback(permitted(wc, permission, details && details.requestingUrl)));
+  ses.setPermissionCheckHandler((wc, permission, _origin, details) => permitted(wc, permission, details && details.requestingUrl));
+  ses.setDevicePermissionHandler(() => false);
+}
+app.on('session-created', guardSession);
+
 app.on('web-contents-created', (_e, contents) => {
   // The keys Viktoria's hide of a terminal might still have in flight go nowhere (parkKeys).
   contents.on('before-input-event', (e, input) => {
@@ -2834,6 +2852,7 @@ let quitting = false;
 app.on('second-instance', () => showDashboard());
 
 app.whenReady().then(() => {
+  guardSession(session.defaultSession); // again, should it have been made before 'session-created' was listened to
   if (PROBE && app.dock) app.dock.hide();
   mascotAsset.init(); // the pak from an earlier run is hashed (off the main thread) before she may come up
   buildMenu();
