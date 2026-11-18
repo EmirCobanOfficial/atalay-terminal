@@ -2785,19 +2785,13 @@ function buildMenu() {
         // The dashboard's Settings, on the category used last (the Mac keeps it in the app menu; no key, as there).
         { label: 'Settings…', click: () => openSettings() },
         { type: 'separator' },
-        // Ctrl+W, as a tab closes in Chrome (the Mac's ⌘W): the terminal in front ends at once, whatever runs in it
-        // (Claude, Codex, Antigravity, a shell); its planet or car leaves the orbit and its window goes, as End does.
-        // Any other window closes as before.
-        {
-          label: 'Close the Terminal in Front', accelerator: 'CmdOrCtrl+W',
-          click: () => {
-            const found = focusedChat();
-            if (found && terminals.has(found[0])) return endTerminal(found[0]);
-            closeFocused();
-          },
-        },
-        // Ctrl+Shift+W (the Mac's ⇧⌘W): the window only closes, what runs in it goes on, a click on the orbit brings it back.
-        { label: 'Close Window', accelerator: 'CmdOrCtrl+Shift+W', click: () => closeFocused() },
+        // Ctrl+W (the Mac's ⌘W, which hides again since the Mac's d7e69be): the window in front closes, and a terminal's
+        // only hides: what runs in it (Claude, Codex, Antigravity, a shell) goes on as a planet or car on the orbit, and a
+        // click brings it back. A terminal ends with its End button or Window > End This Terminal.
+        { label: 'Close Window', accelerator: 'CmdOrCtrl+W', click: () => closeFocused() },
+        // Ctrl+Shift+W (the Mac's ⇧⌘W) does the same. Hidden, as one item on the menu is enough: on Windows a hidden
+        // item's key still works (acceleratorWorksWhenHidden is the Mac's).
+        { label: 'Close Window', accelerator: 'CmdOrCtrl+Shift+W', visible: false, click: () => closeFocused() },
         { role: 'quit', label: 'Quit', accelerator: 'CmdOrCtrl+Q' },
       ],
     },
