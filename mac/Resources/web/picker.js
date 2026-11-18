@@ -230,10 +230,10 @@
   // ---------- the shortcuts around the picker ----------
 
   function tile(s, i, side, delay) {
-    const cls = `sc-tile ${side}${s ? '' : ' empty'}${delay == null ? '' : ' in'}`;
+    const cls = `sc-tile ${side}${s ? (s.missing ? ' missing' : '') : ' empty'}${delay == null ? '' : ' in'}`;
     const anim = delay == null ? '' : ` style="animation-delay:${delay}ms"`;
     const shown = s ? s.display || tild(s.dir) : '';
-    const tip = s ? esc(shown) : `Shortcut ${i + 1}: choose a folder`;
+    const tip = s ? esc(shown) + (s.missing ? ' (folder not found)' : '') : `Shortcut ${i + 1}: choose a folder`;
     // Under the name, the folder it's in (the name is the path's end).
     const body = s
       ? `<svg class="fold" viewBox="0 0 24 24"><path class="fd-fill" d="${FOLDER}"/><path class="fd" d="${FOLDER}"/><text x="12" y="16.4">&gt;_</text></svg>

@@ -2707,9 +2707,15 @@ ipcMain.handle('atl:post', async (e, name, body) => {
         }
         if (body.type === 'done') return hideOverlay(), true;
         if (body.type === 'newTerminal') {
-          const dir = overlay.expand(String(body.dir || ''));
+          const asked = overlay.expand(String(body.dir || ''));
           hideOverlay();
-          if (dir && fs.existsSync(dir)) openChatWindow({ cwd: dir, claudeArgs: null, title: path.basename(dir) });
+          if (!asked) return true;
+          // A shortcut's folder renamed since the page read it: the slot follows it, and the terminal opens there.
+          const dir = await overlay.locate(asked);
+          if (dir) openChatWindow({ cwd: dir, claudeArgs: null, title: path.basename(dir) });
+          // Gone (deleted, moved elsewhere): the user is told, as the Mac's "Folder not found" does, and the shortcut stays.
+          // No parent window: the dashboard may be minimized while the wheel opened over a chat.
+          else dialog.showMessageBox({ type: 'warning', message: 'Folder not found', detail: `${tildify(asked)}\n\nIt was moved or deleted. Right-click its shortcut to change or remove it.`, noLink: true });
           return true;
         }
         return await overlay.handle(body);

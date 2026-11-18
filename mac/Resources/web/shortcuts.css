@@ -42,6 +42,9 @@
 @keyframes sc-pulse { from { transform: scale(1); opacity: 0.9; } to { transform: scale(1.9); opacity: 0; } }
 @keyframes sc-veil { from { opacity: 0; } }
 
+/* a slot whose folder isn't found (the Windows app says so: moved or deleted): dimmed, kept until changed or removed */
+.pie .slice.missing .ico, .pie .slice.missing .ico-fill, .pie .slice.missing text:not(.num) { opacity: 0.4; }
+
 /* empty slots: dashed slice with a spinning plus */
 .pie .slice.empty path.bg { fill: rgba(var(--panel-rgb), 0.72); stroke: rgba(var(--accent-rgb), 0.45); stroke-dasharray: 5 4; }
 .pie .slice.empty .plus-ring { fill: rgba(var(--accent-rgb), 0.08); stroke: rgba(var(--accent-rgb), 0.6); stroke-width: 1.2; stroke-dasharray: 3 3; transform-box: fill-box; transform-origin: center; }

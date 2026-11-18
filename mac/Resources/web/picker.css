@@ -164,6 +164,8 @@
 .sc-tile:hover .fold .fd { stroke: var(--hi); }
 
 /* an empty place: dashed, a plus that spins under the pointer */
+/* its folder isn't found (the Windows app says so): dimmed, kept until changed or removed */
+.sc-tile.missing .fold, .sc-tile.missing .nm, .sc-tile.missing .sub { opacity: 0.4; }
 .sc-tile.empty { border-style: dashed; border-color: rgba(var(--accent-rgb), 0.45); background: rgba(var(--panel-rgb), 0.84); }
 .sc-tile.empty .plus { width: 26px; height: 26px; overflow: visible; }
 .sc-tile.empty .plus circle { fill: rgba(var(--accent-rgb), 0.08); stroke: rgba(var(--accent-rgb), 0.6); stroke-width: 1.2; stroke-dasharray: 3 3; transform-origin: 12px 12px; }
