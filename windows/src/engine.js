@@ -2935,7 +2935,10 @@ class RadarEngine {
       try {
         j = JSON.parse(fs.readFileSync(file, 'utf8'));
       } catch {
-        continue; // half written: read again next time
+        // Half written: read again next time. The chat is still what it said last (unseen, its planet would blow up
+        // and come back).
+        if (cached && cached.chat && this.running(cached.pid, cached.procStart)) seen.add(cached.sid);
+        continue;
       }
       if (!isObj(j) || typeof j.sessionId !== 'string' || typeof j.pid !== 'number') continue;
       const sid = j.sessionId;
@@ -2960,6 +2963,7 @@ class RadarEngine {
       S.regUpdated = updated;
       this.stateDirty = true;
       S.live = true;
+      S.endedAt = 0;
       S.pid = pid;
       if (typeof j.name === 'string') S.name = j.name;
       // A file without a status says nothing about work: idle until Claude says busy (its transcript still shows real
@@ -3060,8 +3064,8 @@ class RadarEngine {
   }
 
   // The other AI tools running (Codex, Antigravity…; runaways.js finds them in its process readings), each a session as
-  // on the Mac: busy while it uses the CPU, idle once it has been quiet for 10 seconds, ended for two minutes after it
-  // quits so its window turns back into a terminal. Codex's and Antigravity's own records tell more (readCodexLog,
+  // on the Mac: busy while it uses the CPU, idle once it has been quiet for 10 seconds; one that quits leaves the
+  // dashboard at once and is kept two more minutes as ended, so its window turns back into a terminal. Codex's and Antigravity's own records tell more (readCodexLog,
   // readAntigravity): their turn, their calls and tokens, counted with Claude's (otherTool). No cost: no list price.
   setOthers(list) {
     const now = Date.now(), seen = new Set();
@@ -3075,6 +3079,10 @@ class RadarEngine {
         O = { id, tool: a.tool, pid: a.pid, cwd: '', cpu: 0, busy: false, busyUntil: 0, statusSince: now, firstTs: a.started, lastTs: now, endedAt: 0, hostTab: null, chain: [], ...(a.tool === 'Antigravity' ? { turnOpen: false } : {}) };
         resetOther(O);
         this.others.set(id, O);
+        this.stateDirty = true;
+      } else if (O.endedAt !== 0) {
+        // Missed for one look, not gone: it is the same session again, not an ended one for good.
+        O.endedAt = 0;
         this.stateDirty = true;
       }
       O.cpu = a.pct;
@@ -3958,6 +3966,10 @@ class RadarEngine {
       }
       // A compacted conversation shows once, as the session it continues in.
       if (S.supersededBy != null && !S.live) continue;
+      // Claude quit (Ctrl+C, /exit, its terminal closed): the chat leaves the dashboard now, its planet blowing up, as
+      // one ended from a chat window does (the Mac's 8699846). It stayed 30 more minutes as a dim "ended" planet. Its
+      // window hears it from live(), and it comes back if the conversation is resumed.
+      if (!S.live && S.endedAt > 0) continue;
       const mine = agentsBySession.get(S.id) || [];
       const status = this.shownStatus(S, mine, now);
       const host = this.hostLabel(S);
@@ -3998,6 +4010,9 @@ class RadarEngine {
     for (const O of this.others.values()) {
       if (this.dismissed.has(O.id) && this.dismissed.get(O.id) === O.pid) continue;
       const live = O.endedAt === 0;
+      // One that quit (Ctrl+C, its terminal closed) leaves the dashboard now, its planet blowing up, as Claude's does; it
+      // stayed two minutes as a dim "ended" planet. Only its window still hears of it (live() and setOthers keep it).
+      if (!live) continue;
       const { status, waiting } = this.otherStatus(O, now);
       const running = this.otherRunning(O);
       // Its subagents end with it.
