@@ -23,6 +23,9 @@ window.Settings = (() => {
       localStorage.setItem(k, v);
     } catch {}
   };
+  // The computer as this platform names it (the Windows app sets __platform, preload.js).
+  const WIN = window.__platform === 'win32';
+  const MACHINE = WIN ? 'PC' : 'Mac';
 
   // Line icons, drawn like the top bar's gear (16×16, stroked in the text's colour).
   const svg = (d) => `<svg class="st-ico" viewBox="0 0 16 16" aria-hidden="true">${d}</svg>`;
@@ -60,9 +63,7 @@ window.Settings = (() => {
 
   // The page cloud.js puts in the Settings window. c: { max, tag, ui, savers, archive, trash, keys }, what only cloud.js knows.
   function html(c) {
-    // The Claude page only where the app has the "mcp" handler (the Mac now; Windows once it has the MCP server).
-    const mcp = !!window.webkit?.messageHandlers?.mcp;
-    panes = PANES.filter((p) => (p.id !== 'shortcuts' || c.keys) && (p.id !== 'claude' || mcp));
+    panes = PANES.filter((p) => p.id !== 'shortcuts' || c.keys);
     current = last(); // the gear opens the one used last; openSettings picks its own after (show(pane, false))
     const pw = window.__powerSave, dc = window.__discord;
     const nav =
@@ -134,8 +135,9 @@ window.Settings = (() => {
       '<input type="search" class="ks-find" placeholder="search shortcuts" aria-label="Search shortcuts" spellcheck="false" autocomplete="off" autocapitalize="off"></label>' +
       '<div class="mn-keys"></div>';
 
-    // Claude Desktop and Claude Code on this Mac reaching the chats (Mcp.swift, the "mcp" handler): off until turned on, and the app
-    // asks in its own window when it is, so this page can only ask.
+    // Claude Desktop and Claude Code on this computer reaching the chats (Mcp.swift, the Windows app's mcp.js, the "mcp" handler):
+    // off until turned on, and the app asks in its own window when it is, so this page can only ask. The sign that it's on is
+    // in the Mac's menu bar, in Windows' system tray.
     const MCP_MODES = [['off', 'Off'], ['watch', 'Watch only'], ['write', 'Watch and type']];
     const claude =
       group('claude can use orbiterm',
@@ -148,8 +150,9 @@ window.Settings = (() => {
         row('as a Claude extension', "if Claude Desktop, or Dispatch on your phone, doesn't show Orbiterm · Claude asks you to confirm", '<button type="button" class="st-btn mcp-ext">install…</button>')) +
       '</div>' +
       '<p class="st-note mcp-error" hidden></p>' +
-      '<p class="st-note">Your notes follow Settings > Privacy > AI tools and my notes: Claude Desktop can read them, and edit them only if that is set to Read and edit.</p>' +
-      "<p class=\"st-note\">Claude only sees Claude Code, Codex and Antigravity chats, never a plain terminal. Passwords, keys and tokens are masked before anything leaves Orbiterm. It can't answer approvals, and can't type into a chat started with permissions bypassed. While it's on, a sign shows in the menu bar with a way to turn it off.</p>";
+      // Only where the notes' AI switch is (Settings > Privacy, the "notesai" handler).
+      (c.notesai ? '<p class="st-note">Your notes follow Settings > Privacy > AI tools and my notes: Claude Desktop can read them, and edit them only if that is set to Read and edit.</p>' : '') +
+      `<p class="st-note">Claude only sees Claude Code, Codex and Antigravity chats, never a plain terminal. Passwords, keys and tokens are masked before anything leaves Orbiterm. It can't answer approvals, and can't type into a chat started with permissions bypassed. While it's on, ${WIN ? 'an icon shows in the system tray' : 'a sign shows in the menu bar'} with a way to turn it off.</p>`;
 
     const privacy =
       group('friends and leaderboard',
@@ -187,7 +190,7 @@ window.Settings = (() => {
       pane('account', 'Account', '', account) +
       pane('appearance', 'Appearance', '', appearance) +
       pane('chats', 'Chats', '', chats) +
-      (mcp ? pane('claude', 'Claude', 'let Claude on this Mac see your AI chats, and type into them', claude) : '') +
+      pane('claude', 'Claude', `let Claude on this ${MACHINE} see your AI chats, and type into them`, claude) +
       (c.keys ? pane('shortcuts', 'Shortcuts', 'click a shortcut, then press the new keys · esc cancels, delete takes them off', shortcuts) : '') +
       pane('privacy', 'Privacy', 'what friends, the leaderboard and Discord can see', privacy) +
       pane('general', 'General', '', general) +
@@ -251,7 +254,10 @@ window.Settings = (() => {
     d.dataset.on = s.desktop ? '1' : '';
     c.textContent = s.code ? 'connected' : 'connect';
     c.disabled = !!s.code;
-    page.querySelector('.mcp-desktop-note').textContent = !s.desktopFound && !s.desktop ? "Claude Desktop isn't on this Mac" : s.desktop ? 'connected · quit and reopen Claude Desktop once if it was open' : 'adds Orbiterm to Claude Desktop · then quit and reopen it';
+    // Windows' Claude Desktop goes on in the tray when its window closes: it reads its settings again only once quit from there.
+    page.querySelector('.mcp-desktop-note').textContent = !s.desktopFound && !s.desktop ? `Claude Desktop isn't on this ${MACHINE}`
+      : s.desktop ? (WIN ? 'connected · quit Claude Desktop from its tray icon and reopen it once if it was open' : 'connected · quit and reopen Claude Desktop once if it was open')
+      : WIN ? 'adds Orbiterm to Claude Desktop · then quit it from its tray icon and reopen it' : 'adds Orbiterm to Claude Desktop · then quit and reopen it';
     page.querySelector('.mcp-code-note').textContent = s.code ? 'connected · new Claude Code chats can use it' : 'adds Orbiterm to Claude Code in your terminal';
   }
   async function mcpAsk(msg) {

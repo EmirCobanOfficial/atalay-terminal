@@ -92,6 +92,7 @@ const { createSavers } = require('./savers');
 const { createChatList } = require('./chatlist');
 const { createLimits } = require('./limits');
 const { createCodexHooks } = require('./codexhooks');
+const { createMcp } = require('./mcp');
 const { createNotesStore } = require('./notesstore');
 const { createStreamer } = require('./streamer');
 const { createNoteWindows } = require('./notewindow');
@@ -297,6 +298,8 @@ const engine = createEngine({
     pushChats();
     discord.update(engine.live());
     mascot.updateSessions(engine.live());
+    // The local MCP server's sessions (the Mac's McpHub.update).
+    mcp.update(engine.live());
   },
   onEvents(json) {
     toDash(`events(${json})`);
@@ -632,6 +635,18 @@ const noteWindows = createNoteWindows({
   opacity: () => WINDOW_OPACITY, editMenu,
 });
 const feedPanel = createFeedPanel({ BrowserWindow, WEB, webPrefs, bootFor, checkPages, home: () => chatHome() });
+// The local MCP server (mcp.js, the Mac's Mcp.swift): Claude Desktop and Claude Code on this PC see the AI sessions in the
+// app's terminals and, if allowed, type a prompt into one. One per build, as the session host is: the installed app's
+// `orbiterm`, a staging one's (packaged, or run from the sources with a profile of its own) `orbiterm-s`, a development
+// run's `orbiterm-d`. The notes' tools (item 7, notesai.js) register on it and pass their switch as notesAccess.
+const mcp = createMcp({
+  settings, engine, terminals, which, source: path.join(__dirname, 'mcpbridge.cs'),
+  tag: RELEASE && !STAGING && !profileSuffix() ? '' : RELEASE || profileSuffix() ? 's' : 'd',
+  chatWindow: (id) => chats.get(id)?.win || null,
+  parentWindow: () => dash,
+  push: (json) => toDash(`mcp(${json})`),
+  notesAccess: () => false,
+});
 
 // The chat of the terminal window touched last is the one the chat list marks. Prefer a working/waiting nested AI (Codex,
 // etc.) over the parent Claude process if both happen to be under the same shell. The dashboard's top bar shows every AI
@@ -1369,6 +1384,7 @@ function handleRadar(msg) {
       pushActiveSession(true);
       pushPower(true);
       pushDiscord();
+      mcp.push();
       mascot.pushToPages();
       return true;
     // Viktoria (app.js, cloud.js, settings.js): her switch and mischief, the dashboard's surfaces she walks on, and a real
@@ -2712,6 +2728,10 @@ ipcMain.handle('atl:post', async (e, name, body) => {
       case 'notes':
         if (e.sender !== pageOf(dashView)) throw new Error('not this page');
         return await notesStore.handle(body);
+      // Settings > Claude, the local MCP server: the dashboard's page only, and it only asks (mcp.js asks the user natively).
+      case 'mcp':
+        if (e.sender !== pageOf(dashView)) throw new Error('not this page');
+        return await mcp.handle(body);
       // A note's own window and the feed's corner window: each only its own page (a note window never gets `notes` or
       // `cloud`: the dashboard writes the notes).
       case 'noteWindow':
@@ -2889,6 +2909,8 @@ app.whenReady().then(() => {
     codexHooks.install();
   }
   engine.start();
+  // What was on stays on: the pipe opens again and the tray shows it (the Mac's McpHub.start).
+  if (!PROBE) mcp.start();
   cloud.start();
   runaways.start();
   // The corner's notices can cover the screen (a level-up): never during a development check.
@@ -2978,6 +3000,7 @@ app.on('before-quit', (e) => {
 function leave() {
   quitting = true;
   mascot.stop();
+  mcp.stop();
   terminals.detachAll();
   engine.stop();
   runaways.stop();

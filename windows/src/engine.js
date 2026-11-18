@@ -4194,7 +4194,13 @@ function createEngine(opts = {}) {
     dismiss: (sessionId, pid) => e.dismiss(sessionId, pid),
     transcriptItems: (sessionId, limit) => e.transcriptItems(sessionId, limit),
     spendHistory: (range) => e.spendHistory(range),
+    // The local MCP server's read_session (mcp.js): a Claude chat's transcript (found as the Mac's LastReply finds it),
+    // and the record the engine matched to another AI's session, Codex's log or Antigravity's transcript (the Mac's
+    // RadarEngine.logPath(ofOther:)).
+    transcriptPath: (sessionId) => e.transcriptPath(String(sessionId || '')),
+    otherLog: (id) => (e.others.get(id) || {}).log || null,
   };
 }
 
-module.exports = { createEngine };
+// redact and clip go to the local MCP server too: mcpshared.js's redactMore masks on top of redact, as Support.swift's does.
+module.exports = { createEngine, redact, clip };

@@ -34,7 +34,10 @@ function shellFor() {
 /** A program on PATH (with Windows' extensions), or null. */
 function which(name) {
   try {
-    const out = execFileSync(WIN ? 'where.exe' : 'which', [name], { encoding: 'utf8', windowsHide: true, timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] });
+    // where.exe looks in its current folder before PATH: run from System32, a claude.exe or codex.cmd left in the app's
+    // own folder isn't taken for the real one.
+    const cwd = WIN ? path.join(process.env.SystemRoot || 'C:\\Windows', 'System32') : undefined;
+    const out = execFileSync(WIN ? 'where.exe' : 'which', [name], { cwd, encoding: 'utf8', windowsHide: true, timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] });
     return out.split(/\r?\n/).map((s) => s.trim()).find(Boolean) || null;
   } catch {
     return null;

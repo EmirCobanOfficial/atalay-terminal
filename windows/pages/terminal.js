@@ -206,6 +206,21 @@
   });
   atl.on('term:data', (data) => term.write(data));
   atl.on('term:exit', () => term.write('\r\n\x1b[2m[ended]\x1b[0m\r\n'));
+  // The local MCP server (the app's mcp.js, the Mac's terminalText): what this terminal shows, as text, for Claude's
+  // read_session and for the checks before it types a prompt. The screen in front (Claude's full-screen view is the
+  // alternate one), row by row, the last 60,000 characters.
+  atl.on('term:screen', (rid) => {
+    const b = term.buffer.active;
+    const rows = [];
+    // Row by row as the screen shows them, wrapped rows not joined: Claude draws its box's top rule the full width of the
+    // window, so xterm counts the input row under it as wrapped, and joined the two the input box (❯) was lost and an
+    // older prompt above it was taken for typed text.
+    for (let y = Math.max(0, b.length - 2000); y < b.length; y++) {
+      const line = b.getLine(y);
+      if (line) rows.push(line.translateToString(false));
+    }
+    atl.send('term:screen', { rid, text: rows.map((r) => r.replace(/\s+$/, '')).join('\n').slice(-60000) });
+  });
   // Tokens as the Mac's strip writes them: 950, 9.5k, 95k, 1.2M.
   const fmtTok = (n) => {
     n = Math.max(0, Math.trunc(Number(n) || 0));

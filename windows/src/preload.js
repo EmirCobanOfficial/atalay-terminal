@@ -11,8 +11,9 @@ const boot = ipcRenderer.sendSync('atl:boot') || {};
 // channels, no Ring.
 const full = !boot.mascot;
 const handlers = {};
+// `mcp`: Settings > Claude, the local MCP server (mcp.js); main.js answers it for the dashboard's page only.
 for (const name of full
-  ? ['radar', 'cloud', 'git', 'theme', 'overlay', 'messages', 'savers', 'chats', 'archive', 'trash', 'spend', 'files', 'notes', 'noteWindow', 'feed']
+  ? ['radar', 'cloud', 'git', 'theme', 'overlay', 'messages', 'savers', 'chats', 'archive', 'trash', 'spend', 'files', 'notes', 'noteWindow', 'feed', 'mcp']
   : ['mascot']) {
   handlers[name] = { postMessage: (body) => ipcRenderer.invoke('atl:post', name, body) };
 }
