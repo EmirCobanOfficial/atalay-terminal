@@ -60,7 +60,9 @@ window.Settings = (() => {
 
   // The page cloud.js puts in the Settings window. c: { max, tag, ui, savers, archive, trash, keys }, what only cloud.js knows.
   function html(c) {
-    panes = PANES.filter((p) => p.id !== 'shortcuts' || c.keys);
+    // The Claude page only where the app has the "mcp" handler (the Mac now; Windows once it has the MCP server).
+    const mcp = !!window.webkit?.messageHandlers?.mcp;
+    panes = PANES.filter((p) => (p.id !== 'shortcuts' || c.keys) && (p.id !== 'claude' || mcp));
     current = last(); // the gear opens the one used last; openSettings picks its own after (show(pane, false))
     const pw = window.__powerSave, dc = window.__discord;
     const nav =
@@ -185,7 +187,7 @@ window.Settings = (() => {
       pane('account', 'Account', '', account) +
       pane('appearance', 'Appearance', '', appearance) +
       pane('chats', 'Chats', '', chats) +
-      pane('claude', 'Claude', 'let Claude on this Mac see your AI chats, and type into them', claude) +
+      (mcp ? pane('claude', 'Claude', 'let Claude on this Mac see your AI chats, and type into them', claude) : '') +
       (c.keys ? pane('shortcuts', 'Shortcuts', 'click a shortcut, then press the new keys · esc cancels, delete takes them off', shortcuts) : '') +
       pane('privacy', 'Privacy', 'what friends, the leaderboard and Discord can see', privacy) +
       pane('general', 'General', '', general) +
