@@ -656,6 +656,19 @@ private final class HeaderHostingView<Content: View>: NSHostingView<Content> {
     }
 }
 
+/// A terminal's window. Pinned above the dashboard it's the dashboard's child window, and AppKit moves a child window
+/// itself, a few times a second (a drag left it in place on 158 of 180 frames), where the window server moves a free one
+/// with the cursor. So a press on the header lets go of the dashboard before AppKit picks how to move the window
+/// (onHeaderPress); the controller pins it again once the button is up.
+final class TerminalWindow: NSWindow {
+    var onHeaderPress: (() -> Void)?
+
+    override func sendEvent(_ event: NSEvent) {
+        if event.type == .leftMouseDown, parent != nil, frame.height - event.locationInWindow.y < 62 { onHeaderPress?() }
+        super.sendEvent(event)
+    }
+}
+
 @MainActor
 final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalProcessTerminalViewDelegate {
     let id = UUID().uuidString
@@ -728,7 +741,7 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
         self.hud = ChatHUD(terminalDir: claudeArgs == nil ? cwd : nil)
         hud.mirror = mirror
         self.manager = manager
-        let w = NSWindow(contentRect: frame, styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+        let w = TerminalWindow(contentRect: frame, styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
                          backing: .buffered, defer: false)
         w.title = title
         w.titlebarAppearsTransparent = true
@@ -744,6 +757,7 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
         w.isReleasedWhenClosed = false
         super.init(window: w)
         w.delegate = self
+        w.onHeaderPress = { [weak self] in self?.letGoForDrag() }
         if detached != nil {
             terminal = TerminalFactory.makeIdle(chatId: id, fontSize: fontSize, delegate: self)
         } else {
@@ -2026,6 +2040,30 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
         if hud.exited { return 0 }
         if let detached { return detached.shellPid ?? 0 }
         return terminal.process.shellPid
+    }
+
+    // MARK: dragging a pinned window (TerminalWindow)
+
+    private var repinTimer: Timer?
+
+    private func letGoForDrag() {
+        guard let w = window, let parent = w.parent else { return }
+        parent.removeChildWindow(w)
+        repinTimer?.invalidate()
+        // In .common modes: a drag tracks the mouse, and default-mode timers wait.
+        let t = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in MainActor.assumeIsolated { self?.repinAfterDrag() } }
+        RunLoop.main.add(t, forMode: .common)
+        repinTimer = t
+    }
+
+    /// The button is up: pinned again, unless the press changed that (the pin button, minimize, close).
+    private func repinAfterDrag() {
+        guard NSEvent.pressedMouseButtons & 1 == 0 else { return }
+        repinTimer?.invalidate()
+        repinTimer = nil
+        guard let w = window, w.parent == nil, isShown, !hiding, !steppedAside, !w.isMiniaturized, hud.attached,
+              let parent = manager?.window, parent.isVisible else { return }
+        parent.addChildWindow(w, ordered: .above)
     }
 
     // MARK: NSWindowDelegate
