@@ -45,23 +45,49 @@ final class MascotAsset {
         for f in (try? FileManager.default.contentsOfDirectory(atPath: Self.folder.path)) ?? [] where f.hasSuffix(".part") {
             try? FileManager.default.removeItem(at: Self.folder.appendingPathComponent(f))
         }
-        // A pak from an earlier run is hashed once, off the main thread, before she may come up: a changed or damaged
-        // file is deleted and the user is offered the download again.
         let size = UserDefaults.standard.object(forKey: Self.sizeKey) as? Int
         let sha = UserDefaults.standard.string(forKey: Self.shaKey)
         guard let size, size > 0, let sha, FileManager.default.fileExists(atPath: Self.pakURL.path) else { return }
+        checkPak(size: Int64(size), sha: sha, tries: 1)
+    }
+
+    /// A pak from an earlier run is hashed once, off the main thread, before she may come up: a changed or damaged file
+    /// (gone, wrong size, wrong hash) is deleted and the user is offered the download again. A transient read error (the
+    /// file locked or not readable for a moment) is not that: the file and the settings stay, she is just not ready yet,
+    /// and the check is tried again a few seconds later (6 tries in all; after that, kept until the next launch).
+    private static let verifyTries = 6
+    private static let verifyWait: Duration = .seconds(5)
+    /// The pending wait between two checks; get() and remove() cancel it.
+    private var retry: Task<Void, Never>?
+
+    private func checkPak(size: Int64, sha: String, tries: Int) {
         verifying = true
         Task { [weak self] in
-            let ok = await Task.detached { Self.verify(Self.pakURL, size: Int64(size), sha: sha) }.value
+            let r = await Task.detached { Self.check(Self.pakURL, size: size, sha: sha) }.value
             guard let self, self.verifying else { return }
-            self.verifying = false
-            if ok {
+            switch r {
+            case .busy:
+                guard tries < Self.verifyTries else { self.verifying = false; return } // not ready, but the pak is kept
+                self.retry = Task { [weak self] in
+                    try? await Task.sleep(for: Self.verifyWait)
+                    guard let self, !Task.isCancelled, self.verifying else { return }
+                    self.retry = nil
+                    self.checkPak(size: size, sha: sha, tries: tries + 1)
+                }
+            case .ok:
+                self.verifying = false
                 self.set(.ready)
-            } else {
+            case .bad:
+                self.verifying = false
                 self.discardPak()
                 self.set(.failed("checksum"))
             }
         }
+    }
+
+    private func stopRetry() {
+        retry?.cancel()
+        retry = nil
     }
 
     /// The file can't be used (damaged, or the page couldn't read it): gone, and the user can try again.
@@ -111,6 +137,12 @@ final class MascotAsset {
 
     /// Asks the API where the pak is, downloads it, checks size and SHA-256, puts it in place, and turns her on.
     func get() {
+        // The user asked while the launch check is only waiting to retry (the UI shows nothing downloaded): drop that
+        // check; the download replaces the old file. A check that is reading the file right now is still waited for.
+        if retry != nil {
+            stopRetry()
+            verifying = false
+        }
         switch state {
         case .downloading, .ready: return
         case .none, .failed: break
@@ -137,6 +169,7 @@ final class MascotAsset {
     func remove() {
         runID += 1
         verifying = false
+        stopRetry()
         run?.cancel()
         loader?.cancel()
         run = nil
@@ -216,15 +249,37 @@ final class MascotAsset {
     }
 
     nonisolated private static func verify(_ file: URL, size: Int64, sha: String) -> Bool {
-        guard let n = (try? FileManager.default.attributesOfItem(atPath: file.path)[.size] as? NSNumber)?.int64Value, n == size,
-              let h = try? FileHandle(forReadingFrom: file) else { return false }
+        check(file, size: size, sha: sha) == .ok
+    }
+
+    /// `ok`; `bad` (gone, wrong size, wrong hash); or `busy`: a transient error (locked, no permission for a moment,
+    /// too many open files) says nothing about the file, so it must not be judged.
+    enum Check: Sendable { case ok, bad, busy }
+
+    nonisolated private static func check(_ file: URL, size: Int64, sha: String) -> Check {
+        func fromError(_ e: Error) -> Check {
+            let ns = e as NSError
+            let gone = (ns.domain == NSCocoaErrorDomain && [NSFileNoSuchFileError, NSFileReadNoSuchFileError].contains(ns.code))
+                || (ns.domain == NSPOSIXErrorDomain && ns.code == Int(ENOENT))
+                || ((ns.userInfo[NSUnderlyingErrorKey] as? NSError).map { $0.domain == NSPOSIXErrorDomain && $0.code == Int(ENOENT) } ?? false)
+            return gone ? .bad : .busy
+        }
+        let n: Int64
+        do {
+            guard let v = (try FileManager.default.attributesOfItem(atPath: file.path)[.size] as? NSNumber)?.int64Value else { return .busy }
+            n = v
+        } catch { return fromError(error) }
+        guard n == size else { return .bad }
+        let h: FileHandle
+        do { h = try FileHandle(forReadingFrom: file) } catch { return fromError(error) }
         defer { try? h.close() }
         var hasher = SHA256()
-        while true {
-            guard let chunk = try? h.read(upToCount: 1 << 20), !chunk.isEmpty else { break }
-            hasher.update(data: chunk)
-        }
-        return hasher.finalize().map { String(format: "%02x", $0) }.joined() == sha
+        do {
+            while let chunk = try h.read(upToCount: 1 << 20), !chunk.isEmpty {
+                hasher.update(data: chunk)
+            }
+        } catch { return .busy }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined() == sha ? .ok : .bad
     }
 
     private func fail(_ reason: String) {

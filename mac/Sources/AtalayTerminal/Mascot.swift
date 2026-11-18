@@ -68,6 +68,16 @@ final class Mascot: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
     private var hitRect: CGRect?
     private var isDragging = false
     private var dragCrossed = false // the panel moved to another screen under her held button
+    // When the drag the app believes in began, its 'dragging' messages counted (a check's answer older than the last one
+    // is stale), the page check in flight (its id) and the missed answers in a row.
+    private var dragSince = Date.distantPast
+    private var dragGen = 0
+    private var dragCheckID = 0
+    private var dragChecking = false
+    private var dragMisses = 0
+    private var dragTimer: Timer?
+    /// The longest she may be held: a drag the app still believes in after this (a release nobody saw) ends, she drops.
+    private static let dragMaxSeconds: TimeInterval = 15
     private var mouseMonitor: Any?
     private var globalMouseMonitor: Any?
     private var pollTimer: Timer?
@@ -274,8 +284,10 @@ final class Mascot: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
             panel?.orderOut(nil)
             syncActive()
         }
-        panel?.ignoresMouseEvents = true
         isDragging = false
+        dragCrossed = false
+        stopDragWatch()
+        panel?.ignoresMouseEvents = true
         removeMouseMonitors()
         stopPolling()
         if !Self.isEnabled { tearDownPanel() }
@@ -285,6 +297,7 @@ final class Mascot: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
     /// them again when she is switched on.
     private func tearDownPanel() {
         guard panel != nil || webView != nil else { return }
+        resetPointer()
         webView?.stopLoading()
         webView?.navigationDelegate = nil
         webView?.configuration.userContentController.removeScriptMessageHandler(forName: "mascot")
@@ -552,7 +565,7 @@ final class Mascot: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
     private func mouseEvent(_ type: NSEvent.EventType) {
         if isDragging {
             if type == .leftMouseDragged { checkDragScreen() }
-            if type == .leftMouseUp, dragCrossed { sendDragEnd() }
+            if type == .leftMouseUp, dragCrossed { endCrossedDrag() }
         }
         updateHitTest()
     }
@@ -575,13 +588,90 @@ final class Mascot: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
         pushTerminalsNow()
     }
 
-    /// Fallback when the page may not get the button release after the panel moved under it.
-    private func sendDragEnd() {
-        guard let panel else { return }
-        let loc = NSEvent.mouseLocation
-        let pf = panel.frame
+    /// Fallback when the page may not get the button release after the panel moved under it: drop her at the cursor.
+    /// The app's drag ends here too, not only when the page answers (a page no longer dragging ignores dragEnd and says
+    /// nothing).
+    private func endCrossedDrag() {
+        if let panel {
+            let loc = NSEvent.mouseLocation
+            let pf = panel.frame
+            sendEvent(["type": "dragEnd", "x": Int((loc.x - pf.minX).rounded()), "y": Int((pf.maxY - loc.y).rounded())])
+        }
+        endDragState()
+    }
+
+    /// The app's own drag ends, whatever the page says (it may say nothing: a release it never got, a page that hung or
+    /// started over). While the app believes in a drag the panel takes every click on its screen and follows the cursor to
+    /// other screens, so that belief must never outlive the page's own drag.
+    private func endDragState() {
+        isDragging = false
         dragCrossed = false
-        sendEvent(["type": "dragEnd", "x": Int((loc.x - pf.minX).rounded()), "y": Int((pf.maxY - loc.y).rounded())])
+        stopDragWatch()
+        if shown { updateHitTest() } else { panel?.ignoresMouseEvents = true }
+    }
+
+    /// Her page gone or new: nothing it held is held any more (no drag, no rect of hers, no cursor hold).
+    private func resetPointer() {
+        isDragging = false
+        dragCrossed = false
+        hitRect = nil
+        stopDragWatch()
+        releaseCursor()
+        panel?.ignoresMouseEvents = true
+    }
+
+    /// While she is held, every 300 ms: the page is asked whether it still holds her, and a drag ends after dragMaxSeconds.
+    private func startDragWatch() {
+        dragTimer?.invalidate()
+        dragTimer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.dragTick() }
+        }
+    }
+
+    private func stopDragWatch() {
+        dragTimer?.invalidate()
+        dragTimer = nil
+        dragChecking = false
+        dragCheckID += 1 // an answer still on its way is dropped
+    }
+
+    private func dragTick() {
+        guard isDragging else { return stopDragWatch() }
+        guard shown, panel != nil, webView != nil else { return endDragState() }
+        // Never held for long: past dragMaxSeconds she drops where the cursor is (a release nobody saw).
+        if Date().timeIntervalSince(dragSince) > Self.dragMaxSeconds { return endCrossedDrag() }
+        checkPageDrag()
+    }
+
+    /// Is her page still holding her? Its stage has the 'dragging' class from the press (set before it says so) to the end
+    /// of its drag. A page that says no or isn't loaded ends the app's drag at once; one that fails or doesn't answer
+    /// within 1 s (a hung page answers never) ends it on the second miss in a row, so one slow answer doesn't drop a real
+    /// drag. An answer from before the page's last 'dragging' message is dropped.
+    private func checkPageDrag() {
+        guard !dragChecking, let wv = webView else { return }
+        guard loaded else { return endDragState() }
+        dragCheckID += 1
+        let id = dragCheckID, gen = dragGen
+        dragChecking = true
+        let settle: (Bool?) -> Void = { [weak self] still in
+            guard let self, id == self.dragCheckID, self.dragChecking else { return }
+            self.dragChecking = false
+            guard wv === self.webView, self.isDragging, gen == self.dragGen else { return }
+            if still == true {
+                self.dragMisses = 0
+            } else if still == false {
+                self.endDragState()
+            } else {
+                self.dragMisses += 1
+                if self.dragMisses >= 2 { self.endDragState() }
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+            MainActor.assumeIsolated { settle(nil) }
+        }
+        wv.evaluateJavaScript("document.getElementById('stage')?.classList.contains('dragging') === true") { value, error in
+            MainActor.assumeIsolated { settle(error != nil ? nil : (value as? Bool) == true) }
+        }
     }
 
     private func updateHitTest() {
@@ -693,6 +783,20 @@ final class Mascot: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
         }
     }
 
+    /// Her page's process died: the new page holds nothing (no drag, no rect of hers, no cursor hold), so nothing of the
+    /// old one may keep the panel taking clicks; then it starts over, as the other pages do.
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        guard webView === self.webView else { return }
+        loaded = false
+        resetPointer()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self, weak webView] in
+            MainActor.assumeIsolated {
+                guard let self, let webView, webView === self.webView else { return }
+                webView.reload()
+            }
+        }
+    }
+
     // MARK: - WKScriptMessageHandler
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
@@ -719,8 +823,16 @@ final class Mascot: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
             }
             updateHitTest()
         case "dragging":
-            isDragging = (body["on"] as? Bool) == true
+            let on = (body["on"] as? Bool) == true
+            dragGen += 1
+            if on && !isDragging {
+                dragSince = Date()
+                dragMisses = 0
+                startDragWatch()
+            }
+            isDragging = on
             dragCrossed = false
+            if !on { stopDragWatch() }
             updateHitTest()
         case "crossScreen":
             if let dir = (body["dir"] as? NSNumber)?.intValue, let y = (body["y"] as? NSNumber)?.doubleValue {
