@@ -2325,6 +2325,8 @@ import { VRMAnimationLoaderPlugin, createVRMAnimationClip } from '@pixiv/three-v
       loaded: !!vrm,
     }),
   };
+  // Now the app can reach her: it sends the Mischief level, the screen and the rest (Mascot.swift pageReady).
+  post({ type: 'ready' });
 
   async function init() {
     try {

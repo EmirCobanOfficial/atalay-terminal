@@ -768,8 +768,14 @@ final class Mascot: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
         decisionHandler(url.standardizedFileURL.path == ours ? .allow : .cancel)
     }
 
-    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+    /// Her page says 'ready' once window.__mascot exists. Not at didFinish: WebKit finishes the document before its module
+    /// script has run, so everything sent then went nowhere (the Mischief level, her page then stayed at its own Crazy;
+    /// the screen and its neighbours; her first drop) and the lists sent were taken for delivered.
+    private func pageReady() {
         loaded = true
+        // A new page (also one that started over after a crash) has none of the lists yet.
+        lastTerminalsJSON = ""
+        lastPlatformsJSON = ""
         sendEvent(["type": "mischief", "level": mischief])
         sendScreenInfo()
         syncActive()
@@ -804,6 +810,8 @@ final class Mascot: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
         // Her actions on the app (views, taps, closing terminals) stop the moment she is switched off or hidden.
         if ["openView", "navTap", "closeTerminal", "hideTerminal"].contains(type), !Self.isEnabled || !shown { return }
         switch type {
+        case "ready":
+            pageReady()
         case "loadFailed":
             // The page couldn't read her download (mascot.js): the file goes, the UI offers Try again.
             MascotAsset.shared.loadFailed()
