@@ -406,7 +406,7 @@ private final class TabChip: NSView {
         close.contentTintColor = ThemeStore.shared.color(active ? "--accent-soft" : "--dim")
         close.target = self
         close.action = #selector(closeTab)
-        close.toolTip = "End this tab (⌘W)"
+        close.toolTip = "End this tab"
         for v in [label, meter, ctxText, counts, close] as [NSView] { addSubview(v) }
         fillStats()
     }

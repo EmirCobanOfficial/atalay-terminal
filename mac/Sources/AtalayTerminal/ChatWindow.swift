@@ -1559,7 +1559,7 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
         return true
     }
 
-    /// A tab's ×, the same as ⌘W on it: what runs in it exits at once (its planet or car leaves the orbit) and the other
+    /// A tab's ×: what runs in it exits at once (its planet or car leaves the orbit) and the other
     /// tabs stay.
     private func closeTab(_ i: Int) {
         guard tabs.indices.contains(i) else { return }
@@ -1651,23 +1651,29 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
         return true
     }
 
-    /// ⌘W, as in iTerm2: the terminal in front exits at once, whatever runs in it (Claude, Codex, Antigravity, a shell):
-    /// its planet or car leaves the orbit, nothing is kept running. The other tabs and panes stay; the last one takes the
-    /// window with it. Only a chat copied from iTerm2 asks first, since its original tab there closes too. False for a
-    /// mirror: its chat runs in the other app, so the window only closes.
+    /// ⌘W: a pane besides this window's own closes, as in iTerm2. False for the window's own pane: the window itself
+    /// closes then (hides; its chat keeps running).
     func closeFocusedPane() -> Bool {
-        let tv = focusedTerminal
-        if let pane = extra(of: tv) {
-            endPanes([pane])
-            return true
-        }
-        guard !hud.mirror else { return false }
-        if allTerminals.count > 1 {
-            endOwnTab(confirm: false)
-        } else {
-            endChat(confirm: origin != nil)
-        }
+        guard let pane = extra(of: focusedTerminal) else { return false }
+        close(pane)
         return true
+    }
+
+    /// Closes a pane as a window closes: what runs in it goes on, a car on the orbit until it's opened again (a click,
+    /// ⇧⌘T) or the window's End Session ends it. A pane without a session of its own (screen couldn't start) just stops.
+    private func close(_ pane: ExtraPane) {
+        if zoomed { _ = toggleZoom() }
+        let folder = pane.currentFolder
+        removePaneView(pane.terminal)
+        extras.removeAll { $0 === pane }
+        if let name = pane.link?.name {
+            pane.detach()
+            manager?.closedPane(of: self, session: name, kind: pane.kind, cwd: folder)
+        } else {
+            pane.end()
+        }
+        refreshPanes()
+        focus(focusTarget(in: activeTab))
     }
 
     /// A pane's shell exited: the pane goes, as in iTerm2.
