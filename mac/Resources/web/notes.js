@@ -74,7 +74,13 @@ window.Notes = (() => {
   // Deleting is a trash can (the icon font of the activity bar, codicon), never the × that closes a window; pinned to
   // the dashboard is codicon's pin.
   const TRASH = '<i class="np-glyph" aria-hidden="true"></i>';
-  const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
+  const EYE = '<i class="np-glyph" aria-hidden="true">&#xEA70;</i>';
+const EYE_OFF = '<i class="np-glyph" aria-hidden="true">&#xEAE7;</i>';
+  // What the eye means, in words: its tooltip and VoiceOver's label (the state, then what a click does).
+  const AI_TIP_SEEN = 'AI can read this note · Click to hide it from AI';
+  const AI_TIP_HIDDEN = 'Hidden from AI · Click to let AI read it';
+  const AI_HIDDEN_TIP = 'Hidden from AI';
+const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
   // The activity bar's Notes: a notepad with its rings, its lines and a pencil, the sign for notes most people know;
   // drawn in strokes so it sits with the outline icons around it.
   const ICON =
@@ -138,6 +144,16 @@ window.Notes = (() => {
   // A note out in its window has its blocks from there (fromWindow), not the panel's.
   const blocksOf = (n) => (n === cur && !out.has(n.id) ? plain(blocks) : n.blocks);
 
+  // A note an AI pinned to a terminal (agentSession): that terminal's session name and a label to show. Kept with the note.
+  const sessionOf = (n) =>
+    typeof n.session === 'string' && n.session && n.session.length <= 100
+      ? { session: n.session, sessionLabel: typeof n.sessionLabel === 'string' ? n.sessionLabel.slice(0, 60) : '' }
+      : {};
+
+  // A note the user hid from AI (the eye): kept with the note, so the app can read it too (NotesStore, NotesTools). Only the
+  // user's own clicks set it (setAiHidden); an AI's tools never touch it, and the app refuses a hidden note's id on every call.
+  const hideOf = (n) => (n && n.aiHidden === true ? { aiHidden: true } : {});
+
   const readHere = () => {
     try {
       return JSON.parse(localStorage.getItem(KEY) || 'null');
@@ -151,7 +167,7 @@ window.Notes = (() => {
     if (v && Array.isArray(v.notes)) {
       list = v.notes
         .filter((n) => n && typeof n.id === 'string')
-        .map((n) => ({ id: n.id, name: typeof n.name === 'string' ? n.name.trim().slice(0, 40) : '', created: Number(n.created) || Number(n.at) || Date.now(), at: Number(n.at) || 0, blocks: Array.isArray(n.blocks) ? n.blocks : [] }));
+        .map((n) => ({ id: n.id, name: typeof n.name === 'string' ? n.name.trim().slice(0, 40) : '', created: Number(n.created) || Number(n.at) || Date.now(), at: Number(n.at) || 0, blocks: Array.isArray(n.blocks) ? n.blocks : [], ...sessionOf(n), ...hideOf(n) }));
     } else if (v && (Array.isArray(v.blocks) || (typeof v.text === 'string' && v.text))) {
       // One page before there were notes (its blocks, or before them its plain text): it's the first note.
       const at = Number(v.at) || 0;
@@ -187,7 +203,7 @@ window.Notes = (() => {
   let unsaved = '';
   function write() {
     if (!ready) return writing;
-    const all = notes.map((n) => ({ id: n.id, name: n.name, created: n.created, at: n.at, blocks: blocksOf(n) }));
+    const all = notes.map((n) => ({ id: n.id, name: n.name, created: n.created, at: n.at, blocks: blocksOf(n), ...sessionOf(n), ...hideOf(n) }));
     const json = JSON.stringify({ v: 3, ordered: true, pinned, current: cur.id, notes: all });
     if (!STORE) {
       try {
@@ -261,13 +277,26 @@ window.Notes = (() => {
 
   // The panel's strip names the pinned note and when it last changed; the window's strip, the note in it.
   let titled = ''; // the name the app has for the note's own window
+  // The last change an AI made (agentApply): while the note is still as it left it, the strip says so and offers Undo.
+  let lastAi = null; // { id, by, at, before (blocks), after (version) }
+  const aiLog = [];
+  const hashOf = (s) => {
+    let h = 2166136261;
+    for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619);
+    return (h >>> 0).toString(36);
+  };
+  const aiTag = (n) => (lastAi && n && lastAi.id === n.id && Date.now() - lastAi.at < 600000 && hashOf(toText(blocksOf(n))) === lastAi.after ? lastAi : null);
+  const aiText = (a) => `${a.by} edited · ${new Date(a.at).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })} · Undo`;
   function stamp() {
     if (!cur) return;
+    paintAi();
     const edited = (n) => (n.at && blocksOf(n).some((b) => b.text || b.type !== 'p') ? `edited ${ago(n.at)}` : '');
     const p = pinnedNote();
     if (meta && p) {
-      meta.textContent = (unsaved ? 'not saved · ' : '') + (edited(p) ? `${nameOf(p)} · ${edited(p)}` : nameOf(p));
-      meta.title = unsaved ? `Not saved on this computer: ${unsaved}` : '';
+      const ai = aiTag(p);
+      meta.textContent = ai ? aiText(ai) : (unsaved ? 'not saved · ' : '') + (edited(p) ? `${nameOf(p)} · ${edited(p)}` : nameOf(p));
+      meta.title = ai ? 'Put the note back as it was before' : unsaved ? `Not saved on this computer: ${unsaved}` : '';
+      meta.dataset.undo = ai ? p.id : '';
     }
     if (WINDOW) {
       // The note's own window: its strip, and its name for the app (Mission Control, the Window menu).
@@ -277,8 +306,10 @@ window.Notes = (() => {
       tag.textContent = name;
       tag.title = name === cur.name ? NAME_HINT : name;
       const m = panel.querySelector('.npw-meta');
-      m.textContent = (unsaved ? 'not saved · ' : '') + edited(cur);
-      m.title = unsaved ? `Not saved on this computer: ${unsaved}` : '';
+      const ai = aiTag(cur);
+      m.textContent = ai ? aiText(ai) : (unsaved ? 'not saved · ' : '') + edited(cur);
+      m.title = ai ? 'Put the note back as it was before' : unsaved ? `Not saved on this computer: ${unsaved}` : '';
+      m.dataset.undo = ai ? cur.id : '';
       // On stream the app's window list shows a plain name, not the note's first line.
       const shown = document.documentElement.classList.contains('streamer') ? 'Note' : name;
       if (shown !== titled) STORE?.postMessage({ type: 'title', name: (titled = shown) }).catch(() => {});
@@ -469,11 +500,16 @@ window.Notes = (() => {
     future.length = 0;
   }
   function restore(s) {
+    // A step taken with no cursor in the page (blocks selected, a box ticked) keeps the cursor where it is now; on a
+    // divider it goes to the text nearest, so ⌘Z and ⌘⇧Z go on working.
+    const here = s.focus || snap().focus;
     blocks = s.blocks.map((b) => mk(b.type, b.text, { checked: !!b.checked, indent: b.indent || 0 }));
     if (!blocks.length) blocks = [mk()];
     lastKind = '';
-    const f = s.focus && blocks[Math.min(s.focus.i, blocks.length - 1)];
-    render(f ? { id: f.id, at: Math.min(s.focus.at, f.text.length) } : null);
+    const i = here ? Math.min(here.i, blocks.length - 1) : -1;
+    const f = i < 0 ? null : blocks.slice(i).find((x) => x.type !== 'divider') || blocks.slice(0, i).reverse().find((x) => x.type !== 'divider');
+    render(f ? { id: f.id, at: f === blocks[i] ? Math.min(here.at, f.text.length) : 0 } : null);
+    if (!f && document.activeElement === clip) refocus();
     later();
   }
   function undo() {
@@ -720,12 +756,14 @@ window.Notes = (() => {
   let firstA = null; // the block a first Ctrl+A selected the text of: the next one selects every block
 
   // The blocks as Markdown: what a copy of all of them gives, and what pasting it back makes into the same blocks. Those
-  // from `from` on: the ones before only count, so on Windows a numbered list's items keep the numbers they show.
+  // from `from` on: the ones before only count, so a numbered list's items keep the numbers they show.
   function toText(list, from = 0) {
     const counts = [];
     return list
-      .map((b) => {
-        const pad = '  '.repeat(b.indent || 0);
+      .map((b0) => {
+        // Kept blocks leave out a zero indent (plain), so it's read as 0 here.
+        const b = { ...b0, indent: b0.indent || 0 };
+        const pad = '  '.repeat(b.indent);
         if (b.type === 'num') {
           counts.length = b.indent + 1;
           counts[b.indent] = (counts[b.indent] || 0) + 1;
@@ -754,6 +792,7 @@ window.Notes = (() => {
   // keys or the Edit menu, a Mac's too) copy it as the browser copies any text, a paste lands there to take their place,
   // and the blocks only light up. A selection across the blocks themselves can't work: each block is its own editor,
   // and the browser hands the keys to the one the selection starts in.
+  let part = null; // a text selection across blocks: { drag: true } while the pointer is down, then { a, z }
   const clip = document.createElement('textarea');
   clip.className = 'np-clip';
   clip.tabIndex = -1;
@@ -773,12 +812,13 @@ window.Notes = (() => {
     allSel = true;
     sel = mark(i, j);
     ed.classList.add('blocksel');
-    clip.value = MAC ? toText(blocks.slice(sel[0], sel[1] + 1)) : toText(blocks.slice(0, sel[1] + 1), sel[0]);
+    clip.value = toText(blocks.slice(0, sel[1] + 1), sel[0]);
     clip.focus({ preventScroll: true });
     clip.select();
   }
   const selectAll = () => selectBlocks(0, blocks.length - 1);
   function letGo() {
+    document.querySelector('.np-lit')?.remove();
     allSel = false;
     ed.classList.remove('blocksel');
     ed.querySelectorAll('.nb.sel').forEach((el) => el.classList.remove('sel'));
@@ -788,6 +828,7 @@ window.Notes = (() => {
   function clearSel() {
     record('op');
     const [a, b] = sel;
+    past[past.length - 1].focus = { i: a, at: 0 }; // undo puts the cursor at the first of them
     letGo();
     blocks.splice(a, b - a + 1);
     if (!blocks.length) blocks = [mk()];
@@ -804,26 +845,110 @@ window.Notes = (() => {
     selectBlocks(a, b);
   }
 
-  // A drag that leaves its block for another selects whole blocks, the way Notion does: the browser's own selection
-  // can't go from one block's editor into the next. Back in the block it began in, it's the text selection again.
-  // On Windows a press in the empty space under the last block (`start` past the blocks) drags from there: up over a
-  // block, the blocks from that one to the last are selected; let go without one, it's the click it was (`click`).
-  function dragFrom(start, click) {
+  // The place in a block's text nearest a point (the pointer may be on its marker or in the page's margin: the text's own
+  // box clamps it), or the very start / end of the text when `edge` is -1 / 1.
+  function caretNear(blockEl, x, y, edge) {
+    const t = blockEl && blockEl.querySelector('.nb-text');
+    if (!t) return null;
+    if (edge) {
+      const r = document.createRange();
+      r.selectNodeContents(t);
+      r.collapse(edge < 0);
+      return r;
+    }
+    const q = t.getBoundingClientRect();
+    return document.caretRangeFromPoint(Math.max(q.left + 1, Math.min(x, q.right - 1)), Math.max(q.top + 1, Math.min(y, q.bottom - 1)));
+  }
+  // The block whose row a height falls in (the first or last when it is above or below the page).
+  function blockAtY(y) {
+    const rows = [...ed.children].filter((n) => n.classList.contains('nb'));
+    return rows.find((n) => y <= n.getBoundingClientRect().bottom) || rows[rows.length - 1];
+  }
+
+  // A drag that leaves its block for another selects text across the blocks, from the press to the pointer. The browser
+  // can't do that between separate editors, so while it lasts the blocks' text isn't editable and the selection is set
+  // here. A drag that began on a divider selects whole blocks, as Notion does. Back in the block it began in, a drag that never left is the text selection again. A press that wasn't on the
+  // text itself (`inText` false: a marker, the margin, under the last block) selects as soon as the pointer is somewhere
+  // else in the text, its own block too; one that never got there is a click, and `click` says what it does.
+  // On Windows a press in the empty space under the last block (`start` past the blocks, no `press`) drags from there: up
+  // over a block, the blocks from that one to the last are selected; let go without one, it's the click it was (`click`).
+  function dragFrom(start, press, inText, click) {
     const under = start >= blocks.length;
     let at = start;
+    let focus = null; // where the pointer's end of a selection across blocks is
+    let want = null; // the selection as the browser holds it once set
+    const hold = (force) => {
+      const s = getSelection();
+      const same = want && s.anchorNode === want[0] && s.anchorOffset === want[1] && s.focusNode === want[2] && s.focusOffset === want[3];
+      if (same && !force) return;
+      s.setBaseAndExtent(press.startContainer, press.startOffset, focus.node, focus.offset);
+      want = [s.anchorNode, s.anchorOffset, s.focusNode, s.focusOffset];
+    };
+    // The browser's own drag goes on moving the selection; it is put back where the pointer is.
+    const keep = () => part && part.drag && focus && hold();
+    // Held above or below a page longer than its box, the page scrolls (unless the browser scrolls it already) and the
+    // selection follows the line at its edge, as in any text box, never jumping to the start or end of the whole note.
+    let last = null;
+    let was = -1;
+    const roll = setInterval(() => {
+      const r = last && ed.getBoundingClientRect();
+      const d = !r ? 0 : last.clientY < r.top ? last.clientY - r.top : last.clientY > r.bottom ? last.clientY - r.bottom : 0;
+      if (!d) return;
+      if (ed.scrollTop === was) ed.scrollTop += Math.sign(d) * Math.min(30, 4 + Math.abs(d) / 2);
+      was = ed.scrollTop;
+      move(last);
+    }, 50);
     const move = (ev) => {
       if (!(ev.buttons & 1)) return up();
+      last = ev;
       const el = document.elementFromPoint(ev.clientX, ev.clientY);
       const over = el && el.closest && el.closest('.nb');
       let i = over && over.parentElement === ed ? idx(over.dataset.id) : -1;
+      let out = false;
+      const r = ed.getBoundingClientRect();
+      const top = ed.scrollTop <= 0;
+      const end = ed.scrollTop + ed.clientHeight >= ed.scrollHeight - 1;
+      // A drag that began in text goes on by text: over a marker or the page's margin it is the nearest place in the
+      // text, and above the first block or under the last it is the start of the first line or the end of the last.
+      if (press) {
+        const rows = [...ed.children].filter((n) => n.querySelector('.nb-text'));
+        let edge = 0;
+        let y = ev.clientY;
+        let blk = over && over.parentElement === ed ? over : null;
+        if (y < Math.max(r.top, ed.firstElementChild.getBoundingClientRect().top)) top ? ((edge = -1), (blk = rows[0])) : (blk = blockAtY((y = r.top + 2)));
+        else if (y > Math.min(r.bottom, ed.lastElementChild.getBoundingClientRect().bottom)) end ? ((edge = 1), (blk = rows[rows.length - 1])) : (blk = blockAtY((y = r.bottom - 2)));
+        else if (!blk || !blk.querySelector('.nb-text')) blk = blockAtY(y);
+        let c = blk && caretNear(blk, ev.clientX, y, edge);
+        const direct = !edge && y === ev.clientY && el && el.closest && el.closest('.nb-text') && document.caretRangeFromPoint(ev.clientX, ev.clientY);
+        if (direct && textOf2(direct.startContainer)) c = direct;
+        if (!c || !textOf2(c.startContainer)) return;
+        i = idx(blk.dataset.id);
+        if (ed.classList.contains('blocksel')) {
+          ed.classList.remove('blocksel');
+          mark(-1, -1);
+        }
+        if (!part) {
+          if (i === start && (inText || (c.startContainer === press.startContainer && c.startOffset === press.startOffset))) return;
+          part = { drag: true };
+          setEditable(false);
+        }
+        focus = { node: c.startContainer, offset: c.startOffset };
+        return hold(true);
+      }
       if (i < 0) {
-        const r = ed.getBoundingClientRect();
-        const end = !MAC && ed.lastElementChild ? ed.lastElementChild.getBoundingClientRect().bottom : Infinity;
-        if (ev.clientY < r.top) i = 0;
+        out = true;
         // Under the last block (out under the page; on Windows in the page's space below it too): the last block, so a
         // quick drag down past it still takes it; or nothing, for a drag that began there.
-        else if (ev.clientY > r.bottom || ev.clientY >= end) i = under ? start : blocks.length - 1;
+        const foot = !MAC && ed.lastElementChild ? ed.lastElementChild.getBoundingClientRect().bottom : Infinity;
+        if (ev.clientY < r.top) i = top ? 0 : idx(blockAtY(r.top + 2).dataset.id);
+        else if (ev.clientY > r.bottom) i = under ? start : end ? blocks.length - 1 : idx(blockAtY(r.bottom - 2).dataset.id);
+        else if (ev.clientY >= foot) i = under ? start : blocks.length - 1;
         else return;
+      }
+      if (part) {
+        part = null;
+        setEditable(true);
+        getSelection().removeAllRanges();
       }
       at = i;
       if (at === start) {
@@ -835,14 +960,137 @@ window.Notes = (() => {
       mark(start, at);
     };
     const up = () => {
+      clearInterval(roll);
       removeEventListener('mousemove', move, true);
       removeEventListener('mouseup', up, true);
+      document.removeEventListener('selectionchange', keep);
+      if (part && part.drag) return setTimeout(takePart, 0);
       if (at !== start) selectBlocks(Math.min(start, blocks.length - 1), at);
       else if (click) click();
     };
     addEventListener('mousemove', move, true);
     addEventListener('mouseup', up, true);
+    document.addEventListener('selectionchange', keep);
   }
+
+  // The text block a node is in, if any.
+  const textOf2 = (n) => n && (n.nodeType === 1 ? n : n.parentElement)?.closest('.nb-text');
+  const setEditable = (on) => ed.querySelectorAll('.nb-text').forEach((t) => t.setAttribute('contenteditable', on ? 'plaintext-only' : 'false'));
+  // Editing comes back; what was selected stays selected (the next click or key moves it).
+  function endPart() {
+    if (!part) return;
+    part = null;
+    setEditable(true);
+  }
+  // The selection across blocks, as the block and place in its text where it starts (a) and ends (z).
+  function takePart() {
+    const s = getSelection();
+    const r = s.rangeCount && s.getRangeAt(0);
+    const at = (node, off) => {
+      const t = textOf2(node);
+      const b = t && blockOf(t);
+      if (!b) return null;
+      const pre = document.createRange();
+      pre.selectNodeContents(t);
+      pre.setEnd(node, off);
+      return { id: b.id, at: Math.min(textOf(pre.cloneContents()).length, b.text.length) };
+    };
+    const a = r && !r.collapsed && at(r.startContainer, r.startOffset);
+    const z = a && at(r.endContainer, r.endOffset);
+    if (!z) {
+      // Dragged back to where it began, or somewhere that isn't text: a cursor again.
+      const b = r && blockOf(textOf2(r.startContainer));
+      const c = b && at(r.startContainer, r.startOffset);
+      endPart();
+      return c ? place(textEl(c.id), c.at) : refocus();
+    }
+    part = { a, z };
+  }
+  // What the selection across blocks holds: its lines, from the first block's part to the last block's.
+  function partText() {
+    const ia = idx(part.a.id);
+    const iz = idx(part.z.id);
+    return blocks
+      .slice(ia, iz + 1)
+      .map((b, k) => (b.type === 'divider' ? '---' : b.text.slice(ia + k === ia ? part.a.at : 0, ia + k === iz ? part.z.at : undefined)))
+      .join('\n');
+  }
+  // The selection goes, Notion's way: the first block keeps its text before it, takes what the last had after it, and
+  // the blocks between go. What is typed goes at the join.
+  function cutPart(ins) {
+    const { a, z } = part;
+    const ia = idx(a.id);
+    const iz = idx(z.id);
+    endPart();
+    if (ia < 0 || iz < 0) return; // a block it was in is gone (a note pinned or deleted meanwhile)
+    record('op');
+    past[past.length - 1].focus = { i: ia, at: a.at }; // undo puts the cursor back where the selection began
+    if (ins) lastKind = 'type'; // what's typed on after it is the same step: one ⌘Z brings the selection's text back
+    const first = blocks[ia];
+    first.text = first.text.slice(0, a.at) + ins + blocks[iz].text.slice(z.at);
+    blocks.splice(ia + 1, iz - ia);
+    changed({ id: first.id, at: a.at + ins.length });
+  }
+  document.addEventListener('copy', (e) => {
+    if (!part || part.drag) return;
+    e.preventDefault();
+    e.clipboardData.setData('text/plain', partText());
+  });
+  document.addEventListener('paste', (e) => {
+    if (!part || part.drag) return;
+    e.preventDefault();
+    const text = (e.clipboardData?.getData('text/plain') || '').replace(/\r\n?/g, '\n');
+    if (!text) return; // an image, say: the selection stays
+    const { a, z } = part;
+    const ia = idx(a.id);
+    const iz = idx(z.id);
+    endPart();
+    if (ia < 0 || iz < 0) return;
+    record('op');
+    past[past.length - 1].focus = { i: ia, at: a.at };
+    const first = blocks[ia];
+    const head = first.text.slice(0, a.at);
+    first.text = head + blocks[iz].text.slice(z.at);
+    blocks.splice(ia + 1, iz - ia);
+    pasteInto(first, head, first.text.slice(a.at), text);
+  });
+  // A press anywhere gives the text its editing back before the click lands.
+  addEventListener(
+    'mousedown',
+    (e) => {
+      if (part && !part.drag && e.button === 0 && !(MAC && e.ctrlKey)) endPart();
+    },
+    true,
+  );
+  // The keys, with the blocks' text not editable: Copy is the browser's; Cut, delete and typing take the selection out;
+  // the rest let go of it.
+  document.addEventListener('keydown', (e) => {
+    if (!part || part.drag || ['Control', 'Meta', 'Shift', 'Alt'].includes(e.key) || e.isComposing) return;
+    const mod = MAC ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey;
+    if (mod && !e.altKey) {
+      // Only the keys that act on the selection are taken; the app's own shortcuts (⌘W, ⌘,) go on to the menu.
+      if (!['KeyX', 'KeyA', 'KeyZ', 'KeyY'].includes(e.code)) return;
+      e.preventDefault();
+      if (e.code === 'KeyX') {
+        document.execCommand('copy');
+        return cutPart('');
+      }
+      const { z } = part;
+      endPart();
+      if (e.code === 'KeyA') return selectAll();
+      if (e.code === 'KeyZ' || e.code === 'KeyY') return e.code === 'KeyY' || e.shiftKey ? redo() : undo();
+      return place(textEl(z.id), z.at);
+    }
+    if (e.ctrlKey || e.metaKey) return; // a shortcut of the app's (⌃⇧G, ⌘⌥T, ⌃A), not typing
+    e.preventDefault();
+    if (e.key === 'Backspace' || e.key === 'Delete') return cutPart('');
+    if (e.key.length === 1) return cutPart(e.key);
+    if (e.key === 'Escape') e.stopPropagation();
+    const up = e.key === 'ArrowUp' || e.key === 'ArrowLeft' || e.key === 'Home' || e.key === 'PageUp';
+    const c = up ? part.a : part.z;
+    endPart();
+    if (e.key !== 'Escape') place(textEl(c.id), c.at);
+  });
 
   // The keys while blocks are selected. Anything not taken lets go of them and goes back to writing: up and left at
   // the first of them, the rest at the end of the last; a letter typed then isn't written over them.
@@ -890,7 +1138,8 @@ window.Notes = (() => {
     const last = made.length ? made[made.length - 1] : blocks[Math.min(a, blocks.length - 1)];
     changed(last.type === 'divider' ? null : { id: last.id, at: last.text.length });
   });
-  clip.addEventListener('blur', letGo);
+  let rlit = null; // the lit blocks while a right click is on them
+  clip.addEventListener('blur', () => !rlit && letGo());
 
   // ---------- typing ----------
   ed.addEventListener('beforeinput', (e) => {
@@ -927,7 +1176,9 @@ window.Notes = (() => {
     if (mod && !e.altKey && !e.shiftKey && e.code === 'KeyA') {
       e.preventDefault();
       closeMenu();
-      if (firstA === b.id) return selectAll();
+      // Its whole text selected already (⌘A, then ⌘C; a triple click; a drag over all of it): every block.
+      const all = b.text && caretIn(t);
+      if (firstA === b.id || (all && all.start === 0 && all.end >= b.text.length)) return selectAll();
       firstA = b.id;
       return selectText(t);
     }
@@ -992,18 +1243,8 @@ window.Notes = (() => {
     }
   });
 
-  // Pasted lines become blocks of their own (Markdown's markers count); one line goes in where the cursor is.
-  ed.addEventListener('paste', (e) => {
-    const t = e.target.closest && e.target.closest('.nb-text');
-    const b = blockOf(t);
-    if (!b) return;
-    e.preventDefault();
-    const text = (e.clipboardData?.getData('text/plain') || '').replace(/\r\n?/g, '\n');
-    if (!text) return;
-    record('op');
-    const c = caretIn(t) || { start: b.text.length, end: b.text.length };
-    const head = b.text.slice(0, c.start);
-    const tail = b.text.slice(c.end);
+  // The text pasted into block b, between its head and its tail.
+  function pasteInto(b, head, tail, text) {
     if (b.type === 'code' || !text.includes('\n')) {
       b.text = head + text + tail;
       return changed({ id: b.id, at: head.length + text.length });
@@ -1019,6 +1260,18 @@ window.Notes = (() => {
     const at = last.text.length;
     last.text += tail;
     changed({ id: last.id, at });
+  }
+  // Pasted lines become blocks of their own (Markdown's markers count); one line goes in where the cursor is.
+  ed.addEventListener('paste', (e) => {
+    const t = e.target.closest && e.target.closest('.nb-text');
+    const b = blockOf(t);
+    if (!b) return;
+    e.preventDefault();
+    const text = (e.clipboardData?.getData('text/plain') || '').replace(/\r\n?/g, '\n');
+    if (!text) return;
+    record('op');
+    const c = caretIn(t) || { start: b.text.length, end: b.text.length };
+    pasteInto(b, b.text.slice(0, c.start), b.text.slice(c.end), text);
   });
   ed.addEventListener('drop', (e) => {
     if ((e.dataTransfer?.getData('text/plain') || '').includes('\n')) e.preventDefault();
@@ -1026,28 +1279,81 @@ window.Notes = (() => {
 
   // A tick on a to-do; a click under the last block puts the cursor there, in a fresh line if the last isn't empty text.
   ed.addEventListener('mousedown', (e) => {
+    // A right click leaves what is selected as it is (blocks lit, or text): the menu's Copy needs it.
+    if (e.button === 2 || (MAC && e.ctrlKey && e.button === 0)) {
+      // (A Mac's control-click is a right click.) The system focuses the block and selects a word under a right click, which would let go of lit blocks: they are
+      // remembered, and lit again when the menu opens.
+      rlit = allSel ? sel.slice() : null;
+      return;
+    }
+    rlit = null;
     letGo();
     firstA = null;
+    // A to-do's box ticks on a click (the press let go where it began); a drag from it selects, as from a marker. The
+    // cursor stays where it was, or waits at the end of the to-do, so ⌘Z takes the tick back.
     const cb = e.target.closest('.nb-cb');
+    let tick = null;
     if (cb) {
-      e.preventDefault();
       const b = blockOf(cb);
-      record('op');
-      b.checked = !b.checked;
-      return changed(null);
+      const t = document.activeElement && document.activeElement.closest && document.activeElement.closest('.np-ed .nb-text');
+      const c = t && caretIn(t);
+      const back = c ? { id: blockOf(t).id, at: c.start } : { id: b.id, at: b.text.length };
+      tick = () => {
+        record('op');
+        b.checked = !b.checked;
+        changed(back);
+      };
+      if (e.button !== 0) return e.preventDefault();
+      // A second quick click ticks again (untick), as a shift-click does: no drag starts from those.
+      if (e.shiftKey || e.detail > 1) {
+        e.preventDefault();
+        return tick();
+      }
     }
-    const from = e.button === 0 && !e.shiftKey && e.target.closest('.nb');
-    if (from && from.parentElement === ed) {
+    // A shift-click in another block than the one the selection starts in takes it there, across the blocks between.
+    if (e.button === 0 && e.shiftKey && e.detail < 2) {
+      const s = getSelection();
+      const home = s.rangeCount && textOf2(s.anchorNode);
+      const row = e.target.closest('.nb') || (e.target === ed && blockAtY(e.clientY));
+      const c = row && row.parentElement === ed && (textOf2(e.target) ? document.caretRangeFromPoint(e.clientX, e.clientY) : caretNear(row, e.clientX, e.clientY, 0));
+      const there = c && textOf2(c.startContainer);
+      if (home && ed.contains(home) && there && there !== home) {
+        e.preventDefault();
+        part = { drag: true };
+        setEditable(false);
+        s.setBaseAndExtent(s.anchorNode, s.anchorOffset, c.startContainer, c.startOffset);
+        return takePart();
+      }
+    }
+    // Only a first press starts a block drag: a double or triple click (a word, a line) and a shift-click are the
+    // browser's own selecting, left alone.
+    const from = e.button === 0 && !e.shiftKey && e.detail < 2 && (e.target.closest('.nb') || (e.target === ed && blockAtY(e.clientY)));
+    // A press under the last block is a click there (below), and a drag from it goes up from the end of the last line.
+    const lastEl = ed.lastElementChild;
+    const below = e.target === ed && lastEl && e.clientY >= lastEl.getBoundingClientRect().bottom;
+    if (from && from.parentElement === ed && !below) {
+      // Where in the text the press is, for a drag that goes on into other blocks (a press on a marker or in the margin is
+      // the nearest place in the text).
+      const inText = !!textOf2(e.target);
+      let press = inText ? document.caretRangeFromPoint(e.clientX, e.clientY) : caretNear(from, e.clientX, e.clientY, 0);
+      if (!(press && textOf2(press.startContainer))) press = null;
       // A press on text already selected would start dragging that text away (the browser's drag and drop): what was
       // selected goes first, so the press always starts a new selection, across blocks too.
       if (!getSelection().isCollapsed) getSelection().removeAllRanges();
-      dragFrom(idx(from.dataset.id));
+      // On a marker or in the margin the browser would select the marker or let go of the cursor: a click there puts the
+      // cursor at that place in the text instead.
+      const click = tick || (press && !inText && (() => {
+        textOf2(press.startContainer).focus({ preventScroll: true });
+        getSelection().collapse(press.startContainer, press.startOffset);
+      }));
+      if (click) e.preventDefault();
+      dragFrom(idx(from.dataset.id), press, inText, click);
     }
-    if (e.target !== ed) return;
-    const lastEl = ed.lastElementChild;
-    if (lastEl && e.clientY < lastEl.getBoundingClientRect().bottom) return;
+    if (e.target !== ed || !below) return;
     e.preventDefault();
-    const under = () => {
+    // A click there puts the cursor in a fresh line under the last (in the last, when it's an empty line already); a drag
+    // from there selects up from the end of the last line, and adds no line.
+    const open = () => {
       const last = blocks[blocks.length - 1];
       if (last.type === 'p' && !last.text) return place(textEl(last.id), 0);
       record('op');
@@ -1057,13 +1363,51 @@ window.Notes = (() => {
     };
     // On Windows a drag up from under the last block selects the blocks it goes over (no fresh line made for it); a
     // click there puts the cursor under them once it's let go.
-    if (!MAC && e.button === 0 && !e.shiftKey) dragFrom(blocks.length, under);
-    else under();
+    if (!MAC) {
+      if (e.button === 0 && !e.shiftKey) dragFrom(blocks.length, null, false, open);
+      else open();
+      return;
+    }
+    const end = [...ed.children].reverse().find((n) => n.querySelector('.nb-text'));
+    if (end) dragFrom(idx(end.dataset.id), caretNear(end, 0, 0, 1), false, open);
+    else open();
+  });
+
+  // A right click on lit blocks: Copy (the hidden box holds them as Markdown). On text, the system's own menu (Copy,
+  // Paste, Select All) opens: nothing here takes it.
+  ed.addEventListener('contextmenu', (e) => {
+    // The system selected the word under the pointer: that is what Copy and the keys now mean.
+    if (part && !part.drag) takePart();
+    if (rlit) selectBlocks(rlit[0], rlit[1]);
+    rlit = null;
+    if (!allSel) return;
+    e.preventDefault();
+    e.stopPropagation();
+    document.querySelector('.pn-ctx')?.remove();
+    const m = document.createElement('div');
+    m.className = 'pn-ctx np-lit';
+    m.innerHTML = '<button type="button" data-ctx="copy">Copy</button>';
+    document.body.appendChild(m);
+    m.style.left = `${Math.max(4, Math.min(e.clientX, innerWidth - m.offsetWidth - 4))}px`;
+    m.style.top = `${Math.max(4, Math.min(e.clientY, innerHeight - m.offsetHeight - 4))}px`;
+    m.addEventListener('mousedown', (ev) => ev.preventDefault());
+    m.onclick = () => {
+      m.remove();
+      clip.focus({ preventScroll: true });
+      clip.select();
+      document.execCommand('copy');
+    };
+    const off = (ev) => {
+      if (ev.target.closest && ev.target.closest('.pn-ctx')) return;
+      m.remove();
+      removeEventListener('mousedown', off, true);
+    };
+    addEventListener('mousedown', off, true);
   });
 
   ed.addEventListener('focusout', () => {
     setTimeout(() => {
-      if (!ed.contains(document.activeElement) && document.activeElement !== clip) {
+      if (!part && !ed.contains(document.activeElement) && document.activeElement !== clip) {
         closeMenu();
         letGo();
         firstA = null;
@@ -1100,6 +1444,117 @@ window.Notes = (() => {
     if (NATIVE) return out.has(pinned) ? dock() : undock();
     return win && !win.hidden ? dock() : undock();
   });
+  // The eye: hide the panel's note from AI, or show it again (the note's own window has the same one).
+  const aiBtn = document.createElement('button');
+  aiBtn.type = 'button';
+  aiBtn.className = 'np-pop np-aib';
+  panel.querySelector(':scope > header')?.insertBefore(aiBtn, pop);
+  aiBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const n = pinnedNote();
+    if (n) setAiHidden(n.id, !n.aiHidden);
+  });
+  // A tooltip in the app's own look (style.css #tip) for whatever has a `data-tip` (the eyes, a hidden note's mark on the
+  // board): under the pointer after a moment, at once on keyboard focus, and anew right after a click. It is the page's,
+  // fixed, so no panel or window edge cuts it; it moves to stay inside the page. "A · B" is two lines: what is, what a click does.
+  const tipEl = document.createElement('div');
+  tipEl.className = 'np-tip';
+  tipEl.setAttribute('role', 'tooltip');
+  tipEl.hidden = true;
+  document.body.appendChild(tipEl);
+  let tipAt = null; // the control it's showing for
+  let tipWait = null; // the control it's about to show for
+  let tipTimer = 0;
+  function showTip(el) {
+    clearTimeout(tipTimer);
+    tipWait = null;
+    if (!el.isConnected || !el.dataset.tip) return hideTip();
+    const [h, r] = el.dataset.tip.split(' · ');
+    tipEl.innerHTML = `<div class="h">${esc(h)}</div>${r ? `<div class="r">${esc(r)}</div>` : ''}`;
+    tipEl.hidden = false;
+    tipAt = el;
+    const b = el.getBoundingClientRect();
+    const w = tipEl.offsetWidth;
+    const hh = tipEl.offsetHeight;
+    const y = b.bottom + 6 + hh > innerHeight - 6 ? b.top - 6 - hh : b.bottom + 6;
+    tipEl.style.left = `${Math.round(Math.max(6, Math.min(b.left + b.width / 2 - w / 2, innerWidth - w - 6)))}px`;
+    tipEl.style.top = `${Math.round(Math.max(6, y))}px`;
+  }
+  function hideTip() {
+    clearTimeout(tipTimer);
+    tipWait = tipAt = null;
+    tipEl.hidden = true;
+  }
+  addEventListener('mouseover', (e) => {
+    const el = e.target.closest && e.target.closest('[data-tip]');
+    if (el && (el === tipAt || el === tipWait)) return;
+    hideTip();
+    if (!el) return;
+    tipWait = el;
+    tipTimer = setTimeout(() => showTip(el), 300);
+  });
+  addEventListener('mouseout', (e) => !e.relatedTarget && hideTip());
+  addEventListener('focusin', (e) => {
+    const el = e.target.closest && e.target.closest('[data-tip]');
+    if (el && el.matches(':focus-visible')) showTip(el);
+  });
+  addEventListener('focusout', (e) => e.target === tipAt && !tipAt.matches(':hover') && hideTip());
+  addEventListener('scroll', hideTip, true);
+  addEventListener('blur', hideTip);
+
+  // The eye(s) as the note they belong to is: crossed out and lit while the note is hidden from AI, and saying so in words
+  // (its tooltip, and VoiceOver's label).
+  function paintAi() {
+    const set = (b, n) => {
+      if (!b || !n) return;
+      const on = !!n.aiHidden;
+      if (b.dataset.ai === String(on)) return;
+      b.dataset.ai = String(on);
+      b.classList.toggle('on', on);
+      b.removeAttribute('aria-pressed');
+      b.removeAttribute('title');
+      b.dataset.tip = on ? AI_TIP_HIDDEN : AI_TIP_SEEN;
+      b.setAttribute('aria-label', b.dataset.tip);
+      b.innerHTML = on ? EYE_OFF : EYE;
+      if (tipAt === b || b.matches(':hover')) showTip(b);
+    };
+    if (WINDOW) set(panel.querySelector('.npw-ai'), cur);
+    else {
+      set(aiBtn, pinnedNote());
+      if (win) set(win.querySelector('.npw-ai'), cur);
+    }
+  }
+  // Hide or show a note from AI. Only here (the user's click): written at once, so the app's own copy says the same before
+  // any AI asks again; a note's window is told too. In a note's window the dashboard's page does it.
+  async function setAiHidden(id, on) {
+    if (WINDOW) {
+      // The eye changes at once; the dashboard's answer sets it as it really is.
+      const was = !!cur.aiHidden;
+      aiHiddenSet(!!on);
+      const r = await post({ type: 'aiHide', on: !!on });
+      aiHiddenSet(r && 'hidden' in r ? r.hidden : was);
+      return r;
+    }
+    await isLoaded;
+    const n = notes.find((x) => x.id === id);
+    if (!n) return { error: 'not_found' };
+    if (on) n.aiHidden = true;
+    else delete n.aiHidden;
+    paintAi();
+    const ok = await write();
+    toApp({ type: 'noteAiHidden', id, on: !!on });
+    paintAi();
+    drawBoard();
+    return ok ? { ok: true, hidden: !!on } : { error: unsaved || 'not saved' };
+  }
+  // A note's window is told its note was hidden or shown (from the board, the panel or its own eye).
+  function aiHiddenSet(on) {
+    if (!cur) return;
+    if (on) cur.aiHidden = true;
+    else delete cur.aiHidden;
+    paintAi();
+  }
+
   // ⤢ lit while the pinned note is out in its app window (NATIVE).
   function popState() {
     const on = out.has(pinned);
@@ -1143,12 +1598,15 @@ window.Notes = (() => {
     win.setAttribute('aria-label', 'Note');
     win.innerHTML =
       '<div class="npw-bar"><span class="tag npw-name">note1</span><span class="npw-meta"></span>' +
+      '<button type="button" class="npw-ai"></button>' +
       `<button type="button" class="npw-del" title="Delete note" aria-label="Delete note">${TRASH}</button>` +
       '<button type="button" class="npw-x" title="Close: back to its place in the dashboard" aria-label="Close the window">×</button></div>' +
       '<div class="npw-body"></div>';
     document.body.appendChild(win);
     win.querySelector('.npw-x').addEventListener('click', () => dock());
     win.querySelector('.npw-del').addEventListener('click', () => askDelete(cur.id));
+    win.querySelector('.npw-ai').addEventListener('click', () => setAiHidden(cur.id, !cur.aiHidden));
+    paintAi();
     const bar = win.querySelector('.npw-bar');
     bar.addEventListener('pointerdown', (e) => {
       if (e.button !== 0 || e.target.closest('button')) return;
@@ -1640,6 +2098,9 @@ window.Notes = (() => {
         (id === pinned
           ? `<button type="button" disabled><span class="np-ci">${PIN}</span>pinned to the dashboard</button>`
           : `<button type="button" data-ctx="pin"><span class="np-ci">${PIN}</span>pin to dashboard</button>`) +
+        (notes.find((x) => x.id === id)?.aiHidden
+          ? `<button type="button" data-ctx="aishow"><span class="np-ci">${EYE}</span>show to AI</button>`
+          : `<button type="button" data-ctx="aihide"><span class="np-ci">${EYE_OFF}</span>hide from AI</button>`) +
         `<hr><button type="button" data-ctx="delete" class="np-ctx-del"><span class="np-ci">${TRASH}</span>delete note…</button>`;
       document.body.appendChild(menu);
       menu.style.left = `${Math.max(4, Math.min(e.clientX, innerWidth - menu.offsetWidth - 4))}px`;
@@ -1650,6 +2111,8 @@ window.Notes = (() => {
         menu.remove();
         if (b.dataset.ctx === 'open') openNote(id);
         else if (b.dataset.ctx === 'pin') pinNote(id);
+        else if (b.dataset.ctx === 'aihide') setAiHidden(id, true);
+        else if (b.dataset.ctx === 'aishow') setAiHidden(id, false);
         else askDelete(id);
       };
     });
@@ -2192,6 +2655,7 @@ window.Notes = (() => {
       `<section class="panel np-tile${n === cur || open ? ' cur' : ''}${coming}" role="listitem" tabindex="0" data-id="${esc(n.id)}" aria-label="${esc(nameOf(n))}">` +
       `<header><span class="tag np-name" title="${esc(nameOf(n) === n.name ? NAME_HINT : nameOf(n))}">${esc(nameOf(n))}</span>` +
       `<span class="meta">${where ? `<b>${where}</b> · ` : ''}${when}</span>` +
+      (n.aiHidden ? `<span class="np-aih" data-tip="${AI_HIDDEN_TIP}" role="img" aria-label="${AI_HIDDEN_TIP}">${EYE_OFF}</span>` : '') +
       `<button type="button" class="np-del" title="Delete note" aria-label="Delete note">${TRASH}</button></header>` +
       `<div class="body np-mini">${mini(blocksOf(n))}</div></section>`
     );
@@ -2272,6 +2736,173 @@ window.Notes = (() => {
     return writing;
   }
 
+  // ---------- what an AI sees and does (NotesTools.swift asks; Claude Code, Codex and Antigravity through MCP) ----------
+  // Every change an AI makes goes through here, the notes' one writer, never to the files: the note redraws at once, is kept
+  // encrypted as any typing is, and ⌘Z takes it back as one step. A note out in its own window is changed by that window's
+  // page (NotesTools asks the page that holds the note live), so what the user is typing there is never overwritten.
+  // The note as Markdown is what an AI reads and writes (toText and fromText); its `version` is a hash of that text.
+  let lastInputAt = 0;
+  let composing = false;
+  ed.addEventListener('beforeinput', () => (lastInputAt = Date.now()));
+  ed.addEventListener('compositionstart', () => (composing = true));
+  ed.addEventListener('compositionend', () => {
+    composing = false;
+    lastInputAt = Date.now();
+  });
+  // Typing now: a key within the last 1.5 s in this note's editor, or a composition (Türkçe, Japanese…) not finished.
+  const typing = () => composing || (ed.contains(document.activeElement) && Date.now() - lastInputAt < 1500);
+  const nap = (ms) => new Promise((r) => setTimeout(r, ms));
+  const AI_MAX = 20000;
+
+  // Every note, where it is, never its text (agentRead has that): `pinnedToDashboard` is the note the dashboard's panel shows,
+  // `inWindow` one out in a window of its own; NotesTools adds what only the app knows (windows' pin, whether the session lives).
+  async function agentList() {
+    await isLoaded;
+    // A note hidden from AI isn't here at all (the app filters again from its own copy).
+    return notes.map((n, i) => (n.aiHidden ? null : { n, i })).filter(Boolean).map(({ n, i }) => {
+      const md = toText(blocksOf(n));
+      return {
+        id: n.id,
+        title: nameOf(n),
+        order: i + 1,
+        created: n.created,
+        changed: n.at || null,
+        version: hashOf(md),
+        chars: md.length,
+        preview: md.slice(0, 160),
+        pinnedToDashboard: n.id === pinned,
+        inWindow: out.has(n.id),
+        session: n.session || null,
+        sessionLabel: n.sessionLabel || null,
+      };
+    });
+  }
+
+  async function agentRead(id) {
+    await isLoaded;
+    const n = notes.find((x) => x.id === id);
+    if (!n || n.aiHidden) return { error: 'not_found' };
+    const md = toText(blocksOf(n));
+    return { id: n.id, title: nameOf(n), version: hashOf(md), changed: n.at || null, chars: md.length, markdown: md };
+  }
+
+  // The blocks of a note replaced as one step: the live editor's (⌘Z takes it back), or a note that isn't being written here.
+  function setBlocksOf(n, next) {
+    if (n === cur && !out.has(n.id)) {
+      const s = snap();
+      record('op');
+      blocks = liveOf(next);
+      lastKind = '';
+      const f = s.focus && blocks[Math.min(s.focus.i, blocks.length - 1)];
+      render(f ? { id: f.id, at: Math.min(s.focus.at, f.text.length) } : null);
+      save();
+    } else {
+      n.blocks = plain(liveOf(next));
+      n.at = Date.now();
+      write();
+      stamp();
+      drawBoard();
+    }
+    return writing;
+  }
+
+  // req: { id, op: 'append' | 'edit' | 'write', text, old, new, version, by }. Answers { ok, version, saved } or { error, message }.
+  async function agentApply(req) {
+    await isLoaded;
+    const bad = (message, more) => ({ error: 'bad_request', message, ...more });
+    if (!req || typeof req !== 'object') return bad('Bad request.');
+    const n = notes.find((x) => x.id === req.id);
+    if (!n || n.aiHidden) return { error: 'not_found', message: 'No note has this id. List the notes again.' };
+    const op = req.op;
+    if (!['append', 'edit', 'write'].includes(op)) return bad('Unknown operation.');
+    const live = n === cur && !out.has(n.id);
+    // An addition goes in at once, at the end, wherever the cursor is. Anything that rewrites waits for a pause in typing.
+    if (op !== 'append' && live) {
+      for (let waited = 0; typing(); waited += 200) {
+        if (waited >= 10000) return { error: 'busy', message: 'The user is typing in this note right now. Try again in a few seconds.' };
+        await nap(200);
+      }
+    }
+    // The user may have hidden (or deleted) it while this waited.
+    if (!notes.includes(n) || n.aiHidden) return { error: 'not_found', message: 'No note has this id. List the notes again.' };
+    const have = blocksOf(n);
+    const md = toText(have);
+    const version = hashOf(md);
+    const base = plain(liveOf(have));
+    let next;
+    if (op === 'append') {
+      const add = plain(fromText(String(req.text ?? '')));
+      if (!String(req.text ?? '').trim()) return bad('Nothing to add.');
+      const empty = base.length === 1 && base[0].type === 'p' && !base[0].text;
+      next = (empty ? [] : base).concat(add);
+    } else if (op === 'edit') {
+      const old = String(req.old ?? '');
+      const neu = String(req.new ?? '');
+      if (!old) return bad('old_text is empty.');
+      const count = md.split(old).length - 1;
+      if (!count) return { error: 'text_not_found', version, message: 'That text is not in the note (it may have changed). Read the note again.' };
+      if (count > 1) return { error: 'ambiguous', version, message: `That text is in the note ${count} times. Give a longer piece that is there once.` };
+      // In one block's own text: that block alone changes. Else the Markdown is changed and read back into blocks.
+      const hit = base.filter((b) => b.text.includes(old));
+      if (hit.length === 1 && hit[0].text.split(old).length === 2 && (!neu.includes('\n') || hit[0].type === 'code' || hit[0].type === 'p')) {
+        hit[0].text = hit[0].text.replace(old, () => neu);
+        next = base;
+      } else next = plain(fromText(md.replace(old, () => neu)));
+    } else {
+      if (md.trim() && !req.version) return bad('version is required to rewrite a note: read it first and pass its version.');
+      if (req.version && req.version !== version) return { error: 'changed', version, message: 'The note changed since you read it. Read it again.' };
+      next = plain(fromText(String(req.text ?? '')));
+    }
+    if (toText(next).length > 400000) return bad('The note would be too long.');
+    return commitAi(n, next, req.by, have, op);
+  }
+
+  async function commitAi(n, next, by, before, op) {
+    const keep = plain(liveOf(before));
+    await setBlocksOf(n, next);
+    const after = hashOf(toText(blocksOf(n)));
+    lastAi = { id: n.id, by: String(by || 'AI').slice(0, 24), at: Date.now(), before: keep, after };
+    aiLog.push(lastAi);
+    if (aiLog.length > 10) aiLog.shift();
+    stamp();
+    return { ok: true, op, version: after, title: nameOf(n), saved: !unsaved };
+  }
+
+  // Undo of the last AI change in this note, while the note is still as the AI left it (the strip's "Undo").
+  async function agentUndo(id) {
+    const n = notes.find((x) => x.id === id);
+    const a = aiTag(n);
+    if (!n || !a) return { error: 'nothing_to_undo' };
+    await setBlocksOf(n, a.before);
+    lastAi = null;
+    aiLog.splice(0, aiLog.length, ...aiLog.filter((x) => x !== a));
+    stamp();
+    return { ok: true };
+  }
+  document.addEventListener('click', (e) => {
+    const t = e.target.closest && e.target.closest('[data-undo]');
+    if (t && t.dataset.undo) agentUndo(t.dataset.undo);
+  });
+
+  // A note pinned to a terminal (its detached session's name) or let go: `session` '' lets go. Kept with the note.
+  async function agentSession(id, session, label) {
+    await isLoaded;
+    const n = notes.find((x) => x.id === id);
+    if (!n || n.aiHidden) return { error: 'not_found' };
+    // Another note held by this terminal lets go: a terminal has one note.
+    const free = (o) => {
+      delete o.session;
+      delete o.sessionLabel;
+    };
+    if (session) {
+      for (const o of notes) if (o !== n && !o.aiHidden && o.session === session) free(o);
+      Object.assign(n, sessionOf({ session, sessionLabel: label }));
+    } else free(n);
+    write();
+    drawBoard();
+    return { ok: true };
+  }
+
   // ---------- the dashboard's side of the note windows (NATIVE; NoteWindow.swift calls these) ----------
   // A note's window asks for its note: from now on it's written there.
   async function windowNote(id) {
@@ -2284,7 +2915,7 @@ window.Notes = (() => {
     popState();
     stamp();
     drawBoard();
-    return JSON.stringify({ v: 3, ordered: true, pinned: id, current: id, notes: [{ id: n.id, name: n.name, created: n.created, at: n.at, blocks: blocksOf(n) }] });
+    return JSON.stringify({ v: 3, ordered: true, pinned: id, current: id, notes: [{ id: n.id, name: n.name, created: n.created, at: n.at, blocks: blocksOf(n), ...hideOf(n) }] });
   }
   // What a note's window wrote, kept with every other note: its blocks and when (its name and order stay this page's).
   async function fromWindow(note) {
@@ -2357,6 +2988,7 @@ window.Notes = (() => {
   function windowBar() {
     panel.querySelector('.npw-x')?.addEventListener('click', () => post({ type: 'close' }));
     panel.querySelector('.npw-del')?.addEventListener('click', () => ready && askDelete(cur.id));
+    panel.querySelector('.npw-ai')?.addEventListener('click', () => ready && setAiHidden(cur.id, !cur.aiHidden));
     panel.querySelector('.npw-top')?.addEventListener('click', () => post({ type: 'onTop', on: !onTop }).then((r) => r && setTop(r.onTop)));
     const bar = panel.querySelector('.npw-bar');
     bar?.addEventListener('mousedown', (e) => {
@@ -2464,5 +3096,12 @@ window.Notes = (() => {
     windowClosed,
     windowsOpen,
     removeFromWindow: (id) => removeNote(id),
+    agentList,
+    agentRead,
+    agentApply,
+    agentUndo,
+    agentSession,
+    setAiHidden,
+    aiHiddenSet,
   };
 })();

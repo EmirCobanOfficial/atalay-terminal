@@ -9,6 +9,9 @@
 /* Blocks selected (Ctrl+A twice, or a drag from one block into another): they light up, as Notion shows them, instead
    of the text. */
 .nb.sel { background: rgba(var(--accent-rgb), 0.16); }
+/* A drag that began in the page can't pull in the panel's header or anything else around it. */
+#p-notes, .np-win { -webkit-user-select: none; user-select: none; }
+.np-ed { -webkit-user-select: text; user-select: text; }
 .np-ed.blocksel *::selection { background: transparent; }
 /* The box that holds every block as Markdown while they're all selected: out of sight, still able to take the keys. */
 .np-clip { position: fixed; left: -10000px; top: 0; width: 10px; height: 10px; opacity: 0; pointer-events: none; }
@@ -174,18 +177,28 @@
 }
 /* Keep on top (the pin): first on the right, the trash can and × after it. Off, a dim pin; on, codicon's pinned in the
    accent on a lit square, so the two states differ in shape and fill, not only in colour. Its targets are 24 px. */
-.npw-top { flex: none; width: 24px; height: 24px; margin-left: auto; padding: 0; border: 0; border-radius: 4px; background: none; color: var(--dim); line-height: 24px; cursor: pointer; }
-.npw-top:hover { background: rgba(var(--accent-rgb), 0.18); color: var(--hi); }
-.npw-top.on { background: rgba(var(--accent-rgb), 0.22); color: var(--accent); }
-.npw-top.on:hover { background: rgba(var(--accent-rgb), 0.3); }
+.npw-top, .npw-ai { flex: none; width: 24px; height: 24px; margin-left: auto; padding: 0; border: 0; border-radius: 4px; background: none; color: var(--dim); line-height: 24px; cursor: pointer; }
+.npw-top:hover, .npw-ai:hover { background: rgba(var(--accent-rgb), 0.18); color: var(--hi); }
+.npw-top.on, .npw-ai.on { background: rgba(var(--accent-rgb), 0.22); color: var(--accent); }
+.npw-top.on:hover, .npw-ai.on:hover { background: rgba(var(--accent-rgb), 0.3); }
+.npw-ai + .npw-top, .npw-ai + .npw-del { margin-left: 2px; }
+/* Hidden from AI: a small quiet eye-off on the note's board card (its window and the panel light their own eye). */
+.np-aih { flex: none; margin-right: 3px; color: var(--dim); line-height: 19px; cursor: default; }
+/* The eye's tooltip (notes.js showTip): the dashboard's own tooltip look (style.css #tip), small, over everything. */
+.np-tip { position: fixed; z-index: 2800; box-sizing: border-box; max-width: calc(100vw - 12px); padding: 5px 9px; border: 1px solid var(--accent-soft); background: rgba(var(--surface-rgb), 0.94); -webkit-backdrop-filter: blur(16px) saturate(1.4); backdrop-filter: blur(16px) saturate(1.4); box-shadow: 0 0 24px rgba(var(--accent-rgb), 0.3); color: var(--txt); font: 11px/1.4 var(--font); white-space: nowrap; pointer-events: none; }
+.np-tip[hidden] { display: none; }
+.np-tip .h { color: var(--hi); font-weight: 700; }
+.np-tip .r { margin-top: 1px; color: var(--txt); }
 .npw-top + .npw-del { margin-left: 2px; }
-.np-native .npw-del, .np-native .npw-x { width: 24px; height: 24px; line-height: 24px; }
+.np-native .npw-ai, .np-native .npw-del, .np-native .npw-x { width: 24px; height: 24px; line-height: 24px; }
 .np-native .npw-bar button:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
 /* Streamer mode blurs the note as the dashboard's window did, rather than the panel's made-up to-do list. */
 html.streamer #p-notes.np-native .np-ed, html.streamer #p-notes.np-native .np-ed * { visibility: visible !important; }
 html.streamer .np-native #notes::before, html.streamer .np-native #notes::after { content: none; }
 .np-ci { display: inline-block; width: 18px; }
 .pn-ctx .np-ctx-del:hover { color: var(--red); }
+/* The Copy menu of lit blocks opens over the note's window too (np-win is z-index 2400; the dashboard's menus are 80). */
+.pn-ctx.np-lit { z-index: 2750; }
 .pn-ctx button[disabled] { opacity: 0.6; cursor: default; }
 .pn-ctx button[disabled]:hover { background: transparent; color: var(--txt); }
 
@@ -208,3 +221,7 @@ html.np-dragging, html.np-dragging * { cursor: grabbing !important; }
 /* The pinned note in the panel while another note is out in its window: to read, a click to write in it again. */
 .np-peek { box-sizing: border-box; height: 100%; overflow: hidden; padding: 8px 12px; line-height: 1.6; cursor: pointer; opacity: 0.85; -webkit-mask-image: linear-gradient(to bottom, #000 80%, transparent); mask-image: linear-gradient(to bottom, #000 80%, transparent); }
 .np-peek:hover { opacity: 1; }
+
+/* The strip after an AI changed the note: "Claude edited · 2:14 PM · Undo", the whole line a button until the note changes again. */
+[data-undo]:not([data-undo=""]) { cursor: pointer; color: var(--accent); }
+[data-undo]:not([data-undo=""]):hover { text-decoration: underline; }

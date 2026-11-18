@@ -1514,6 +1514,8 @@ function panelMenu(e) {
   document.querySelector('.pn-ctx')?.remove();
   const p = e.target.closest('section.panel[id^="p-"]');
   if (!p || !(CLEARABLE.includes(p.id) || window.PanelLayout?.hide)) return;
+  // A note's text keeps the system's menu (Copy, Paste, Select All); the notes script takes the lit blocks' own.
+  if (e.target.closest('.np-ed')) return;
   e.preventDefault();
   const menu = document.createElement('div');
   menu.className = 'pn-ctx';
