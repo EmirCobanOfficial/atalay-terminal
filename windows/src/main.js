@@ -114,6 +114,9 @@ const PRELOAD = path.join(__dirname, 'preload.js');
 // ATL_PROBE=<folder>: a check without windows on screen — the pages render out of sight, pictures of them land in the
 // folder, and the app quits (development only: a released app never runs it).
 const PROBE = RELEASE ? '' : process.env.ATL_PROBE || '';
+// ORBITERM_DEMO=1 (staging, development only): the dashboard shows four made-up projects at work and nothing real
+// (web/app.js's DEMO), without the chats list. With ORBITERM_DEMO_SHOT=<folder>, pictures of it land there (demoShots).
+const DEMO = !RELEASE && process.env.ORBITERM_DEMO === '1';
 // The pages still the release's own, checked before one loads: once they aren't, the guard signs nothing more.
 function checkPages() {
   if (guard && !sameFiles(WEB, builtFiles && builtFiles.web)) guard.lock();
@@ -817,7 +820,7 @@ function createDashboard() {
   for (const v of views) {
     v.setBackgroundColor(bg);
     win.contentView.addChildView(v);
-    bootFor(v.webContents, v === dashView ? { dashboard: true } : {});
+    bootFor(v.webContents, v === dashView ? { dashboard: true, demo: DEMO } : {});
     // Links in the pages open in the browser, never inside the app.
     v.webContents.setWindowOpenHandler(({ url }) => {
       if (/^https?:/.test(url)) shell.openExternal(url);
@@ -906,7 +909,7 @@ function createDashboard() {
 // it open and shut, fading, while the dashboard gives it room and takes it back.
 const CHATS_MIN = 210, CHATS_MAX = 460;
 const chatsWidth = (w) => (Number.isFinite(w) ? Math.round(Math.min(CHATS_MAX, Math.max(CHATS_MIN, w))) : 280);
-const chatsList = { shown: settings.get('sidebarHidden') !== true, width: chatsWidth(settings.get('sidebarWidth')), slide: null, timer: null };
+const chatsList = { shown: settings.get('sidebarHidden') !== true && !DEMO, width: chatsWidth(settings.get('sidebarWidth')), slide: null, timer: null };
 
 function layout() {
   if (!dash || dash.isDestroyed() || dash.isMinimized()) return;
@@ -2890,6 +2893,7 @@ app.whenReady().then(() => {
     for (const s of found) openChatWindow({ id: s.id, cwd: s.cwd, claude: s.claude, title: s.title, show: false });
   });
   if (PROBE) probe();
+  if (DEMO && process.env.ORBITERM_DEMO_SHOT) demoShots(process.env.ORBITERM_DEMO_SHOT);
 });
 
 let savingFiles = false;
@@ -2939,6 +2943,30 @@ function leave() {
 app.on('window-all-closed', () => {
   if (!quitting) app.quit();
 });
+
+// ---------- the demo's pictures (ORBITERM_DEMO_SHOT) ----------
+// The dashboard on screen, once its four projects have been at work a while, then every few seconds: demo-1.png…
+// ORBITERM_DEMO_JS runs in the page first (a zoom of the map, say).
+async function demoShots(dir) {
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const count = Number(process.env.ORBITERM_DEMO_SHOTS) || 4;
+  const every = Number(process.env.ORBITERM_DEMO_EVERY) || 12000;
+  await wait(Number(process.env.ORBITERM_DEMO_DELAY) || 45000);
+  if (process.env.ORBITERM_DEMO_JS) {
+    await dashView.webContents.executeJavaScript(process.env.ORBITERM_DEMO_JS).catch((e) => console.log('demo js:', e.message));
+    await wait(1500);
+  }
+  for (let n = 1; n <= count; n++) {
+    const wc = pageOf(dashView);
+    const img = wc && (await Promise.race([wc.capturePage(), wait(5000).then(() => null)]));
+    if (img) {
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, `demo-${n}.png`), img.toPNG());
+      console.log(`demo: shot ${n} (${img.getSize().width}x${img.getSize().height})`);
+    } else console.log(`demo: no picture ${n}`);
+    if (n < count) await wait(every);
+  }
+}
 
 // ---------- the development check (ATL_PROBE) ----------
 async function probe() {

@@ -35,6 +35,8 @@ if (boot.dashboard) {
   contextBridge.exposeInMainWorld('__noteWindows', true);
   contextBridge.exposeInMainWorld('__nativeFeed', true);
 }
+// Staging's demo for screenshots (main.js's DEMO): web/app.js shows four made-up projects and nothing real.
+if (boot.demo) contextBridge.exposeInMainWorld('__DEMO__', true);
 if (boot.noteWindow) contextBridge.exposeInMainWorld('__NOTE_WINDOW__', boot.noteWindow);
 // The chat window's size as it was left, without the ring for its glow (main.js's chatWindowSize), or null the first time.
 if (boot.role === 'chat') contextBridge.exposeInMainWorld('__CHAT_SIZE__', boot.chatSize || null);
