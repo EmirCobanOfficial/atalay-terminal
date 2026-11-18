@@ -19,6 +19,9 @@ import { VRMAnimationLoaderPlugin, createVRMAnimationClip } from '@pixiv/three-v
   const EDGE_MARGIN = 76;
   const GRAVITY = 1450;
   const FRAME_INTERVAL_MS = 1000 / 30;
+  // Asleep (no input for 10 min, idle >= 600 s): she breathes at 10 fps. With a display that doesn't sleep the page
+  // went on drawing 30 frames a second for as long as the user was away.
+  const SLEEP_FRAME_MS = 1000 / 10;
   const CROSSFADE_SEC = 0.25;
 
   const FIRST_GREETINGS = [
@@ -2267,20 +2270,31 @@ import { VRMAnimationLoaderPlugin, createVRMAnimationClip } from '@pixiv/three-v
     }
   }
 
+  // A frame still in the queue, as either an animation frame or (asleep) a setTimeout waking it up.
+  let frameTimer = 0;
   function loop(now) {
-    if (!active) {
-      rafId = 0;
+    rafId = 0;
+    if (!active) return;
+    const interval = mode === 'sleep' ? SLEEP_FRAME_MS : FRAME_INTERVAL_MS;
+    // Asleep the next frame is far off: wait with setTimeout so the page sleeps instead of waking at every display
+    // refresh, as the orbit map does when throttled.
+    const dueIn = lastFrameTime ? interval - (now - lastFrameTime) - 2 : 0;
+    if (dueIn > 20) {
+      frameTimer = setTimeout(() => {
+        frameTimer = 0;
+        if (active && !rafId) rafId = requestAnimationFrame(loop);
+      }, dueIn - 10);
       return;
     }
     rafId = requestAnimationFrame(loop);
-    if (lastFrameTime && now - lastFrameTime < FRAME_INTERVAL_MS - 1) return;
-    const dt = lastFrameTime ? Math.min(1 / 30, (now - lastFrameTime) / 1000) : 0;
+    if (lastFrameTime && now - lastFrameTime < interval - 1) return;
+    const dt = lastFrameTime ? Math.min(interval / 1000, (now - lastFrameTime) / 1000) : 0;
     lastFrameTime = now;
     stepSimulation(dt);
   }
 
   function startLoop() {
-    if (!rafId && active) {
+    if (!rafId && !frameTimer && active) {
       lastFrameTime = 0;
       rafId = requestAnimationFrame(loop);
     }
@@ -2291,6 +2305,8 @@ import { VRMAnimationLoaderPlugin, createVRMAnimationClip } from '@pixiv/three-v
       cancelAnimationFrame(rafId);
       rafId = 0;
     }
+    clearTimeout(frameTimer);
+    frameTimer = 0;
   }
 
   function handleResize() {
