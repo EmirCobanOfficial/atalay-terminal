@@ -24,7 +24,7 @@ enum Shortcuts {
         Action(id: "splitVertically", group: "Chats", title: "Split vertically", combo: "cmd+d"),
         Action(id: "splitHorizontally", group: "Chats", title: "Split horizontally", combo: "shift+cmd+d"),
         // Its second way to open (the first is the trackpad's four-finger click): keys, or a mouse button with modifiers.
-        Action(id: "shortcutsWheel", group: "Chats", title: "Shortcut wheel", combo: "ctrl+mouse2"),
+        Action(id: "shortcutsWheel", group: "Chats", title: "Ring", combo: "ctrl+mouse2"),
         Action(id: "copyReply", group: "Chats", title: "Copy Claude's last reply", combo: "shift+cmd+c"),
         Action(id: "closePane", group: "Chats", title: "Close the terminal in front (what runs in it ends)", combo: "cmd+w"),
         Action(id: "closeWindow", group: "Chats", title: "Close the terminal window", combo: "shift+cmd+w"),
@@ -102,7 +102,7 @@ enum Shortcuts {
     /// Sets an action's keys ("" for none): nil, or why not (another action has them, or the system does).
     static func set(_ id: String, _ combo: String) -> String? {
         guard action(id) != nil else { return "unknown action" }
-        if isMouse(combo), id != "shortcutsWheel" { return "only the shortcut wheel opens with the mouse" }
+        if isMouse(combo), id != "shortcutsWheel" { return "only the Ring opens with the mouse" }
         if !combo.isEmpty, !isMouse(combo) {
             if let what = reserved[combo] { return "\(label(combo)) is \(what)" }
             if let other = actions.first(where: { $0.id != id && Self.combo($0.id) == combo }) {

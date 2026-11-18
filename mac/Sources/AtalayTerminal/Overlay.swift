@@ -27,7 +27,9 @@ final class ShortcutStore {
     var json: [Any] {
         slots.map { s -> Any in
             guard let s else { return NSNull() }
-            return ["name": s.name, "dir": s.dir, "display": tildify(s.dir)]
+            var isDir: ObjCBool = false
+            let missing = !(FileManager.default.fileExists(atPath: s.dir, isDirectory: &isDir) && isDir.boolValue)
+            return ["name": s.name, "dir": s.dir, "display": tildify(s.dir), "missing": missing]
         }
     }
 
@@ -40,6 +42,12 @@ final class ShortcutStore {
                 continue
             }
             let dir = FolderLister.expand(dirRaw)
+            // A slot that is already saved stays as it is, even if its folder was renamed or removed since: only
+            // new folders are checked, so a missing one never blocks changing or clearing the others.
+            if let kept = slots.compactMap({ $0 }).first(where: { $0.dir == dir }) {
+                next.append(kept)
+                continue
+            }
             var isDir: ObjCBool = false
             guard FileManager.default.fileExists(atPath: dir, isDirectory: &isDir), isDir.boolValue else { throw err("not a folder: \(dirRaw)") }
             let name = (d["name"] as? String).flatMap { $0.isEmpty ? nil : String($0.prefix(40)) } ?? (dir as NSString).lastPathComponent
@@ -62,7 +70,12 @@ enum FolderLister {
     }
 
     static func list(_ raw: String, projects: String) -> [String: Any] {
-        let dir = URL(fileURLWithPath: expand(raw.isEmpty ? "~" : raw)).standardizedFileURL.path
+        var dir = URL(fileURLWithPath: expand(raw.isEmpty ? "~" : raw)).standardizedFileURL.path
+        // A folder that is gone (renamed in Finder): open the nearest one that still exists.
+        var isDir: ObjCBool = false
+        while dir != "/", !(FileManager.default.fileExists(atPath: dir, isDirectory: &isDir) && isDir.boolValue) {
+            dir = (dir as NSString).deletingLastPathComponent
+        }
         let parent: Any = dir == "/" ? NSNull() : (dir as NSString).deletingLastPathComponent
         let fm = FileManager.default
         guard let names = try? fm.contentsOfDirectory(atPath: dir) else {

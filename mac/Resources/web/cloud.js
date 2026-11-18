@@ -963,7 +963,7 @@ window.Cloud = (() => {
   function wheelCard(k) {
     const label = k?.label || '';
     return (
-      `<div class="ks-wheel">${WHEEL_ICON}<div class="ksw-txt"><b>Shortcut wheel</b><span>Your folders around the pointer: pick one and a chat opens there.</span></div>` +
+      `<div class="ks-wheel">${WHEEL_ICON}<div class="ksw-txt"><b>Ring</b><span>Your folders around the pointer: pick one and a chat opens there.</span></div>` +
       '<div class="ksw-how">' +
       '<div><small>primary</small><span class="ks-key fixed">4-finger click</span></div>' +
       '<div><small>secondary</small>' +
@@ -1025,7 +1025,7 @@ window.Cloud = (() => {
       '</div>';
     const card = page.querySelector('.ks-wheel');
     if (card) {
-      card.dataset.find = `shortcut wheel chats 4-finger click ${wheel?.label || ''}`.toLowerCase();
+      card.dataset.find = `ring shortcut wheel chats 4-finger click ${wheel?.label || ''}`.toLowerCase();
       card.dataset.keys = keyFind.keys([wheel?.label]);
     }
     page.onclick = onKeysClick;

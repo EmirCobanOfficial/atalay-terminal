@@ -27,7 +27,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         controller.window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         installMonitors()
-        if !Trackpad.start() { NSLog("Orbiterm: trackpad finger tracking unavailable; ⌃ and the middle mouse button open the shortcut wheel") }
+        if !Trackpad.start() { NSLog("Orbiterm: trackpad finger tracking unavailable; ⌃ and the middle mouse button open the Ring") }
         NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { _ in
             Trackpad.start()
             // Sleep kills the live line to the API without a word; open a fresh one.
@@ -229,7 +229,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         keyed(file, "newTabNext", "New Tab Next to Current Tab", #selector(newTab), target: self)
         keyed(file, "splitVertically", "Split Vertically", #selector(splitVertically), target: self)
         keyed(file, "splitHorizontally", "Split Horizontally", #selector(splitHorizontally), target: self)
-        keyed(file, "shortcutsWheel", "Shortcut Wheel", #selector(showShortcuts), target: self)
+        keyed(file, "shortcutsWheel", "Ring", #selector(showShortcuts), target: self)
         file.addItem(.separator())
         keyed(file, "closePane", "Close", #selector(closePane), target: self)
         keyed(file, "closeWindow", "Close Terminal Window", #selector(NSWindow.performClose(_:)))

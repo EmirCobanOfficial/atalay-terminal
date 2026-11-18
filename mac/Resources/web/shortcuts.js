@@ -104,7 +104,7 @@
     el('circle', { class: 'pulse', cx: C, cy: C, r: R0 - 6 }, hub);
     el('circle', { class: 'core', cx: C, cy: C, r: R0 - 6 }, hub);
     el('text', { class: 'brand', x: C, y: C - 12 }, hub).textContent = 'ORBITERM';
-    el('text', { class: 'title', x: C, y: C + 3 }, hub).textContent = 'SHORTCUTS';
+    el('text', { class: 'title', x: C, y: C + 3 }, hub).textContent = 'RING';
     el('text', { class: 'sub', x: C, y: C + 16 }, hub).textContent = SLOTS.some(Boolean) ? 'pick a folder' : 'add your folders';
     hub.addEventListener('click', (e) => (e.stopPropagation(), close()));
 
@@ -136,7 +136,7 @@
     const s = SLOTS[i];
     const [title, sub] = pie.querySelectorAll('.hub .title, .hub .sub');
     if (i < 0) {
-      title.textContent = 'SHORTCUTS';
+      title.textContent = 'RING';
       sub.textContent = SLOTS.some(Boolean) ? 'pick a folder' : 'add your folders';
     } else {
       title.textContent = s ? s.name.slice(0, 12) : `SLOT ${i + 1}`;
@@ -150,10 +150,10 @@
     pie.querySelectorAll('.slice')[i].classList.add('pick');
     setTimeout(() => {
       close(false, true);
-      if (s) {
+      if (s && !s.missing) {
         API.newTerminal(s.dir, s.name);
         API.done();
-      } else choose(i);
+      } else choose(i, s?.dir);
     }, 140);
   }
 
@@ -168,7 +168,7 @@
         if (await saveSlots(next)) {
           toast(`shortcut ${i + 1} → ${baseName(dir)}`);
           open(at.x, at.y, i);
-        }
+        } else open(at.x, at.y);
       },
       onCancel: () => open(at.x, at.y),
     });
@@ -181,7 +181,7 @@
     const r = pie.getBoundingClientRect();
     m.style.left = x - r.left + 'px';
     m.style.top = y - r.top + 'px';
-    m.innerHTML = `<div class="t">${esc(SLOTS[i].display || SLOTS[i].dir)}</div><button data-a="change">Change folder…</button><button data-a="remove">Remove from slot ${i + 1}</button>`;
+    m.innerHTML = `<div class="t">${esc(SLOTS[i].display || SLOTS[i].dir)}${SLOTS[i].missing ? ' (missing)' : ''}</div><button data-a="change">Change folder…</button><button data-a="remove">Remove from slot ${i + 1}</button>`;
     m.addEventListener('click', async (e) => {
       e.stopPropagation();
       const a = e.target.dataset.a;
@@ -235,5 +235,5 @@
   }, true);
 
   loadSlots();
-  window.Shortcuts = { open, show, close, slots: () => SLOTS };
+  window.Shortcuts = { open, show, close, slots: () => SLOTS, refresh: loadSlots };
 })();
