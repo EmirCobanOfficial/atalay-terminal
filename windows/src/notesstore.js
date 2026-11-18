@@ -151,6 +151,20 @@ function createNotesStore({ dir, keyFile, safeStorage }) {
     }
   }
 
+  // The notes the user hid from AI, from the files' own content as read or written here (what the page last saved): the
+  // AI tools ask this on every call and don't take the page's word for it (the Mac's NotesStore.hiddenIDs).
+  function hiddenIDs() {
+    const out = new Set();
+    for (const [name, plain] of known) {
+      if (name === INDEX || !plain.includes('"aiHidden":true')) continue;
+      try {
+        const o = JSON.parse(plain);
+        if (o && o.aiHidden === true) out.add(name);
+      } catch {}
+    }
+    return out;
+  }
+
   // { type: 'load' } answers { json } (null with no notes yet), { type: 'save', json } answers { ok }; either answers
   // { error } when it can't. One at a time, in the order they came.
   function handle(body) {
@@ -166,7 +180,7 @@ function createNotesStore({ dir, keyFile, safeStorage }) {
     return run.catch((err) => ({ error: String((err && err.message) || err) }));
   }
 
-  return { handle };
+  return { handle, hiddenIDs };
 }
 
 module.exports = { createNotesStore, seal, open };

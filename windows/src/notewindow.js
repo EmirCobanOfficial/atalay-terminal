@@ -274,6 +274,13 @@ function createNoteWindows({ BrowserWindow, screen, dialog, WEB, settings, webPr
     }
   }
 
+  // A note hidden from AI or shown again somewhere else: its window's eye follows (the Mac's NoteWindow.setAiHidden).
+  function setAiHidden(id, on) {
+    const n = open.get(id);
+    if (!n || !n.loaded || n.finished || n.win.isDestroyed()) return;
+    n.win.webContents.executeJavaScript(`window.Notes && Notes.aiHiddenSet && Notes.aiHiddenSet(${on === true}); true`).catch(() => {});
+  }
+
   function setStreamer(on) {
     for (const n of open.values()) {
       if (n.win.isDestroyed()) continue;
@@ -308,6 +315,10 @@ function createNoteWindows({ BrowserWindow, screen, dialog, WEB, settings, webPr
         return true;
       case 'notesReady':
         notesReady();
+        return true;
+      // A note hidden from AI or shown again (the board, the panel or the note's own eye): its window's eye follows.
+      case 'noteAiHidden':
+        if (typeof msg.id === 'string') setAiHidden(msg.id, msg.on === true);
         return true;
       default:
         return null;
@@ -353,6 +364,15 @@ function createNoteWindows({ BrowserWindow, screen, dialog, WEB, settings, webPr
           win.focus();
         }
         return { onTop: n.onTop };
+      }
+      // The eye on the note's own window (the Mac's aadd95b): the dashboard's page keeps the flag (it writes every note)
+      // and answers { hidden }. Without an answer the page puts the eye back as it was.
+      case 'aiHide': {
+        const r = await callNotes(
+          "const N = window.Notes; return N && N.setAiHidden ? await N.setAiHidden(id, on) : { error: 'the dashboard is loading' };",
+          { id: n.id, on: body.on === true },
+        );
+        return r && typeof r === 'object' ? r : { error: "the dashboard didn't answer" };
       }
       case 'close':
         setImmediate(() => close(n, true));

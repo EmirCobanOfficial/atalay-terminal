@@ -1421,10 +1421,12 @@ function handleRadar(msg) {
       dimSidebar(msg.open === true);
       return stepAside(msg.open === true);
     // A note out of the dashboard in its own window, closed from the dashboard, the dashboard's notes loaded (the notes
-    // left out at the last quit come back), and the community feed's lines (the corner window draws them).
+    // left out at the last quit come back), a note hidden from AI or shown again (its window's eye follows), and the
+    // community feed's lines (the corner window draws them).
     case 'noteWindow':
     case 'noteWindowClose':
     case 'notesReady':
+    case 'noteAiHidden':
       return noteWindows.radar(msg);
     case 'feedLine':
     case 'feedOut':
