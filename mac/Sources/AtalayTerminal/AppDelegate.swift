@@ -23,6 +23,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         controller.showWindow(nil)
         // The token savers this build ships go on by themselves the first time (Settings turns them off).
         TokenSavers.autoStart()
+        // The notes' tools on Orbiterm's MCP server, for the AIs inside Orbiterm and, when the Claude access is on, Claude Desktop / Dispatch, each checked against the notes' own mode at every call;
+        // they reach the AIs through the notes-only launcher, which offers no session tool.
+        McpConnect.writeLauncher()
+        NotesAI.launcher = McpConnect.notesLauncher
+        for t in NotesTools.all {
+            McpRegistry.register(McpTool(name: t.name, title: t.title, description: t.description, props: t.props, required: t.required,
+                                         readOnly: t.readOnly, audience: t.audience, enabled: { NotesAI.mode != .off },
+                                         handler: { a, c in t.handler(a, NotesCaller(peer: c.peer, insideScreen: c.insideScreen, hubMode: c.mode)) }))
+        }
+        NotesAI.autoStart()
         AIColors.autoStart()
         controller.window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
@@ -34,6 +44,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             MainActor.assumeIsolated { Social.shared.kick() }
         }
         engine.start()
+        McpHub.shared.onChange = { [weak self] in self?.controller.pushMcp() }
+        McpHub.shared.start()
         controller.restoreSessions()
         HangWatchdog.shared.start()
         Cloud.shared.installUpdatesRightAway = CommandLine.arguments.contains("--update")
@@ -63,6 +75,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // A downloaded update waiting for the user to step away goes in now: the next launch is the new build.
     func applicationWillTerminate(_ notification: Notification) {
+        McpHub.shared.stop()
         Cloud.shared.installOnQuit()
     }
 

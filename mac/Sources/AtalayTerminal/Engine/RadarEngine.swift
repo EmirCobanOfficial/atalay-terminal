@@ -124,6 +124,11 @@ final class RadarEngine {
         }
     }
 
+    /// The record file (Codex's log, Antigravity's transcript) the engine matched to another AI's session, for the local MCP server's read_session.
+    func logPath(ofOther id: String, completion: @escaping (String?) -> Void) {
+        queue.async { completion(self.others[id]?.log) }
+    }
+
     func refreshHistorySoon() { queue.async { self.scanHistory(force: false) } }
 
     /// The user ended this session in a chat window: it leaves the dashboard now, instead of once Claude has

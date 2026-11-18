@@ -134,6 +134,19 @@ final class NotesStore {
         }
     }
 
+    /// The notes the user hid from AI, from the files' own content as read or written here (what the page last saved): the
+    /// native side asks this on every tool call and doesn't take the page's word for it.
+    func hiddenIDs() -> Set<String> {
+        queue.sync {
+            var out = Set<String>()
+            let mark = Data("\"aiHidden\":true".utf8)
+            for (name, plain) in known where name != Self.indexName && plain.range(of: mark) != nil {
+                if let o = (try? JSONSerialization.jsonObject(with: plain)) as? [String: Any], o["aiHidden"] as? Bool == true { out.insert(name) }
+            }
+            return out
+        }
+    }
+
     private func write(_ object: [String: Any], as name: String, with key: SymmetricKey) throws {
         let plain = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
         guard known[name] != plain else { return }

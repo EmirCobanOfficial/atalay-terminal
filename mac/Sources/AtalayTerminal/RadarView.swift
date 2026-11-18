@@ -40,10 +40,12 @@ final class RadarView: NSObject, WKScriptMessageHandler, WKNavigationDelegate, W
         ThemeStore.shared.attach(webView, zooms: true)
         ucc.add(WeakMessageHandler(self), name: "radar")
         ucc.addScriptMessageHandler(CloudBridge(), contentWorld: .page, name: "cloud")
+        ucc.addScriptMessageHandler(McpPageBridge(), contentWorld: .page, name: "mcp")
         ucc.addScriptMessageHandler(ThemeBridge(), contentWorld: .page, name: "theme")
         ucc.addScriptMessageHandler(KeysBridge(), contentWorld: .page, name: "keys")
         ucc.addScriptMessageHandler(SaversBridge(), contentWorld: .page, name: "savers")
         ucc.addScriptMessageHandler(NotesBridge(), contentWorld: .page, name: "notes")
+        ucc.addScriptMessageHandler(NotesAIBridge(), contentWorld: .page, name: "notesai")
         webView.setValue(false, forKey: "drawsBackground")
         webView.navigationDelegate = self
         webView.uiDelegate = self

@@ -625,7 +625,7 @@ window.Cloud = (() => {
         <div class="pk-border"></div>
         <div class="pk-title"><span class="lights"><i class="l-close" title="Close"></i><i class="l-min off" aria-hidden="true"></i><i class="l-max off" aria-hidden="true"></i></span><img class="hk-logo" src="logo.png" alt=""><b>SETTINGS</b></div>
         <div class="mn-body">
-          <section class="mn-page mn-settings" data-page="settings">${window.Settings.html({ max: MAX, tag: tagText(S.tag), ui: UI, savers: SAVERS, archive: ARCHIVE(), trash: TRASH(), keys: KEYS })}</section>
+          <section class="mn-page mn-settings" data-page="settings">${window.Settings.html({ max: MAX, tag: tagText(S.tag), ui: UI, savers: SAVERS, notesai: NOTESAI, archive: ARCHIVE(), trash: TRASH(), keys: KEYS })}</section>
         </div>
         <div class="pk-foot"><span class="pk-sel note">esc to close</span></div>
       </div></div>`;
@@ -757,6 +757,7 @@ window.Cloud = (() => {
     if (pane) window.Settings?.show(pane, false);
     setTimeout(() => window.Settings?.focusTarget()?.focus(), 100);
     renderSaver();
+    renderNotesAI();
     renderUI();
     window.Fonts?.mount(q('.mn-settings'));
   }
@@ -937,6 +938,30 @@ window.Cloud = (() => {
         q(`.ts-note[data-which="${which}"]`).textContent = on ? `turning ${which} on…` : `turning ${which} off…`;
         showSavers(await saversCall({ type: 'set', which, on }).catch(() => null));
       };
+    });
+  }
+
+  // ---------- AI tools and the notes ----------
+  // Whether Claude Code, Codex and Antigravity in Orbiterm's terminals may read and edit the notes (NotesAI.swift). Off until the
+  // user turns it on, and the app asks natively before it does.
+  const NOTESAI = !!(window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.notesai);
+  const notesAiCall = (msg) => window.webkit.messageHandlers.notesai.postMessage(msg);
+  const NA_NOTE = {
+    off: "off · AI tools can't see your notes",
+    read: 'on · AI tools can read your notes, never change them · passwords and keys are masked',
+    write: 'on · AI tools can read your notes and add to or edit them, every change can be undone · passwords and keys are masked',
+  };
+  function showNotesAI(st) {
+    const note = q('.na-note');
+    if (!st || !note) return;
+    root.querySelectorAll('.st-notesai button').forEach((b) => b.classList.toggle('on', b.dataset.mode === st.mode));
+    note.textContent = NA_NOTE[st.mode] + (st.mode !== 'off' ? ' · Claude Desktop gets them too while Settings > Claude is on' : '') + ' · hide a note from AI with the eye on it, or right-click it on the board' + (st.mode !== 'off' && !st.ready ? ' · starts with the next build that has the MCP server' : '');
+  }
+  async function renderNotesAI() {
+    if (!NOTESAI || !q('.st-notesai')) return;
+    showNotesAI(await notesAiCall({ type: 'state' }).catch(() => null));
+    root.querySelectorAll('.st-notesai button').forEach((b) => {
+      b.onclick = async () => showNotesAI(await notesAiCall({ type: 'mode', mode: b.dataset.mode }).catch(() => null));
     });
   }
 
