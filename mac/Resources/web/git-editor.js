@@ -45,7 +45,8 @@ window.GitEditor = (() => {
   }
   {
     const root = document.documentElement.style;
-    root.setProperty('--code-font', `"${LOOK.font}", Menlo, monospace`);
+    // WebKit has no family named SF Mono; the system one is ui-monospace (as in fonts.js).
+    root.setProperty('--code-font', (LOOK.font === 'SF Mono' ? 'ui-monospace, "SF Mono"' : `"${LOOK.font}"`) + ', Menlo, monospace');
     root.setProperty('--code-size', `${LOOK.size}px`);
   }
   const store = (k, v) => {

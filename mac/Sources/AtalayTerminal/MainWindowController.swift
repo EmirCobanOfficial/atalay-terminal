@@ -26,6 +26,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private var sidebarMin: NSLayoutConstraint!
     private var sidebarPreferred: NSLayoutConstraint!
     private var sidebarSliding = false
+    /// The dark cover on the chat list while a menu is open on the dashboard: the page's own backdrop ends at its edge.
+    private var sidebarDim: NSView?
+    /// A menu is open on the dashboard (so a chat list opened meanwhile must be dimmed too).
+    private var modalOpen = false
+    private var frameObserver: NSObjectProtocol?
     private var fontSize: CGFloat
     private var cascade = 0
     private var lastVisibility = ""
@@ -58,6 +63,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         Self.shared = self
         window.delegate = self
         MessagePanel.dashboard = window
+        NoteWindow.dashboard = window
+        NoteWindow.radar = radar
         let git = GitBridge(engine: engine, terminalFolders: { [weak self] in self?.terminalFolders() ?? [] })
         // Open File in Source Control's ⋯ menu: the pick is the click that opens the file.
         git.onMenuPick = { [weak self] in self?.files.pressed() }
@@ -78,6 +85,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
         runaways.start()
         observeVisibility()
+        Mascot.shared.bind(manager: self)
         PowerSaver.shared.onChange = { [weak self] in self?.pushPower() }
         PowerSaver.shared.start()
         DiscordPresence.shared.onChange = { [weak self] in self?.pushDiscord() }
@@ -94,7 +102,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 self?.pushTerminals()
                 // How long since the last input anywhere on the Mac: the orbit's cinematic camera waits for five
                 // minutes of it, and typing in a terminal window counts.
-                self?.radar.push("idle", String(format: "%.1f", Social.idleSeconds()))
+                let idle = Social.idleSeconds()
+                self?.radar.push("idle", String(format: "%.1f", idle))
+                Mascot.shared.updateIdle(idle)
             }
         }
         t.tolerance = 0.5
@@ -120,8 +130,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         window.contentView = root
 
         let side = NSHostingView(rootView: SidebarView(model: sidebar, actions: SidebarActions(
-            open: { [weak self] in self?.openSession($0) },
-            fork: { [weak self] in self?.openSession($0, fork: true) },
+            open: { [weak self] in self?.userOpenSession($0) },
+            fork: { [weak self] in self?.userOpenSession($0, fork: true) },
             newTerminal: { [weak self] in self?.newTerminal(in: $0) },
             reveal: { NSWorkspace.shared.open(URL(fileURLWithPath: $0)) },
             copyId: {
@@ -165,6 +175,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             side.widthAnchor.constraint(lessThanOrEqualToConstant: 460),
             preferred,
         ])
+        // The page centres its menus on the whole window, so it needs the chat list's width (left of it) in its own px.
+        // The dashboard's frame changes whenever the list is dragged, opened or closed, or the window is resized.
+        radar.webView.postsFrameChangedNotifications = true
+        frameObserver = NotificationCenter.default.addObserver(forName: NSView.frameDidChangeNotification, object: radar.webView, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.pushSide() }
+        }
         radar.onMessage = { [weak self] in self?.handleRadar($0) }
         Cloud.shared.onChange = { [weak self] _ in
             self?.pushCloud()
@@ -176,6 +192,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             self?.radar.push("social", json)
             MessagePanel.notices.push(json)
             MessagePanel.pushToChats(json)
+            Mascot.shared.onSocialJSON(json)
             if json.contains(#""type":"xp""#) { Cloud.shared.apply(xpEvent: json) }
         }
         // The "update available" notice was clicked: the dashboard in front, on its "what's new" screen.
@@ -183,10 +200,18 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             self?.showDashboard()
             self?.radar.push("openUpdate", "null")
         }
+        // The "updated" note was clicked: the dashboard in front, on the notes of the version you're on.
+        MessagePanel.onOpenWhatsNew = { [weak self] in self?.openWhatsNew("notes") }
         // The daily bonus notice was clicked: the dashboard in front, on your profile.
         MessagePanel.onOpenProfile = { [weak self] in
             self?.showDashboard()
             self?.radar.push("openProfile", "null")
+        }
+        // A friend's picture or name was clicked in the chat: the dashboard in front, on the friends with their card.
+        MessagePanel.onOpenFriend = { [weak self] id in
+            guard let data = try? JSONSerialization.data(withJSONObject: [id]), let list = String(data: data, encoding: .utf8) else { return }
+            self?.showDashboard()
+            self?.radar.push("openFriend", String(list.dropFirst().dropLast()))
         }
         // A notification from the developer was clicked: the dashboard in front, on the notifications.
         MessagePanel.onOpenNotifications = { [weak self] in
@@ -213,6 +238,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         engine.onInit = { [weak self] js in
             self?.radar.push("init", js)
             self?.pushWinOpen(force: true)
+            self?.pushSide()
         }
         engine.onState = { [weak self] js, list in
             guard let self else { return }
@@ -230,6 +256,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             // A reloaded page has no menu open.
             for c in chats.values { c.stepBack() }
             MessagePanel.stepAside(false)
+            NoteWindow.stepAside(false)
+            dimSidebar(false)
+            modalOpen = false
+            // A reloaded page starts its feed over: lines from the old one would never dissolve.
+            FeedPanel.clearIfCreated()
             engine.requestInit()
             lastVisibility = ""
             dashboardVisibilityChanged()
@@ -246,8 +277,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         case "discordPresence": DiscordPresence.shared.setEnabled(msg["on"] as? Bool == true)
         case "discordProject": DiscordPresence.shared.setShowProject(msg["on"] as? Bool == true)
         case "discordActive": DiscordPresence.shared.setShowActive(msg["on"] as? Bool == true)
-        case "open": if let sid = msg["sid"] as? String { openSession(sid) }
-        case "fork": if let sid = msg["sid"] as? String { openSession(sid, fork: true) }
+        case "open": if let sid = msg["sid"] as? String { userOpenSession(sid) }
+        case "fork": if let sid = msg["sid"] as? String { userOpenSession(sid, fork: true) }
         case "newTerminal": overlay.showNewTerminal()
         case "openTerminal": if let id = msg["id"] as? String { openTerminal(id) }
         case "endLeftover":
@@ -264,12 +295,25 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             let open = msg["open"] as? Bool == true
             for c in chats.values { open ? c.stepAside() : c.stepBack() }
             MessagePanel.stepAside(open)
+            NoteWindow.stepAside(open)
+            // Here and not with --side-x: this message comes once the box is drawn, and moving it then would make it jump.
+            modalOpen = open
+            dimSidebar(open)
         // Streamer mode (the switch on the map): the chats list and the chat windows show made-up names too.
         case "streamer":
             let on = msg["on"] as? Bool == true
             Streamer.on = on
             sidebar.streamer = on
             for c in chats.values { c.setStreamer(on) }
+            NoteWindow.setStreamer(on)
+        // A note out of the dashboard in its own window (NoteWindow), closed from the dashboard, and the dashboard's notes
+        // loaded (the notes left out at the last quit come back, a reloaded page learns which are out).
+        case "noteWindow": if let id = msg["id"] as? String { NoteWindow.show(id: id) }
+        case "noteWindowClose":
+            if let id = msg["id"] as? String {
+                NoteWindow.close(id: id, flush: msg["flush"] as? Bool != false, deleted: msg["deleted"] as? Bool == true)
+            }
+        case "notesReady": NoteWindow.notesReady()
         case "log": NSLog("dashboard page: %@", String(describing: msg["msg"] ?? ""))
         // Two chats began (or stopped) writing the same file (files.heat): the corner's notice.
         case "clash":
@@ -279,8 +323,112 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         case "clashOver": if let key = msg["key"] as? String { MessagePanel.notices.clashOver(key) }
         // A friend's spaceship attack (attack.js): its DANGER banner, over whatever is in front.
         case "attack": MessagePanel.notices.attack(msg)
+        // The community feed's lines (community.js decides; the panel at the screen's corner draws).
+        case "feedLine":
+            guard let id = msg["id"] as? String, let kind = msg["kind"] as? String, let html = msg["html"] as? String else { return }
+            FeedPanel.shared.add(id: id, kind: kind, html: html)
+        case "feedOut": if let id = msg["id"] as? String { FeedPanel.shared.out(id: id) }
+        case "feedClear": FeedPanel.shared.clear()
+        // The bell's "Replay animation" (inbox.js): a badge's reveal again, over whatever is in front.
+        case "badgeReveal":
+            guard let id = msg["id"] as? String, !id.isEmpty, id.count <= 64 else { return }
+            MessagePanel.notices.replayBadge(id: id, tier: min(max((msg["tier"] as? NSNumber)?.intValue ?? 1, 1), 99))
+        // What's new and the tips (cloud.js, whatsnew.js): the page asks for what it can't know, and says when the notes
+        // of the version that came by itself were opened (the notifications stop counting them).
+        case "whatsNew": pushWhatsNew()
+        case "whatsNewRead": UserDefaults.standard.removeObject(forKey: Self.whatsNewKey)
+        case "mascotThemeGuard":
+            Mascot.shared.onThemeChooserOpened()
+        case "mascotEnabled":
+            Mascot.isEnabled = (msg["on"] as? NSNumber)?.boolValue ?? false
+        // Viktoria's download (Themes row, Settings > Appearance): get, stop, or remove her files.
+        case "mascotGet": MascotAsset.shared.get()
+        case "mascotCancel": MascotAsset.shared.cancel()
+        case "mascotRemove": MascotAsset.shared.remove()
+        case "mascotMischief":
+            Mascot.shared.setMischief((msg["level"] as? NSNumber)?.intValue ?? 3)
+        case "mascotPanels":
+            Mascot.shared.updateWebPanels(
+                msg["panels"] as? [[String: Any]] ?? [],
+                friends: msg["friends"] as? [String: Any],
+                nav: msg["nav"] as? [[String: Any]] ?? []
+            )
         default: break
         }
+    }
+
+    /// Tells the page how far right of the window's edge it starts (the chat list and the divider), in its px: the text
+    /// size zooms the page, so the same points are fewer px. Its menus use it to sit in the middle of the whole window.
+    func pushSide() {
+        let web = radar.webView
+        let px = Int((web.frame.minX / web.pageZoom).rounded())
+        web.evaluateJavaScript("document.documentElement.style.setProperty('--side-x','\(px)px'); true", completionHandler: nil)
+        Mascot.shared.refreshPlatforms()
+    }
+
+    /// Darkens the chat list as the page's backdrop darkens the dashboard (cloud.css #cloudui), so the open menu is the
+    /// one thing in front. It also takes the list's clicks, which a menu over the whole window would.
+    private func dimSidebar(_ on: Bool) {
+        if !on {
+            sidebarDim?.removeFromSuperview()
+            sidebarDim = nil
+            return
+        }
+        // A hidden list keeps its old frame: a cover on it would darken the dashboard's edge instead.
+        guard sidebarDim == nil, !sidebarHost.isHidden, let root = window?.contentView else { return }
+        let dim = NSView()
+        dim.wantsLayer = true
+        dim.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.4).cgColor
+        dim.translatesAutoresizingMaskIntoConstraints = false
+        root.addSubview(dim, positioned: .above, relativeTo: split)
+        NSLayoutConstraint.activate([
+            dim.leadingAnchor.constraint(equalTo: sidebarHost.leadingAnchor),
+            dim.trailingAnchor.constraint(equalTo: sidebarHost.trailingAnchor),
+            dim.topAnchor.constraint(equalTo: sidebarHost.topAnchor),
+            dim.bottomAnchor.constraint(equalTo: sidebarHost.bottomAnchor),
+        ])
+        sidebarDim = dim
+    }
+
+    // MARK: what's new and tips
+
+    /// The build whose notes stay unread in the notifications, set when the app finds it updated itself (AppDelegate).
+    static let whatsNewKey = "whatsNewUnread"
+    /// The shortcut wheel was opened at least once: its tip on the dashboard is only for someone who never did.
+    private static let wheelUsedKey = "tipUsedWheel"
+
+    /// Help → What's New ("notes") or Tips ("tips"), and the "updated" note's click: the dashboard in front, the window open.
+    func openWhatsNew(_ what: String) {
+        showDashboard()
+        radar.push("whatsNew", what == "tips" ? #"{"open":"tips"}"# : #"{"open":"notes"}"#)
+    }
+
+    /// The app menu's Settings…: the dashboard in front, Settings open on the category used last (web/cloud.js).
+    func openSettings() {
+        showDashboard()
+        radar.push("openSettings", "null")
+    }
+
+    /// Help → Keyboard Shortcuts: the dashboard in front, the list of every shortcut over it (web/cheatsheet.js).
+    /// Pressed again on the dashboard it closes the list; from a chat window it always opens it.
+    func openShortcutList() {
+        let front = window?.isKeyWindow == true
+        showDashboard()
+        radar.push("openShortcuts", front ? "true" : "false")
+    }
+
+    /// The overlay opened the shortcut wheel (Overlay.showShortcuts).
+    func wheelOpened() {
+        guard !UserDefaults.standard.bool(forKey: Self.wheelUsedKey) else { return }
+        UserDefaults.standard.set(true, forKey: Self.wheelUsedKey)
+        pushWhatsNew()
+    }
+
+    private func pushWhatsNew() {
+        let unread = UserDefaults.standard.integer(forKey: Self.whatsNewKey)
+        let state: [String: Any] = ["unread": unread > 0 && unread == Cloud.shared.build, "wheel": UserDefaults.standard.bool(forKey: Self.wheelUsedKey)]
+        guard let data = try? JSONSerialization.data(withJSONObject: ["state": state]), let json = String(data: data, encoding: .utf8) else { return }
+        radar.push("whatsNew", json)
     }
 
     /// A dashboard card's red button (the page asked already): Claude stops wherever it runs, and the card goes. A chat in
@@ -353,6 +501,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         for c in chats.values {
             let b = list.first(where: { $0.tab == c.id }) ?? c.sessionId.flatMap { briefs[$0] }
             c.apply(b)
+            c.applyHosted(list.filter { $0.tab == c.id && $0.live })
         }
         let live = list.filter(\.live)
         runaways.liveSessions = live.compactMap { b in
@@ -379,9 +528,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         if sidebar.openInTabs != open { sidebar.openInTabs = open }
         pushWinOpen()
         pushActiveSession()
+        Mascot.shared.updateSessions(list)
     }
 
     private func route(_ events: [NativeEvent]) {
+        Mascot.shared.onNativeEvents(events)
         for e in events {
             let target = briefs[e.sid].flatMap { chat(for: $0) } ?? chats.values.first(where: { $0.sessionId == e.sid })
             target?.hud.push(e)
@@ -599,6 +750,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// Settings · DISCORD shows its switches and whether Discord answers (DiscordPresence).
     private func pushDiscord() {
         radar.push("discord", DiscordPresence.shared.json)
+        Mascot.shared.pushMischiefToPage()
     }
 
     // MARK: chats
@@ -630,6 +782,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     // Friend chats stay above the dashboard when it's clicked, like the terminals.
     func windowDidBecomeKey(_ notification: Notification) {
         MessagePanel.pinAll()
+        NoteWindow.pinAll()
     }
 
     /// A terminal in `cwd`, not a chat: a new conversation starts with `claude`, an earlier one in that folder
@@ -678,6 +831,14 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
         NSApp.activate(ignoringOtherApps: true)
         openSession(sid)
+    }
+
+    /// A card click (the page's or the sidebar's): the one thing that may reopen a window the mascot just closed.
+    var userOpenDepth = 0
+    private func userOpenSession(_ sid: String, fork: Bool = false) {
+        userOpenDepth += 1
+        defer { userOpenDepth -= 1 }
+        openSession(sid, fork: fork)
     }
 
     /// Opens a saved or running conversation in its own window, in its project folder.
@@ -882,6 +1043,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     func closePane() {
         // A friend's chat in front closes itself (the terminal behind keeps its panes).
         if MessagePanel.closeKeyChat() { return }
+        if NoteWindow.closeKey() { return }
         if let c = activeChat, c.closeFocusedPane() { return }
         NSApp.keyWindow?.performClose(nil)
     }
@@ -1068,18 +1230,21 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         syncShells()
         pushWinOpen()
         pushActiveSession()
+        Mascot.shared.pushTerminalsNow()
     }
 
     func chatProcessEnded(_ id: String) {
         syncShells()
         pushWinOpen()
         pushActiveSession()
+        Mascot.shared.pushTerminalsNow()
     }
 
     func chatVisibilityChanged() {
         if let id = activeTerminalWindow, chats[id]?.isShown != true { activeTerminalWindow = activeChat?.id }
         pushWinOpen()
         pushActiveSession()
+        Mascot.shared.pushTerminalsNow()
     }
 
     private func syncShells() {
@@ -1117,7 +1282,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             finished = true
             RunLoop.main.perform(inModes: [.common], block: done)
         }
-        radar.flushFiles { finish() }
+        // The note windows first: what they typed last goes through the dashboard's page, which keeps it.
+        NoteWindow.flushAll { [weak self] in
+            guard let self else { return finish() }
+            self.radar.flushFiles { finish() }
+        }
         RunLoop.main.add(Timer(timeInterval: 2, repeats: false) { _ in finish() }, forMode: .common)
     }
 
@@ -1156,6 +1325,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     /// The chat list slides open and shut, fading as it goes and the dashboard giving it room and taking it back, instead
     /// of snapping. It opens to the width the split view itself gives it, so nothing jumps once the slide is over.
+    deinit {
+        if let frameObserver { NotificationCenter.default.removeObserver(frameObserver) }
+    }
+
     func toggleSidebar() {
         guard !sidebarSliding else { return }
         let side: NSView = sidebarHost
@@ -1194,6 +1367,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 self.sidebarMin.isActive = true
                 self.split.adjustSubviews()
                 self.sidebarSliding = false
+                self.dimSidebar(self.modalOpen)
                 UserDefaults.standard.set(side.isHidden, forKey: "sidebarHidden")
             }
         })
@@ -1216,6 +1390,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         for c in chats.values { c.setFont(fontSize) }
     }
 
+    /// The terminals' font, picked in Settings or from another computer (TerminalFont): every open terminal takes it.
+    func setFontFamily(_ family: String?) {
+        TerminalFont.set(family)
+        for c in chats.values { c.setFont(fontSize) }
+    }
+
     private func alert(_ title: String, _ text: String) {
         _ = ask(title, text, ["OK"], style: .warning)
     }
@@ -1228,6 +1408,110 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         a.alertStyle = style
         for b in buttons { a.addButton(withTitle: b) }
         return a.runModal().rawValue - NSApplication.ModalResponse.alertFirstButtonReturn.rawValue
+    }
+
+    func mascotTerminalSnapshots() -> [[String: Any]] {
+        guard let dw = window else { return [] }
+        let df = dw.frame
+        return chats.values.compactMap { c in
+            guard c.isShown, let tw = c.window else { return nil }
+            let tf = tw.frame
+            let status = c.sessionId.flatMap { briefs[$0]?.status } ?? "idle"
+            var item: [String: Any] = [
+                "canClose": c.closeOnlyHides,
+                "id": c.id,
+                "sid": c.sessionId ?? "",
+                "wn": tw.windowNumber,
+                "x": Int((tf.minX - df.minX).rounded()),
+                "y": Int((df.maxY - tf.maxY).rounded()),
+                "w": Int(tf.width.rounded()),
+                "h": Int(tf.height.rounded()),
+                "status": status,
+            ]
+            // The close (X) button, dashboard-relative like the rest; only when pressing it just hides the window.
+            if c.closeOnlyHides, let r = c.closeButtonScreenRect {
+                item["cx"] = Int((r.minX - df.minX).rounded())
+                item["cy"] = Int((df.maxY - r.maxY).rounded())
+                item["cw"] = Int(r.width.rounded())
+                item["ch"] = Int(r.height.rounded())
+            }
+            return item
+        }
+    }
+
+    func mascotWebOriginAndZoom() -> (origin: CGPoint, zoom: CGFloat)? {
+        guard let dw = window else { return nil }
+        let web = radar.webView
+        let wr = web.convert(web.bounds, to: nil)
+        return (CGPoint(x: wr.minX, y: dw.frame.height - wr.maxY), web.pageZoom)
+    }
+
+    func mascotSidebarFrame() -> CGRect? {
+        guard let dw = window, !sidebarHost.isHidden, sidebarHost.frame.width > 8 else { return nil }
+        let sr = sidebarHost.convert(sidebarHost.bounds, to: nil)
+        return CGRect(x: sr.minX, y: dw.frame.height - sr.maxY, width: sr.width, height: sr.height)
+    }
+
+    func mascotPageEval(_ js: String) {
+        radar.webView.evaluateJavaScript("\(js); true", completionHandler: nil)
+    }
+
+    func mascotOpenView(_ view: String) {
+        guard ["dash", "board", "notes", "friends", "themes", "notifications", "roadmap", "git"].contains(view) else { return }
+        radar.push("openView", "\"\(view)\"")
+    }
+
+    func mascotNavTap(_ id: String) {
+        if id.hasPrefix("fold:") {
+            let cwd = String(id.dropFirst(5))
+            guard sidebar.cards.contains(where: { $0.cwd == cwd }) else { return }
+            sidebar.toggleFold(cwd)
+            return
+        }
+        guard let data = try? JSONEncoder().encode(id), let arg = String(data: data, encoding: .utf8) else { return }
+        radar.webView.evaluateJavaScript("window.__mascotNav?.(\(arg)); true", completionHandler: nil)
+    }
+
+    /// She walked to the terminal's X button and pressed it. The X only hides the window (windowShouldClose), so the
+    /// real button is clicked when that is so; otherwise it is only highlighted and the window is hidden the same way
+    /// as before. A session is never ended and the typed text stays. Idle sessions only.
+    /// Returns false only when keyboard focus could not be parked (nothing was closed then).
+    @discardableResult
+    func mascotPressClose(_ id: String) -> Bool {
+        // Live chats only: a dead (exited) chat or a mirror does something else on close, so she never touches those.
+        guard let chat = chats[id], chat.isShown, !chat.isHiding, chat.closeOnlyHides else { return true }
+        let status = chat.sessionId.flatMap { briefs[$0]?.status } ?? "idle"
+        guard status == "idle" else { return true }
+        guard mascotParkKey() else { return false }
+        chat.mascotShieldUntil = Date().addingTimeInterval(1.5)
+        guard let btn = chat.window?.standardWindowButton(.closeButton), !btn.isHidden else {
+            return mascotHideTerminal(id)
+        }
+        btn.performClick(nil)
+        return true
+    }
+
+    /// Before she hides a terminal the dashboard takes the keyboard (and no field), so keys still in flight go nowhere
+    /// instead of landing in another terminal that AppKit would otherwise make key.
+    /// True only if the dashboard is visible, not miniaturized, and really became key.
+    private func mascotParkKey() -> Bool {
+        guard let dw = window, dw.isVisible, !dw.isMiniaturized else { return false }
+        dw.makeKey()
+        guard dw.isKeyWindow else { return false }
+        dw.makeFirstResponder(nil)
+        return true
+    }
+
+    /// Returns false only when keyboard focus could not be parked (nothing was hidden then).
+    @discardableResult
+    func mascotHideTerminal(_ id: String) -> Bool {
+        guard let chat = chats[id], chat.isShown, !chat.isHiding, chat.closeOnlyHides else { return true }
+        let status = chat.sessionId.flatMap { briefs[$0]?.status } ?? "idle"
+        guard status == "idle" else { return true }
+        guard mascotParkKey() else { return false }
+        chat.mascotShieldUntil = Date().addingTimeInterval(1.5)
+        if chat.hide() { closed(id) }
+        return true
     }
 }
 

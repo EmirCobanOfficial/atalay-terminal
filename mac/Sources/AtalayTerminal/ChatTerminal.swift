@@ -295,6 +295,8 @@ final class ChatTerminalView: LocalProcessTerminalView {
     /// Everything typed or pasted goes out through here: typing in a chat or terminal is work (Activity, for XP).
     override func send(source: TerminalView, data: ArraySlice<UInt8>) {
         Activity.work()
+        // Real keystrokes only (the terminal's own replies to the program come through here too): the mascot may notice.
+        if let ev = NSApp.currentEvent, ev.type == .keyDown, ev.window === window { Mascot.shared.onTyping(chatId) }
         super.send(source: source, data: data)
     }
 
@@ -460,10 +462,10 @@ enum TerminalFactory {
     private static func styled(chatId: String, fontSize: CGFloat, delegate: LocalProcessTerminalViewDelegate) -> ChatTerminalView {
         let tv = ChatTerminalView(frame: NSRect(x: 0, y: 0, width: 960, height: 600))
         tv.chatId = chatId
-        // The user's iTerm2 font when there is one (e.g. a Nerd Font with the prompt's icons), its size and cursor; the
-        // colours are the app's own (Theme.ansi).
+        // The font picked in Settings, else the user's iTerm2 one when there is one (e.g. a Nerd Font with the prompt's
+        // icons, TerminalFont), and iTerm2's cursor; the colours are the app's own (Theme.ansi).
         let look = ITermLook.current
-        tv.font = look?.fontName.flatMap { NSFont(name: $0, size: fontSize) } ?? Theme.mono(fontSize)
+        tv.font = TerminalFont.font(fontSize)
         // Text never fades into its background (iTerm2's "minimum contrast", WCAG AA): light text on a line Claude's
         // diff paints green or red is darkened just enough to read.
         tv.minimumContrastRatio = 4.5

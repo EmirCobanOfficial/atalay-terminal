@@ -21,6 +21,28 @@ async function isDir(p) {
   }
 }
 
+// A folder's identity, which a rename keeps: its file ID (NTFS's file index) and its volume's serial, as strings for the
+// JSON (64-bit numbers). Null when it isn't a folder; ino "0" where the file system has no IDs (some network drives).
+async function folderId(p) {
+  try {
+    const st = await fsp.stat(p, { bigint: true });
+    return st.isDirectory() ? { ino: String(st.ino), dev: String(st.dev) } : null;
+  } catch {
+    return null;
+  }
+}
+
+// The subfolder of `parent` with that identity (one level: a folder renamed where it is), or ''.
+async function findFolder(parent, ino, dev) {
+  for (const e of await fsp.readdir(parent, { withFileTypes: true }).catch(() => [])) {
+    if (!e.isDirectory()) continue;
+    const full = path.join(parent, e.name);
+    const id = await folderId(full);
+    if (id && id.ino === ino && id.dev === dev) return full;
+  }
+  return '';
+}
+
 // Windows hides its own folders with an attribute (AppData, ProgramData, the old profile's links like "Documents and
 // Settings") where a Mac starts their names with a dot; Node can't read it, `dir /a:h` can. Lower-case names, for a
 // case-blind file system. Run in the folder itself, so no path goes through cmd's parsing.
@@ -38,19 +60,63 @@ function createOverlay({ dataDir, claudeDir }) {
   const SETS = { pie: { file: path.join(dataDir, 'shortcuts.json'), count: 5 }, picker: { file: path.join(dataDir, 'picker-shortcuts.json'), count: 14 } };
   const set = (body) => (body && body.set === 'picker' ? SETS.picker : SETS.pie);
 
-  async function readSlots(s) {
+  const same = (a, b) => path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase();
+  // A saved slot: { name, dir, ino, dev } (ino and dev, the folder's identity, since slots follow a rename; older files
+  // have slots without them, or a bare path).
+  const entryOf = (x) => {
+    if (typeof x === 'string') return x ? { name: (path.basename(x) || x).slice(0, 40), dir: x } : null;
+    return x && typeof x.dir === 'string' && x.dir ? { ...x, name: x.name || (path.basename(x.dir) || x.dir).slice(0, 40) } : null;
+  };
+
+  async function readSaved(s) {
     try {
       const saved = JSON.parse(await fsp.readFile(s.file, 'utf8'));
-      const slots = (Array.isArray(saved) ? saved : saved.slots || []).slice(0, s.count).map((x) => (x && x.dir ? { name: x.name, dir: x.dir, display: tildify(x.dir) } : null));
-      while (slots.length < s.count) slots.push(null);
-      return slots;
+      return (Array.isArray(saved) ? saved : saved.slots || []).map(entryOf);
     } catch {
-      return Array(s.count).fill(null);
+      return null;
     }
+  }
+
+  async function write(s, slots) {
+    await fsp.mkdir(path.dirname(s.file), { recursive: true });
+    await fsp.writeFile(s.file, JSON.stringify(slots, null, 2));
+  }
+
+  // One read or save at a time per file: a read that follows a renamed folder writes the file too, and must not undo a
+  // save made meanwhile.
+  const busy = new Map();
+  function serial(s, job) {
+    const run = (busy.get(s) || Promise.resolve()).then(job);
+    busy.set(s, run.catch(() => {}));
+    return run;
+  }
+
+  // A slot against the disk. Its folder still there: its identity is recorded (a slot saved before they were, or another
+  // folder at that path now). Gone: the folder with its identity in the same parent is it, renamed, and the slot follows
+  // (its name too, unless it was given another than the folder's). Not found (deleted, moved elsewhere, a drive that is
+  // out): the slot stays as it was, shown as missing, until the folder is back or the user changes or removes it.
+  async function check(x) {
+    const id = await folderId(x.dir);
+    if (id) return id.ino === '0' || (x.ino === id.ino && x.dev === id.dev) ? { entry: x } : { entry: { ...x, ...id }, changed: true };
+    const dir = x.ino && x.ino !== '0' ? await findFolder(path.dirname(x.dir), x.ino, x.dev) : '';
+    if (!dir) return { entry: x, missing: true };
+    const name = x.name === (path.basename(x.dir) || x.dir).slice(0, 40) ? (path.basename(dir) || dir).slice(0, 40) : x.name;
+    return { entry: { ...x, name, dir }, changed: true };
+  }
+
+  async function readSlots(s) {
+    const saved = await readSaved(s);
+    if (!saved) return Array(s.count).fill(null);
+    const checked = await Promise.all(saved.slice(0, s.count).map((x) => (x ? check(x) : null)));
+    if (checked.some((c) => c && c.changed)) await write(s, checked.map((c) => (c ? c.entry : null))).catch(() => {});
+    const slots = checked.map((c) => (c ? { name: c.entry.name, dir: c.entry.dir, display: tildify(c.entry.dir), ...(c.missing ? { missing: true } : {}) } : null));
+    while (slots.length < s.count) slots.push(null);
+    return slots;
   }
 
   async function saveSlots(s, input) {
     if (!Array.isArray(input) || input.length !== s.count) throw new Error(`need ${s.count} slots`);
+    const before = (await readSaved(s)) || [];
     const next = [];
     for (const it of input) {
       if (!it || !it.dir) {
@@ -58,12 +124,30 @@ function createOverlay({ dataDir, claudeDir }) {
         continue;
       }
       const dir = path.resolve(expand(String(it.dir)));
-      if (!(await isDir(dir))) throw new Error(`not a folder: ${it.dir}`);
-      next.push({ name: String(it.name || path.basename(dir) || dir).slice(0, 40), dir });
+      const id = await folderId(dir);
+      // A slot whose folder is missing goes back as it was saved, its identity kept to find the folder again: only a
+      // folder being set must be one.
+      const kept = id ? null : before.find((x) => x && same(x.dir, dir));
+      if (!id && !kept) throw new Error(`not a folder: ${it.dir}`);
+      next.push(kept || { name: String(it.name || path.basename(dir) || dir).slice(0, 40), dir, ...(id.ino !== '0' ? id : {}) });
     }
-    await fsp.mkdir(path.dirname(s.file), { recursive: true });
-    await fsp.writeFile(s.file, JSON.stringify(next, null, 2));
+    await write(s, next);
     return readSlots(s);
+  }
+
+  // The folder a click on the wheel or around the picker opens: the path the page has, or, for a slot whose folder was
+  // renamed since the page read it, where the slot follows it now (its file updated). '' when it can't be found.
+  async function locate(raw) {
+    const dir = path.resolve(expand(String(raw || '')));
+    if (await folderId(dir)) return dir;
+    for (const s of Object.values(SETS)) {
+      const slot = await serial(s, async () => {
+        const at = ((await readSaved(s)) || []).slice(0, s.count).findIndex((x) => x && same(x.dir, dir));
+        return at < 0 ? null : (await readSlots(s))[at];
+      });
+      if (slot && !slot.missing) return slot.dir;
+    }
+    return '';
   }
 
   // A folder's subfolders, with whether each is a git repo and whether Claude ran there. One that isn't on this PC (the
@@ -149,10 +233,10 @@ function createOverlay({ dataDir, claudeDir }) {
       switch (body.type) {
         case 'listDir': return listDir(body.path);
         case 'places': return places();
-        case 'getSlots': return { slots: await readSlots(set(body)) };
+        case 'getSlots': return { slots: await serial(set(body), () => readSlots(set(body))) };
         case 'saveSlots':
           try {
-            return { slots: await saveSlots(set(body), body.slots) };
+            return { slots: await serial(set(body), () => saveSlots(set(body), body.slots)) };
           } catch (e) {
             return { error: e.message };
           }
@@ -160,6 +244,7 @@ function createOverlay({ dataDir, claudeDir }) {
       }
     },
     expand,
+    locate,
   };
 }
 

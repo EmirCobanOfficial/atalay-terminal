@@ -4,6 +4,9 @@
 // colours, never the theme's, as CS:GO's collectibles look the same whatever your HUD. Tiered badges are coins struck in
 // their tier's metal (bronze, silver, gold, diamond); the Season and Service Medals hang from a ribbon, the Service
 // Medal's level in CS:GO's colours (grey, green, blue, purple, pink, red); a few one-offs have colours of their own.
+// The pictures, names and the list of badges aren't in the app (it's open source): they come from the API's catalog
+// (GET v1/badges/catalog, badges.ts), which tells only of the badges out, the pictures from the files bucket on S3. Until
+// it arrives (offline, the first start) a badge is drawn as a coin in its metal.
 window.BadgeArt = (() => {
   let n = 0;
   const METAL = {
@@ -22,8 +25,6 @@ window.BadgeArt = (() => {
     both: ['#3a2a5c', '#9b86e8', '#efe9ff', '#140f22'],
     founder: ['#0b0b0b', '#d4a531', '#fff0b8', '#0d0a05'],
     polyglot: ['#6b2a0f', '#f08a2c', '#ffe1b3', '#1a0d05'],
-    night: ['#121a40', '#5c6fe0', '#dfe5ff', '#070a1c'],
-    comeback: ['#0d4a44', '#36c2b0', '#d4fff8', '#04201d'],
   };
 
   // The emblems, on a 24×24 grid (strokes and fills take the badge's metal).
@@ -45,8 +46,6 @@ window.BadgeArt = (() => {
     idea: '<path class="s" d="M12 3a6 6 0 0 0-3.6 10.8c.8.6 1.1 1.4 1.1 2.2v.5h5V16c0-.8.3-1.6 1.1-2.2A6 6 0 0 0 12 3z"/><path class="s" d="M9.8 19h4.4M10.5 21.5h3"/><path class="f" d="M11.3 9h1.4l-.3 4h-.8z"/>',
     tenure: '<path class="s" d="M12 2.5l7.5 3v6c0 4.5-3.2 8.3-7.5 10-4.3-1.7-7.5-5.5-7.5-10v-6z"/><path class="s" d="M8 11l4 2.5 4-2.5M8 14.5l4 2.5 4-2.5"/>',
     founder: '<path class="f" d="M3 18l1.2-10 4.6 4.5L12 5l3.2 7.5L19.8 8 21 18z"/><path class="s" d="M3 20.5h18"/>',
-    night: '<path class="f" d="M15 3a8.5 8.5 0 1 0 6 14.5A7 7 0 0 1 15 3z"/><path class="f" d="M7 4.5l.5 1.3 1.3.5-1.3.5L7 8.1l-.5-1.3-1.3-.5 1.3-.5zM4.5 10l.35.9.9.35-.9.35-.35.9-.35-.9-.9-.35.9-.35z"/>',
-    comeback: '<path class="s" d="M19 12a7 7 0 1 1-2.1-5"/><path class="s" d="M17.5 3v4.2h-4.2"/><path class="f" d="M10.5 9l4.5 3-4.5 3z"/>',
   };
 
   const stops = (m, id) =>
@@ -86,35 +85,85 @@ window.BadgeArt = (() => {
     );
   }
 
-  // The badges' pictures (badges/<name>-<tier>.webp, made with Gemini, cut from its sheets): how many tiers each has.
-  // Every season's medal shares one set; anything without a picture (or a tier past its pictures) is drawn below.
-  const IMG = { week: 3, streak: 4, fire: 4, hours: 4, claude: 4, codex: 4, gemini: 4, antigravity: 4, squad: 3, voice: 3, idea: 2, tenure: 5,
-    season: 4, service: 6, mac: 1, windows: 1, both: 1, polyglot: 1, founder: 1, night: 1, comeback: 1 };
-  // Each year's Service Medal has a design of its own, as CS:GO's (badges/service-<year>-<tier>.webp): the years drawn
-  // so far. A year not drawn yet shows the latest design before it.
-  const SERVICE_YEARS = [2026, 2027];
-  const serviceYear = (y) => [...SERVICE_YEARS].reverse().find((x) => x <= y) ?? SERVICE_YEARS[0];
-
-  /** The badge's picture (badges/…webp), or '' when it's drawn. */
-  function src(id, tier) {
-    const key = id.startsWith('season-') ? 'season' : id.startsWith('service-') ? 'service' : id;
-    if (!IMG[key] || (tier || 1) > IMG[key]) return '';
-    const t = Math.max(1, Math.min(IMG[key], tier || 1));
-    return `badges/${key === 'service' ? `service-${serviceYear(Number(id.slice(8)))}` : key}-${t}.webp`;
+  // The catalog (badges.ts): { base, art: { "<badge>-<tier>": file }, names, tiers, grand, serviceYears }. Every season's
+  // medal shares one set (season-<tier>); each year's Service Medal has its own (service-<year>-<tier>), a year not drawn
+  // yet shows the latest before it. Kept for the next start, so pictures show at once; the files stay in the web view's
+  // HTTP cache (they never change: a new picture is a new file name).
+  const KEY = 'badgeCatalog';
+  // Where badge pictures may come from: the files bucket's badges folder, nowhere else, and only a file named by its
+  // hash. Whatever a catalog says (one kept from before too), a picture outside these is drawn instead: a picture's
+  // address goes into the page's HTML, and a host of anyone's choosing would see who looks at which badge.
+  const ART_BASES = ['https://orbiterm-files.s3.eu-central-1.amazonaws.com/public/badges/'];
+  const ART_FILE = /^[0-9a-f]{8,64}\.webp$/;
+  let cat = null;
+  try { cat = JSON.parse(localStorage.getItem(KEY) || 'null'); } catch { cat = null; }
+  let loading = null;
+  /** Asks the API for the catalog again (a badge it didn't know of came in); resolves once it's here (or failed). */
+  function refresh() {
+    const h = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.cloud;
+    if (!h) return Promise.resolve();
+    loading = loading || h.postMessage({ type: 'social', method: 'GET', path: 'v1/badges/catalog' }).then((c) => {
+      if (!c || !c.art || !c.base) return;
+      cat = c;
+      try { localStorage.setItem(KEY, JSON.stringify(c)); } catch { /* not kept: fetched again next start */ }
+      upgrade();
+    }).catch(() => {}).finally(() => { loading = null; });
+    return loading;
   }
+  /** Whether the catalog knows the badge (its name, its pictures). */
+  const known = (id) => !!cat && (id.startsWith('season-') || id.startsWith('service-') || !!cat.names?.[id]);
+
+  /** The badge's picture (its address in the files bucket), or '' when it's drawn. */
+  function src(id, tier) {
+    if (!cat) return '';
+    id = cleanId(id);
+    tier = cleanTier(tier);
+    let key = id;
+    if (id.startsWith('season-')) key = 'season';
+    else if (id.startsWith('service-')) {
+      const years = cat.serviceYears || [];
+      const y = Number(id.slice(8));
+      key = `service-${[...years].reverse().find((x) => x <= y) ?? years[0]}`;
+    }
+    const t = Math.max(1, tier || 1);
+    const file = cat.art?.[`${key}-${t}`] || (!tier && cat.art?.[`${key}-1`]);
+    if (typeof file !== 'string' || !ART_FILE.test(file) || !ART_BASES.includes(cat.base)) return '';
+    return cat.base + file;
+  }
+
+  // What comes from the API (a badge event, a profile, the catalog) as a badge's id, tier and size, made safe for the
+  // HTML they go into: an id of letters, digits and dashes, a tier and a size as whole numbers.
+  const cleanId = (id) => String(id ?? '').toLowerCase().replace(/[^a-z0-9-]/g, '').slice(0, 64);
+  const cleanTier = (tier) => Math.max(0, Math.min(99, Math.trunc(Number(tier)) || 0));
+  const cleanSize = (size) => Math.max(1, Math.min(1024, Math.trunc(Number(size)) || 48));
 
   /** The badge `id` at `tier` (0: not earned, grey), `size` px square: its picture, or drawn when it has none. */
   function svg(id, tier, size = 48) {
+    id = cleanId(id);
+    tier = cleanTier(tier);
+    size = cleanSize(size);
     const pic = src(id, tier);
-    if (pic) return `<img class="badge-art${tier ? '' : ' locked'}" src="${pic}" width="${size}" height="${size}" alt="" draggable="false">`;
+    if (pic) return img(pic, tier, size);
     return draw(id, tier, size);
+  }
+  // An attribute's value, escaped (src() already lets only the bucket's own addresses through).
+  const attr = (s) => String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const img = (pic, tier, size) =>
+    `<img class="badge-art${tier ? '' : ' locked'}" src="${attr(pic)}" width="${Number(size) || 48}" height="${Number(size) || 48}" alt="" draggable="false">`;
+
+  // Drawn while the catalog was on its way: swapped for the pictures once it's here.
+  function upgrade() {
+    document.querySelectorAll('svg.badge-art[data-bid]').forEach((el) => {
+      const pic = src(el.dataset.bid, Number(el.dataset.bt) || 0);
+      if (pic) el.outerHTML = img(pic, Number(el.dataset.bt) || 0, Number(el.getAttribute('width')) || 48);
+    });
   }
 
   /** A gleam crossing the badge in its own shape: a brightened copy of its picture, seen through a moving stripe (the
    *  page's CSS moves it, class `cls` + `gleam`); nothing for a drawn one. */
   function gleam(id, tier, cls) {
-    const pic = src(id, tier);
-    return pic ? `<img class="gleam ${cls}" src="${pic}" alt="" draggable="false">` : '';
+    const pic = src(cleanId(id), cleanTier(tier));
+    return pic ? `<img class="gleam ${attr(cls)}" src="${attr(pic)}" alt="" draggable="false">` : '';
   }
 
   function draw(id, tier, size) {
@@ -132,7 +181,7 @@ window.BadgeArt = (() => {
     }
     const style = `<style>#${uid} .s{fill:none;stroke:url(#${uid}e);stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}#${uid} .f{fill:url(#${uid}e)}</style>`;
     return (
-      `<svg id="${uid}" class="badge-art${grey ? ' locked' : ''}" width="${size}" height="${size}" viewBox="0 0 100 100" aria-hidden="true">` +
+      `<svg id="${uid}" class="badge-art${grey ? ' locked' : ''}" data-bid="${String(id).replace(/[^a-z0-9-]/g, '')}" data-bt="${tier || 0}" width="${size}" height="${size}" viewBox="0 0 100 100" aria-hidden="true">` +
       `<defs>${stops(m, uid)}</defs>${style}${body}</svg>`
     );
   }
@@ -150,8 +199,8 @@ window.BadgeArt = (() => {
   // "r, g, b" of the rim and of the shine: the reveal's glow and sparks (messages.js).
   const rgb = (hex) => { const v = parseInt(hex.slice(1), 16); return `${v >> 16}, ${(v >> 8) & 255}, ${v & 255}`; };
   const glow = (id, tier) => { const m = metal(id, tier); return [rgb(m[1]), rgb(m[2])]; };
-  /** A grand reveal: gold and up, a Service Medal, a hidden one, Founder. */
-  const grand = (id, tier) => tier >= 3 || id.startsWith('service-') || ['night', 'comeback', 'founder'].includes(id);
+  /** A grand reveal: gold and up, a Service Medal, and the ones the catalog names (Founder, the hidden ones). */
+  const grand = (id, tier) => tier >= 3 || id.startsWith('service-') || id === 'founder' || !!cat?.grand?.includes(id);
 
   // A colour lighter (amount > 0) or darker.
   function shade(hex, amount) {
@@ -160,22 +209,21 @@ window.BadgeArt = (() => {
     return `#${ch.map((c) => c.toString(16).padStart(2, '0')).join('')}`;
   }
 
-  // Names and how many tiers each has (badges.ts says the same; the notices panel only has ids).
-  const NAMES = { mac: 'macOS', windows: 'Windows', both: 'Two Worlds', week: 'Week of Work', streak: 'Steady', fire: 'On Fire',
-    hours: 'Hundreds', claude: 'Claude', codex: 'Codex', gemini: 'Gemini', antigravity: 'Antigravity', polyglot: 'Polyglot', squad: 'Squad', voice: 'Your Say',
-    idea: 'Idea Maker', tenure: 'Veteran', founder: 'Founder', night: 'Night Owl', comeback: 'Comeback' };
-  const TIERS = { week: 3, streak: 4, fire: 4, hours: 4, claude: 4, codex: 4, gemini: 4, antigravity: 4, squad: 3, voice: 3, idea: 2, tenure: 5 };
+  // Names and how many tiers each has come with the catalog (the notices panel only has ids).
   const TIER = ['', 'Bronze', 'Silver', 'Gold', 'Diamond', 'Legend'];
   const NAMED = { tenure: ['', '1 month', '6 months', '1 year', '2 years', '5 years'], idea: ['', 'Planned', 'Shipped'] };
-  const name = (id) => NAMES[id] || (id.startsWith('season-') ? 'Season Medal' : id.startsWith('service-') ? 'Service Medal' : id);
+  const name = (id) => cat?.names?.[id] || (id.startsWith('season-') ? 'Season Medal' : id.startsWith('service-') ? 'Service Medal' : '');
   /** "Gold", a medal's level, a named step ("1 year"), or nothing for a one-off. */
   function tierName(id, tier, tiers) {
+    id = cleanId(id);
+    tier = cleanTier(tier);
     if (id.startsWith('service-')) return `Level ${tier} · ${id.slice(8)}`;
     if (id.startsWith('season-')) return `${TIER[tier] || ''} · ${id.slice(7, 11)} Q${id.slice(12)}`;
     if (NAMED[id]) return NAMED[id][tier] || '';
-    if ((TIERS[id] || tiers || 1) <= 1) return '';
+    if ((cat?.tiers?.[id] || tiers || 1) <= 1) return '';
     return TIER[tier] || `Tier ${tier}`;
   }
 
-  return { svg, src, gleam, name, tierName, glow, grand };
+  refresh();
+  return { svg, src, gleam, name, tierName, glow, grand, known, refresh };
 })();

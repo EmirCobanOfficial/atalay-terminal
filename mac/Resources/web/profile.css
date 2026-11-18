@@ -1,0 +1,387 @@
+/* Your profile (cloud.js renderMe), a page of its own where the dashboard's middle is; its "Edit profile" panel and the
+   "Adjust picture" sheet (profile-edit.js). The app's warm look: the dark orange ground, the orange accent, your rank's
+   colour (--rc). Content in the sans; the monospace only for the small capital labels and your #tag, the hacker's
+   signature. Sizes on an 8 px grid. Pictures are squares with near-hard corners, as Steam's: the square they're cut to
+   is the square they show in. Movement 120–160 ms, none with reduced motion. */
+
+/* ---------- the page: two panels, as Steam's and GitHub's profiles (the UX review, orbiterm-profil-yeni/ux-inceleme.md):
+   your identity card on the left (320 px, it stays put while the right side scrolls), your hours and your badges on the
+   right; one under the other when the page gets narrow. ---------- */
+#profile-view .cv-me { flex: 1; min-width: 0; }
+#profile-view .cv-me > .body { padding: 24px 32px 32px; container: pp / inline-size; color: var(--txt); font: 13px/18px var(--font-sans); }
+#profile-view .me-grid { display: grid; grid-template-columns: 320px minmax(0, 1fr); align-items: start; gap: 20px; max-width: 1374px; margin-inline: auto; }
+#profile-view .me-top { position: sticky; top: 0; min-width: 0; }
+#profile-view .me-main { display: flex; flex-direction: column; gap: 20px; min-width: 0; }
+#profile-view .pp-back { font: 600 12px/1 var(--font-sans); letter-spacing: 0.02em; }
+
+/* the identity card: your picture in its square frame of your rank's colour and "Edit profile", your name, rank and XP,
+   the badge you display, your AIs, your links, your status */
+.pp-hero { position: relative; isolation: isolate; display: grid; grid-template-columns: 128px minmax(0, 1fr); grid-template-areas: "pic edit" "who who" "show show" "ai ai" "links links" "status status"; gap: 0 16px; padding: 24px; overflow: hidden; border: 1px solid rgba(var(--rc), 0.3); border-radius: 4px; background: radial-gradient(90% 160% at 0% 0%, rgba(var(--rc), 0.16), transparent 62%), rgba(0, 0, 0, 0.28); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06); }
+.pp-fire { position: absolute; right: 0; bottom: 0; left: 0; z-index: -1; width: 100%; height: 64px; pointer-events: none; opacity: 0.85; }
+.pp-pic { --dot-bg: rgb(var(--panel-rgb)); position: relative; grid-area: pic; align-self: start; width: 128px; height: 128px; }
+.pp-pic .me-pic { display: block; width: 128px; height: 128px; border-radius: 2px; object-fit: cover; box-shadow: 0 0 0 2px rgb(var(--panel-rgb)), 0 0 0 5px rgb(var(--rc)), 0 0 24px 4px rgba(var(--rc), 0.35); }
+.pp-mono, .pe-mono { display: grid; place-items: center; background: linear-gradient(135deg, rgba(var(--rc), 0.6), rgba(var(--rc), 0.2)); color: var(--hi); font-family: var(--font-sans); font-weight: 700; text-shadow: 0 2px 8px rgba(0, 0, 0, 0.45); -webkit-user-select: none; user-select: none; }
+.pp-pic .pp-mono { display: grid; font-size: 56px; line-height: 1; }
+.pp-pic > .pdot { position: absolute; right: -5px; bottom: -5px; outline: 2px solid rgb(var(--panel-rgb)); transform: scale(1.8); transform-origin: 100% 100%; }
+.pp-who { display: flex; grid-area: who; flex-direction: column; gap: 8px; min-width: 0; margin-top: 24px; }
+.pp-name { display: flex; align-items: baseline; gap: 8px; min-width: 0; margin: 0; color: var(--hi); font: 700 30px/36px var(--font-sans); letter-spacing: -0.01em; }
+.pp-name > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pp-tag { flex: none; color: var(--txt3); font: 400 15px/20px var(--font); font-style: normal; letter-spacing: 0; }
+/* rank and level: the product's status mark, a step over the text */
+.pp-rank { margin: 0; overflow: hidden; color: rgb(var(--rc)); font: 700 16px/20px var(--font-sans); letter-spacing: 0.1em; }
+/* a long rank ("ACADEMY STUDENT") puts the level under it whole, its dot cut off at the line's start */
+.pp-dl { display: flex; flex-wrap: wrap; margin-left: -24px; }
+.pp-dl > span { white-space: nowrap; }
+.pp-dl > span::before { content: "·"; display: inline-block; width: 24px; text-align: center; }
+.pf-bar.pp-bar { height: 8px; margin-top: 8px; border-radius: 4px; }
+.pp-xp { display: flex; justify-content: space-between; gap: 16px; margin: 0; color: var(--txt3); font: 13px/18px var(--font-sans); font-variant-numeric: tabular-nums; }
+.pp-xp b { color: var(--hi); font-weight: 600; }
+.pp-status { display: flex; grid-area: status; flex-wrap: wrap; gap: 4px 0; margin: 20px 0 0; color: var(--txt3); font: 13px/18px var(--font-sans); }
+.pp-status > span + span::before { content: "·"; margin: 0 8px; color: var(--dim); }
+.pp-pres { color: var(--txt2); }
+.pp-acct { flex-basis: 100%; color: var(--accent-soft); }
+.pp-status > span.pp-acct::before { content: none; }
+.pp-edit { display: inline-flex; grid-area: edit; align-items: center; align-self: start; justify-self: end; gap: 8px; height: 32px; padding: 0 14px; border: 1px solid rgba(var(--accent-rgb), 0.5); border-radius: 6px; background: rgba(var(--accent-rgb), 0.1); color: var(--accent-pale); font: 600 13px/1 var(--font-sans); white-space: nowrap; cursor: pointer; transition: background 0.14s, border-color 0.14s, color 0.14s; }
+.pp-edit svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.pp-edit:hover, .pp-edit[aria-expanded="true"] { border-color: var(--accent); background: rgba(var(--accent-rgb), 0.2); color: var(--hi); }
+.pp-edit:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* the badge you display, lying down: its picture, then DISPLAYED, its name and tier */
+.pp-hero > .me-show { grid-area: show; min-width: 0; margin-top: 24px; }
+.pp-hero .sc-slot { display: grid; grid-template-columns: 56px minmax(0, 1fr); grid-template-areas: "art s" "art b" "art t"; align-content: center; justify-items: start; gap: 2px 16px; height: auto; min-height: 0; padding: 14px 16px; border-radius: 4px; text-align: left; }
+.pp-hero .sc-slot .badge-art, .pp-hero .sc-slot > i { grid-area: art; align-self: center; justify-self: center; width: 56px; height: 56px; }
+.pp-hero .sc-slot small { grid-area: s; font: 700 10px/12px var(--font); letter-spacing: 0.16em; }
+.pp-hero .sc-slot b { grid-area: b; min-width: 0; max-width: 100%; overflow: hidden; font: 600 15px/20px var(--font-sans); text-overflow: ellipsis; white-space: nowrap; }
+.pp-hero .sc-slot span { grid-area: t; font: 13px/18px var(--font-sans); }
+.pp-hero .sc-slot:not(.on) span { grid-row: 2 / 4; }
+.pp-hero .sc-slot > i { display: grid; place-items: center; font-size: 28px; line-height: 1; }
+/* the landing ring around the picture, where it lies now */
+.pp-hero .sc-slot.land::before { top: 50%; left: 44px; width: 80px; height: 80px; margin: -40px 0 0 -40px; }
+
+/* MOST USED AI and your links, each under a line */
+.pp-hero > .pp-ai, .pp-hero > .pp-links { min-width: 0; margin-top: 20px; padding-top: 20px; border-top: 1px solid var(--line-soft); }
+.pp-hero > .pp-ai { grid-area: ai; }
+.pp-hero > .pp-links { grid-area: links; }
+
+/* your links: the site's mark and a short text, the full address on hover */
+#profile-view .pf-links { gap: 8px; margin: 0; }
+#profile-view .pf-link { gap: 8px; height: 32px; padding: 0 14px 0 11px; border-color: rgba(var(--accent-rgb), 0.3); border-radius: 16px; font: 500 13px/1 var(--font-sans); }
+#profile-view .pf-link i { min-width: 15px; color: var(--accent-soft); }
+#profile-view .pf-link i svg { width: 15px; height: 15px; }
+.pf-link i svg.ln, svg.ln { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+svg.ln .dot { fill: currentColor; stroke: none; }
+
+/* the right panel's headings (the hours box, How XP and ranks work) */
+.pp-h { margin: 32px 0 12px; color: var(--accent); font: 700 11px/14px var(--font); letter-spacing: 0.16em; }
+
+/* your badges (badges.js) in their box, UP NEXT over them (profile-stats.js); a click on one offers to display it, a
+   right click too */
+#profile-view .me-inv { container: bx / inline-size; padding: 12px 20px 16px; border: 1px solid rgba(var(--rc), 0.2); border-radius: 4px; background: rgba(0, 0, 0, 0.28); }
+#profile-view .sc-bar { align-items: baseline; gap: 12px; margin: 0 0 14px; padding-bottom: 0; border-bottom: 0; }
+#profile-view .sc-title { margin: 0; color: var(--accent); font: 700 11px/14px var(--font); letter-spacing: 0.16em; }
+#profile-view .sc-count { color: var(--txt3); font: 13px/18px var(--font-sans); }
+#profile-view .sc-grid { grid-template-columns: repeat(auto-fill, minmax(124px, 1fr)); gap: 8px; }
+#profile-view .sc-item { padding: 8px 6px 11px; border-radius: 2px; cursor: pointer; }
+#profile-view .sc-item:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+#profile-view .sc-art { height: 70px; }
+#profile-view .sc-art .badge-art { width: 68px; height: 68px; }
+#profile-view .sc-item b { font: 600 13px/16px var(--font-sans); }
+#profile-view .sc-item span { font: 600 12px/16px var(--font-sans); }
+.bdg-ctx { width: auto; min-width: 210px; }
+.bdg-ctx button { min-height: 28px; font: 500 13px/18px var(--font-sans); }
+.bdg-ctx button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+/* how XP and ranks work, folded */
+.pp-how { padding-top: 4px; }
+.pp-how > summary { display: inline-flex; align-items: center; gap: 8px; min-height: 28px; color: var(--txt2); font: 600 13px/18px var(--font-sans); list-style: none; cursor: pointer; }
+.pp-how > summary::-webkit-details-marker { display: none; }
+.pp-how > summary::before { content: "▸"; color: var(--accent); transition: transform 0.14s; }
+.pp-how[open] > summary::before { transform: rotate(90deg); }
+.pp-how > summary:hover { color: var(--hi); }
+.pp-how > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+.pp-how-in { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 32px; }
+.pp-how-in .pp-h { margin-top: 16px; }
+.pp-how .pf-rk { height: 28px; font: 13px/18px var(--font-sans); }
+.pp-rules { margin: 0; padding-left: 18px; color: var(--txt2); font: 13px/20px var(--font-sans); }
+.pp-rules li + li { margin-top: 6px; }
+.pp-rules li::marker { color: var(--accent); }
+
+/* Narrow (under about 900 px): the panels one under the other, the identity card lying down as a banner (your picture,
+   who you are and your status, "Edit profile" on the right; under them the badge you display beside your AIs).
+   Narrower still, all in one column. */
+@container pp (max-width: 880px) {
+  #profile-view .me-grid { grid-template-columns: minmax(0, 1fr); }
+  #profile-view .me-top { position: static; }
+  .pp-hero { grid-template-columns: 128px minmax(0, 1fr) minmax(0, 1fr); grid-template-areas: "pic who edit" "pic status status" "show show ai" "links links links"; gap: 0 32px; }
+  .pp-who { margin-top: 0; }
+  .pp-status { align-self: start; margin-top: 12px; }
+  .pp-hero > .me-show { align-self: start; }
+  .pp-hero > .pp-ai { margin-top: 24px; padding-top: 0; border-top: 0; }
+}
+@container pp (max-width: 640px) {
+  .pp-hero { grid-template-columns: 96px minmax(0, 1fr); grid-template-areas: "pic who" "pic status" "edit edit" "show show" "ai ai" "links links"; gap: 0 20px; }
+  .pp-hero > .pp-ai { padding-top: 20px; border-top: 1px solid var(--line-soft); }
+  .pp-pic, .pp-pic .me-pic { width: 96px; height: 96px; }
+  .pp-pic .pp-mono { font-size: 44px; }
+  .pp-edit { justify-self: start; margin-top: 16px; }
+  .pp-name { font-size: 24px; line-height: 30px; }
+  .pp-how-in { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* ---------- pictures everywhere are squares with near-hard corners, as Steam's (cloud.css). Friends' (and yours among
+   them) framed in their status's colour, as Steam frames them; the status's word and its dot's shape say it too. ---------- */
+.fr-av.st-online, .fr-av.st-idle, .fr-av.st-dnd, .fr-av.st-offline, .fr-av.st-invisible { box-shadow: 0 0 0 2px var(--st); }
+.st-online { --st: var(--green); }
+.st-idle { --st: var(--amber); }
+.st-dnd { --st: var(--red); }
+.st-offline, .st-invisible { --st: var(--dim); }
+.pf-pic[class*="st-"], .me-card-pic[class*="st-"] { border-color: var(--st); box-shadow: 0 0 14px color-mix(in srgb, var(--st) 35%, transparent); }
+
+/* ---------- "Edit profile": the panel on the page's right ---------- */
+#profile-view .pe { position: relative; display: flex; flex: none; flex-direction: column; width: 360px; min-height: 0; border: 1px solid var(--line); border-radius: 4px; background: var(--panel); color: var(--txt); font: 13px/18px var(--font-sans); opacity: 0; transform: translateX(24px); transition: opacity 0.16s ease-out, transform 0.16s ease-out; }
+#profile-view .pe[hidden] { display: none; }
+#profile-view .pe.on { opacity: 1; transform: none; }
+.pe-head { display: flex; flex: none; align-items: center; justify-content: space-between; gap: 8px; height: 48px; padding: 0 12px 0 20px; border-bottom: 1px solid var(--line-soft); }
+.pe-head h2 { margin: 0; color: var(--hi); font: 700 15px/20px var(--font-sans); }
+.pe-x { display: grid; place-items: center; width: 28px; height: 28px; border: 0; border-radius: 6px; background: transparent; color: var(--txt3); font: 14px/1 var(--font-sans); cursor: pointer; }
+.pe-x:hover { background: rgba(var(--accent-rgb), 0.14); color: var(--hi); }
+.pe-body { flex: 1; min-height: 0; padding: 4px 20px 24px; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--dim2) transparent; }
+.pe-sec { padding: 16px 0; }
+.pe-sec + .pe-sec { border-top: 1px solid var(--line-soft); }
+.pe-sec[hidden] { display: none; }
+.pe-h { margin: 0 0 12px; color: var(--accent); font: 700 11px/14px var(--font); letter-spacing: 0.16em; }
+.pe-hint { margin: 8px 0 0; color: var(--txt3); font: 12px/16px var(--font-sans); }
+.pe-note { margin: 16px 0 12px; color: var(--txt2); }
+.pe-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.pe-btn { display: inline-flex; flex: none; align-items: center; justify-content: center; gap: 6px; min-width: 28px; height: 28px; padding: 0 12px; border: 1px solid rgba(var(--accent-rgb), 0.45); border-radius: 6px; background: rgba(var(--accent-rgb), 0.07); color: var(--accent-pale); font: 500 13px/1 var(--font-sans); white-space: nowrap; cursor: pointer; transition: background 0.12s, border-color 0.12s, color 0.12s; }
+.pe-btn:hover:not(:disabled) { border-color: var(--accent); background: rgba(var(--accent-rgb), 0.18); color: var(--hi); }
+.pe-btn:disabled { opacity: 0.45; cursor: default; }
+.pe-btn:focus-visible, .pe-x:focus-visible, .pe-del:focus-visible, .pe-chip:focus-visible, .pe-bdg:focus-visible, .pe-linkbtn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.pe-primary { border-color: var(--accent); background: var(--accent); color: var(--ink); font-weight: 700; }
+.pe-primary:hover:not(:disabled) { background: var(--accent-soft); color: var(--ink); }
+.pe-primary:disabled { border-color: rgba(var(--accent-rgb), 0.45); background: transparent; color: var(--accent-soft); }
+.pe-danger { border-color: rgba(var(--red-rgb), 0.6); background: transparent; color: var(--red); }
+.pe-danger:hover:not(:disabled) { border-color: var(--red); background: rgba(var(--red-rgb), 0.14); color: var(--red); }
+.pe-err, .pe-warn { display: flex; align-items: flex-start; gap: 6px; margin: 8px 0 0; font: 12px/16px var(--font-sans); }
+.pe-err { color: #ff8a7a; }
+.pe-warn { color: var(--amber); }
+.pe-wi { flex: none; width: 14px; height: 14px; margin-top: 1px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+
+/* the picture: a place to drop one, its buttons, the rules */
+.pe-drop { position: relative; display: flex; align-items: center; gap: 16px; padding: 12px; border: 1px dashed rgba(var(--accent-rgb), 0.3); border-radius: 4px; background: rgba(0, 0, 0, 0.2); }
+.pe-pic { flex: none; width: 72px; height: 72px; border-radius: 2px; object-fit: cover; box-shadow: 0 0 0 1px rgba(var(--rc), 0.7); }
+.pe-mono { font-size: 32px; line-height: 1; }
+.pe-drop-txt p { margin: 0 0 8px; color: var(--txt2); }
+.pp-pic .pe-over, .pe-drop .pe-over { position: absolute; inset: 0; z-index: 2; display: none; place-items: center; padding: 8px; border: 2px dashed var(--accent); border-radius: 4px; background: rgba(var(--ink-rgb), 0.86); color: var(--hi); font: 600 13px/18px var(--font-sans); text-align: center; pointer-events: none; }
+.pp-pic .pe-over { border-radius: 2px; }
+.pp-pic.over .pe-over, .pe-drop.over .pe-over { display: grid; }
+
+/* the name: read-only here, changed in Settings */
+.pe-name { display: flex; align-items: baseline; gap: 4px; min-width: 0; }
+.pe-name b { overflow: hidden; color: var(--hi); font: 600 15px/20px var(--font-sans); text-overflow: ellipsis; white-space: nowrap; }
+.pe-name i { color: var(--txt3); font: 400 13px/18px var(--font); font-style: normal; }
+.pe-linkbtn { min-height: 28px; margin-top: 4px; padding: 0; border: 0; background: transparent; color: var(--accent-soft); font: 500 13px/18px var(--font-sans); cursor: pointer; }
+.pe-linkbtn:hover { color: var(--hi); text-decoration: underline; text-underline-offset: 2px; }
+/* NAME: the hacker name's field, the tag after it, the count at the end. */
+.pe-nm { flex: 1; min-width: 0; height: 100%; padding: 0; border: 0; outline: 0; background: transparent; color: var(--hi); font: 600 14px/18px var(--font-sans); caret-color: var(--accent); }
+.pe-nm:disabled { opacity: 0.6; }
+.pe-nmf .pe-tag { flex: none; color: var(--txt3); font: 400 13px/18px var(--font); font-style: normal; }
+.pe-nmf .pe-count { flex: none; padding-right: 6px; color: var(--txt3); font: 11px/16px var(--font); }
+
+/* the links: a row each, then one field that tells the site */
+.pe-list { display: flex; flex-direction: column; gap: 4px; margin: 0 0 12px; padding: 0; list-style: none; }
+.pe-list[hidden] { display: none; }
+.pe-li { display: flex; align-items: center; gap: 10px; min-height: 40px; padding: 0 4px 0 10px; border: 1px solid rgba(var(--accent-rgb), 0.16); border-radius: 4px; background: rgba(0, 0, 0, 0.22); }
+.pe-ic { display: inline-grid; flex: none; place-items: center; width: 16px; height: 16px; color: var(--accent-soft); }
+.pe-ic svg { width: 15px; height: 15px; fill: currentColor; }
+.pe-ic svg.ln { fill: none; }
+.pe-lt { display: flex; flex: 1; flex-direction: column; min-width: 0; }
+.pe-lt b { color: var(--txt2); font: 600 11px/14px var(--font-sans); }
+.pe-lt small { overflow: hidden; color: var(--hi); font: 13px/18px var(--font-sans); text-overflow: ellipsis; white-space: nowrap; }
+.pe-del { display: grid; flex: none; place-items: center; width: 28px; height: 28px; border: 0; border-radius: 4px; background: transparent; color: var(--txt3); font: 13px/1 var(--font-sans); cursor: pointer; }
+.pe-del:hover:not(:disabled) { background: rgba(var(--red-rgb), 0.14); color: var(--red); }
+.pe-suggest { display: flex; align-items: center; gap: 8px; margin: 0 0 12px; padding: 8px 8px 8px 10px; border: 1px solid rgba(var(--accent-rgb), 0.3); border-radius: 4px; background: rgba(var(--accent-rgb), 0.06); color: var(--txt2); }
+.pe-suggest > span:not(.pe-ic) { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pe-suggest b { color: var(--hi); font-weight: 600; }
+.pe-add[hidden], .pe-full[hidden] { display: none; }
+.pe-label { display: block; margin: 0 0 6px; color: var(--txt); font: 600 13px/18px var(--font-sans); }
+.pe-field { display: flex; align-items: center; gap: 8px; height: 36px; padding: 0 4px 0 10px; border: 1px solid rgba(var(--accent-rgb), 0.4); border-radius: 6px; background: rgba(0, 0, 0, 0.35); transition: border-color 0.12s; }
+.pe-field:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.2); }
+.pe-field.bad, .pe-field.bad:focus-within { border-color: #ff8a7a; }
+.pe-field.bad:focus-within { box-shadow: 0 0 0 3px rgba(255, 138, 122, 0.2); }
+.pe-fi { display: inline-grid; flex: none; place-items: center; width: 16px; height: 16px; color: var(--txt3); transition: color 0.12s; }
+.pe-fi.on { color: var(--accent-soft); }
+.pe-fi svg { width: 15px; height: 15px; fill: currentColor; }
+.pe-fi svg.ln { fill: none; }
+.pe-in { flex: 1; min-width: 0; height: 100%; padding: 0; border: 0; outline: 0; background: transparent; color: var(--hi); font: 13px/18px var(--font-sans); caret-color: var(--accent); }
+.pe-live:empty { display: none; }
+.pe-live { margin-top: 6px; }
+.pe-det { margin: 0; color: var(--txt2); font: 12px/16px var(--font-sans); }
+.pe-det b { color: var(--accent-soft); font-weight: 600; }
+.pe-repl { color: var(--amber); }
+.pe-which { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.pe-which > span { margin-right: 2px; color: var(--txt2); font: 12px/16px var(--font-sans); }
+.pe-chip { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border: 1px solid rgba(var(--accent-rgb), 0.4); border-radius: 14px; background: transparent; color: var(--txt); font: 500 12px/1 var(--font-sans); cursor: pointer; }
+.pe-chip:hover { border-color: var(--accent); background: rgba(var(--accent-rgb), 0.14); color: var(--hi); }
+.pe-chip .pe-ic, .pe-chip .pe-ic svg { width: 13px; height: 13px; }
+.pe-privacy { margin-top: 12px; }
+
+/* the displayed badge: one of yours, or none */
+.pe-badges { display: grid; grid-template-columns: repeat(auto-fill, minmax(72px, 1fr)); gap: 6px; }
+.pe-bdg { display: flex; flex-direction: column; align-items: center; gap: 4px; min-width: 0; min-height: 64px; padding: 8px 4px 6px; border: 1px solid rgba(var(--accent-rgb), 0.16); border-radius: 4px; background: rgba(0, 0, 0, 0.22); color: var(--txt2); font: 500 11px/14px var(--font-sans); cursor: pointer; }
+.pe-bdg span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pe-bdg:hover { border-color: rgba(var(--accent-rgb), 0.5); color: var(--hi); }
+.pe-bdg[aria-checked="true"] { border-color: var(--accent); background: rgba(var(--accent-rgb), 0.16); color: var(--hi); box-shadow: inset 0 0 0 1px var(--accent); }
+.pe-none { display: block; width: 30px; height: 30px; border: 1.5px dashed rgba(var(--accent-rgb), 0.45); border-radius: 50%; }
+
+/* Cancel · Save, always in sight */
+.pe-foot { display: flex; flex: none; align-items: center; justify-content: flex-end; gap: 8px; padding: 12px 20px; border-top: 1px solid var(--line-soft); background: rgba(0, 0, 0, 0.2); }
+.pe-foot .pe-btn { height: 32px; padding: 0 16px; }
+.pe-status { flex: 1; min-width: 0; margin: 0; color: var(--txt3); font: 12px/16px var(--font-sans); }
+.pe-status.bad { color: #ff8a7a; }
+
+/* "Discard changes?", over the panel */
+.pe-ask { position: absolute; inset: 0; z-index: 5; display: grid; place-items: center; padding: 20px; background: rgba(var(--surface-rgb), 0.78); -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px); }
+.pe-ask-in { width: 100%; padding: 20px; border: 1px solid var(--line); border-radius: 6px; background: rgb(var(--panel-rgb)); box-shadow: 0 16px 40px rgba(0, 0, 0, 0.6); }
+.pe-ask-in b { display: block; color: var(--hi); font: 700 15px/20px var(--font-sans); }
+.pe-ask-in p { margin: 6px 0 16px; color: var(--txt2); }
+.pe-ask-in .pe-row { justify-content: flex-end; }
+.pe-ask-in .pe-btn { height: 32px; padding: 0 16px; }
+
+/* ---------- "Adjust picture": the sheet ---------- */
+.pe-crop-wrap { position: fixed; inset: 0; z-index: 8000; display: grid; place-items: center; background: rgba(0, 0, 0, 0.6); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); opacity: 0; transition: opacity 0.14s ease-out; }
+.pe-crop-wrap.on { opacity: 1; }
+.pe-crop { display: flex; flex-direction: column; align-items: stretch; width: 336px; padding: 20px 24px; border: 1px solid var(--line); border-radius: 8px; background: rgb(var(--panel-rgb)); box-shadow: 0 24px 60px rgba(0, 0, 0, 0.7), 0 0 24px rgba(var(--accent-rgb), 0.18); color: var(--txt); font: 13px/18px var(--font-sans); }
+.pe-crop h2 { margin: 0 0 16px; color: var(--hi); font: 700 15px/20px var(--font-sans); }
+.pe-stage { position: relative; width: 288px; height: 288px; overflow: hidden; border-radius: 4px; background: #000; cursor: grab; touch-action: none; }
+.pe-stage.grab { cursor: grabbing; }
+.pe-stage:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.pe-stage-img { position: absolute; top: 0; left: 0; max-width: none; transform-origin: 0 0; -webkit-user-select: none; user-select: none; pointer-events: none; }
+/* the square that's kept, the rest dimmed */
+.pe-mask { position: absolute; top: 32px; left: 32px; width: 224px; height: 224px; border-radius: 2px; box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.85), 0 0 0 200px rgba(0, 0, 0, 0.62); pointer-events: none; }
+.pe-crop .pe-hint { margin: 8px 0 0; }
+.pe-zoom { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
+.pe-sq { width: 28px; padding: 0; font-size: 16px; }
+.pe-range { flex: 1; min-width: 0; height: 28px; margin: 0; background: transparent; -webkit-appearance: none; appearance: none; cursor: pointer; }
+.pe-range::-webkit-slider-runnable-track { height: 4px; border-radius: 2px; background: linear-gradient(90deg, var(--accent) var(--fill, 0%), rgba(var(--accent-rgb), 0.25) var(--fill, 0%)); }
+.pe-range::-webkit-slider-thumb { width: 16px; height: 16px; margin-top: -6px; border: 2px solid var(--ink); border-radius: 50%; background: var(--accent-pale); box-shadow: 0 0 0 1px var(--accent); -webkit-appearance: none; appearance: none; }
+.pe-range:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+.pe-sizes { display: flex; align-items: flex-end; gap: 24px; margin-top: 16px; }
+.pe-sizes figure { display: flex; flex-direction: column; align-items: center; gap: 6px; margin: 0; }
+.pe-sizes i { display: block; border-radius: 2px; background-color: #000; background-repeat: no-repeat; box-shadow: 0 0 0 1px rgba(var(--rc), 0.7); }
+.pe-sizes i[data-s="96"] { width: 96px; height: 96px; }
+.pe-sizes i[data-s="40"] { width: 40px; height: 40px; }
+.pe-sizes i[data-s="24"] { width: 24px; height: 24px; }
+.pe-sizes figcaption { color: var(--txt3); font: 11px/14px var(--font-sans); white-space: nowrap; }
+.pe-crop-warn[hidden] { display: none; }
+.pe-crop-foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
+.pe-crop-foot .pe-btn { height: 32px; padding: 0 16px; }
+
+@media (prefers-reduced-motion: reduce) {
+  #profile-view .pe, .pe-crop-wrap, .pp-edit, .pp-how > summary::before { transition: none; }
+  #profile-view .pv-in, #profile-view .pv-top * { animation-duration: 0.01ms !important; animation-delay: 0s !important; transition-duration: 0.01ms !important; }
+}
+
+/* ===================== the profile page, for visitors and self (.pv-*) ===================== */
+#profile-view .cv-me > header .pp-back { display: none; }
+#profile-view .cv-me > .body.pv-body { position: relative; padding-top: 4.25rem; }
+#profile-view .pv-top button, #profile-view .pv-acts button { font-family: inherit; }
+.pv-in { animation: bd-rise 0.26s var(--bd-ease) both; }
+.pv-top { position: sticky; top: -3.5rem; z-index: 6; display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; height: 0; max-width: 1374px; margin: 0 auto; transform: translateY(-3.5rem); pointer-events: none; }
+.pv-top > * { pointer-events: auto; }
+.pv-step { display: flex; align-items: center; gap: 0.125rem; height: 2.25rem; padding: 0 0.25rem 0 0.875rem; color: var(--txt2); font-size: 0.8125rem; font-weight: 600; cursor: default; }
+.pv-step b { color: var(--hi); font-family: var(--font-mono); }
+.pv-step button { display: grid; width: 1.875rem; height: 1.875rem; place-items: center; border: 0; border-radius: 50%; background: none; color: var(--txt2); cursor: pointer; }
+.pv-step button:hover:not(:disabled) { background: rgba(var(--accent-rgb), 0.18); color: var(--hi); }
+.pv-step button:disabled { opacity: 0.35; cursor: default; }
+.pv-step button:focus-visible { outline: 2px solid var(--accent-soft); outline-offset: 1px; }
+
+/* what you can do about them: where "Edit profile" sits on your own */
+.pv-acts { display: flex; grid-area: edit; flex-direction: column; align-items: stretch; align-self: start; gap: 0.5rem; min-width: 0; }
+.pv-acts .bd-glassbtn, .pv-acts .bd-primary { justify-content: center; padding: 0 0.5rem; }
+.pv-acts .pv-more { align-self: flex-end; width: 2.25rem; padding: 0; }
+.pv-state { display: inline-flex; align-items: center; justify-content: center; gap: 0.375rem; height: 2.25rem; padding: 0 0.875rem; border-radius: 999px; box-shadow: inset 0 0 0 1px var(--bd-hair); color: var(--txt2); font-size: 0.8125rem; font-weight: 600; white-space: nowrap; }
+.pv-nick { display: block; margin-top: 0.125rem; color: var(--txt3); font: 500 0.8125rem/1.3 var(--font-sans); }
+
+/* their place on the board, and their flame: two small tiles under the level bar */
+.pv-stand { display: grid; grid-area: stand; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.5rem; margin-top: 1.25rem; }
+.pp-hero.pv-hero { grid-template-areas: "pic edit" "who who" "stand stand" "show show" "ai ai" "links links" "theme theme" "status status"; }
+.pv-tile { display: flex; flex-direction: column; gap: 0.125rem; min-width: 0; padding: 0.625rem 0.75rem; border-radius: 0.75rem; background: var(--bd-raise); box-shadow: var(--bd-edge), inset 0 0 0 1px var(--bd-hair); }
+.pv-tile label { color: var(--txt3); font: 700 0.625rem var(--font); letter-spacing: 0.16em; }
+.pv-tile b { color: var(--hi); font: 750 1.25rem/1.2 var(--font-mono); font-variant-numeric: tabular-nums; }
+.pv-tile b small { margin-left: 0.25rem; color: var(--txt3); font: 500 0.75rem var(--font-sans); }
+.pv-tile span { overflow: hidden; color: var(--txt2); font-size: 0.75rem; font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap; }
+.pv-tile.gold { box-shadow: var(--bd-edge), inset 0 0 0 1px rgba(var(--gold), 0.45); background: linear-gradient(180deg, rgba(var(--gold), 0.12), rgba(var(--gold), 0.03)); }
+.pv-tile.gold b { color: var(--amber); }
+.pv-fire { display: inline-flex; align-items: center; align-self: flex-start; gap: 0.375rem; margin-top: 0.75rem; padding: 0.1875rem 0.625rem 0.1875rem 0.5rem; border-radius: 999px; background: rgba(255, 120, 10, 0.14); box-shadow: inset 0 0 0 1px rgba(255, 140, 30, 0.45); color: #ffb057; font-size: 0.75rem; font-weight: 650; }
+.pv-fire svg { width: 0.75rem; height: 0.875rem; fill: currentColor; }
+.pv-fire.f2 { background: rgba(90, 160, 255, 0.14); box-shadow: inset 0 0 0 1px rgba(120, 180, 255, 0.5); color: #b9dcff; }
+.pv-theme { display: flex; flex-wrap: wrap; grid-area: theme; align-items: center; justify-content: space-between; gap: 0.75rem 1.5rem; min-width: 0; margin-top: 1.25rem; padding-top: 1.25rem; border-top: 1px solid var(--line-soft); }
+.pv-theme label { display: block; color: var(--txt3); font: 700 0.625rem var(--font); letter-spacing: 0.16em; }
+.pv-theme b { color: var(--hi); font-size: 0.9375rem; font-weight: 600; }
+.pv-theme em { color: var(--txt3); font-size: 0.8125rem; font-style: normal; }
+.pv-cell { display: flex; align-items: center; gap: 0.75rem; min-width: 0; }
+/* Alone (no Viktoria cell), the THEME cell keeps its old look: "you use it too" at the far right */
+.pv-theme > .pv-cell:only-child { flex: 1; justify-content: space-between; }
+.pv-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+/* Viktoria's Mischief meter: four dots, filled up to her level (the level's name beside it carries the meaning) */
+.pv-dots { display: inline-flex; gap: 0.25rem; }
+.pv-dots i { width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--txt3); }
+.pv-dots i.on { background: var(--hi); }
+
+/* head to head with a friend: only the two of you see it */
+.pv-h2h { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 0.75rem 1.5rem; padding: 0.875rem 1.25rem; border: 1px solid rgba(var(--rc), 0.2); border-radius: 4px; background: rgba(0, 0, 0, 0.28); }
+.pv-h2h h2 { grid-column: 1 / -1; margin: 0; color: var(--accent); font: 700 11px/14px var(--font); letter-spacing: 0.16em; }
+.pv-h2h h2 span { margin-left: 0.5rem; color: var(--txt3); font: 13px/18px var(--font-sans); letter-spacing: 0; }
+.pv-side { display: flex; align-items: center; gap: 0.75rem; min-width: 0; }
+.pv-side.them { flex-direction: row-reverse; text-align: right; }
+.pv-side .bd-av { flex: none; }
+.pv-side p { min-width: 0; margin: 0; color: var(--txt2); font-size: 0.8125rem; line-height: 1.35; }
+.pv-side p b { display: block; overflow: hidden; color: var(--hi); font-size: 0.9375rem; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.pv-score { display: grid; grid-template-columns: auto auto auto; align-items: baseline; justify-items: center; gap: 0.125rem 0.625rem; color: var(--txt3); font: 800 1.75rem/1 var(--font-mono); font-variant-numeric: tabular-nums; }
+.pv-score b.lead { color: var(--amber); text-shadow: 0 0 1rem rgba(var(--amber-rgb), 0.4); }
+.pv-score b { color: var(--txt2); }
+.pv-score small { grid-column: 1 / -1; color: var(--txt3); font: 600 0.625rem var(--font-sans); letter-spacing: 0.1em; text-transform: uppercase; }
+
+/* their tokens: what the board's card showed in the Tokens view (by AI, then model), now on the page */
+.pv-tok { display: grid; grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr); align-items: start; gap: 0.875rem 1.5rem; padding: 0.875rem 1.25rem 1rem; border: 1px solid rgba(var(--rc), 0.2); border-radius: 4px; background: rgba(0, 0, 0, 0.28); }
+.pv-tok h2 { grid-column: 1 / -1; margin: 0; color: var(--accent); font: 700 11px/14px var(--font); letter-spacing: 0.16em; }
+.pv-tok h2 span { margin-left: 0.5rem; color: var(--txt3); font: 13px/18px var(--font-sans); letter-spacing: 0; }
+.pv-tok .pf-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); font: 13px/18px var(--font-sans); }
+.pv-tok .tk-e { display: flex; flex-wrap: wrap; gap: 4px; margin: 0 0 2px 28px; }
+
+/* where the hours would be, when they aren't yours to see */
+.pv-lock { display: flex; flex-direction: column; align-items: center; gap: 0.375rem; padding: 2.25rem 1.5rem 2.5rem; border: 1px solid rgba(var(--rc), 0.2); border-radius: 4px; background: radial-gradient(60% 90% at 50% 0%, rgba(var(--rc), 0.1), transparent 70%), rgba(0, 0, 0, 0.28); text-align: center; }
+.pv-lock-art { position: relative; display: flex; align-items: flex-end; gap: 0.3125rem; height: 3.75rem; margin-bottom: 0.625rem; }
+.pv-lock-art i { width: 0.75rem; border-radius: 0.1875rem 0.1875rem 0 0; background: rgba(var(--rc), 0.22); filter: blur(1.5px); }
+.pv-lock-art svg { position: absolute; top: 50%; left: 50%; width: 2rem; height: 2rem; margin: -1rem 0 0 -1rem; padding: 0.375rem; border-radius: 50%; background: rgb(var(--panel-rgb)); box-shadow: inset 0 0 0 1px rgba(var(--rc), 0.45); fill: none; stroke: var(--accent-soft); stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.pv-lock h2 { margin: 0; color: var(--hi); font: 700 1.125rem/1.3 var(--font-sans); }
+.pv-lock p { max-width: 28rem; margin: 0 0 0.75rem; color: var(--txt2); font: 0.875rem/1.5 var(--font-sans); }
+.pv-lock p:last-child { margin-bottom: 0; }
+
+/* unavailable / deleted profile */
+.pv-avail { display: grid; place-items: center; min-height: 16rem; padding: 2rem; color: var(--txt2); font: 0.9375rem/1.5 var(--font-sans); text-align: center; }
+
+/* a visitor only looks at the badges: no hand, no "displayed" star to set */
+.pv-visit .sc-item { cursor: default; }
+.pv-visiting .sc-tip em { display: none; }
+
+/* nickname dialog inside the profile */
+.pv-nick-pop { display: flex; flex-direction: column; gap: 0.5rem; min-width: 220px; padding: 0.625rem; }
+.pv-nick-pop input { height: 2rem; padding: 0 0.5rem; border: 1px solid var(--line); border-radius: 4px; background: rgba(0, 0, 0, 0.35); color: var(--hi); font: 13px/18px var(--font-sans); outline: 0; }
+.pv-nick-pop input:focus { border-color: var(--accent); }
+.pv-nick-pop .pv-nick-row { display: flex; justify-content: flex-end; gap: 0.375rem; }
+
+@container pp (max-width: 880px) {
+  .pp-hero.pv-hero { grid-template-areas: "pic who edit" "pic status status" "stand stand stand" "show show ai" "links links links" "theme theme theme"; }
+}
+@container pp (max-width: 640px) {
+  .pp-hero.pv-hero { grid-template-areas: "pic who" "pic status" "edit edit" "stand stand" "show show" "ai ai" "links links" "theme theme"; }
+  .pv-acts { grid-area: edit; flex-direction: row; flex-wrap: wrap; justify-self: start; margin-top: 16px; }
+  .pv-acts .pv-more { align-self: center; }
+  .pv-tok { grid-template-columns: minmax(0, 1fr); }
+  .pv-h2h { grid-template-columns: minmax(0, 1fr); text-align: center; }
+  .pv-side.them { flex-direction: row; text-align: left; }
+}
+@supports (view-transition-name: pv-pic) {
+  ::view-transition-old(pv-pic), ::view-transition-new(pv-pic) { animation-duration: 0.3s; animation-timing-function: var(--bd-spring); }
+}

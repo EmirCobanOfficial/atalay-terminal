@@ -148,6 +148,19 @@ function catOf(name) {
   return 'plan';
 }
 
+// A shell command that runs another AI CLI (Codex, Antigravity, Gemini) runs as Claude's subagent: a drone on the orbit
+// while it works, as a Task would (the Mac's externalAISubAgentTool). On Windows the program can come as a path, quoted,
+// behind PowerShell's call operator & or with .cmd/.exe/.ps1. null for anything else.
+function externalAISubAgentTool(cmd) {
+  for (const part of String(cmd).split(/\s+/)) {
+    if (!part || part === '&' || part.includes('=')) continue;
+    const bin = part.replace(/^['"]+|['"]+$/g, '').split(/[\\/]/).pop().toLowerCase().replace(/\.(cmd|exe|ps1|bat)$/, '');
+    if (bin === 'codex' || bin === 'agy' || bin === 'antigravity' || bin === 'gemini') return bin === 'antigravity' ? 'agy' : bin;
+    return null;
+  }
+  return null;
+}
+
 // ---------- value helpers ----------
 const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const int = (v) => (typeof v === 'number' && Number.isFinite(v) ? Math.trunc(v) : 0);
@@ -1484,6 +1497,9 @@ class RadarEngine {
     // another one's records continues that chat.
     this.recOwner = new Map();
     this.agentHints = new Map(); // Agent tool_use id -> { desc, type }
+    // Shell tool uses that run another AI CLI (Codex, Antigravity, Gemini): tool_use id -> the SubAgent holding the drone
+    // on the orbit, so its pending clears and the drone retires on the tool's result.
+    this.externalBashAgent = new Map();
     this.log = [];
     this.logIndex = new Map();
     this.outbox = [];
@@ -1607,6 +1623,8 @@ class RadarEngine {
         sessionId: S.id, pid: S.pid, cwd: S.cwd, status: this.shownStatus(S, bySession.get(S.id) || [], now),
         name: S.name || S.id.slice(0, 8), title: S.title || '', prompt: S.lastPrompt || '', waitingFor: S.waitingFor ?? null,
         host: this.hostLabel(S), tab: typeof S.hostTab === 'string' ? S.hostTab : null, statusSince: S.statusSince || 0,
+        // Its context and today's counts, for the strip of the window it runs in (terminal.js).
+        ctx: S.ctx, ctxMax: S.ctxMax, tools: S.tools, web: S.web, errors: S.errors,
       });
     }
     // The other AI tools (`ai`: no conversation to resume, nor one a new chat window should take for its own).
@@ -1616,7 +1634,7 @@ class RadarEngine {
       out.push({
         sessionId: O.id, convId: otherConv(O), pid: O.pid, cwd: O.cwd, status, waitingFor: waiting, name: O.tool, title: O.title || O.prompt || baseName(O.cwd),
         host: O.hostTab != null ? 'app' : 'term', tab: typeof O.hostTab === 'string' ? O.hostTab : null, ai: true,
-        statusSince: O.statusSince || 0,
+        statusSince: O.statusSince || 0, ctx: O.ctx, ctxMax: O.ctxMax, tools: O.tools, web: O.web, errors: O.errors,
       });
     }
     return out;
@@ -2554,6 +2572,21 @@ class RadarEngine {
       const r = { id, t: ts, s: S.id, l: sm.label, cmd: sm.cmd ?? '', ok: null, d: null };
       if (A) r.a = A.id;
       this.ringPush(G.shells, r, 40);
+      // Claude running another AI CLI (codex, agy, gemini) in a shell: the shell is a subagent of this session, so a
+      // drone orbits it while it works, as a Task's would. One already inside a subagent gets no drone of its own.
+      const tool = !A && sm.cmd ? externalAISubAgentTool(sm.cmd) : null;
+      if (tool) {
+        const X = this.agent(S.id, `ext-${tool}-${id.slice(0, 16)}`);
+        if (X.firstTs === 0) X.firstTs = ts;
+        X.lastTs = ts;
+        X.desc = tool;
+        X.type = tool;
+        if (!X.model) X.model = tool;
+        X.bg = false;
+        X.endTurn = false;
+        X.pendingSet(id, { n: tool, c: 'agent', l: clip(sm.label, 70), t: ts });
+        this.externalBashAgent.set(id, X);
+      }
     }
     if (sm.file !== undefined) this.touchFile(sm.file, name, S, A, ts);
     if ((name === 'Agent' || name === 'Task') && isObj(b.input)) {
@@ -2629,6 +2662,15 @@ class RadarEngine {
     S.pending.delete(id);
     const ok = b.is_error !== true;
     const d = p ? (ts > 0 ? Math.max(0, ts - p.t) : 0) : null;
+    // An AI CLI run in a shell (Codex, agy, Gemini as a subagent): its drone retires on the result.
+    const X = this.externalBashAgent.get(id);
+    if (X) {
+      this.externalBashAgent.delete(id);
+      X.pending.delete(id);
+      X.lastTs = Math.max(X.lastTs, ts);
+      X.endTurn = true;
+      if (!ok) X.errors += 1;
+    }
     const tr = rec.toolUseResult;
     const { meta, hosts, agentId } = resultMeta(tr);
     if (agentId !== null) {
@@ -2671,6 +2713,9 @@ class RadarEngine {
       }
       this.emit(this.ev('turn', ts, S, null, { d: ms }), today);
     } else if (subtype === 'compact_boundary') {
+      // Claude just put a summary in place of the running context: the last usage's `ctx` is stale (a 180k/200k bar for
+      // a 5k context). It drops to 0, and the next assistant usage writes the summary's size.
+      if (!A) S.ctx = 0;
       this.emit(this.ev('sys', ts, S, null, { l: 'context compacted' }), today);
     } else if (rec.level === 'error' || subtype === 'api_error') {
       this.emit(this.ev('sys', ts, S, null, { l: clip(redact(str(rec.content) ?? subtype), 100), err: true }), today);

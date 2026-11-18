@@ -37,7 +37,9 @@ export class SessionIcon {
     const pct = s.ctxMax ? Math.min(1, s.ctx / s.ctxMax) : 0;
     const name = R.clipT(s.name, 11);
     const label = s.status === 'waiting' ? '! ' + st.label : st.label;
-    const key = [name, label, st.color, pct.toFixed(3), hue].join('|');
+    // 1% rounding on the context ring: the arc's end angle moves by at most ~3.6°, invisible on a 164 px hexagon, and
+    // the 256² CanvasTexture no longer uploads on every thousand-token tick.
+    const key = [name, label, st.color, pct.toFixed(2), hue].join('|');
     if (key === this.key) return;
     this.key = key;
     const x = this.x, c = ICON.size / 2, r = ICON.hex;

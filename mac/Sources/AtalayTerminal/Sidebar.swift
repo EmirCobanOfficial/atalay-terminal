@@ -457,6 +457,8 @@ struct SidebarView: View {
     @ObservedObject var model: SidebarModel
     let actions: SidebarActions
     @ObservedObject var theme = ThemeStore.shared
+    /// Her switch: the rects she walks on are reported only while she is on (Mascot.swift).
+    @State private var mascotOn = Mascot.isEnabled
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -555,6 +557,7 @@ struct SidebarView: View {
                 VStack(alignment: .leading, spacing: 1) {
                     if !sections.favorites.isEmpty {
                         SectionHeader(icon: "star.fill", title: "favorites", count: sections.favorites.count)
+                            .mascotPlatform("side:favorites", on: mascotOn)
                         ForEach(sections.favorites) { item in row(item) }
                     }
                     ForEach(cards, id: \.cwd) { card in
@@ -570,10 +573,18 @@ struct SidebarView: View {
                 }
                 .padding(.bottom, 12)
             }
+            .mascotPlatform("__scroll__", on: mascotOn)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(Theme.cPanel)
+        .coordinateSpace(name: "sidebar")
+        .onPreferenceChange(SidebarPlatformKey.self) { rects in
+            Task { @MainActor in
+                Mascot.shared.updateSidebarLocalRects(rects)
+            }
+        }
         .id(theme.current.id)
+        .onReceive(NotificationCenter.default.publisher(for: Mascot.changed)) { _ in mascotOn = Mascot.isEnabled }
     }
 
     /// A folder as a panel of its own, in the dashboard's panel look: its strip (a click folds it shut or open), the app's
@@ -586,6 +597,7 @@ struct SidebarView: View {
         }
         return VStack(alignment: .leading, spacing: 1) {
             header(card, label: label, shut: shut)
+                .mascotPlatform("side:\(card.cwd)", on: mascotOn)
             if !shut {
                 VStack(alignment: .leading, spacing: 1) {
                     ForEach(card.terms) { t in termRow(t) }
@@ -1114,5 +1126,30 @@ final class TrashBridge: NSObject, WKScriptMessageHandlerWithReply {
             }
             replyHandler(["folders": model.trashList(), "days": Int(ChatTrash.keep / 86_400_000)], nil)
         }
+    }
+}
+
+struct SidebarPlatformRect: Equatable {
+    let id: String
+    let rect: CGRect
+}
+
+private struct SidebarPlatformKey: PreferenceKey {
+    static var defaultValue: [SidebarPlatformRect] = []
+    static func reduce(value: inout [SidebarPlatformRect], nextValue: () -> [SidebarPlatformRect]) {
+        value.append(contentsOf: nextValue())
+    }
+}
+
+private extension View {
+    func mascotPlatform(_ id: String, on: Bool) -> some View {
+        background(
+            GeometryReader { geo in
+                Color.clear.preference(
+                    key: SidebarPlatformKey.self,
+                    value: on ? [SidebarPlatformRect(id: id, rect: geo.frame(in: .named("sidebar")))] : []
+                )
+            }
+        )
     }
 }

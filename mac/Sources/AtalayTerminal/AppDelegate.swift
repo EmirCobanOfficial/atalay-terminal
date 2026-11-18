@@ -40,12 +40,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // An update restarts the app only when that stops nothing: no chat runs outside its detached session.
         Cloud.shared.canRestart = { [weak self] in (self?.controller?.runningChatCount ?? 0) == 0 }
         Cloud.shared.start()
-        // Load the notices' page now, so a message can pop up at any time (chats load when opened).
+        UpdateWatch.shared.start()
+        // Load the notices' page now, so a message can pop up at any time; the chat window follows a little later,
+        // hidden, so opening a chat is instant.
         _ = MessagePanel.notices
-        // A newer build than last time (it updated itself, maybe while the user was away): say so in the corner.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { MessagePanel.warmChat() }
+        // A newer build than last time (it updated itself, maybe while the user was away): say so in the corner, with
+        // what's new in it, once; its notes count as unread in the notifications until they're opened.
         let build = Cloud.shared.build, last = UserDefaults.standard.integer(forKey: "lastRunBuild")
         if build > 0 {
-            if last > 0, build > last { MessagePanel.notices.announce(updated: Cloud.shared.version) }
+            if last > 0, build > last {
+                UserDefaults.standard.set(build, forKey: MainWindowController.whatsNewKey)
+                MessagePanel.notices.announce(updated: Cloud.shared.version, build: build)
+            }
             UserDefaults.standard.set(build, forKey: "lastRunBuild")
         }
         handleLaunchArguments()
@@ -66,7 +73,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         let running = controller?.runningChatCount ?? 0
-        if running > 0 {
+        if running > 0, !Cloud.shared.overdueForcedUpdate {
             let a = NSAlert()
             a.messageText = running == 1 ? "1 chat is still running" : "\(running) chats are still running"
             a.informativeText = "Quitting stops Claude in those windows, including hidden ones. The conversations stay saved and can be resumed."
@@ -118,7 +125,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.controller.overlay.showShortcuts(at: NSEvent.mouseLocation)
             return nil
         }) { monitors.append(m) }
-        // The same with a mouse: ⌃ and its middle button (the wheel pressed), or what was set in SHORTCUTS.
+        // The same with a mouse: ⌃ and its middle button (the wheel pressed), or what was set in Settings › Shortcuts.
         if let m = NSEvent.addLocalMonitorForEvents(matching: .otherMouseDown, handler: { [weak self] event in
             guard Shortcuts.wheelOpens(event), let self else { return event }
             self.controller.overlay.showShortcuts(at: NSEvent.mouseLocation)
@@ -191,7 +198,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             menu.addItem(item)
             return item
         }
-        // An action whose keys the user can change (Shortcuts, the dashboard's main menu → SHORTCUTS).
+        // An action whose keys the user can change (Shortcuts, the dashboard's Settings › Shortcuts).
         @discardableResult
         func keyed(_ menu: NSMenu, _ id: String, _ title: String, _ action: Selector, target: AnyObject? = nil) -> NSMenuItem {
             let item = Shortcuts.item(id, title: title, action: action, target: target)
@@ -201,6 +208,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let app = submenu("Orbiterm")
         add(app, "About Orbiterm", #selector(NSApplication.orderFrontStandardAboutPanel(_:)), "")
+        app.addItem(.separator())
+        // Apple's place for an app's settings (HIG, The menu bar): the dashboard's Settings, on the category used last
+        // (web/cloud.js). No key: it's clicked, like the gear (Atalay, 2026-11-15); ⌘, stays out of the user's keys
+        // (Shortcuts.reserved).
+        add(app, "Settings…", #selector(showSettings), "", target: self)
         app.addItem(.separator())
         add(app, "Hide Orbiterm", #selector(NSApplication.hide(_:)), "h")
         add(app, "Hide Others", #selector(NSApplication.hideOtherApplications(_:)), "h", [.command, .option])
@@ -217,7 +229,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         keyed(file, "newTabNext", "New Tab Next to Current Tab", #selector(newTab), target: self)
         keyed(file, "splitVertically", "Split Vertically", #selector(splitVertically), target: self)
         keyed(file, "splitHorizontally", "Split Horizontally", #selector(splitHorizontally), target: self)
-        keyed(file, "shortcutsWheel", "Shortcuts", #selector(showShortcuts), target: self)
+        keyed(file, "shortcutsWheel", "Shortcut Wheel", #selector(showShortcuts), target: self)
         file.addItem(.separator())
         keyed(file, "closePane", "Close", #selector(closePane), target: self)
         keyed(file, "closeWindow", "Close Terminal Window", #selector(NSWindow.performClose(_:)))
@@ -244,6 +256,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         add(view, "Dashboard", #selector(showDashboard), "", target: self)
         keyed(view, "reloadDashboard", "Reload Dashboard", #selector(reloadDashboard), target: self)
         keyed(view, "chatsList", "Chats List", #selector(toggleSidebar), target: self)
+        // Viktoria's own switch (the same flag as Settings > Appearance); the checkmark and the title ("Get Viktoria…"
+        // until she is downloaded) are set in validateMenuItem.
+        add(view, "Show Viktoria", #selector(toggleViktoria), "", target: self)
         view.addItem(.separator())
         keyed(view, "biggerText", "Bigger Text", #selector(fontBigger), target: self)
         keyed(view, "smallerText", "Smaller Text", #selector(fontSmaller), target: self)
@@ -282,10 +297,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.addItem(.separator())
         add(window, "Bring All to Front", #selector(NSApplication.arrangeInFront(_:)), "")
 
+        // The notes of the version you're on, and the features few people find (windows on the dashboard, cloud.js);
+        // every shortcut at a glance, read-only (web/cheatsheet.js; Settings › Shortcuts changes them).
+        let help = submenu("Help")
+        add(help, "What's New", #selector(showWhatsNew), "", target: self)
+        add(help, "Tips", #selector(showTips), "", target: self)
+        keyed(help, "keyboardShortcuts", "Keyboard Shortcuts", #selector(showShortcutList), target: self)
+        help.addItem(.separator())
+
         NSApp.mainMenu = main
         NSApp.windowsMenu = window
+        NSApp.helpMenu = help
     }
 
+    /// Not downloaded yet: opens the Themes view, where "Get Viktoria" is. Downloaded: her switch.
+    @objc private func toggleViktoria() {
+        if MascotAsset.shared.isReady { Mascot.isEnabled.toggle() } else { controller.showDashboard(); controller.mascotOpenView("themes") }
+    }
+    /// The checkmark of View > Show Viktoria; every other item of this delegate stays enabled as before.
+    @objc func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        if item.action == #selector(toggleViktoria) {
+            let ready = MascotAsset.shared.isReady
+            item.title = ready ? "Show Viktoria" : "Get Viktoria…"
+            item.state = ready && Mascot.isEnabled ? .on : .off
+        }
+        return true
+    }
     @objc private func newTerminal() { controller.overlay.showNewTerminal() }
     @objc private func newFile() { controller.newFile() }
     @objc private func newTab() { controller.newTab() }
@@ -324,6 +361,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func showDashboard() { controller.showDashboard() }
     @objc private func reloadDashboard() { controller.radar.reload() }
     @objc private func toggleSidebar() { controller.toggleSidebar() }
+    @objc private func showWhatsNew() { controller.openWhatsNew("notes") }
+    @objc private func showTips() { controller.openWhatsNew("tips") }
+    @objc private func showSettings() { controller.openSettings() }
+    @objc private func showShortcutList() { controller.openShortcutList() }
     @objc private func fontBigger() { controller.changeFont(by: 1) }
     @objc private func fontSmaller() { controller.changeFont(by: -1) }
     @objc private func fontReset() { controller.changeFont(by: nil) }

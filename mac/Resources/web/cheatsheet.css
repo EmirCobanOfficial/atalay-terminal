@@ -1,0 +1,38 @@
+/* The list of every shortcut (cheatsheet.js): a window over the dashboard and over Settings (#cloudui, 2700), the
+   groups side by side in columns, each action's name on the left and its keys on key caps on the right. */
+#cheatsheet { position: fixed; inset: 0; z-index: 2850; display: flex; align-items: center; justify-content: center; background: rgba(0, 0, 0, 0.5); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); }
+/* In the middle of the whole window, not just the page right of the chat list, as far as it fits (#cloudui, cloud.css). */
+#cheatsheet { padding-right: min(var(--side-x, 0px), max(0px, 100vw - 1108px)); }
+/* Solid: whatever is under it would read through a see-through card. */
+#cheatsheet .cs-pk { width: min(1060px, 94vw); height: auto; max-height: min(780px, 90vh); --glass-a: 1; }
+#cheatsheet .lights i.off { background: rgba(255, 255, 255, 0.16); cursor: default; }
+#cheatsheet .lights:hover i.off::after { content: none; }
+
+/* the filter */
+.cs-top { flex: none; padding: 14px 20px 6px; }
+.cs-find-l { display: flex; align-items: center; gap: 10px; height: 2.25rem; padding: 0 12px; border: 1px solid rgba(var(--accent-rgb), 0.35); border-radius: 8px; background: rgba(0, 0, 0, 0.3); color: var(--txt3); cursor: text; }
+.cs-find-l:focus-within { border-color: var(--accent); box-shadow: 0 0 10px rgba(var(--accent-rgb), 0.25); }
+.cs-find-l svg { flex: none; width: 0.95rem; height: 0.95rem; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; }
+.cs-find { flex: 1; min-width: 0; height: 100%; padding: 0; border: 0; outline: 0; background: transparent; color: var(--hi); font: 400 0.875rem/1 var(--font-sans); -webkit-appearance: none; appearance: none; caret-color: var(--accent); }
+.cs-find::placeholder { color: var(--txt3); }
+
+/* the groups, as many columns as fit; a long one goes on in the next column, its name kept with its first rows */
+.cs-body { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 20px 18px; scrollbar-width: thin; scrollbar-color: var(--dim2) transparent; }
+.cs-cols { columns: 3 17rem; column-gap: 28px; }
+.cs-group { margin: 0 0 18px; }
+.cs-head, .cs-row { break-inside: avoid; -webkit-column-break-inside: avoid; }
+.cs-group[hidden], .cs-row[hidden], .cs-none[hidden] { display: none; }
+.cs-group h3 { margin: 0 0 6px 2px; color: var(--accent); font: 700 0.6875rem/1.2 var(--font); letter-spacing: 0.16em; text-transform: uppercase; }
+.cs-group dl { margin: 0; }
+/* keys too wide beside the name (the shortcut wheel's two ways) go under it, on the right */
+.cs-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; min-height: 2rem; padding: 3px 2px; border-top: 1px solid rgba(var(--accent-rgb), 0.1); }
+.cs-row dt { flex: 1 1 8rem; min-width: 0; color: var(--txt); font: 400 0.8125rem/1.35 var(--font-sans); }
+.cs-row dd { display: flex; flex: none; align-items: center; gap: 6px; margin: 0 0 0 auto; }
+.cs-row dd i { color: var(--txt3); font: 0.75rem var(--font-sans); font-style: normal; }
+.cs-row kbd { min-width: 1.6rem; padding: 3px 7px; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 5px; background: rgba(var(--panel-rgb), 0.9); color: var(--hi); font: 500 0.75rem/1.2 var(--font); text-align: center; white-space: nowrap; }
+.cs-off { color: var(--txt3); font: 0.75rem var(--font-sans); }
+.cs-none { margin: 16px 2px; color: var(--txt3); font: 0.875rem var(--font-sans); }
+
+/* the way to change them, at the bottom right: a link to Settings › Shortcuts */
+#cheatsheet .pk-foot .cs-change { height: 28px; padding: 0 10px; border: 0; border-radius: 6px; background: transparent; color: var(--accent); font: 500 0.8125rem/1 var(--font-sans); }
+#cheatsheet .pk-foot .cs-change:hover { background: rgba(var(--accent-rgb), 0.12); box-shadow: none; color: var(--hi); text-decoration: underline; }

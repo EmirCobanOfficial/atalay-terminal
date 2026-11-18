@@ -18,20 +18,22 @@ const dc = require('node:diagnostics_channel');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { createE2EE } = require('./e2ee');
+const { createUnseal } = require('./unseal');
 
 const API = 'https://terminal-api.atalaykarahan.com';
 // Where Node's WebSocket reports the pings it answers (the API's, every 25 s); see `watch`.
 const PING = 'undici:websocket:ping';
 const THEME = /^[a-z0-9-]{1,40}$/;
 
-// Only the friends, messages, notifications, feedback, Roadmap, account, sign-in, settings-sync and badges endpoints,
+// Only the friends, messages, notifications, feedback, Roadmap, account, sign-in, settings-sync, badges and releases endpoints,
 // as the Mac's CloudBridge allows them; the pages never reach anything else with the token.
 // v1/me/profile and v1/me/avatar: Settings → PROFILE's links and picture (profile.js).
 const SOCIAL_ROUTES = ['v1/me/status', 'v1/me/activity', 'v1/me/leaderboard', 'v1/me/profile', 'v1/me/avatar', 'v1/feedback'];
 const SOCIAL_TREES = [
   'v1/social', 'v1/friends', 'v1/messages', 'v1/leaderboard', 'v1/notifications',
-  'v1/roadmap', 'v1/account', 'v1/auth', 'v1/settings', 'v1/badges',
+  'v1/roadmap', 'v1/account', 'v1/auth', 'v1/settings', 'v1/badges', 'v1/releases',
+  // A whole screen in one answer (the API's screens.ts: a person's profile page).
+  'v1/screens',
 ];
 const under = (p, t) => p === t || p.startsWith(t + '/') || p.startsWith(t + '?');
 // Signing out answers with this PC's new token: only signOut() here calls it, so the token stays in the main process
@@ -176,10 +178,14 @@ class Failure extends Error {
 // - isActive(): is the user working right now, for XP (on the Mac, Activity.swift: input in the last five minutes and a
 //   sign of work in the last five: a busy Claude session, a job using the CPU, typing in a chat or terminal)
 // - idleSeconds(): seconds since the last key, mouse or touch input anywhere on the PC, for "away"
-// - theme(): the chosen theme's id; onChange(state): the page's state changed (`json()`); onSocial(text): a live event
+// - theme(): the chosen theme's id
+// - mascot(): -1 when the Viktoria mascot is off, else her Mischief level (0..3), for the profile
+// - onChange(state): the page's state changed (`json()`); onSocial(text): a live event
 // - tools(): the AI tools at work since the last heartbeat (claude, codex, gemini, antigravity), for their badges
-// - protect: { seal(text), open(bytes) }, both async: text sealed by Windows for this user (Electron's safeStorage), for
-//   the keys of end-to-end encrypted messages (e2ee.js). Without it messages aren't sealed or opened here.
+// - protect: { seal(text), open(bytes) }, both async: text sealed by Windows for this user (Electron's safeStorage); only
+//   `open` is used, to read the keys the old end-to-end encrypted messages were sealed with (unseal.js). Without it
+//   nothing of them is opened here.
+// - tokens: the token ledger (tokenledger.js), { start(), batch(max), sent(batch) }: the tokens burned, sent after a heartbeat
 function createCloud(opts = {}) {
   const dataDir = opts.dataDir;
   if (!dataDir) throw new Error('createCloud: dataDir is required');
@@ -187,6 +193,7 @@ function createCloud(opts = {}) {
   const toolsAtWork = opts.tools || (() => []);
   const idleSeconds = opts.idleSeconds || (() => 0);
   const theme = opts.theme || (() => 'atalay');
+  const mascot = opts.mascot || (() => -1);
   const onChange = opts.onChange || (() => {});
   const onSocial = opts.onSocial || (() => {});
   // How calls go out: Node's fetch by default; the app passes Electron's net.fetch, which goes through Windows' proxy
@@ -257,7 +264,7 @@ function createCloud(opts = {}) {
   // Starts with the last known name and tag (or a name picked offline), so an offline launch still shows them.
   let S = {
     reachable: false,
-    // Null until the API answered; false means the user still has to pick a hacker name.
+    // Null until the API answered; false means the user still has to pick a way in (the welcome screen).
     registered: null,
     hackerName: pendingName() ?? (typeof settings.hackerName === 'string' ? settings.hackerName : null),
     // Names repeat; name + tag (1-9999, shown as #0427) is unique, like Discord.
@@ -338,21 +345,25 @@ function createCloud(opts = {}) {
     const body = { ...client(), active: !!ask(isActive, false), tz: -Math.round(new Date().getTimezoneOffset()) };
     const th = ask(theme, '');
     if (typeof th === 'string' && THEME.test(th)) body.theme = th;
+    // Viktoria too: -1 when she is off, else her Mischief level (0..3); a profile shows it.
+    const mc = ask(mascot, -1);
+    if (Number.isInteger(mc) && mc >= -1 && mc <= 3) body.mascot = mc;
     // Which AI tools were at work, for their badges (hours with each).
     const tools = ask(toolsAtWork, []);
     body.tools = Array.isArray(tools) ? [...new Set(tools)].filter((t) => TOOLS.has(t)).sort() : [];
     let a;
     try {
       a = await call('POST', 'v1/heartbeat', body, token);
-      if (typeof a.hackerName !== 'string' || !Number.isInteger(a.tag) || !Number.isInteger(a.online)) throw new Error('unexpected answer');
+      // No name (nor tag) yet: a token from `begin`, before signing in or picking one.
+      if (!(a.hackerName === null || a.hackerName === undefined || typeof a.hackerName === 'string') || !Number.isInteger(a.online)) throw new Error('unexpected answer');
     } catch (e) {
       if (e.status !== 401) return set({ reachable: false });
       // The token isn't valid anymore: start over.
       saveToken(null);
       return identify();
     }
-    let name = a.hackerName;
-    let tag = a.tag;
+    let name = typeof a.hackerName === 'string' ? a.hackerName : null;
+    let tag = Number.isInteger(a.tag) ? a.tag : null;
     const wanted = pendingName();
     if (wanted) {
       const r = await send(wanted, token);
@@ -365,13 +376,45 @@ function createCloud(opts = {}) {
         set({ nameError: r.refused });
       } else {
         name = wanted;
-        tag = S.tag ?? a.tag;
+        tag = S.tag ?? tag;
       }
     }
     set({
       reachable: true, registered: true, hackerName: name, tag, online: a.online,
       xp: a.xp && typeof a.xp === 'object' ? a.xp : S.xp, xpPaused: a.xpPaused === true,
     });
+    // Without a name the API takes none yet: they wait for the account it signs in to. Not awaited: the first read of
+    // every transcript and the POSTs can take minutes, and the beat must stay free meanwhile.
+    if (typeof a.hackerName === 'string') sendUsage(token).catch((e) => console.error('cloud: usage', e));
+  }
+
+  // Tokens burned (tokenledger.js): the days that changed since they last went out, at most every five minutes, a few
+  // hundred rows a call, each already as the API takes it. The API keeps the larger of each number, so a call that fails is
+  // simply made again. It takes each row on its own and names any it can't (`rejected`), so one bad row never costs the
+  // others; a call it refuses whole as malformed isn't made again (it never would take it).
+  let usageAt = 0;
+  let sendingUsage = false;
+  async function sendUsage(token) {
+    const tokens = opts.tokens;
+    if (!tokens || sendingUsage || Date.now() - usageAt < 290_000) return;
+    sendingUsage = true;
+    usageAt = Date.now();
+    try {
+      for (let i = 0; i < 8; i++) {
+        const batch = await tokens.batch();
+        if (!batch) return;
+        try {
+          const a = await call('POST', 'v1/usage', { source: batch.source, days: batch.rows }, token);
+          if (Array.isArray(a.rejected) && a.rejected.length) console.warn(`cloud: the API left out ${a.rejected.length} token rows of ${batch.rows.length}`);
+          tokens.sent(batch);
+        } catch (e) {
+          if (e.status !== 400) return;
+          tokens.sent(batch);
+        }
+      }
+    } finally {
+      sendingUsage = false;
+    }
   }
 
   async function identify() {
@@ -401,27 +444,71 @@ function createCloud(opts = {}) {
   // the API answers again) or refused with the API's code.
   const DONE = () => ({ error: null });
 
-  async function register(name) {
-    let a;
-    try {
-      a = await call('POST', 'v1/devices', { ...client(), deviceHash: await deviceHash(), hackerName: name });
-      if (typeof a.token !== 'string' || typeof a.hackerName !== 'string' || !Number.isInteger(a.tag)) throw new Error('unexpected answer');
-    } catch (e) {
-      if (e.status === 409 && e.code === 'device_exists') {
-        // Registered before (reinstall, erased disk): sign in and keep the name just picked.
-        setPending(name);
-        await identify();
-        return DONE();
-      }
-      if (e.status) return { error: e.code || 'failed' };
-      set({ reachable: false });
-      return keep(name);
+  // The one registration under way (`begin`, or `register` before there's a token): a second click, or a guest name typed
+  // while a sign-in's `begin` is still on its way, waits for it and then goes on its token, instead of making another
+  // device (which would take this PC's hash from the first and leave a name behind).
+  let registering = null;
+
+  async function registerOnce(name) {
+    while (registering) {
+      const r = registering;
+      await r.catch(() => {});
+      if (registering === r) registering = null;
     }
-    saveToken(a.token);
-    if (pendingName() === name) setPending(null);
-    set({ reachable: true, registered: true, hackerName: a.hackerName, tag: a.tag, nameError: null });
-    await heartbeat(a.token);
-    return DONE();
+    // A token already (from `begin`: a sign-in started on the welcome screen, or a new account just signed in to): the
+    // name goes on it.
+    if (readToken()) return name ? rename(name) : DONE();
+    const t = create(name);
+    registering = t;
+    let outcome;
+    try {
+      outcome = await t;
+    } finally {
+      if (registering === t) registering = null;
+    }
+    // Online with its name at once. Not inside the task: a heartbeat that hears 401 registers again, and would wait on itself.
+    const token = readToken();
+    if (!outcome.error && name && token) await heartbeat(token);
+    return outcome;
+  }
+
+  // The user picked a name (the page's "register").
+  const register = (name) => registerOnce(name);
+
+  // The welcome screen's sign-in: signing in needs a token, so this PC gets one without a name. Signing in to an account
+  // then brings that account's name, XP and friends; a new account picks its name after (`register`). The API keeps a PC
+  // without a name out of sight meanwhile. Already has a token: nothing to do.
+  const begin = () => registerOnce(null);
+
+  // POST /v1/devices, with a name or without one (`begin`). A token that came meanwhile is never replaced.
+  async function create(name) {
+    const body = { ...client(), deviceHash: await deviceHash() };
+    if (name) body.hackerName = name;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      let a;
+      try {
+        a = await call('POST', 'v1/devices', body);
+        if (typeof a.token !== 'string' || !(a.hackerName === null || a.hackerName === undefined || typeof a.hackerName === 'string')) {
+          throw new Error('unexpected answer');
+        }
+      } catch (e) {
+        // Another copy of the app registering this PC at the same moment: once more (the API frees the hash).
+        if (e.status === 409 && e.code === 'device_exists' && attempt === 0) continue;
+        if (e.status) return { error: e.code || 'failed' };
+        set({ reachable: false });
+        return name ? keep(name) : { error: 'offline' };
+      }
+      if (readToken()) return name ? rename(name) : DONE();
+      saveToken(a.token);
+      if (name && pendingName() === name) setPending(null);
+      set({
+        reachable: true, registered: true, hackerName: typeof a.hackerName === 'string' ? a.hackerName : null,
+        tag: Number.isInteger(a.tag) ? a.tag : null, nameError: null,
+      });
+      return DONE();
+    }
+    // Still taken: a name waits here and goes with the next heartbeat (identify registers it).
+    return name ? keep(name) : { error: 'device_exists' };
   }
 
   async function rename(name) {
@@ -497,13 +584,17 @@ function createCloud(opts = {}) {
     return null;
   }
 
-  // Everything of the account is deleted on the server, on all its computers; this PC starts over as on its first
-  // launch (the page asks for a name again).
-  async function deleteAccount() {
+  // The account is deleted on the server (hidden at once, signed out on all its computers, erased after the days the API
+  // keeps it); this PC starts over as on its first launch (the welcome screen again). `reason` and `text`: why they're
+  // leaving, if they said (account.js deleteData), kept with the deleted account.
+  async function deleteAccount(reason, text) {
     const token = readToken();
     if (!token) return 'signed_out';
+    const reasons = {};
+    if (typeof reason === 'string' && reason) reasons.reason = reason.slice(0, 40);
+    if (typeof text === 'string' && text) reasons.text = text.slice(0, 1000);
     try {
-      await call('DELETE', 'v1/account', undefined, token);
+      await call('DELETE', 'v1/account', Object.keys(reasons).length ? reasons : undefined, token);
     } catch (e) {
       return why(e);
     }
@@ -537,8 +628,8 @@ function createCloud(opts = {}) {
   }
 
   // The friends and messages endpoints for the pages: JSON in, the API's JSON out, or `{error}` with its code
-  // ("offline" when it can't be reached, "signed_out" before a hacker name is picked). `own`: a call the app makes itself
-  // (the message keys', e2ee.js), to a path it wrote: those aren't among the ones pages may reach.
+  // ("offline" when it can't be reached, "signed_out" before there's a token). `own`: a call the app makes itself
+  // (unseal.js), to a path it wrote: those aren't among the ones pages may reach.
   async function social(method, p, body, own = false) {
     const token = readToken();
     if (!token) return { error: 'signed_out' };
@@ -570,17 +661,16 @@ function createCloud(opts = {}) {
     }
   }
 
-  // ---------- end-to-end encrypted messages (e2ee.js, the Mac's E2EE.swift) ----------
-  // Messages are sealed on the way out and opened on the way in; what the keys keep secret is in a file of the app's
-  // folder sealed by Windows for this user, one per API as the token is, and friends' pinned keys beside it.
+  // ---------- the messages sealed end to end before (unseal.js, the Mac's Unseal.swift) ----------
+  // Messages are encrypted on the server now. The keys the old versions kept sit in a file of the app's folder sealed by
+  // Windows for this user, one per API as the token is; unseal.js reads them and hands the server what it needs to open
+  // the old messages. Nothing is ever written to that file.
   const vaultFile = path.join(dataDir, `e2ee-vault-${host}${base.port ? `-${base.port}` : ''}`);
-  const e2ee = !opts.protect
-    ? null
-    : createE2EE({
-        api: (method, p, body) => social(method, p, body, true),
-        pass: (method, p, body) => social(method, p, body),
-        vault: {
-          async load() {
+  const unseal =
+    opts.protect && typeof opts.protect.open === 'function'
+      ? createUnseal({
+          social: (method, p, body) => social(method, p, body, true),
+          async loadVault() {
             let sealed;
             try {
               sealed = fs.readFileSync(vaultFile);
@@ -590,24 +680,8 @@ function createCloud(opts = {}) {
             }
             return opts.protect.open(sealed);
           },
-          // A key that isn't kept must not go out: this one says so when it can't write (`write` above doesn't).
-          async save(text) {
-            const sealed = await opts.protect.seal(text);
-            const temp = `${vaultFile}.${process.pid}.tmp`;
-            fs.mkdirSync(path.dirname(vaultFile), { recursive: true });
-            try {
-              fs.writeFileSync(temp, sealed, { mode: 0o600 });
-              fs.renameSync(temp, vaultFile);
-            } catch {
-              fs.rmSync(temp, { force: true });
-              fs.writeFileSync(vaultFile, sealed, { mode: 0o600 });
-            }
-          },
-        },
-        pinsFile: path.join(dataDir, `e2ee-friends-${host}${base.port ? `-${base.port}` : ''}.json`),
-        // What changes in the message keys reaches the pages the way live events do.
-        onState: (ev) => deliver(ev),
-      });
+        })
+      : null;
 
   // ---------- the live socket (Social.swift) ----------
   // The app's live line to the API for friends and messages: one WebSocket the API pushes events into (a message, a
@@ -626,13 +700,11 @@ function createCloud(opts = {}) {
   let pingsSeen = false;
   let noSocket = false;
 
-  // Cloud's state changed: keep the line open while signed in and the API answers.
+  // Cloud's state changed: keep the line open while signed in and the API answers. Not before there's a name: a token
+  // from the welcome screen (`begin`) reaches no friends or messages yet.
   function sync() {
-    signedIn = S.registered === true;
-    if (signedIn && S.reachable) {
-      open();
-      if (e2ee) e2ee.wake();
-    }
+    signedIn = S.registered === true && !!S.hackerName;
+    if (signedIn && S.reachable) open();
     if (!signedIn) close();
   }
 
@@ -681,9 +753,6 @@ function createCloud(opts = {}) {
   // Each event goes to main.js (the dashboard, the notices and the chat panels hear every one) as JSON.stringify writes
   // it, not as it came: main.js runs it in the pages as code (`social(${text})`), so a line that isn't JSON never gets
   // there. Your own XP changing (the daily bonus, a new level) also updates the state, so the top bar shows it at once.
-  // With message keys the events go through them first (messages opened, key changes taken in), one at a time, in the
-  // order they came.
-  let delivering = Promise.resolve();
   function event(text) {
     let e;
     try {
@@ -691,12 +760,7 @@ function createCloud(opts = {}) {
     } catch {
       return;
     }
-    if (!e2ee) return deliver(e);
-    delivering = delivering
-      .then(async () => {
-        for (const out of await e2ee.incoming(e)) deliver(out);
-      })
-      .catch((err) => console.error('cloud: live event', err));
+    deliver(e);
   }
 
   function deliver(e) {
@@ -706,6 +770,8 @@ function createCloud(opts = {}) {
       console.error('cloud: onSocial', err);
     }
     if (e && e.type === 'xp' && e.xp && typeof e.xp === 'object') set({ xp: e.xp });
+    // The line (re)connected: the messages sealed end to end before, opened if this PC still has their keys.
+    if (e && e.type === 'hello' && unseal) unseal.run();
   }
 
   // The API pings every 25 s and Node's WebSocket answers by itself, but unlike the Mac app's it can't ping on its own
@@ -798,11 +864,10 @@ function createCloud(opts = {}) {
     const data = body === undefined ? undefined : JSON.stringify(body);
     if (data !== undefined) headers['content-type'] = 'application/json';
     if (token) headers.authorization = 'Bearer ' + token;
-    // This app opens end-to-end encrypted messages (e2ee.js): the API sends them sealed, as they are.
-    if (e2ee) headers['x-e2ee'] = '1';
     key.sign(method, url, data, headers);
     const res = await fetcher(String(url), { method, headers, body: data, signal: AbortSignal.timeout(15_000) });
     key.learn(res);
+    if (res.status === 426 && typeof opts.onUpdateRequired === 'function') opts.onUpdateRequired();
     return { status: res.status, text: await res.text() };
   }
 
@@ -829,6 +894,9 @@ function createCloud(opts = {}) {
         return json();
       case 'register':
         return register(name);
+      // The welcome screen, before signing in: a token without a name.
+      case 'begin':
+        return begin();
       case 'rename':
         return rename(name);
       case 'update':
@@ -844,12 +912,8 @@ function createCloud(opts = {}) {
         const p = typeof b.path === 'string' ? b.path : '';
         if (!allowed(p)) return { error: 'bad_path' };
         const method = typeof b.method === 'string' ? b.method : 'GET';
-        // Messages are sealed on the way out and opened on the way in (e2ee.js).
-        return e2ee ? e2ee.social(method, p, b.body) : social(method, p, b.body);
+        return social(method, p, b.body);
       }
-      // End-to-end encryption's own screens: the recovery key, approving a computer, a friend's security code.
-      case 'e2ee':
-        return e2ee ? e2ee.page(b) : { error: 'offline' };
       case 'openChat':
         // The chat panel is main.js's to open.
         return { openChat: typeof b.id === 'string' ? b.id : '' };
@@ -861,7 +925,7 @@ function createCloud(opts = {}) {
       case 'signOut':
         return { error: await signOut(), state: json() };
       case 'deleteAccount':
-        return { error: await deleteAccount(), state: json() };
+        return { error: await deleteAccount(b.reason, b.text), state: json() };
       default:
         throw new Error('unknown message');
     }
@@ -871,6 +935,12 @@ function createCloud(opts = {}) {
   function start() {
     if (running) return;
     running = true;
+    // Tokens burned, read from the AI tools' own records (tokenledger.js); they go out after a heartbeat.
+    try {
+      if (opts.tokens) opts.tokens.start();
+    } catch (e) {
+      console.error('cloud: token ledger', e);
+    }
     dc.subscribe(PING, onPing);
     beat();
     timer = setInterval(beat, 60_000);
@@ -901,7 +971,24 @@ function createCloud(opts = {}) {
     open();
   }
 
-  return { start, stop, kick, json, handle };
+  // The app's own call to a path it wrote (mascotasset.js: v1/assets/viktoria): not one the pages may reach.
+  // Client-signed, no Authorization header: works before a device is registered (the API's route needs no device).
+  const api = async (method, p) => {
+    if (method !== 'GET' || p !== 'v1/assets/viktoria') return { error: 'bad_path' };
+    try {
+      const r = await request('GET', new URL(p, base), undefined, null);
+      let json = null;
+      try {
+        json = JSON.parse(r.text);
+      } catch {}
+      if (r.status >= 200 && r.status < 300) return json ?? {};
+      return { error: json && typeof json.error === 'string' ? json.error : `http_${r.status}` };
+    } catch {
+      return { error: 'offline' };
+    }
+  };
+
+  return { start, stop, kick, json, handle, api };
 }
 
 module.exports = { createCloud };

@@ -93,6 +93,8 @@ window.Messages = (() => {
     if ((peek && p !== peek && replying()) || alertOn || (peek && peek.kind === 'wait' && p.kind !== 'wait')) return void queue.push(p);
     clearTimeout(peekTimer);
     const again = !!peek;
+    // The "updated" note stays until it's closed: whatever comes over it, it comes back after.
+    if (peek && peek.kind === 'updated' && peek !== p && !queue.includes(peek)) queue.unshift(peek);
     peek = p;
     notes.innerHTML = peekHTML(p);
     if (again) notes.firstElementChild.classList.remove('in');
@@ -101,8 +103,9 @@ window.Messages = (() => {
       p.heard = true;
       Sfx.play('xp');
     }
-    // A chat that needs you, or two writing the same file, has no time: it goes when that's over or it's put away.
-    if (!['wait', 'clash', 'sas', 'device'].includes(p.kind)) peekTimer = setTimeout(autoHide, p.kind === 'xp' || p.kind === 'online' ? STRIP_MS : p.kind === 'fire' ? FIRE_MS + 3000 : p.kind === 'note' ? NOTE_MS : PEEK_MS);
+    // A chat that needs you, or two writing the same file, has no time: it goes when that's over or it's put away; nor
+    // has the "updated" note.
+    if (!['wait', 'clash', 'updated'].includes(p.kind)) peekTimer = setTimeout(autoHide, ['xp', 'online', 'rare'].includes(p.kind) ? STRIP_MS : p.kind === 'fire' ? FIRE_MS + 3000 : p.kind === 'note' ? NOTE_MS : PEEK_MS);
   }
 
   // What comes after a notice: a chat that needs you first, then two chats writing the same file, then the queue.
@@ -145,11 +148,15 @@ window.Messages = (() => {
         `<small>see what's new ›</small></span></div></div>`
       );
     } else if (p.kind === 'updated') {
-      // The app updated itself since it last ran (maybe while you were away).
+      // The app updated itself since it last ran (maybe while you were away): what's new in it, the top changes a short
+      // line each (whatsnew.js). It stays until it's closed; a click shows all of it on the dashboard.
+      const news = (p.lines || []).map((l) => `<li>${esc(l)}</li>`).join('');
       return (
-        `<div class="mb peek update in" data-act="close" title="Close"><div class="mb-border"></div>` +
-        `<div class="mb-head"><span class="mb-tag">UPDATED</span><span class="mb-who"><span>You're on version ${esc(p.version)}</span>` +
-        `<small>updated by itself · your chats kept running</small></span></div></div>`
+        `<div class="mb peek update updated in" data-act="whatsnew" title="See what's new"><div class="mb-border"></div>` +
+        `<div class="mb-head"><span class="mb-tag">UPDATED</span><span class="mb-who"><span>You're on version ${esc(p.version)}</span></span>` +
+        `<button class="mb-x" data-act="close" title="Close">×</button></div>` +
+        `${news ? `<ul class="mb-news">${news}</ul>` : ''}` +
+        `<div class="mb-foot"><small>updated by itself · your chats kept running</small><span>see what's new ›</span></div></div>`
       );
     } else if (p.kind === 'note') {
       // A notification from the developer (the admin page): a click opens the notifications on the dashboard.
@@ -165,10 +172,26 @@ window.Messages = (() => {
         `<small>welcome back${p.level ? ` · level ${p.level}` : ''}</small></span></div></div>`
       );
     } else if (p.kind === 'fire') {
+      const hot = p.tier === 2;
       return (
-        `<div class="mb peek fire in" data-act="profile" title="See your profile"><div class="mb-border"></div>` +
+        `<div class="mb peek fire${hot ? ' f2' : ''} in" data-act="profile" title="See your profile"><div class="mb-border"></div>` +
         `<div class="mb-head"><span class="mb-tag"><i class="mb-flame"></i>ON FIRE</span><span class="mb-who">` +
-        `<span>You passed 5 hours today</span><small>you're on fire · keep it burning</small></span></div></div>`
+        (hot
+          ? '<span>5 days on fire this week</span><small>the hottest flame · keep it burning</small>'
+          : "<span>In today's top 20%</span><small>5+ hours today · you're on fire · keep it burning</small>") +
+        '</span></div></div>'
+      );
+    } else if (p.kind === 'rare') {
+      // A friend's rare badge (the community feed's line, the API's feed.ts), as thin as "is now online": a click opens
+      // the chat.
+      const b = p.line.badge || {};
+      const name = (window.BadgeArt && BadgeArt.name(b.id)) || b.name || 'a badge';
+      const tier = window.BadgeArt ? BadgeArt.tierName(b.id, b.tier, b.tiers) : '';
+      const f = Social.friend(p.line.who.id) || p.line.who;
+      return (
+        `<div class="mb peek rare in" data-act="open" title="Open the chat"><div class="mb-border"></div>` +
+        `<div class="mb-head"><span class="mb-tag">◆ RARE BADGE</span><span class="mb-who">${who(f)}` +
+        `<small>unlocked ${esc(name)}${tier ? ` · ${esc(tier)}` : ''} · ${esc(b.rare)}% have it</small></span></div></div>`
       );
     } else if (p.kind === 'online') {
       // As on Steam: one thin strip, no buttons, a click opens the chat. Friends coming online together share it.
@@ -187,32 +210,6 @@ window.Messages = (() => {
         `<small>${esc(w.folder)}${p.more ? ` · ${p.more} more waiting` : ''}</small></span>` +
         `<button class="mb-x" data-act="close" title="Close">×</button></div>` +
         `<div class="mb-text">${esc(w.what)}</div></div>`
-      );
-    } else if (p.kind === 'device') {
-      // A computer that joined your account asks for your messages' key (E2EE.swift).
-      const d = p.device;
-      const what = [d.os, d.app ? `app ${d.app}` : ''].filter(Boolean).join(' · ') || 'another computer';
-      return (
-        `<div class="mb peek in"><div class="mb-border"></div><div class="mb-head"><span class="mb-tag">NEW COMPUTER</span>` +
-        `<span class="mb-who"><span>Show your messages there too?</span><small>${esc(what)}</small></span>` +
-        `<button class="mb-x" data-act="close" title="Later">×</button></div>` +
-        `<div class="mb-text">A computer that joined your account asks for your end-to-end encrypted messages. Approve it only if it's yours: both screens will show a code to compare.</div>` +
-        `<div class="mb-actions"><button class="go" data-act="dev-approve">approve…</button><button data-act="close">later</button></div></div>`
-      );
-    } else if (p.kind === 'sas') {
-      // The two computers compare a code; it stays until that's over.
-      const s = p.sas;
-      const other = s.giver ? 'the new computer' : 'your other computer';
-      const tag = s.step === 'compare' ? 'COMPARE' : s.step === 'done' ? 'APPROVED' : s.step === 'failed' ? 'STOPPED' : 'APPROVING';
-      const text =
-        s.step === 'compare'
-          ? `<div class="mb-text">Does ${other} show the same code?<b class="mb-sas">${esc(s.code)}</b>${s.note ? `<small>${esc(s.note)}</small>` : ''}</div>` +
-            '<div class="mb-actions"><button class="go" data-act="sas-yes">they match</button><button data-act="sas-no">they don\'t</button></div>'
-          : `<div class="mb-text">${esc(s.step === 'waiting' ? (s.giver ? 'Waiting for the new computer · keep Orbiterm open on it' : 'Your other computer is approving this one…') : s.note)}</div>`;
-      return (
-        `<div class="mb peek sas ${s.step} in"><div class="mb-border"></div><div class="mb-head"><span class="mb-tag">${tag}</span>` +
-        `<span class="mb-who"><span>Messages on another computer</span><small>end-to-end encryption</small></span>` +
-        `<button class="mb-x" data-act="close" title="${s.step === 'compare' ? 'Stop' : 'Close'}">×</button></div>${text}</div>`
       );
     } else if (p.kind === 'clash') {
       // Two chats writing the same file (files.heat's collision): which file, which chats, how many more. A click shows
@@ -239,6 +236,7 @@ window.Messages = (() => {
     if (peek.kind === 'message') return peek.from && peek.from.id;
     if (peek.kind === 'friend') return peek.friend.id;
     if (peek.kind === 'online') return peek.friends[peek.friends.length - 1].id;
+    if (peek.kind === 'rare') return peek.line.who.id;
     return null;
   };
 
@@ -247,20 +245,6 @@ window.Messages = (() => {
       const el = e.target.closest('[data-act]');
       if (!el || !peek) return;
       const act = el.dataset.act;
-      let act2 = act;
-      if (act === 'close' && peek.kind === 'sas' && peek.sas.step === 'compare') act2 = 'sas-no';
-      if (act2 === 'sas-yes' || act2 === 'sas-no') {
-        const sid = peek.sas.sid;
-        notes.querySelectorAll('.mb-actions button').forEach((b) => (b.disabled = true));
-        return void Social.keys('confirm', { sid, match: act2 === 'sas-yes' });
-      }
-      if (act === 'dev-approve') {
-        const id = peek.device.id;
-        hidePeek();
-        const r = await Social.keys('approve', { device: id });
-        if (r && r.error) say(r.error === 'locked' ? 'this computer has no key to give yet' : "couldn't start approving");
-        return;
-      }
       if (act === 'close') {
         // Put away: the chats waiting now don't pop up again (another question in one of them does).
         if (peek.kind === 'wait') waits.clear();
@@ -285,6 +269,11 @@ window.Messages = (() => {
         hidePeek();
         // The dashboard shows what's new (Swift brings its window to the front).
         return post({ type: 'openUpdate' });
+      }
+      if (act === 'whatsnew') {
+        hidePeek();
+        // The dashboard, on what's new in the version you're on.
+        return post({ type: 'openWhatsNew' });
       }
       if (act === 'profile') {
         hidePeek();
@@ -336,44 +325,33 @@ window.Messages = (() => {
     if (r.error) say(r.error === 'offline' ? "not sent · you're offline" : "not sent · you're not friends anymore");
   }
 
-  // ======================= approving another computer =======================
-  // A computer new to your account asks for your messages' key: a notice offers to approve it; then both computers show
-  // a code to compare (E2EE.swift), on top of the other notices until it's over.
-  const devicesShown = new Set();
-  function e2eeNotice(st) {
-    if (!NOTICES) return;
-    const s = st.sas;
-    if (s) {
-      if (peek && peek.kind === 'sas' && peek.sas.sid === s.sid) {
-        peek.sas = s;
-        notes.innerHTML = peekHTML(peek);
-        notes.firstElementChild.classList.remove('in');
-        sizeNotes();
-        clearTimeout(peekTimer);
-        if (s.step === 'done' || s.step === 'failed') peekTimer = setTimeout(hidePeek, 6000);
-        return;
-      }
-      if (peek && peek.kind !== 'sas' && peek.kind !== 'wait' && peek.kind !== 'device') queue.unshift(peek);
-      peek = null;
-      Sfx.play('request');
-      return showPeek({ kind: 'sas', sas: s });
-    }
-    if (peek && peek.kind === 'sas') return hidePeek();
-    if (Social.dnd()) return;
-    for (const d of st.waiting || []) {
-      if (devicesShown.has(d.id)) continue;
-      devicesShown.add(d.id);
-      Sfx.play('request');
-      return showPeek({ kind: 'device', device: d });
-    }
-  }
-
   // A new version of the app (from Swift): after whatever is on screen, and not on do-not-disturb.
   function updateNotice(u) {
     if (!NOTICES || !u || Social.dnd()) return;
     const p = { kind: 'update', version: u.version };
-    if (takeover || (peek && peek.kind !== 'update')) queue.push(p);
+    if (takeover || (peek && peek.kind !== 'update' && peek.kind !== 'updated')) queue.push(p);
     else showPeek(p);
+  }
+
+  // The app updated itself since it last ran (from Swift, once per version): the note at once, its top changes as soon
+  // as the notes come (the API; one more try a little later, the network may still be waking up).
+  function updatedNotice(version, build) {
+    if (!NOTICES) return;
+    const p = { kind: 'updated', version, lines: null };
+    if (takeover) queue.push(p);
+    else showPeek(p);
+    if (!window.WhatsNew?.on) return;
+    // Its own build's notes, even when it's older than the newest few.
+    const fill = (again) =>
+      WhatsNew.releases(again).then(() => WhatsNew.release(version, build)).then((r) => {
+        if (!r) return !again && setTimeout(() => fill(true), 8000);
+        p.lines = WhatsNew.arrange(r, []).top.map((l) => WhatsNew.short(l.text));
+        if (peek !== p) return;
+        notes.innerHTML = peekHTML(p);
+        notes.firstElementChild.classList.remove('in');
+        sizeNotes();
+      });
+    fill(false);
   }
 
   // ======================= a chat needs you =======================
@@ -455,14 +433,15 @@ window.Messages = (() => {
   // they see the new level on your profile. It plays only while the app is in front and not on do not disturb: a level
   // gained while you look elsewhere waits until you're back.
   let seenLevel = 0; // the level last seen, so a level-up shows once (and never for the level you start with)
-  // Five hours of work in one day: you're on fire. The first time the day's active time reaches them, flames burn along
-  // the screen's edges for a few seconds, over the windows but taking no clicks, with a notice and a sound; once a day
-  // (the leaderboard keeps a flame on your card until the day ends).
-  const FIRE_SECONDS = 5 * 3600;
+  // Your card catching fire (its flame, the API's fire.ts: 1 the orange one, 5+ hours today among the day's top fifth;
+  // 2 the hottest, 5+ hours today and the fifth fire day of the week): the first time in a day, flames burn along the
+  // screen's edges for a few seconds, over the windows but taking no clicks, with a notice and a sound, the hottest in
+  // its blue-white; once a day (the leaderboard keeps the flame on your card while it lasts).
   const FIRE_MS = 7000;
   const localDay = () => new Date().toLocaleDateString('sv');
   let fireDay = ''; // the day the flames last burned
   let firePending = false;
+  let fireOf = { tier: 1, look: 'orange' }; // the flame waiting or burning: its tier and its look (fire.js)
   let fire = null; // the flames on screen
   try {
     seenLevel = Number(localStorage.getItem('xpLevel')) || 0;
@@ -492,17 +471,18 @@ window.Messages = (() => {
         } catch {}
       }
     }
-    if (x && x.today >= FIRE_SECONDS && fireDay !== localDay()) {
+    if (x && x.fire >= 1 && fireDay !== localDay()) {
       fireDay = localDay();
       try {
         localStorage.setItem('fireDay', fireDay);
       } catch {}
+      fireOf = { tier: x.fire, look: x.fire === 2 ? 'blue' : 'orange' };
       firePending = true;
       ignite();
     }
     if (ev.reason === 'daily' && ev.gained > 0 && !Social.dnd()) {
       const p = { kind: 'xp', gained: ev.gained, level: x ? x.level : 0 };
-      if (takeover || (peek && peek.kind !== 'online')) queue.push(p);
+      if (takeover || (peek && peek.kind !== 'online' && peek.kind !== 'updated')) queue.push(p);
       else showPeek(p);
     }
   }
@@ -523,10 +503,10 @@ window.Messages = (() => {
     document.body.appendChild(canvas);
     // Flames up from the bottom and along the sides (the panel grows to the screen as they start, so their reach
     // follows its size).
-    fire = Fire.burn(canvas, { reach: () => [innerHeight * 0.11, innerWidth * 0.028, 0], scale: 34, life: FIRE_MS, res: 1 });
+    fire = Fire.burn(canvas, { reach: () => [innerHeight * 0.11, innerWidth * 0.028, 0], scale: 34, life: FIRE_MS, res: 1, look: fireOf.look });
     // A message or a request on screen keeps its place; the notice comes right after it.
-    const p = { kind: 'fire' };
-    if (peek && !['online', 'xp', 'update'].includes(peek.kind)) queue.unshift(p);
+    const p = { kind: 'fire', tier: fireOf.tier, look: fireOf.look };
+    if (peek && !['online', 'xp', 'update', 'updated'].includes(peek.kind)) queue.unshift(p);
     else showPeek(p);
     sizeNotes();
     Sfx.play('fire');
@@ -691,6 +671,22 @@ window.Messages = (() => {
     takeover = showReveal({ badge: order[0], quiet: c.quiet, n: seen, of: seen + order.length - 1, cont });
   }
 
+  // A badge's reveal again, asked for (the bell's "Replay animation", inbox.js, through Swift): the same takeover for
+  // that badge and tier, now, even on do not disturb; nothing is awarded, counted or marked seen. Not over another one.
+  // Founder asks the inventory for its number first ("#4 of the first 1,000"), as its first reveal showed it.
+  async function replayBadge(id, tier) {
+    if (!NOTICES || !id || takeover) return;
+    const badge = { id: String(id), tier: Math.max(1, Math.floor(Number(tier)) || 1) };
+    if (badge.id === 'founder') {
+      const r = await window.webkit.messageHandlers.cloud.postMessage({ type: 'social', method: 'GET', path: 'v1/badges' }).catch(() => null);
+      const no = r && r.badges && r.badges.find((b) => b.id === 'founder')?.no;
+      if (no) badge.no = no;
+      if (takeover) return;
+    }
+    takeover = showReveal({ badge, quiet: false, n: 1, of: 1, cont: false });
+    sizeNotes();
+  }
+
   // How grand a badge is, for the order of several (the grandest revealed last): a Service Medal, then gold and up, a
   // hidden one or Founder, then the tier.
   const badgeScore = (b) => (b.id.startsWith('service-') ? 20 : 0) + (window.BadgeArt.grand(b.id, b.tier) ? 10 : 0) + b.tier;
@@ -706,7 +702,8 @@ window.Messages = (() => {
     const main = c.badge;
     const grand = Art.grand(main.id, main.tier);
     const [rc, rs] = Art.glow(main.id, main.tier);
-    const tier = Art.tierName(main.id, main.tier);
+    // Founder tells its number ("#4 of the first 1,000"; badges.ts sends it).
+    const tier = main.no ? `#${main.no} of the first 1,000` : Art.tierName(main.id, main.tier);
     const kicker = (main.id.startsWith('service-') ? 'MEDAL EARNED' : main.tier > 1 ? 'BADGE UPGRADED' : 'BADGE UNLOCKED') +
       (c.of > 1 ? ` · ${c.n} OF ${c.of}` : '');
     // The moment the badge shows: the impact's burst.
@@ -738,7 +735,9 @@ window.Messages = (() => {
     // Keys only wait a moment (one pressed for the badge before can't skip this one); from then on a key or a click
     // before the burst jumps to it, and one after it brings the next.
     lockKeys(KEY_GUARD);
-    const SOUNDS = [['badge-impact', 1], ['badge-shine', 0.8]];
+    // About -20 LUFS together, between a mobile game's mix (-16/-18) and a console's (-24): at the recordings' own level
+    // (-11.4 LUFS) a badge out of silence startled people (2026-11-15).
+    const SOUNDS = [['badge-impact', 0.4], ['badge-shine', 0.32]];
     // The sounds, each started so that its moment falls on IMPACT.
     for (const [name, vol] of SOUNDS) {
       Sfx.preload(name);
@@ -953,6 +952,15 @@ window.Messages = (() => {
     return () => cancelAnimationFrame(raf);
   }
 
+  // ======================= a friend's rare badge =======================
+  // A friend's rare badge, with the community feed on: a strip like "is now online", never over a message.
+  function rareIn(line) {
+    if (!NOTICES || !line || line.kind !== 'badge' || !line.who || !Social.prefs().feed || Social.dnd()) return;
+    if (!line.dev && !Social.friend(line.who.id)) return;
+    if (peek && !['online', 'xp', 'update', 'updated', 'rare'].includes(peek.kind)) return;
+    showPeek({ kind: 'rare', line });
+  }
+
   function say(msg) {
     if (typeof window.toast === 'function') return window.toast(msg);
     post({ type: 'log', msg });
@@ -990,17 +998,29 @@ window.Messages = (() => {
       case 'request_gone':
         if (peek && peek.kind === 'request' && peek.request.id === ev.id) hidePeek();
         return;
-      case 'e2ee_state':
-        return e2eeNotice(ev);
       case 'xp':
         return progress(ev);
+      case 'feed':
+        return rareIn(ev.line);
+      case 'fire_test':
+        // Staging only (the dashboard's fire-test.js, through the local API's dev route; to delete with it): a flame's
+        // screen edges now, the day's own moment left as it was.
+        fireOf = ev.fire === 2 ? { tier: 2, look: 'blue' } : { tier: 1, look: 'orange' };
+        firePending = true;
+        return ignite();
       case 'badge': {
         // Its reveal waits for the app in front and do not disturb's end, as a level-up; what comes meanwhile joins it.
-        if (!ev.badges || !ev.badges.length) return;
+        if (!Array.isArray(ev.badges) || !ev.badges.length) return;
         const all = new Map((badgesWaiting ? badgesWaiting.badges : []).map((b) => [b.id, b]));
-        for (const b of ev.badges) if (!all.has(b.id) || all.get(b.id).tier < b.tier) all.set(b.id, b);
+        // Ids and tiers as the reveal needs them (letters, digits and dashes; a whole number), whatever came.
+        const came = ev.badges.filter((b) => b && typeof b.id === 'string' && /^[a-z0-9-]{1,64}$/.test(b.id))
+          .map((b) => ({ ...b, tier: Math.max(0, Math.trunc(Number(b.tier)) || 0), tiers: Math.max(1, Math.trunc(Number(b.tiers)) || 1) }));
+        if (!came.length) return;
+        for (const b of came) if (!all.has(b.id) || all.get(b.id).tier < b.tier) all.set(b.id, b);
         badgesWaiting = { badges: [...all.values()], quiet: (!badgesWaiting || badgesWaiting.quiet) && !!ev.quiet, seen: badgesWaiting?.seen || 0 };
-        play();
+        // One the catalog doesn't know yet (a hidden one nobody had, a new one): its name and picture first.
+        if (came.some((b) => !window.BadgeArt.known(b.id))) window.BadgeArt.refresh().then(play);
+        else play();
         return;
       }
       case 'status':
@@ -1013,10 +1033,10 @@ window.Messages = (() => {
         // is open, nor over a message or request on screen.
         const f = Social.friend(ev.id);
         if (!f || ev.was !== 'offline' || Date.now() - (offlineAt.get(ev.id) || 0) < BACK_MS || showing.has(ev.id)) return;
-        if (peek && peek.kind !== 'online') return;
+        if (peek && peek.kind !== 'online' && peek.kind !== 'updated') return;
         if (Social.dnd()) return;
         Sfx.play('online');
-        const others = peek ? peek.friends.filter((x) => x.id !== f.id) : [];
+        const others = peek && peek.kind === 'online' ? peek.friends.filter((x) => x.id !== f.id) : [];
         showPeek({ kind: 'online', friends: [...others, f], at: Date.now() });
         return;
       }
@@ -1024,17 +1044,28 @@ window.Messages = (() => {
   }
 
   // ======================= chat window =======================
-  // The conversation is drawn a message at a time: each message's row is made once and only what changes on it (sent,
-  // failed) is touched afterwards, so nothing on screen blinks or jumps when one is sent or arrives; only a new message
-  // slides in. A message is known by the app's own id for it (uuid), so a message coming back from the server or from
-  // another computer of yours finds its row.
+  // As Steam's friend chat: one window with a tab on top for each conversation open in it (the open one's tab is its
+  // header: their picture, status and name), the conversation in one column below, your lines on the left too, and the
+  // box to write in at the bottom. Lines come in blocks: a new one when the other one speaks, after five minutes of quiet
+  // or on a new day, each under its writer's picture, status, name and time. A click on a friend's picture or name (a
+  // block's, or their open tab's) opens their card in the friends view; hovering them shows a small card, a right-click
+  // their menu. The window starts at 740×650, is made larger or smaller (400×400 at the least) from its edges and keeps
+  // its size.
+  // The conversation is drawn a row at a time: each row (a line, a block's header, a day) is made once and only what
+  // changes on it (sent, failed) is touched afterwards, so nothing on screen blinks or jumps when one is sent or arrives;
+  // only a new message slides in. A message is known by the app's own id for it (uuid), so a message coming back from
+  // the server or from another computer of yours finds its row.
+  // An app that gives the panel one friend (__MESSAGES_FRIEND__, a panel per friend) gets that friend's tab alone, and
+  // another friend's chat opens in a panel of its own.
   const win = CHAT ? mount('chatwin') : null;
   const q = (sel) => win.querySelector(sel);
   let current = null;
   let isOpen = false;
-  const convs = new Map(); // friend id -> { list, more, loaded, loading, name }
+  let tabs = []; // the conversations open in the window (friend ids), in their tabs' order
+  const convs = new Map(); // friend id -> { list, more, loaded, loading, failed, name, text, newKey }
+  let meId = null; // the account the kept conversations belong to
   const conv = (id) => {
-    if (!convs.has(id)) convs.set(id, { list: [], more: false, loaded: false, loading: null, name: '' });
+    if (!convs.has(id)) convs.set(id, { list: [], more: false, loaded: false, loading: null, name: '', text: '', newKey: null });
     return convs.get(id);
   };
   const keyOf = (m) => m.uuid || `id:${m.id}`;
@@ -1043,68 +1074,231 @@ window.Messages = (() => {
   const TEXT_MAX = 2000;
   const CODE_MAX = 7990; // with its ``` fence, 8000
 
+  // The window's size, without the 8 px around it for its glow: Steam's 740×650 the first time, then as it was left
+  // (Swift keeps it and gives it as __CHAT_SIZE__; the page keeps it too, for an app that doesn't). 400×400 at the least.
+  const MIN_W = 400, MIN_H = 400;
+  const SIZE_KEY = 'chatWindowSize';
+  let want = (() => {
+    let s = window.__CHAT_SIZE__;
+    if (!Array.isArray(s)) {
+      try {
+        s = JSON.parse(localStorage.getItem(SIZE_KEY) || 'null');
+      } catch {
+        s = null;
+      }
+    }
+    const ok = Array.isArray(s) && s.length === 2 && s.every((v) => Number.isFinite(v) && v > 0);
+    return { w: Math.max(MIN_W, ok ? Math.round(s[0]) : 740), h: Math.max(MIN_H, ok ? Math.round(s[1]) : 650) };
+  })();
+
   function tellShowing() {
     const id = isOpen ? current : null;
-    if (ROLE === 'chat') post({ type: 'showing', id });
+    // Every open tab's friend: no pop-ups for them (their tab lights up instead); `id`, the one in front, for an app
+    // with a panel per friend.
+    if (ROLE === 'chat') post({ type: 'showing', id, ids: isOpen ? [...tabs] : [] });
     else showing = new Set(id ? [id] : []);
   }
 
   function sizeChat(focus) {
     if (ROLE !== 'chat') return;
     const box = win.firstElementChild;
-    post(box ? { type: 'layout', w: box.offsetWidth + 16, h: box.offsetHeight + 16, focus: !!focus } : { type: 'layout', w: 0, h: 0 });
+    post(box ? { type: 'layout', w: want.w + 16, h: want.h + 16, focus: !!focus } : { type: 'layout', w: 0, h: 0 });
   }
 
-  // The box's two tools, drawn (a smiley, code brackets); their names are in the tooltips.
+  // The box's tools, drawn (a smiley, code brackets, an arrow); their names are in the tooltips. A line's tools: reply,
+  // copy.
   const ICON_EMOJI = '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.2"/><path d="M5.4 9.5c.7 1 1.6 1.5 2.6 1.5s1.9-.5 2.6-1.5"/><circle class="f" cx="5.9" cy="6.5" r=".9"/><circle class="f" cx="10.1" cy="6.5" r=".9"/></svg>';
   const ICON_CODE = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5.2 4.3 1.6 8l3.6 3.7M10.8 4.3 14.4 8l-3.6 3.7M9.2 2.8 6.8 13.2"/></svg>';
+  const ICON_SEND = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.6 8h9.6M8.4 4.1 12.3 8l-3.9 3.9"/></svg>';
+  const ICON_REPLY = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6.2 4 2.6 7.5 6.2 11M2.8 7.5h6.4c2.4 0 4.2 1.7 4.2 4.3"/></svg>';
+  const ICON_COPY = '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5.3" y="5.3" width="8" height="8.6" rx="1.4"/><path d="M10.6 3.4V3a1.2 1.2 0 0 0-1.2-1.2H3.9A1.2 1.2 0 0 0 2.7 3v6.5a1.2 1.2 0 0 0 1.2 1.2h.4"/></svg>';
+  const GRIPS = ['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'];
 
   function frameHTML() {
-    return `<div class="mb open chat in"><div class="mb-border"></div>` +
-      `<div class="mb-head" title="Drag to move"><span class="mb-tag">CHAT</span><span class="mb-who"></span><span class="mb-time mb-sub"></span>` +
-      `<button class="mb-x" data-act="close" title="Close (esc)">×</button></div>` +
-      `<div class="mb-switch"></div><div class="mb-note" hidden></div><div class="mb-list"></div>` +
+    return `<div class="mb open chat fc in"><div class="mb-border"></div>` +
+      `<div class="fc-tabs"><div class="fc-tablist" role="tablist"></div>` +
+      '<button class="fc-more" data-act="tabmore" title="More chats" aria-label="More chats" hidden>▾</button><span class="fc-fill"></span>' +
+      '<button class="fc-x" data-act="closeall" title="Close the window and its chats" aria-label="Close the window">×</button></div>' +
+      `<div class="fc-strip"></div><div class="mb-switch"></div><div class="mb-list" role="log"></div>` +
       `<div class="mb-gone" hidden>you're not friends anymore · messages won't be delivered</div>` +
+      `<div class="fc-compose">` +
       `<div class="mb-reply" hidden><span class="mb-reply-t"><b></b><small></small></span><button class="mb-x" data-act="unreply" title="Don't reply (esc)">×</button></div>` +
       `<div class="mb-codebar" hidden><span class="mb-codebar-t">&lt;/&gt; code</span><select class="mb-lang" title="The code's language"></select>` +
       `<span class="mb-codebar-k">⌘↩ send · ↩ new line</span><button data-act="astext" title="Send it as plain text">send as text</button></div>` +
       `<div class="mb-suggest" hidden></div><div class="mb-emoji" hidden></div>` +
-      `<div class="mb-input"><span class="pr">$</span><textarea rows="1" maxlength="${TEXT_MAX}" spellcheck="false"></textarea>` +
-      `<button class="mb-tool" data-act="emoji" title="Emoji (type : and a name, too)" aria-label="Emoji">${ICON_EMOJI}</button>` +
-      `<button class="mb-tool" data-act="code" title="Code: kept as it is, coloured, with a Copy button" aria-label="Code">${ICON_CODE}</button>` +
-      `<button class="send" data-act="send" disabled>send</button></div>` +
-      `<div class="mb-menu" hidden></div><div class="mb-sc" hidden></div><div class="mb-toast" hidden></div></div>`;
+      `<div class="fc-input"><div class="fc-box"><textarea rows="1" maxlength="${TEXT_MAX}" spellcheck="false"></textarea>` +
+      `<button class="fc-send" data-act="send" title="Send (↩)" aria-label="Send" disabled>${ICON_SEND}</button></div>` +
+      `<div class="fc-well"><button class="mb-tool" data-act="emoji" title="Emoji (type : and a name, too)" aria-label="Emoji">${ICON_EMOJI}</button>` +
+      `<button class="mb-tool" data-act="code" title="Code: kept as it is, coloured, with a Copy button" aria-label="Code">${ICON_CODE}</button></div></div></div>` +
+      `<div class="mb-menu" hidden></div><div class="mb-toast" hidden></div><div class="fc-card" hidden></div><div class="fc-ask" hidden></div></div>` +
+      GRIPS.map((g) => `<i class="fc-grip ${g}" data-grip="${g}"></i>`).join('');
   }
 
+  // ---------- who: a friend, you, or someone no longer a friend ----------
+  // You, for your own blocks and your card: your picture (v1/account) and your level (the app's state), asked once a
+  // chat opens.
+  let you = null;
+  // `again`: asked afresh (the window opening again), the old picture and level kept until the answer comes.
+  function loadYou(again) {
+    if (you && !again) return;
+    you = you || { avatar: null, xp: null };
+    const cloud = window.webkit.messageHandlers.cloud;
+    const ask = (body) => Promise.resolve().then(() => cloud.postMessage(body)).catch(() => null);
+    Promise.all([ask({ type: 'social', method: 'GET', path: 'v1/account' }), ask({ type: 'state' })]).then(([a, s]) => {
+      if (a && !a.error && a.avatar) you.avatar = a.avatar;
+      if (s && s.xp) you.xp = s.xp;
+      if (isOpen) paint();
+    });
+  }
+
+  // Who a block, a tab or a card is about: a friend (their id), you ('me'), or someone who isn't a friend anymore (the
+  // name the chat had for them).
+  function person(id) {
+    if (id === 'me') {
+      const m = Social.state()?.me;
+      if (!m) return null;
+      return { id, me: true, name: m.name, tag: m.tag, short: m.name, presence: m.status || 'online', avatar: you && you.avatar, xp: you && you.xp };
+    }
+    const f = Social.friend(id);
+    if (f) return { id, name: f.name, tag: f.tag, nick: f.nick, short: f.nick || f.name, presence: f.presence || 'offline', avatar: f.avatar, xp: f.xp, badge: f.badge };
+    const name = convs.get(id)?.name || 'them';
+    return { id, gone: true, name, short: name.replace(/#\d+$/, ''), presence: 'offline' };
+  }
+  const stateLabel = (p) => Social.PRESENCE[p.presence]?.label || p.presence;
+  // Their picture (GitHub's, or one of their own), else their initial in their rank's colour, as on the friends list.
+  const pic = (p, cls) =>
+    `<span class="${cls}" style="--rc:${Xp.rank(p.xp ? p.xp.level : 1).color}">` +
+    (p.avatar ? `<img alt="" src="${esc(p.avatar)}" draggable="false">` : `<b>${esc(((p.short || '?').trim().charAt(0) || '?').toUpperCase())}</b>`) +
+    '</span>';
+
+  // ---------- times, as Steam writes them ----------
+  const clock = (at) => new Date(at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  const daysAgo = (at) => Math.round((new Date(new Date().toDateString()) - new Date(new Date(at).toDateString())) / 864e5);
+  // A block's: "3:45 PM" today, "Yesterday 3:45 PM", the weekday within five days, else the date.
+  const stamp = (at) => {
+    const n = daysAgo(at);
+    if (n <= 0) return clock(at);
+    if (n === 1) return `Yesterday ${clock(at)}`;
+    if (n < 5) return `${new Date(at).toLocaleDateString('en-US', { weekday: 'long' })} ${clock(at)}`;
+    return `${new Date(at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })} ${clock(at)}`;
+  };
+  // A day's line: "Wednesday, November 12, 2025".
+  const dayLine = (at) => new Date(at).toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
+  // A line's own time, beside it on hover: the clock without AM/PM (it has the indent's 30 px).
+  const gutterFmt = new Intl.DateTimeFormat([], { hour: 'numeric', minute: '2-digit' });
+  const gutter = (at) => gutterFmt.formatToParts(new Date(at)).filter((x) => x.type !== 'dayPeriod').map((x) => x.value).join('').trim();
+  const GROUP_GAP = 5 * 60_000; // a new block after this much quiet
+  const QUIET_GAP = 60 * 60_000; // and a dashed line between two blocks of the same day after this much
+
+  // ---------- opening, tabs, closing ----------
   async function open(id) {
-    // An app chat panel holds one friend; another friend's chat opens in a panel of its own, next to this one.
+    // A panel per friend (an app that gives the page one): another friend's chat opens in a panel of its own.
     if (FRIEND && id && id !== FRIEND) return post({ type: 'openChat', id });
-    // A panel opened just now may not have the friends list yet.
-    if (!Social.state()) await Social.load();
+    // The window first, the data after: without the friends list yet (a panel loaded just now), the frame shows at
+    // once with placeholders and fills in when the list arrives.
+    let waited = false;
+    if (!Social.state()) {
+      if (id && !isOpen) {
+        win.innerHTML = frameHTML();
+        win.classList.add('fc-wait');
+        tabs = [id];
+        current = id;
+        isOpen = true;
+        waited = true;
+        sizeChat(true);
+        paintTabs();
+        paintList();
+      }
+      await Social.load();
+      win.classList.remove('fc-wait');
+      if (waited && !Social.friend(id)) return close();
+    }
     const s = Social.state();
     id = id || FRIEND || current || (s && (s.friends.find((f) => f.unread) || s.friends[0])?.id);
-    if (!id || !Social.friend(id)) return;
-    const fresh = !isOpen;
-    if (current !== id) clearDraft();
-    current = id;
-    isOpen = true;
-    if (fresh || !q('.mb.open')) {
+    if (!id || (!Social.friend(id) && !(isOpen && tabs.includes(id)))) return;
+    if (!isOpen || !q('.mb.open')) {
       win.innerHTML = frameHTML();
-    } else win.firstElementChild.classList.remove('in');
-    paint(true);
-    tellShowing();
+      tabs = [];
+      current = null;
+    } else if (!waited) win.firstElementChild.classList.remove('in');
+    // A new conversation is a new tab at the end, as on Steam.
+    if (!tabs.includes(id)) tabs.push(id);
+    isOpen = true;
+    loadYou(true);
     sizeChat(true);
-    await load(id);
-    if (!isOpen || current !== id) return;
-    paintList({ stick: true });
-    if (Social.friend(id)?.unread) Social.read(id);
-    const ta = q('.mb-input textarea');
-    if (ta && !ta.disabled) setTimeout(() => ta.focus(), 30);
+    await select(id);
   }
 
+  // A conversation to the front: its tab lit, its lines, what was being written to them when it was left.
+  async function select(id) {
+    if (!isOpen || !tabs.includes(id)) return;
+    const ta = q('.fc-input textarea');
+    if (current !== id) {
+      if (current) {
+        const was = conv(current);
+        was.text = ta.value;
+        // Code mode is kept with the text: otherwise the code comes back as plain text and Enter would send it.
+        was.code = draft.code;
+        was.lang = draft.lang;
+        was.newKey = null;
+      }
+      clearDraft();
+      current = id;
+      const back = conv(id);
+      ta.value = back.text || '';
+      if (back.code) {
+        setCode(true, back.text || '');
+        if (back.lang) {
+          draft.lang = back.lang;
+          q('.mb-lang').value = back.lang;
+        }
+      }
+    }
+    const unread = Social.friend(id)?.unread || 0;
+    hideCard();
+    paint(true);
+    tellShowing();
+    await load(id);
+    if (!isOpen || current !== id) return;
+    const c = conv(id);
+    // "New messages" above the first of the ones that came while it wasn't in front.
+    if (unread) c.newKey = firstUnread(c.list, unread);
+    paintList({ stick: true });
+    if (Social.friend(id)?.unread) Social.read(id);
+    if (!ta.disabled) setTimeout(() => ta.focus(), 30);
+  }
+
+  const firstUnread = (list, n) => {
+    for (let i = list.length - 1, left = n; i >= 0; i--) {
+      if (list[i].mine) continue;
+      if (--left === 0) return keyOf(list[i]);
+    }
+    return null;
+  };
+
+  // A tab's ×, ⌘W, Esc or a middle click on the tab: that conversation leaves the window; the last one closes it.
+  function closeTab(id) {
+    const i = tabs.indexOf(id);
+    if (!isOpen || i < 0) return;
+    if (tabs.length === 1) return close();
+    tabs.splice(i, 1);
+    if (id === current) return select(tabs[Math.min(i, tabs.length - 1)]);
+    paintTabs();
+    tellShowing();
+  }
+
+  // The whole window, with all its tabs (its ×, the last tab closed). What was being written stays for next time.
   function close() {
     if (!isOpen) return;
     isOpen = false;
+    hideCard();
+    if (current) {
+      const c = conv(current);
+      c.text = q('.fc-input textarea')?.value || '';
+      c.code = draft.code;
+      c.lang = draft.lang;
+      c.newKey = null;
+    }
     tellShowing();
     const box = win.firstElementChild;
     if (!box) return sizeChat();
@@ -1117,82 +1311,80 @@ window.Messages = (() => {
     }, 190);
   }
 
-  // ---------- end-to-end encryption, as this chat shows it ----------
-  const myKeys = () => Social.e2ee() || {};
-  // Whether a message to this friend goes sealed: they have a key, and so does this computer.
-  const sealing = (f) => !!(f && f.e2ee && myKeys().phase === 'ready');
-  const changedCode = (f) => !!(f && (myKeys().friends?.[f.id]?.changed ?? f.sc?.changed));
-
-  // The line above the conversation: their security code changed, messages locked here, or not encrypted yet.
-  function paintNote(f) {
-    const note = q('.mb-note');
-    let html = '', cls = '';
-    if (f && changedCode(f)) {
-      cls = 'warn';
-      html = `<span>⚠ ${esc(f.nick || f.name)}'s security code changed</span><button data-act="sc">check it</button><button data-act="scok">ok</button>`;
-    } else if (f && f.e2ee && myKeys().phase === 'locked') {
-      cls = 'lock';
-      html = '<span>🔒 Messages are locked on this computer · approve it from your other computer, or enter your recovery key in Settings · Account</span>';
-    } else if (f && !f.e2ee) {
-      cls = 'open';
-      html = `<span>🔓 ${esc(f.nick || f.name)} hasn't updated Orbiterm yet · messages to them aren't end-to-end encrypted</span>`;
-    }
-    note.hidden = !html;
-    note.className = `mb-note ${cls}`;
-    if (note.__html !== html) note.innerHTML = note.__html = html;
-  }
-
-  // A friend's security code: the same 60 digits on both screens means nobody reads along.
-  async function showCode() {
-    const f = Social.friend(current);
-    const box = q('.mb-sc');
-    if (!f || !box) return;
-    const r = await Social.keys('code', { id: f.id });
-    if (!isOpen || current !== f.id) return;
-    if (!r || r.error) {
-      box.innerHTML = `<div class="mb-sc-in"><b>Security code</b><p>${r && r.error === 'no_key' ? `${esc(f.name)} has no key yet.` : "Couldn't get it right now."}</p>` +
-        '<div class="mb-actions"><button data-act="scclose">close</button></div></div>';
-      box.hidden = false;
-      return;
-    }
-    const groups = r.code.match(/.{5}/g) || [];
-    const rows = [0, 4, 8].map((i) => `<div>${groups.slice(i, i + 4).join(' ')}</div>`).join('');
-    box.innerHTML =
-      `<div class="mb-sc-in"><b>Security code with ${esc(f.nick || f.name)}</b>` +
-      `<div class="mb-sc-code">${rows}</div>` +
-      `<p>Compare it with ${esc(f.name)}'s screen, side by side or on a call. If it's the same, your messages go only to the two of you; nobody in between, the server included, can read them.</p>` +
-      `<div class="mb-actions">${r.verified ? '<span class="mb-sc-ok">✓ checked</span><button data-act="scun">not checked</button>' : '<button class="go" data-act="scyes">it\'s the same</button>'}` +
-      '<button data-act="scclose">close</button></div></div>';
-    box.hidden = false;
-    if (changedCode(f)) Social.keys('seen', { id: f.id });
-  }
+  const holder = (f) => (!f ? 'not friends anymore' : draft.code ? 'paste or write code…' : `message ${f.nick || f.name}…`);
 
   function paint(stick) {
     if (!isOpen) return;
     const f = Social.friend(current);
-    const c = conv(current);
-    if (f) c.name = Social.label(f);
-    q('.mb-who').innerHTML = f ? who(f) : `<span>${esc(c.name)}</span>`;
-    const sub = q('.mb-time');
-    const subHTML = f
-      ? `${esc(Social.PRESENCE[f.presence || 'offline'].label)}${sealing(f) ? ' · <button class="mb-lock" data-act="sc" title="End-to-end encrypted: only the two of you can read these messages. Click to see the security code.">🔒 encrypted</button>' : ''}`
-      : '';
-    if (sub.__html !== subHTML) sub.innerHTML = sub.__html = subHTML;
+    for (const id of tabs) {
+      const t = Social.friend(id);
+      if (t) conv(id).name = Social.label(t);
+    }
+    paintTabs();
     // Removed from friends: the conversation stays on screen, but nothing more goes out.
     q('.mb-gone').hidden = !!f;
-    paintNote(f);
-    const ta = q('.mb-input textarea');
+    const ta = q('.fc-input textarea');
     ta.disabled = !f;
-    ta.placeholder = !f ? 'not friends anymore' : draft.code ? 'paste or write code…' : `message ${f.name}…`;
-    grow(ta);
-    // Other conversations with unread messages, one click away.
-    const others = (Social.state()?.friends || []).filter((x) => x.id !== current && x.unread);
-    const sw = others
-      .map((x) => `<button data-act="switch" data-id="${esc(x.id)}">${Social.dot(x.presence)}${esc(x.name)} <i class="cnt hot">${x.unread}</i></button>`)
-      .join('');
+    ta.placeholder = holder(f);
+    growChat(ta);
+    // Other friends' unread messages, one click away (their chat opens as a tab).
+    const others = (Social.state()?.friends || []).filter((x) => !tabs.includes(x.id) && x.unread);
+    const sw = others.length
+      ? '<span class="mb-switch-t">new messages from</span>' +
+        others.map((x) => `<button data-act="switch" data-id="${esc(x.id)}">${Social.dot(x.presence)}${esc(x.nick || x.name)} <i class="cnt hot">${x.unread}</i></button>`).join('')
+      : '';
     const switcher = q('.mb-switch');
     if (switcher.__html !== sw) switcher.innerHTML = switcher.__html = sw;
     paintList({ stick });
+  }
+
+  // The tabs: as many as fit, the open one always among them; the rest behind ▾, whose arrow lights up when one of them
+  // has news.
+  const TAB_W = 189, MORE_W = 42;
+  function tabHTML(id) {
+    const p = person(id);
+    const on = id === current;
+    const f = Social.friend(id);
+    const unread = !on && f && f.unread;
+    const line = p.gone ? 'not friends anymore' : `${stateLabel(p)}${p.xp ? ` · Lv ${p.xp.level}` : ''}`;
+    return `<div class="fc-tab${on ? ' on' : ''}${unread ? ' unread' : ''}" role="tab" aria-selected="${on}" data-st="${esc(p.presence)}" data-act="tab" data-tab="${esc(id)}" data-who="${esc(id)}">` +
+      `<span class="fc-tav" data-act="who">${pic(p, 'fc-pic')}<i class="fc-bar"></i></span>` +
+      `<span class="fc-tl"><b data-act="who">${esc(p.short)}</b><small>${esc(line)}</small></span>` +
+      `<button class="fc-tx" data-act="tabclose" title="Close this chat (⌘W)" aria-label="Close this chat">×</button></div>`;
+  }
+
+  function paintTabs() {
+    const host = win && q('.fc-tablist');
+    if (!host || !isOpen) return;
+    const strip = q('.fc-tabs');
+    const room = strip.clientWidth - 6 - q('.fc-x').offsetWidth - 28;
+    let shown = tabs;
+    if (tabs.length * TAB_W > room) {
+      const fit = Math.max(1, Math.floor((room - MORE_W) / TAB_W));
+      shown = tabs.slice(0, fit);
+      if (!shown.includes(current)) shown = [...shown.slice(0, fit - 1), current];
+    }
+    const html = shown.map(tabHTML).join('');
+    if (host.__html !== html) host.innerHTML = host.__html = html;
+    const hidden = tabs.filter((id) => !shown.includes(id));
+    const more = q('.fc-more');
+    more.hidden = !hidden.length;
+    more.classList.toggle('unread', hidden.some((id) => Social.friend(id)?.unread));
+    more.__hidden = hidden;
+  }
+
+  function moreMenu(btn) {
+    const menu = q('.mb-menu');
+    const hidden = btn.__hidden || [];
+    if (!hidden.length) return;
+    menu.innerHTML = hidden
+      .map((id) => {
+        const p = person(id);
+        const f = Social.friend(id);
+        return `<button data-act="tabpick" data-tab="${esc(id)}">${Social.dot(p.presence)} ${esc(p.short)}${f && f.unread ? ` <i class="cnt hot">${f.unread}</i>` : ''}</button>`;
+      })
+      .join('');
+    placeMenu(menu, btn.getBoundingClientRect().left, btn.getBoundingClientRect().bottom + 2);
   }
 
   // ---------- a message's text: code blocks, `inline code`, quoted lines ----------
@@ -1315,7 +1507,7 @@ window.Messages = (() => {
     if (rest) textPart(parent, rest);
   }
 
-  // One to three emoji and nothing else: shown big, as WhatsApp and Discord do.
+  // One to three emoji and nothing else: shown big, as Steam, WhatsApp and Discord do.
   const seg = typeof Intl !== 'undefined' && Intl.Segmenter ? new Intl.Segmenter(undefined, { granularity: 'grapheme' }) : null;
   const onlyEmoji = (t) => {
     const s = (t || '').replace(/\s+/g, '');
@@ -1334,28 +1526,38 @@ window.Messages = (() => {
   };
 
   // ---------- the list ----------
-  const DAYS = { today: 'TODAY', yesterday: 'YESTERDAY' };
-  const dayLabel = (at) => {
-    const d = new Date(at).toDateString();
-    if (d === new Date().toDateString()) return DAYS.today;
-    if (d === new Date(Date.now() - 864e5).toDateString()) return DAYS.yesterday;
-    return new Date(at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }).toUpperCase();
-  };
   const NOTES = {
     not_friends: "not delivered · you're not friends",
-    locked: 'not sent · approve this computer first (Settings · Account)',
-    key_missing: "not sent · their key is missing · click to retry",
     too_long: 'not sent · too long',
   };
-  const stateNote = (m) => (m.state === 'failed' ? NOTES[m.error] || 'not sent · click to retry' : time(m.at));
   const canRetry = (m) => m.state === 'failed' && m.error !== 'not_friends' && m.error !== 'too_long';
 
-  // A message's row. Its content is made once; `stateOf` and its classes change in place.
+  // A block's header: its writer's picture with their status on its edge, their name in their status's colour, the
+  // time. The picture and the name open their card (yours: your profile).
+  function headRow(m, p) {
+    const who = m.mine ? 'me' : current;
+    const h = el('div', `fc-gh${m.mine ? ' mine' : ''}`);
+    h.dataset.st = p.presence;
+    h.innerHTML =
+      `<span class="fc-avw" data-act="who" data-who="${esc(who)}">${pic(p, 'fc-pic')}<i class="fc-bar"></i></span>` +
+      `<span class="fc-name" data-act="who" data-who="${esc(who)}">${esc(p.short)}</span>` +
+      `<time class="fc-time" title="${esc(new Date(m.at).toLocaleString())}">${esc(stamp(m.at))}</time>`;
+    return h;
+  }
+  const headSig = (m, p) => `${m.mine ? 1 : 0}|${p.short}|${p.presence}|${p.avatar || ''}|${p.xp ? p.xp.level : ''}|${stamp(m.at)}`;
+
+  function dayRow(at) {
+    const d = el('div', 'fc-day');
+    d.append(el('i'), el('span', '', dayLine(at)), el('i'));
+    return d;
+  }
+
+  // A line. Its content is made once; `stateRow` changes its classes and its note in place.
   function messageRow(m) {
     const row = el('div', `mb-msg${m.mine ? ' mine' : ''}`);
     const b = el('div', 'b');
     if (m.reply) {
-      const who = m.reply.who === 'me' ? 'You' : Social.friend(current)?.name || 'them';
+      const who = m.reply.who === 'me' ? 'You' : Social.friend(current)?.nick || Social.friend(current)?.name || 'them';
       const qb = el('button', 'mb-quote');
       qb.dataset.act = 'jump';
       qb.dataset.key = m.reply.uuid;
@@ -1363,30 +1565,22 @@ window.Messages = (() => {
       qb.append(el('b', '', who), el('span', '', m.reply.text || '…'));
       b.append(qb);
     }
-    if (m.enc === 'locked') {
+    if (Social.sealed(m)) {
+      // Sealed end to end before that was retired, and nobody opened it on a Mac that still has its key.
       row.classList.add('locked');
-      b.append(el('span', 'mb-lockmsg', "🔒 can't open this on this computer yet · approve it from your other computer, or enter your recovery key in Settings · Account"));
-    } else if (m.enc === 'bad') {
-      row.classList.add('bad');
-      b.append(el('span', 'mb-lockmsg', "⚠ this message didn't open · it may have been changed on the way"));
+      b.append(el('span', 'mb-lockmsg', '🔒 older encrypted message'));
     } else {
       renderBody(b, m.body || '');
       if (!m.reply && onlyEmoji(m.body)) row.classList.add('jumbo');
     }
-    const t = el('div', 't');
-    t.append(el('span', 'mb-when'));
-    const rep = el('button', 'mb-rep', '↩ reply');
-    rep.dataset.act = 'reply';
-    rep.title = 'Reply to this message';
-    t.append(rep);
-    row.append(b, t);
+    row.append(b, el('span', 'fc-at'), el('div', 'fc-note'));
     return row;
   }
 
   function stateRow(row, m) {
     row.classList.toggle('sending', m.state === 'sending');
     row.classList.toggle('failed', m.state === 'failed');
-    row.classList.toggle('canreply', !m.state && m.enc !== 'locked' && m.enc !== 'bad');
+    row.classList.toggle('canreply', !m.state && !Social.sealed(m));
     const b = row.firstElementChild;
     if (canRetry(m)) {
       b.dataset.act = 'retry';
@@ -1395,18 +1589,32 @@ window.Messages = (() => {
       delete b.dataset.act;
       delete b.dataset.key;
     }
-    const when = row.querySelector('.mb-when');
-    const note = stateNote(m);
-    if (when.textContent !== note) when.textContent = note;
+    const at = row.querySelector('.fc-at');
+    const g = gutter(m.at);
+    if (at.textContent !== g) at.textContent = g;
+    const note = row.querySelector('.fc-note');
+    const n = m.state === 'failed' ? NOTES[m.error] || 'not sent · click to retry' : '';
+    if (note.textContent !== n) note.textContent = n;
   }
 
   // What a row shows: a different one (opened now, edited by the server's answer) means a new row.
-  const contentOf = (m) => `${m.mine ? 1 : 0}|${m.enc}|${m.body}|${m.reply ? `${m.reply.uuid}|${m.reply.who}|${m.reply.text}` : ''}`;
+  const contentOf = (m) => `${m.mine ? 1 : 0}|${Social.sealed(m) ? 1 : 0}|${m.body}|${m.reply ? `${m.reply.uuid}|${m.reply.who}|${m.reply.text}` : ''}`;
 
   /**
    * Draws the conversation: rows already on screen stay, new ones go in, gone ones go out. `stick` keeps the newest in
    * view; `fresh` names the messages that just arrived (they slide in).
    */
+  // Three message blocks drawn as grey shapes (picture, name, lines of different lengths) while a conversation loads.
+  function skeleton() {
+    const d = el('div', 'fc-skel');
+    d.setAttribute('aria-hidden', 'true');
+    d.innerHTML = [[92, 64, 38], [70, 52], [84, 72, 58, 30]]
+      .map(([name, ...lines]) => `<div class="fc-sk"><i class="fc-sk-av"></i><div><i class="fc-sk-name" style="width:${name}px"></i>` +
+        lines.map((w) => `<i class="fc-sk-line" style="width:${w}%"></i>`).join('') + '</div></div>')
+      .join('');
+    return d;
+  }
+
   function paintList({ stick = false, fresh = null } = {}) {
     const list = q('.mb-list');
     if (!list) return;
@@ -1424,27 +1632,44 @@ window.Messages = (() => {
       const name = Social.friend(current)?.name || '';
       items.push({ key: 'empty', make: () => el('div', 'mb-empty', `no messages yet · say hi to ${name}`), sig: name });
     }
+    // Not here yet: placeholder blocks in the shape of the real ones, or a line saying why nothing came.
+    if (!c.loaded && !c.list.length) {
+      if (c.failed) items.push({ key: 'failed', make: () => el('div', 'mb-empty', "couldn't load messages · they'll show when you're back online"), sig: 'failed' });
+      else items.push({ key: 'skel', make: skeleton, sig: 'skel' });
+    }
+    const them = person(current);
+    const me = person('me') || { short: 'you', presence: 'online' };
     let day = '';
-    let sealedSeen = false;
+    let prev = null;
     for (const m of c.list) {
-      const d = dayLabel(m.at);
+      const at = new Date(m.at).getTime();
+      const d = new Date(m.at).toDateString();
+      let block = !prev || !!prev.mine !== !!m.mine || at - new Date(prev.at).getTime() > GROUP_GAP;
       if (d !== day) {
         day = d;
-        items.push({ key: `day:${new Date(m.at).toDateString()}`, make: () => el('div', 'mb-day', d), sig: d });
+        block = true;
+        items.push({ key: `day:${d}`, make: () => dayRow(m.at), sig: dayLine(m.at) });
+      } else if (prev && at - new Date(prev.at).getTime() >= QUIET_GAP) {
+        items.push({ key: `gap:${keyOf(m)}`, make: () => el('div', 'fc-gap'), sig: 'gap' });
       }
-      if (!sealedSeen && m.enc === true) {
-        sealedSeen = true;
-        items.push({ key: 'sealed', make: () => el('div', 'mb-sealed', '🔒 Messages from here on are end-to-end encrypted: only the two of you can read them'), sig: 's' });
+      if (c.newKey && keyOf(m) === c.newKey) {
+        block = true;
+        items.push({ key: 'new', make: () => el('div', 'fc-new', 'new messages'), sig: 'new' });
+      }
+      if (block) {
+        const p = m.mine ? me : them;
+        items.push({ key: `h:${keyOf(m)}`, make: () => headRow(m, p), sig: headSig(m, p) });
       }
       items.push({ key: keyOf(m), make: () => messageRow(m), sig: contentOf(m), m });
+      prev = m;
     }
-    const want = new Set(items.map((i) => i.key));
+    const want2 = new Set(items.map((i) => i.key));
     for (const [k, n] of rows) {
-      if (want.has(k)) continue;
+      if (want2.has(k)) continue;
       n.remove();
       rows.delete(k);
     }
-    let prev = null;
+    let before = null;
     for (const it of items) {
       let n = rows.get(it.key);
       if (!n || n.__sig !== it.sig) {
@@ -1461,9 +1686,9 @@ window.Messages = (() => {
         n = made;
       }
       if (it.m) stateRow(n, it.m);
-      const at = prev ? prev.nextSibling : list.firstChild;
+      const at = before ? before.nextSibling : list.firstChild;
       if (at !== n) list.insertBefore(n, at);
-      prev = n;
+      before = n;
     }
     if (stick || near) list.scrollTop = list.scrollHeight;
   }
@@ -1471,10 +1696,14 @@ window.Messages = (() => {
   async function load(id) {
     const c = conv(id);
     if (c.loaded) return;
+    c.failed = false;
     c.loading = c.loading || Social.history(id);
     const r = await c.loading;
     c.loading = null;
-    if (r.error) return;
+    if (r.error) {
+      c.failed = true;
+      return;
+    }
     const pending = c.list.filter((m) => m.state);
     c.list = [...r.messages, ...pending.filter((p) => !r.messages.some((m) => keyOf(m) === keyOf(p)))];
     c.more = r.more;
@@ -1511,10 +1740,18 @@ window.Messages = (() => {
       }
       if (!conv(current).more || !(await loadMore())) break;
     }
-    flash("that message is further back than the chat goes");
+    flash('that message is further back than the chat goes');
   }
 
   // ---------- writing ----------
+  // The box grows with what's written, from 42 px to 120 (code to 220), as Steam's.
+  function growChat(ta) {
+    ta.style.height = '42px';
+    ta.style.height = Math.min(draft.code ? 220 : 120, Math.max(42, ta.scrollHeight)) + 'px';
+    const btn = q('.fc-send');
+    if (btn) btn.disabled = !ta.value.trim() || ta.disabled;
+  }
+
   function setReply(m) {
     const f = Social.friend(current);
     draft.reply = { uuid: keyOf(m), mine: !!m.mine, text: preview(m) };
@@ -1522,7 +1759,7 @@ window.Messages = (() => {
     strip.querySelector('b').textContent = m.mine ? 'Replying to yourself' : `Replying to ${f ? f.nick || f.name : 'them'}`;
     strip.querySelector('small').textContent = draft.reply.text || '…';
     strip.hidden = false;
-    q('.mb-input textarea').focus();
+    q('.fc-input textarea').focus();
   }
 
   function clearReply() {
@@ -1533,7 +1770,7 @@ window.Messages = (() => {
 
   function setCode(on, text) {
     draft.code = on;
-    const ta = q('.mb-input textarea');
+    const ta = q('.fc-input textarea');
     const bar = q('.mb-codebar');
     if (!ta || !bar) return;
     win.firstElementChild.classList.toggle('coding', on);
@@ -1549,14 +1786,13 @@ window.Messages = (() => {
     } else draft.lang = '';
     bar.hidden = !on;
     q('[data-act=code]').classList.toggle('on', on);
-    const f = Social.friend(current);
-    ta.placeholder = !f ? 'not friends anymore' : on ? 'paste or write code…' : `message ${f.name}…`;
-    grow(ta);
+    ta.placeholder = holder(Social.friend(current));
+    growChat(ta);
     ta.focus();
   }
 
   function clearDraft() {
-    if (!win || !q('.mb-input')) return;
+    if (!win || !q('.fc-input')) return;
     clearReply();
     if (draft.code) setCode(false);
     hideEmoji();
@@ -1564,7 +1800,7 @@ window.Messages = (() => {
   }
 
   function send() {
-    const ta = q('.mb-input textarea');
+    const ta = q('.fc-input textarea');
     if (!ta || !current || ta.disabled) return;
     let text = ta.value;
     if (!text.trim()) return;
@@ -1575,14 +1811,17 @@ window.Messages = (() => {
     const out = draft.reply ? { ...draft.reply } : null;
     const temp = {
       uuid: Social.uuid(), mine: true, body: text, at: new Date().toISOString(), state: 'sending',
-      enc: sealing(Social.friend(current)), reply: out && { uuid: out.uuid, who: out.mine ? 'me' : 'them', text: out.text }, out,
+      reply: out && { uuid: out.uuid, who: out.mine ? 'me' : 'them', text: out.text }, out,
     };
     ta.value = '';
     clearReply();
     if (draft.code) setCode(false);
     hideSuggest();
-    grow(ta);
-    conv(current).list.push(temp);
+    growChat(ta);
+    const c = conv(current);
+    // Answered: the "new messages" line has done its job.
+    c.newKey = null;
+    c.list.push(temp);
     paintList({ stick: true, fresh: new Set([keyOf(temp)]) });
     Sfx.play('send');
     deliver(temp, current);
@@ -1604,10 +1843,9 @@ window.Messages = (() => {
     if (isOpen && current === to) paintList();
   }
 
-  // Messages that failed while offline (or before this computer had its key) go out again once that's over.
-  function retryFailed(keys) {
-    const again = (e) => e === 'offline' || e === 'e2ee_starting' || (keys && e === 'locked');
-    for (const [id, c] of convs) for (const m of c.list) if (m.state === 'failed' && again(m.error)) deliver(m, id);
+  // Messages that failed while offline go out again once that's over.
+  function retryFailed() {
+    for (const [id, c] of convs) for (const m of c.list) if (m.state === 'failed' && m.error === 'offline') deliver(m, id);
   }
 
   // ---------- emoji: the picker, and :name: while typing ----------
@@ -1627,7 +1865,7 @@ window.Messages = (() => {
   const EMO = () => (window.EMOJI ? window.EMOJI.list : []);
 
   function insertAtCaret(text, from, to) {
-    const ta = q('.mb-input textarea');
+    const ta = q('.fc-input textarea');
     const s = from ?? ta.selectionStart, e = to ?? ta.selectionEnd;
     ta.setRangeText(text, s, e, 'end');
     ta.dispatchEvent(new Event('input', { bubbles: true }));
@@ -1690,7 +1928,7 @@ window.Messages = (() => {
   let suggested = [];
   let suggestAt = 0;
   function suggest() {
-    const ta = q('.mb-input textarea');
+    const ta = q('.fc-input textarea');
     const box = q('.mb-suggest');
     if (!ta || !box || draft.code) return hideSuggest();
     const before = ta.value.slice(0, ta.selectionStart);
@@ -1732,13 +1970,20 @@ window.Messages = (() => {
     const x = suggested[i];
     const box = q('.mb-suggest');
     if (!x || !box) return;
-    const ta = q('.mb-input textarea');
+    const ta = q('.fc-input textarea');
     remember(x[1]);
     insertAtCaret(x[1] + ' ', box.__from, ta.selectionStart);
     hideSuggest();
   }
 
-  // ---------- the right-click menu on a message ----------
+  // ---------- menus: a message's, a friend's (their picture, name or tab), the hidden tabs' ----------
+  function placeMenu(menu, x, y) {
+    menu.hidden = false;
+    const box = win.firstElementChild.getBoundingClientRect();
+    menu.style.left = `${Math.max(4, Math.min(x - box.left, box.width - menu.offsetWidth - 8))}px`;
+    menu.style.top = `${Math.max(4, Math.min(y - box.top, box.height - menu.offsetHeight - 8))}px`;
+  }
+
   function showMenu(x, y, row) {
     const menu = q('.mb-menu');
     const m = conv(current).list.find((v) => keyOf(v) === row.dataset.key);
@@ -1746,14 +1991,33 @@ window.Messages = (() => {
     const code = row.querySelector('.mb-code');
     menu.innerHTML =
       (row.classList.contains('canreply') ? '<button data-act="mreply">↩ Reply</button>' : '') +
-      (m.body && m.enc !== 'locked' && m.enc !== 'bad' ? '<button data-act="mcopy">Copy text</button>' : '') +
+      (m.body && !Social.sealed(m) ? '<button data-act="mcopy">Copy text</button>' : '') +
       (code ? '<button data-act="mcode">Copy code</button>' : '');
     if (!menu.innerHTML) return;
     menu.__key = row.dataset.key;
-    menu.hidden = false;
-    const box = win.firstElementChild.getBoundingClientRect();
-    menu.style.left = `${Math.min(x - box.left, box.width - menu.offsetWidth - 8)}px`;
-    menu.style.top = `${Math.min(y - box.top, box.height - menu.offsetHeight - 8)}px`;
+    placeMenu(menu, x, y);
+  }
+
+  // A friend's menu, as on their row in the friends list: message, profile, nickname, copy name#tag, remove (after a
+  // yes); a tab's also closes it. Yours: your profile.
+  function personMenu(x, y, id) {
+    const menu = q('.mb-menu');
+    const p = person(id);
+    if (!menu || !p) return;
+    const shut = tabs.includes(id) ? `<button data-act="tabclose" data-tab="${esc(id)}">Close this chat</button>` : '';
+    if (p.me) menu.innerHTML = `<div class="fc-mt">${esc(p.short)}</div><button data-act="pprofile" data-who="me">View your profile</button>`;
+    else if (p.gone) menu.innerHTML = `<div class="fc-mt">${esc(p.short)}</div>${shut}`;
+    else {
+      menu.innerHTML =
+        `<div class="fc-mt">${esc(p.short)}</div>` +
+        `<button data-act="pchat" data-who="${esc(id)}">Send message</button><button data-act="pprofile" data-who="${esc(id)}">View profile</button>` +
+        `<button data-act="pnick" data-who="${esc(id)}">${p.nick ? 'Change nickname…' : 'Add nickname…'}</button>` +
+        (p.nick ? `<button data-act="punnick" data-who="${esc(id)}">Remove nickname</button>` : '') +
+        `<button data-act="pcopy" data-who="${esc(id)}">Copy name#tag</button>${shut}<hr>` +
+        `<button class="danger" data-act="premove" data-who="${esc(id)}">Remove friend…</button>`;
+    }
+    menu.__key = null;
+    placeMenu(menu, x, y);
   }
 
   function hideMenu() {
@@ -1761,6 +2025,152 @@ window.Messages = (() => {
     if (!menu || menu.hidden) return false;
     menu.hidden = true;
     return true;
+  }
+
+  // Their card in the friends view (the dashboard comes to the front); yours, your profile.
+  function openProfileOf(id) {
+    hideCard();
+    hideMenu();
+    if (id === 'me') return post({ type: 'openProfile' });
+    if (Social.friend(id)) post({ type: 'openFriend', id });
+  }
+
+  // ---------- a friend's small card on hover, as Steam's ----------
+  let cardTimer = 0;
+  let hoverEl = null;
+  function cardHTML(p) {
+    const x = p.xp;
+    const level = x ? x.level : 1;
+    const r = Xp.rank(level);
+    // Their active time unless they keep it to themselves (as their card in the friends view); yours, today and in all.
+    const acts = p.me
+      ? x ? [['TODAY', Xp.dur(x.today || 0)], ['TOTAL', Xp.hours(x.total || 0)]] : []
+      : x && x.total != null ? [['LAST 24H', x.last24 == null ? '—' : Xp.dur(x.last24)], ['THIS WEEK', `${x.week}/3 days`], ['TOTAL', Xp.hours(x.total)]] : null;
+    const b = p.badge && p.badge.tier && window.BadgeArt ? p.badge : null;
+    const tag = p.tag != null ? Social.handle(p) : '';
+    return `<div class="fc-card-in" data-st="${esc(p.presence)}" style="--rc:${r.color}">` +
+      `<div class="fc-card-top"><span class="fc-card-av">${pic(p, 'fc-pic')}<i class="fc-bar"></i></span>` +
+      `<span class="fc-card-who"><b>${esc(p.short)}</b>${tag && (p.nick || p.me) ? `<em>${esc(tag)}</em>` : tag ? `<em>#${esc(String(p.tag).padStart(4, '0'))}</em>` : ''}` +
+      `<span class="fc-card-st">${esc(stateLabel(p))}</span></span></div>` +
+      `<div class="fc-card-act">${acts === null ? '<span class="fc-card-none">keeps their active time to themselves</span>' : acts.map(([k, v]) => `<span><small>${k}</small><b>${esc(v)}</b></span>`).join('')}</div>` +
+      '<div class="fc-card-foot">' +
+      (b ? `<span class="fc-card-badge">${BadgeArt.svg(b.id, b.tier, 34)}</span><span class="fc-card-bt"><b>${esc(BadgeArt.name(b.id))}</b><small>${esc(BadgeArt.tierName(b.id, b.tier) || 'displayed badge')}</small></span>` : '<span class="fc-card-bt"></span>') +
+      `<span class="fc-card-rank"><small>${esc(r.name)}</small><b class="fc-card-lv" title="Level ${level}">${level}</b></span></div>` +
+      `<div class="fc-card-hint">${p.me ? 'click for your profile' : 'click for their profile · right-click for more'}</div></div>`;
+  }
+
+  function showCard(t) {
+    const card = q('.fc-card');
+    const p = person(t.dataset.who);
+    if (!card || !p || p.gone || !t.isConnected) return;
+    card.innerHTML = cardHTML(p);
+    card.className = 'fc-card';
+    card.hidden = false;
+    const box = win.firstElementChild.getBoundingClientRect();
+    const r = t.getBoundingClientRect();
+    const w = card.offsetWidth, h = card.offsetHeight;
+    const M = 11;
+    let left, top;
+    if (t.closest('.fc-tab')) {
+      // Under the tab.
+      left = Math.max(8, Math.min(r.left - box.left, box.width - w - 8));
+      top = r.bottom - box.top + M;
+      card.classList.add('up');
+      card.style.setProperty('--ax', `${Math.max(14, Math.min(r.left - box.left + 22 - left, w - 22))}px`);
+    } else {
+      // Beside the picture or the name: on its right, else its left.
+      left = r.right - box.left + M;
+      card.classList.add('side');
+      if (left + w > box.width - 8) {
+        left = r.left - box.left - M - w;
+        card.classList.replace('side', 'sideR');
+      }
+      if (left < 8) {
+        left = Math.max(8, Math.min(r.left - box.left, box.width - w - 8));
+        card.classList.remove('side', 'sideR');
+      }
+      top = Math.max(8, Math.min(r.top - box.top - 18, box.height - h - 8));
+      card.style.setProperty('--ay', `${Math.max(12, Math.min(r.top - box.top + r.height / 2 - top, h - 12))}px`);
+    }
+    card.style.left = `${left}px`;
+    card.style.top = `${top}px`;
+  }
+
+  function hideCard() {
+    clearTimeout(cardTimer);
+    hoverEl = null;
+    const card = win && q('.fc-card');
+    if (card) card.hidden = true;
+  }
+
+  // ---------- a line's tools on hover: reply, copy (and copy its code) ----------
+  const tools = CHAT ? el('div', 'fc-tools') : null;
+  function toolsFor(row) {
+    const m = conv(current).list.find((v) => keyOf(v) === row.dataset.key);
+    if (!m) return tools.remove();
+    tools.innerHTML =
+      (row.classList.contains('canreply') ? `<button data-act="reply" title="Reply" aria-label="Reply">${ICON_REPLY}</button>` : '') +
+      (m.body && !Social.sealed(m) ? `<button data-act="lcopy" title="Copy text" aria-label="Copy text">${ICON_COPY}</button>` : '') +
+      (row.querySelector('.mb-code') ? `<button data-act="lcode" title="Copy code" aria-label="Copy code">${ICON_CODE}</button>` : '');
+    if (!tools.innerHTML) return tools.remove();
+    row.append(tools);
+  }
+
+  // ---------- small windows over the chat: removing a friend, a nickname ----------
+  function ask(html, onAnswer) {
+    const box = q('.fc-ask');
+    box.innerHTML = `<div class="fc-ask-in">${html}</div>`;
+    box.hidden = false;
+    box.__answer = onAnswer;
+    (box.querySelector('input') || box.querySelector('[data-ans=no]'))?.focus();
+  }
+  function hideAsk() {
+    const box = win && q('.fc-ask');
+    if (!box || box.hidden) return false;
+    box.hidden = true;
+    box.innerHTML = '';
+    return true;
+  }
+
+  // The same words as the friends list's.
+  function askRemove(id) {
+    const f = Social.friend(id);
+    if (!f) return;
+    ask(
+      `<b>remove ${esc(Social.handle(f))}?</b><p>you'll stop seeing each other's status and can't message each other, until one of you sends a new request.</p>` +
+        '<div class="fc-ask-btns"><button data-ans="no">cancel</button><button class="danger" data-ans="yes">remove</button></div>',
+      async (ans, btn) => {
+        if (ans !== 'yes') return hideAsk();
+        btn.disabled = true;
+        const r = await Social.unfriend(id);
+        hideAsk();
+        if (r.error) return flash(r.error === 'offline' ? "can't reach the server" : "couldn't remove them · try again");
+        Sfx.play('decline');
+        flash(`removed ${Social.handle(f)}`);
+      },
+    );
+  }
+
+  function askNick(id) {
+    const f = Social.friend(id);
+    if (!f) return;
+    ask(
+      `<b>${f.nick ? 'Change the nickname' : 'Add a nickname'} for ${esc(Social.handle(f))}</b>` +
+        '<p>What you call them on your screens. Only you see it, on all your computers; their own name stays beside it.</p>' +
+        '<input class="fc-ask-input" maxlength="32" spellcheck="false" autocomplete="off" placeholder="yunus emre öztürk">' +
+        '<div class="fc-ask-btns"><button data-ans="no">cancel</button><button class="go" data-ans="yes">save</button></div>',
+      async (ans) => {
+        if (ans !== 'yes') return hideAsk();
+        const nick = q('.fc-ask-input').value.trim();
+        hideAsk();
+        if (nick === (f.nick || '')) return;
+        const r = await Social.setNick(id, nick);
+        if (r.error) return flash(r.error === 'offline' ? "can't reach the server" : "couldn't save it · try again");
+        flash(nick ? `${Social.handle(f)} is ${nick} to you now` : `nickname removed · ${Social.handle(f)} again`);
+      },
+    );
+    q('.fc-ask-input').value = f.nick || '';
+    q('.fc-ask-input').select();
   }
 
   // A word in the chat for a moment (copied, …).
@@ -1784,11 +2194,18 @@ window.Messages = (() => {
     }, 1500);
   }
 
+  const msgOf = (key) => conv(current).list.find((x) => keyOf(x) === key);
+  function copyCode(row) {
+    const codes = row ? [...row.querySelectorAll('.mb-code')].map((b) => b.__code) : [];
+    if (codes.length) post({ type: 'copyText', text: codes.join('\n\n') });
+    flash('code copied');
+  }
+
   function chatEvent(ev) {
     switch (ev.type) {
-      // A nickname set or taken off: the open chat's title follows.
+      // A nickname set or taken off: the tabs and the blocks follow.
       case 'nickname':
-        if (ev.id === current) paint();
+        if (isOpen && (tabs.includes(ev.id) || ev.id === current)) paint();
         break;
       case 'message': {
         const c = convs.get(ev.with);
@@ -1811,25 +2228,40 @@ window.Messages = (() => {
             Sfx.play('message');
             Social.read(ev.with);
           }
-        } else paint();
+        } else {
+          // Another tab's friend wrote: their tab lights up (no pop-up for them), with the message's sound.
+          if (!m.mine && tabs.includes(ev.with)) Sfx.play('message');
+          paint();
+        }
         return;
       }
-      case 'e2ee_state':
-        if (ev.phase === 'ready') {
-          // This computer got its key (approved, recovered): what couldn't open is asked for again, what couldn't go goes.
-          for (const c of convs.values()) if (c.list.some((m) => m.enc === 'locked')) c.loaded = false;
-          if (isOpen && current && !conv(current).loaded) load(current).then(() => isOpen && paintList());
-          retryFailed(true);
+      case 'unsealed':
+        // Older encrypted messages of this conversation opened (a Mac that still had their keys): asked for again.
+        if (convs.has(ev.with)) conv(ev.with).loaded = false;
+        if (isOpen && current === ev.with) load(current).then(() => isOpen && current === ev.with && paintList());
+        return;
+      case 'hello': {
+        // Signed out, or into another account, while the window waited hidden: nothing kept belongs to who's here now.
+        const who = Social.state()?.me?.id || null;
+        if (who !== meId) {
+          if (meId) {
+            if (isOpen) close();
+            convs.clear();
+            you = null;
+          }
+          meId = who;
         }
+        retryFailed();
+        // Back from a drop: anything missed is in a fresh copy of each conversation kept here (the window stays loaded
+        // while hidden); the one in front now, the others when they're opened, shown from what's kept meanwhile.
+        for (const c of convs.values()) c.loaded = false;
+        if (isOpen && current && Social.friend(current)) load(current).then(() => isOpen && paintList());
         if (isOpen) paint();
         return;
-      case 'hello':
-        retryFailed();
-        // Back from a drop: anything missed is in a fresh copy of the conversation.
-        if (isOpen && current && Social.friend(current)) {
-          conv(current).loaded = false;
-          load(current).then(() => isOpen && paintList());
-        }
+      }
+      case 'snapshot':
+        // Whose window this is, from the first friends list it gets (a hello compares against it later).
+        if (!meId) meId = Social.state()?.me?.id || null;
         if (isOpen) paint();
         return;
       default:
@@ -1837,15 +2269,84 @@ window.Messages = (() => {
     }
   }
 
-  // Dragging by the header, like a window: Swift moves the panel.
+  // ---------- resizing from the edges (the page asks Swift, as when dragging) ----------
+  function startResize(e, edge) {
+    e.preventDefault();
+    hideCard();
+    hideMenu();
+    const sx = e.screenX, sy = e.screenY;
+    const w0 = want.w, h0 = want.h;
+    const maxW = Math.max(MIN_W, (screen.availWidth || 4000) - 16), maxH = Math.max(MIN_H, (screen.availHeight || 4000) - 16);
+    let movedX = 0, movedY = 0; // how far the top-left corner has moved, for the left and top edges
+    win.classList.add('resizing');
+    win.dataset.grip = edge;
+    // The mouse reports far more often than the screen draws: keep the newest size and send it once per frame, size
+    // and corner in one message, so Swift moves the window a single time.
+    let tick = 0, pend = null;
+    const flush = () => {
+      tick = 0;
+      if (!pend) return;
+      const { w, h, shiftX, shiftY } = pend;
+      pend = null;
+      const dx = shiftX - movedX, dy = shiftY - movedY;
+      movedX = shiftX;
+      movedY = shiftY;
+      if (w === want.w && h === want.h && !dx && !dy) return;
+      want = { w, h };
+      post({ type: 'layout', w: w + 16, h: h + 16, dx, dy, live: true });
+    };
+    const move = (ev) => {
+      const dx = ev.screenX - sx, dy = ev.screenY - sy;
+      let w = w0, h = h0;
+      if (edge.includes('e')) w = w0 + dx;
+      if (edge.includes('w')) w = w0 - dx;
+      if (edge.includes('s')) h = h0 + dy;
+      if (edge.includes('n')) h = h0 - dy;
+      w = Math.round(Math.max(MIN_W, Math.min(maxW, w)));
+      h = Math.round(Math.max(MIN_H, Math.min(maxH, h)));
+      const shiftX = edge.includes('w') ? w0 - w : 0;
+      const shiftY = edge.includes('n') ? h0 - h : 0;
+      pend = { w, h, shiftX, shiftY };
+      if (!tick) tick = requestAnimationFrame(flush);
+    };
+    const up = () => {
+      if (tick) cancelAnimationFrame(tick);
+      flush();
+      removeEventListener('mousemove', move);
+      removeEventListener('mouseup', up);
+      win.classList.remove('resizing');
+      delete win.dataset.grip;
+      post({ type: 'dragEnd' });
+      try {
+        localStorage.setItem(SIZE_KEY, JSON.stringify([want.w, want.h]));
+      } catch {}
+      paintTabs();
+    };
+    addEventListener('mousemove', move);
+    addEventListener('mouseup', up);
+  }
+
   if (CHAT) {
+    // Dragging by the tabs' strip (a tab too, once the mouse moves), like a window: Swift moves the panel.
+    let dragged = false;
     win.addEventListener('mousedown', (e) => {
       if (!e.target.closest('.mb-menu')) hideMenu();
-      const head = e.target.closest('.mb-head');
+      hideCard();
+      const grip = e.target.closest('[data-grip]');
+      if (grip && e.button === 0) return startResize(e, grip.dataset.grip);
+      const head = e.target.closest('.fc-tabs, .fc-strip');
       if (!head || e.button !== 0 || e.target.closest('button')) return;
       e.preventDefault();
-      let x = e.screenX, y = e.screenY;
+      const x0 = e.screenX, y0 = e.screenY;
+      let x = x0, y = y0;
+      let moving = !e.target.closest('.fc-tab');
+      if (moving) win.classList.add('dragging');
       const move = (ev) => {
+        if (!moving) {
+          if (Math.abs(ev.screenX - x0) + Math.abs(ev.screenY - y0) < 4) return;
+          moving = true;
+          win.classList.add('dragging');
+        }
         const dx = ev.screenX - x, dy = ev.screenY - y;
         x = ev.screenX;
         y = ev.screenY;
@@ -1855,25 +2356,74 @@ window.Messages = (() => {
         removeEventListener('mousemove', move);
         removeEventListener('mouseup', up);
         win.classList.remove('dragging');
+        if (!moving) return;
         post({ type: 'dragEnd' });
+        // A tab dragged isn't a tab clicked.
+        dragged = true;
+        setTimeout(() => (dragged = false), 0);
       };
-      win.classList.add('dragging');
       addEventListener('mousemove', move);
       addEventListener('mouseup', up);
     });
-    win.addEventListener('contextmenu', (e) => {
+    // Hovering someone (a block's picture or name, a tab) for a moment: their small card.
+    win.addEventListener('mouseover', (e) => {
       const row = e.target.closest('.mb-msg');
+      if (row && tools.parentElement !== row && !win.classList.contains('dragging')) toolsFor(row);
+      const t = e.target.closest('[data-who]');
+      if (t === hoverEl) return;
+      clearTimeout(cardTimer);
+      q('.fc-card') && (q('.fc-card').hidden = true);
+      hoverEl = t;
+      if (t && !win.classList.contains('dragging') && !win.classList.contains('resizing')) cardTimer = setTimeout(() => hoverEl === t && showCard(t), 250);
+    });
+    win.addEventListener('mouseout', (e) => {
+      if (!e.relatedTarget || !win.contains(e.relatedTarget)) {
+        hideCard();
+        tools.remove();
+      } else if (!e.relatedTarget.closest('.mb-msg')) tools.remove();
+    });
+    win.addEventListener('contextmenu', (e) => {
       e.preventDefault();
+      hideCard();
+      const who = e.target.closest('[data-who]');
+      if (who) return personMenu(e.clientX, e.clientY, who.dataset.who);
+      const row = e.target.closest('.mb-msg');
       if (row) showMenu(e.clientX, e.clientY, row);
     });
+    // A middle click on a tab closes it, as on Steam.
+    win.addEventListener('auxclick', (e) => {
+      const tab = e.button === 1 && e.target.closest('.fc-tab');
+      if (tab) closeTab(tab.dataset.tab);
+    });
     win.addEventListener('click', (e) => {
+      const ans = e.target.closest('[data-ans]');
+      if (ans && q('.fc-ask').__answer) return q('.fc-ask').__answer(ans.dataset.ans, ans);
+      if (e.target.matches('.fc-ask')) return hideAsk();
       const el2 = e.target.closest('[data-act]');
-      if (!el2) return;
+      if (!el2 || dragged) return;
       const act = el2.dataset.act;
-      const ta = q('.mb-input textarea');
+      const ta = q('.fc-input textarea');
       switch (act) {
         case 'close':
           return close();
+        case 'closeall':
+          return close();
+        case 'tab':
+          return select(el2.dataset.tab);
+        case 'tabpick':
+          hideMenu();
+          return select(el2.dataset.tab);
+        case 'tabclose':
+          hideMenu();
+          return closeTab(el2.dataset.tab || el2.closest('[data-tab]')?.dataset.tab);
+        case 'tabmore':
+          return moreMenu(el2);
+        case 'who': {
+          // On a tab in the back, the click only brings that conversation forward.
+          const tab = el2.closest('.fc-tab');
+          if (tab && tab.dataset.tab !== current) return select(tab.dataset.tab);
+          return openProfileOf(el2.closest('[data-who]').dataset.who);
+        }
         case 'switch':
           return open(el2.dataset.id);
         case 'more':
@@ -1881,15 +2431,23 @@ window.Messages = (() => {
         case 'send':
           return send();
         case 'retry': {
-          const m = conv(current).list.find((x) => keyOf(x) === el2.dataset.key);
+          const m = msgOf(el2.dataset.key);
           if (m) deliver(m, current);
           return;
         }
         case 'reply': {
           const row = el2.closest('.mb-msg');
-          const m = row && conv(current).list.find((x) => keyOf(x) === row.dataset.key);
+          const m = row && msgOf(row.dataset.key);
           return m && setReply(m);
         }
+        case 'lcopy': {
+          const row = el2.closest('.mb-msg');
+          const m = row && msgOf(row.dataset.key);
+          if (m) post({ type: 'copyText', text: m.body });
+          return flash('copied');
+        }
+        case 'lcode':
+          return copyCode(el2.closest('.mb-msg'));
         case 'unreply':
           return clearReply();
         case 'jump':
@@ -1926,12 +2484,12 @@ window.Messages = (() => {
         case 'sugg':
           return takeSuggest(Number(el2.dataset.i));
         case 'mreply': {
-          const m = conv(current).list.find((x) => keyOf(x) === q('.mb-menu').__key);
+          const m = msgOf(q('.mb-menu').__key);
           hideMenu();
           return m && setReply(m);
         }
         case 'mcopy': {
-          const m = conv(current).list.find((x) => keyOf(x) === q('.mb-menu').__key);
+          const m = msgOf(q('.mb-menu').__key);
           hideMenu();
           if (m) post({ type: 'copyText', text: m.body });
           return flash('copied');
@@ -1939,32 +2497,53 @@ window.Messages = (() => {
         case 'mcode': {
           const row = q(`.mb-msg[data-key="${CSS.escape(q('.mb-menu').__key)}"]`);
           hideMenu();
-          const codes = row ? [...row.querySelectorAll('.mb-code')].map((b) => b.__code) : [];
-          if (codes.length) post({ type: 'copyText', text: codes.join('\n\n') });
-          return flash('code copied');
+          return copyCode(row);
         }
-        case 'sc':
-          return showCode();
-        case 'scok':
-          return Social.keys('seen', { id: current });
-        case 'scyes':
-        case 'scun':
-          return Social.keys('verify', { id: current, on: act === 'scyes' }).then(showCode);
-        case 'scclose':
-          q('.mb-sc').hidden = true;
-          return ta.focus();
+        // A friend's menu.
+        case 'pchat': {
+          hideMenu();
+          const id = el2.dataset.who;
+          return tabs.includes(id) ? select(id) : open(id);
+        }
+        case 'pprofile':
+          return openProfileOf(el2.dataset.who);
+        case 'pnick':
+          hideMenu();
+          return askNick(el2.dataset.who);
+        case 'punnick': {
+          hideMenu();
+          const f = Social.friend(el2.dataset.who);
+          if (!f) return;
+          return Social.setNick(f.id, '').then((r) => flash(r.error ? "couldn't remove it · try again" : `nickname removed · ${Social.handle(f)} again`));
+        }
+        case 'pcopy': {
+          hideMenu();
+          const f = Social.friend(el2.dataset.who);
+          if (f) post({ type: 'copyText', text: Social.handle(f) });
+          return f && flash(`copied ${Social.handle(f)}`);
+        }
+        case 'premove':
+          hideMenu();
+          return askRemove(el2.dataset.who);
       }
     });
     win.addEventListener('input', (e) => {
       if (e.target.matches('.mb-e-find')) return findEmoji(e.target.value);
-      if (!e.target.matches('textarea')) return;
-      grow(e.target);
+      if (!e.target.matches('.fc-input textarea')) return;
+      growChat(e.target);
       suggest();
     });
     win.addEventListener('change', (e) => {
       if (e.target.matches('.mb-lang')) draft.lang = e.target.value;
     });
     win.addEventListener('keydown', (e) => {
+      if (e.target.matches('.fc-ask-input')) {
+        if (e.key === 'Enter' && !e.isComposing) {
+          e.preventDefault();
+          q('.fc-ask').__answer?.('yes');
+        }
+        return;
+      }
       if (e.target.matches('.mb-e-find')) {
         if (e.key === 'Enter') {
           const first = q('.mb-emoji .mb-e');
@@ -1973,14 +2552,14 @@ window.Messages = (() => {
         }
         return;
       }
-      if (!e.target.matches('textarea')) return;
+      if (!e.target.matches('.fc-input textarea')) return;
       if (suggested.length) {
         if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
           suggestAt = (suggestAt + (e.key === 'ArrowDown' ? 1 : suggested.length - 1)) % suggested.length;
           e.preventDefault();
           return suggest();
         }
-        if ((e.key === 'Enter' || e.key === 'Tab') && !e.shiftKey && !e.isComposing) {
+        if ((e.key === 'Enter' || e.key === 'Tab') && !e.shiftKey && !e.ctrlKey && !e.isComposing) {
           e.preventDefault();
           return takeSuggest(suggestAt);
         }
@@ -2003,20 +2582,53 @@ window.Messages = (() => {
       }
     });
     win.addEventListener('keyup', (e) => {
-      if (e.target.matches('textarea') && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) suggest();
+      if (e.target.matches('.fc-input textarea') && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) suggest();
+    });
+    // The window made larger or smaller: as many tabs as fit now, and the newest line still in view if it was.
+    win.addEventListener('scroll', (e) => {
+      const l = e.target;
+      if (l.classList && l.classList.contains('mb-list')) l.__stuck = l.scrollHeight - l.scrollTop - l.clientHeight < 60;
+    }, true);
+    addEventListener('resize', () => {
+      if (!isOpen) return;
+      const list = q('.mb-list');
+      if (list && list.__stuck !== false) list.scrollTop = list.scrollHeight;
+      if (win.classList.contains('resizing')) return; // the tabs are laid out once, when the edge is let go
+      hideCard();
+      paintTabs();
     });
   }
 
+  // Ctrl+Tab and Ctrl+Shift+Tab (Ctrl+Page Down/Up, ⌘⇧] and ⌘⇧[ too) go through the tabs; typing anywhere writes in the box.
+  const tabStep = (e) => {
+    if (e.ctrlKey && e.key === 'Tab') return e.shiftKey ? -1 : 1;
+    if (e.ctrlKey && (e.key === 'PageDown' || e.key === 'PageUp')) return e.key === 'PageDown' ? 1 : -1;
+    if (e.metaKey && e.shiftKey && (e.key === ']' || e.key === '}' || e.key === '[' || e.key === '{')) return e.key === ']' || e.key === '}' ? 1 : -1;
+    return 0;
+  };
+
   addEventListener('keydown', (e) => {
+    if (CHAT && isOpen) {
+      const step = tabStep(e);
+      if (step) {
+        e.preventDefault();
+        if (tabs.length > 1) select(tabs[(tabs.indexOf(current) + step + tabs.length) % tabs.length]);
+        return;
+      }
+      if (e.key.length === 1 && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        const a = document.activeElement;
+        const ta = q('.fc-input textarea');
+        if (ta && !ta.disabled && !(a && a.matches('textarea, input, select'))) ta.focus();
+      }
+    }
     if (e.key !== 'Escape') return;
     if (CHAT && isOpen) {
-      // The nearest thing first: a menu, the emoji, a suggestion, the security code, code mode, the reply; then the chat.
-      if (hideMenu() || hideEmoji() || hideSuggest()) return;
-      const sc = q('.mb-sc');
-      if (sc && !sc.hidden) return void (sc.hidden = true);
+      // The nearest thing first: a small window, a menu, the emoji, a suggestion, code mode, the reply; then the tab.
+      hideCard();
+      if (hideAsk() || hideMenu() || hideEmoji() || hideSuggest()) return;
       if (draft.code) return setCode(false);
       if (draft.reply) return clearReply();
-      close();
+      closeTab(current);
     } else if (NOTICES && peek) hidePeek();
   });
 
@@ -2125,16 +2737,23 @@ window.Messages = (() => {
   window.__messages = {
     event: (ev) => Social.event(ev),
     open: (id) => open(id),
-    close: () => close(),
+    // The hidden chat window made at launch: the friends list and your picture ready before the first chat opens.
+    warm: () => {
+      if (!Social.state()) Social.load();
+      loadYou();
+    },
+    // ⌘W: the tab in front (the last one closes the window).
+    close: () => (isOpen ? closeTab(current) : undefined),
     showing: (ids) => (showing = new Set(ids || [])),
     paste: (text) => pasteText(text),
     copy: (cut) => copyText(cut),
     selectAll: () => selectAll(),
     update: (u) => updateNotice(u),
-    updated: (version) => NOTICES && showPeek({ kind: 'updated', version }),
+    updated: (version, build) => updatedNotice(version, build),
     xp: (x) => progress({ xp: x }),
     focus: (on) => setFocus(on),
     skip: () => skip(),
+    reveal: (id, tier) => replayBadge(id, tier),
     runaways: (list) => setRunaways(list),
     wait: (w) => addWait(w),
     waitOver: (sid) => waitOver(sid),
@@ -2144,5 +2763,5 @@ window.Messages = (() => {
   Social.load();
   post({ type: 'ready' });
 
-  return { open, close, canChat: CHAT, peek: () => peek, isOpen: () => isOpen, update: updateNotice, progress, focus: setFocus };
+  return { open, close, canChat: CHAT, peek: () => peek, isOpen: () => isOpen, update: updateNotice, progress, focus: setFocus, layout: sizeNotes };
 })();

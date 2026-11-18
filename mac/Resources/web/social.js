@@ -5,6 +5,12 @@
 window.Social = (() => {
   const h = window.webkit.messageHandlers.cloud;
   const api = (method, path, body) => h.postMessage({ type: 'social', method, path, body }).catch(() => ({ error: 'offline' }));
+  // The leaderboard's span and who's on it: friends this week as the old `by=friends`, friends ever with `friends=1`,
+  // and an optional Monday `week=YYYY-MM-DD` for past weeks.
+  const boardQuery = (by, friends, week) => {
+    const base = by === 'all' ? `by=all${friends ? '&friends=1' : ''}` : `by=${friends ? 'friends' : 'week'}`;
+    return by !== 'all' && week ? `${base}&week=${encodeURIComponent(week)}` : base;
+  };
 
   // What friends see, and what each status means (like Discord's).
   const PRESENCE = {
@@ -108,7 +114,7 @@ window.Social = (() => {
       case 'message': {
         const f = friend(ev.with);
         if (!f) break;
-        f.last = { body: ev.message.body, at: ev.message.at, mine: ev.message.mine, enc: ev.message.enc };
+        f.last = { body: ev.message.body, at: ev.message.at, mine: ev.message.mine, sealed: ev.message.sealed, enc: ev.message.enc };
         if (!ev.message.mine) f.unread = (f.unread || 0) + 1;
         S.friends = [f, ...S.friends.filter((x) => x !== f)];
         break;
@@ -138,26 +144,28 @@ window.Social = (() => {
         if (f) f.nick = ev.nick || null;
         break;
       }
-      // End-to-end encryption (E2EE.swift): this computer's keys, friends' security codes; a friend got a key.
-      case 'e2ee_state': {
-        const { type, ...st } = ev;
-        S.me.e2ee = st;
-        for (const f of S.friends) f.sc = st.friends[f.id] || null;
+      // Older encrypted messages opened (a Mac that still had their keys): the last ones shown change with them.
+      case 'unsealed':
+        load();
         break;
-      }
-      case 'e2ee_keys': {
-        const f = friend(ev.id);
-        if (f) f.e2ee = true;
-        break;
-      }
       case 'friend_xp': {
         const f = friend(ev.id);
         if (f) f.xp = { ...(f.xp || {}), level: ev.level, rank: ev.rank };
         break;
       }
+      // Your community feed switch, changed on another of your computers (synced settings, account.js).
+      case 'settings':
+        if (ev.set) S.me.prefs = { ...prefs(), ...prefsFrom(ev.set) };
+        break;
     }
     emit(ev);
   }
+
+  // Settings' "community feed" and the Tokens board's two switches (the API's feed.ts): on unless turned off, kept with
+  // the account's synced settings (social.feed, social.tokensName, social.tokensDetail).
+  const prefs = () => ({ feed: true, tokensName: true, tokensDetail: true, ...((S && S.me && S.me.prefs) || {}) });
+  const prefsFrom = (set) => Object.fromEntries(['feed', 'tokensName', 'tokensDetail']
+    .filter((k) => `social.${k}` in set).map((k) => [k, set[`social.${k}`] !== false]));
 
   return {
     PRESENCE,
@@ -220,18 +228,16 @@ window.Social = (() => {
         return r;
       }),
     history: (id, before) => api('GET', `v1/messages/${id}${before ? `?before=${before}` : ''}`),
-    // `extra`: { uuid, reply: { uuid, mine, text } }. Swift seals it on the way (E2EE.swift).
+    // `extra`: { uuid, reply: { uuid, mine, text } }.
     send: (to, body, extra) => api('POST', 'v1/messages', { to, body, uuid: (extra && extra.uuid) || uuid(), ...(extra && extra.reply ? { reply: extra.reply } : {}) }),
     uuid,
-    // This computer's end-to-end keys as Swift last said (phase ready · locked · starting · off, approvals, recovery key).
-    e2ee: () => (S && S.me && S.me.e2ee) || null,
-    // Asks E2EE.swift: state, recovery, newRecovery, recover, startOver, approve, confirm, code, verify, seen.
-    keys: (action, extra) => h.postMessage({ type: 'e2ee', action, ...(extra || {}) }).catch(() => ({ error: 'offline' })),
-    // A message in one line, for previews: code says so, a sealed one that didn't open says that.
+    // Whether a message is one sealed end to end before that was retired, not opened yet (`sealed` from the API;
+    // `enc` from the Windows app until it drops its own encryption).
+    sealed: (m) => !!(m && (m.sealed || m.enc === 'locked' || m.enc === 'bad')),
+    // A message in one line, for previews: code says so, an older encrypted one says that.
     preview: (m) => {
       if (!m) return '';
-      if (m.enc === 'locked') return '🔒 encrypted message';
-      if (m.enc === 'bad') return "⚠ a message that didn't open";
+      if (m.sealed || m.enc === 'locked' || m.enc === 'bad') return '🔒 older encrypted message';
       const body = m.body || '';
       const text = body.replace(/```[\s\S]*?(```|$)/g, ' ').replace(/^> .*$/gm, '').replace(/\s+/g, ' ').trim();
       return text || (body.includes('```') ? '</> code' : '');
@@ -239,10 +245,35 @@ window.Social = (() => {
     read: (id) => api('POST', 'v1/messages/read', { with: id }),
     // Whether friends see your active time (today, this week, in total); your level shows either way.
     setActivity: (show) => api('PATCH', 'v1/me/activity', { show }),
-    // Everyone with XP, by this week since Monday ('week'), ever ('all') or this week among your friends ('friends');
-    // and whether you're listed there.
-    leaderboard: (by) => api('GET', `v1/leaderboard?by=${['all', 'friends'].includes(by) ? by : 'week'}`),
+    // Everyone with XP, by this week since Monday ('week') or ever ('all'), everyone or only you and your friends
+    // (`friends`; this week's still goes as the old 'friends', which every API knows), and an optional past week.
+    leaderboard: (by, friends, week) => api('GET', `v1/leaderboard?${boardQuery(by, friends, week)}`),
+    // The same by tokens burned (the leaderboard's Tokens view), optionally of one tool, model and effort; and someone's
+    // tokens by AI, model and effort.
+    tokens: (by, pick, friends, week) => {
+      const p = new URLSearchParams(boardQuery(by, friends, week));
+      for (const k of ['tool', 'model', 'effort']) if (pick && pick[k]) p.set(k, pick[k]);
+      return api('GET', `v1/leaderboard/tokens?${p}`);
+    },
+    tokensOf: (id, by, week) =>
+      api('GET', `v1/leaderboard/tokens/${encodeURIComponent(id)}?by=${by === 'all' ? 'all' : 'week'}${by !== 'all' && week ? `&week=${encodeURIComponent(week)}` : ''}`),
+    weeks: (metric, friends) =>
+      api('GET', `v1/leaderboard/weeks?metric=${metric === 'tokens' ? 'tokens' : 'xp'}${friends ? '&friends=1' : ''}`),
     setBoard: (show) => api('PATCH', 'v1/me/leaderboard', { show }),
+    prefs,
+    setPref: (key, on) =>
+      api('PUT', 'v1/settings', { set: { [`social.${key}`]: !!on } }).then((r) => {
+        if (!r.error && S) {
+          S.me.prefs = { ...prefs(), [key]: !!on };
+          emit({ type: 'prefs' });
+        }
+        return r;
+      }),
+    // The community feed's recent lines (newest first), and head to head with a friend.
+    feed: () => api('GET', 'v1/leaderboard/feed'),
+    rivalry: (id) => api('GET', `v1/friends/${id}/rivalry`),
+    // A person's whole profile page (identity, hours, badges, weekly tokens, rivalry) in one round trip.
+    profile: (id) => api('GET', `v1/screens/profile/${encodeURIComponent(id || 'me')}`),
     // Settings → Feedback: straight to the developer, with who sent it and when.
     feedback: (body) => api('POST', 'v1/feedback', { body }),
     setStatus: (status) =>

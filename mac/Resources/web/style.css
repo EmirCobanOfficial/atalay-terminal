@@ -297,7 +297,7 @@ body::after {
 .legend { position: absolute; left: 8px; bottom: 6px; display: flex; gap: 12px; color: var(--dim); font-size: 0.86em; pointer-events: none; }
 .legend i { display: inline-block; width: 7px; height: 7px; margin-right: 4px; }
 .legend .hint { color: var(--dim2); }
-#tip, #pwr-tip {
+#tip, #pwr-tip, .wn-tip {
   position: absolute;
   z-index: 5;
   display: none;
@@ -310,8 +310,8 @@ body::after {
   box-shadow: 0 0 24px rgba(var(--accent-rgb), 0.3);
   pointer-events: none;
 }
-#tip .h, #pwr-tip .h { color: var(--hi); font-weight: 700; }
-#tip .r, #pwr-tip .r { margin-top: 3px; color: var(--txt); }
+#tip .h, #pwr-tip .h, .wn-tip .h { color: var(--hi); font-weight: 700; }
+#tip .r, #pwr-tip .r, .wn-tip .r { margin-top: 3px; color: var(--txt); }
 #tip .d, #pwr-tip .d { margin-top: 3px; color: var(--dim); }
 /* what power save changes, under its switch (app.js powerTip) */
 #pwr-tip { top: 42px; right: 8px; width: 340px; }

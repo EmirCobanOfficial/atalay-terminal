@@ -1,16 +1,19 @@
 'use strict';
 
-// Fire for the "on fire" moments (five hours of work in a day), drawn like a game's on-fire effect: a fragment shader
-// of crisp flame tongues rising from a canvas's edges, red-orange behind and yellow-white in front, with embers flying
-// up. The leaderboard and the friends list light a burning card with it, flames rising from its bottom behind its
-// text; the notices panel lights the screen's edges for a few seconds.
+// Fire for the "on fire" moments (a card's flame, the API's fire.ts), drawn like a game's on-fire effect: a fragment
+// shader of crisp flame tongues rising from a canvas's edges, a darker layer behind and a brighter one in front, with
+// embers flying up. The leaderboard and the friends list light a burning card with it, flames rising from its bottom
+// behind its text; the notices panel lights the screen's edges for a few seconds.
+// Its looks (LOOKS below): orange for the flame of the day's top fifth,
+// blue-white, taller and with more embers, for the rare hottest one.
 window.Fire = (() => {
   const VERTEX = 'attribute vec2 p; void main() { gl_Position = vec4(p, 0.0, 1.0); }';
   const FRAGMENT = `
 precision mediump float;
 uniform vec2 res;
 uniform vec3 reach;
-uniform float t, k, scale, mound;
+uniform float t, k, scale, embers, mound;
+uniform vec3 pal[6];
 float hash(vec2 p) {
   p = fract(p * vec2(123.34, 456.21));
   p += dot(p, p + 45.32);
@@ -49,28 +52,40 @@ void main() {
   }
   vec2 q = px / scale;
   float fade = (1.0 - k) * 0.9;
-  // Two layers, drawn like a game's on-fire effect: crisp-edged red-orange tongues behind, yellow-white ones in front.
+  // Two layers, drawn like a game's on-fire effect: crisp-edged tongues behind (pal 0 at their edge, 1 inside), brighter
+  // ones in front (2 at their edge, 3 inside).
   float back = tongues(q, d, 2.7) - fade;
   float front = tongues(q * 1.3 + 7.3, d * 1.5, 3.5) - fade;
   float aBack = smoothstep(0.0, 0.06, back);
   float aFront = smoothstep(0.0, 0.06, front);
-  vec3 c = mix(vec3(0.92, 0.14, 0.0), vec3(1.0, 0.47, 0.02), smoothstep(0.0, 0.45, back));
-  c = mix(c, mix(vec3(1.0, 0.64, 0.06), vec3(1.0, 0.96, 0.74), smoothstep(0.05, 0.5, front)), aFront);
+  vec3 c = mix(pal[0], pal[1], smoothstep(0.0, 0.45, back));
+  c = mix(c, mix(pal[2], pal[3], smoothstep(0.05, 0.5, front)), aFront);
   float a = max(aBack * 0.9, aFront);
-  // A hot line along the burning edge.
+  // A hot line along the burning edge (pal 4).
   float base = smoothstep(0.22, 0.0, d) * k;
-  c = mix(c, vec3(1.0, 0.82, 0.4), base * (1.0 - aFront) * 0.6);
+  c = mix(c, pal[4], base * (1.0 - aFront) * 0.6);
   a = max(a, base * 0.75);
-  // Embers rising past the flames, fading as they go.
+  // Embers rising past the flames, fading as they go (pal 5), in a share of the cells (embers).
   vec2 cell = vec2(px.x, px.y - t * scale * 2.4) / (scale * 0.85);
   vec2 id = floor(cell);
   vec2 off = vec2(hash(id + 3.1), hash(id + 7.7)) - 0.5;
-  float ember = step(0.88, hash(id)) * smoothstep(0.13, 0.0, length(fract(cell) - 0.5 + off * 0.6)) * clamp(1.5 - d, 0.0, 1.0) * k;
-  c = mix(c, vec3(1.0, 0.85, 0.45), ember);
+  float ember = step(1.0 - embers, hash(id)) * smoothstep(0.13, 0.0, length(fract(cell) - 0.5 + off * 0.6)) * clamp(1.5 - d, 0.0, 1.0) * k;
+  c = mix(c, pal[5], ember);
   a = max(a, ember);
   a *= k;
   gl_FragColor = vec4(c * a, a);
 }`;
+
+  // Each look: its colours (pal: the back tongues' edge and inside, the front ones' edge and inside, the hot line, the
+  // embers), how much taller than the reach asked its tongues rise, and the share of cells with an ember. The hottest
+  // flame's back tongues keep 3:1 at their edge, where it meets the card, against every theme's background (Nord's,
+  // the lightest, included).
+  const LOOKS = {
+    // The day's top fifth (and the screen's edges): red-orange behind, yellow-white in front.
+    orange: { pal: [[0.92, 0.14, 0.0], [1.0, 0.47, 0.02], [1.0, 0.64, 0.06], [1.0, 0.96, 0.74], [1.0, 0.82, 0.4], [1.0, 0.85, 0.45]], tall: 1, embers: 0.12 },
+    // The hottest flame (five fire days in a week): blue behind, white-blue in front, taller, with more embers.
+    blue: { pal: [[0.16, 0.48, 1.0], [0.42, 0.72, 1.0], [0.66, 0.86, 1.0], [0.95, 0.98, 1.0], [0.78, 0.9, 1.0], [0.82, 0.93, 1.0]], tall: 1.45, embers: 0.22 },
+  };
 
   // Every fire on the page draws with one WebGL context, and each card's canvas gets a copy (2D). WebKit allows a page
   // 16 WebGL contexts and, past that, takes away for good the one that drew least recently: the orbit map's when the
@@ -102,18 +117,20 @@ void main() {
     gl.enableVertexAttribArray(at);
     gl.vertexAttribPointer(at, 2, gl.FLOAT, false, 0, 0);
     const u = (name) => gl.getUniformLocation(prog, name);
-    G = { gl, canvas, uRes: u('res'), uReach: u('reach'), uT: u('t'), uK: u('k'), uScale: u('scale'), uMound: u('mound') };
+    G = { gl, canvas, uRes: u('res'), uReach: u('reach'), uT: u('t'), uK: u('k'), uScale: u('scale'), uPal: u('pal'), uEmbers: u('embers'), uMound: u('mound') };
     return G;
   }
 
   // Lights `canvas` until it leaves the page or the returned stop is called. reach: how far flames rise from the
   // bottom, the sides and the top, in CSS px (0: that edge doesn't burn), or a function giving them each frame;
   // scale: the size of the flames' detail (CSS px); life: ms until it has died down (0: it burns on); res: canvas
-  // pixels per CSS px; mound: true for a fire tallest in the middle of the canvas and nothing at its sides (a friend's
-  // spaceship attack, attack.js), instead of one along the whole edge.
-  function burn(canvas, { reach, scale, life = 0, res = Math.min(2, devicePixelRatio || 1), mound = false }) {
+  // pixels per CSS px; look: a name in LOOKS; mound: true for a fire tallest in the middle of the canvas and nothing at
+  // its sides (a friend's spaceship attack, attack.js), instead of one along the whole edge.
+  function burn(canvas, { reach, scale, life = 0, res = Math.min(2, devicePixelRatio || 1), look = 'orange', mound = false }) {
     const ctx = canvas.getContext('2d');
     if (!ctx || !shared()) return () => {};
+    const L = LOOKS[look] || LOOKS.orange;
+    const pal = new Float32Array(L.pal.flat());
     live++;
     // Each fire starts somewhere else in the noise, so two cards don't burn alike.
     const seed = Math.random() * 100;
@@ -152,11 +169,13 @@ void main() {
       gl.clearColor(0, 0, 0, 0);
       gl.clear(gl.COLOR_BUFFER_BIT);
       gl.uniform2f(g.uRes, w, h);
-      gl.uniform3f(g.uReach, r[0] * res, r[1] * res, r[2] * res);
+      gl.uniform3f(g.uReach, r[0] * res * L.tall, r[1] * res * L.tall, r[2] * res * L.tall);
       gl.uniform1f(g.uMound, mound ? 1 : 0);
       gl.uniform1f(g.uT, seed + ms / 1000);
       gl.uniform1f(g.uK, k);
       gl.uniform1f(g.uScale, scale * res);
+      gl.uniform3fv(g.uPal, pal);
+      gl.uniform1f(g.uEmbers, L.embers);
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
       ctx.clearRect(0, 0, w, h);
       ctx.drawImage(g.canvas, 0, g.canvas.height - h, w, h, 0, 0, w, h);

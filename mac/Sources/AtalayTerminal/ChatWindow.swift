@@ -25,6 +25,11 @@ final class ChatHUD: ObservableObject {
     /// A second screen on a chat another build of the app runs: closing it leaves the chat running.
     var mirror = false
     @Published var chips: [TickerChip] = []
+    /// Tabs open in this window right now: the HUD's End Session button hides when there are two or more, so the per-tab
+    /// × on each chip ends only its own tab and nothing else can.
+    @Published var tabCount = 1
+    /// Starred in the sidebar: the HUD's star icon fills in.
+    @Published var isFavorite = false
     /// False while the window is hidden, so its clocks stop ticking.
     @Published var visible = false
     /// The dashboard's streamer mode (Streamer.swift): the header and the footer show made-up names.
@@ -90,9 +95,9 @@ struct ChatHeaderView: View {
     @ObservedObject var hud: ChatHUD
     @ObservedObject var theme = ThemeStore.shared
     let onTogglePin: () -> Void
-    let onDashboard: () -> Void
     let onEnd: () -> Void
     let onCopyReply: () -> Void
+    let onToggleFavorite: () -> Void
 
     var body: some View {
         // Clocks tick once a second. Per-frame effects here kept the main thread busy and froze the
@@ -105,7 +110,8 @@ struct ChatHeaderView: View {
                 VStack(alignment: .leading, spacing: 0) {
                     TitleRow(hud: hud, now: tl.date, status: status, hex: hex)
                         .frame(height: 32)
-                    HUDRow(hud: hud, now: tl.date, hex: hex, onTogglePin: onTogglePin, onDashboard: onDashboard, onEnd: onEnd, onCopyReply: onCopyReply)
+                    HUDRow(hud: hud, now: tl.date, hex: hex, onTogglePin: onTogglePin, onEnd: onEnd,
+                           onCopyReply: onCopyReply, onToggleFavorite: onToggleFavorite)
                         .frame(height: 30)
                 }
             }
@@ -203,16 +209,18 @@ private struct HUDRow: View {
     let now: Date
     let hex: UInt32
     let onTogglePin: () -> Void
-    let onDashboard: () -> Void
     let onEnd: () -> Void
     let onCopyReply: () -> Void
+    let onToggleFavorite: () -> Void
 
     var body: some View {
         HStack(spacing: 14) {
             if let dir = hud.terminalDir, hud.status == "terminal" {
                 Text("terminal in \(hud.streamer ? Streamer.folder(dir) : tildify(dir))").foregroundColor(Theme.cDim).lineLimit(1)
             } else if let b = hud.brief {
-                ContextBar(ctx: b.ctx, ctxMax: b.ctxMax)
+                // With two or more tabs each tab's chip shows its own context and counts; one bar here would be one tab's.
+                let perTab = hud.tabCount > 1
+                if !perTab { ContextBar(ctx: b.ctx, ctxMax: b.ctxMax) }
                 if !b.model.isEmpty {
                     Text([b.model, b.effort].filter { !$0.isEmpty }.joined(separator: " · ")).foregroundColor(Theme.cDim)
                 }
@@ -220,7 +228,7 @@ private struct HUDRow: View {
                 if !b.id.hasPrefix("ai:") {
                     Text(fmtUsd(b.cost)).foregroundColor(Theme.cAmber).fontWeight(.semibold)
                 }
-                Counts(b: b)
+                if !perTab { Counts(b: b) }
                 if !b.actionName.isEmpty {
                     ActionLabel(b: b, now: now, streamer: hud.streamer)
                 }
@@ -235,14 +243,21 @@ private struct HUDRow: View {
                 HUDButton(symbol: "doc.on.doc", active: false,
                           help: "Copy Claude's last reply, all of it, even past what fits the window (⇧⌘C)", hex: hex, action: onCopyReply)
             }
+            HUDButton(symbol: hud.isFavorite ? "star.fill" : "star", active: hud.isFavorite,
+                      help: hud.isFavorite ? "Starred. Click to take it out of the sidebar's favourites."
+                          : "Star this chat in the sidebar's favourites list.",
+                      hex: ThemeStore.shared.hex("--amber"), action: onToggleFavorite)
             HUDButton(symbol: hud.onTop ? "pin.fill" : "pin", active: hud.onTop,
                       help: hud.onTop ? "Pinned on top of every app, on any desktop. Click to put it back above the dashboard."
                           : "Pin on top of every app (Discord, Chrome…). It leaves the dashboard, even a full-screen one.",
                       hex: hex, action: onTogglePin)
-            HUDButton(symbol: "square.grid.2x2", active: false, help: "Back to the dashboard (this chat keeps running)", hex: hex, action: onDashboard)
-            HUDButton(symbol: "power", active: false,
-                      help: hud.mirror ? "End this chat (it runs in the other app, and ends there too)" : hud.status == "terminal" ? "Close this terminal" : "End this chat",
-                      hex: ThemeStore.shared.hex("--red"), action: onEnd)
+            // With two or more tabs the HUD's End Session ended the window, not the tab in front: ambiguous. The × on
+            // each tab chip ends that tab, so the HUD button hides in multi-tab mode.
+            if hud.tabCount <= 1 {
+                HUDButton(symbol: "power", active: false,
+                          help: hud.mirror ? "End this chat (it runs in the other app, and ends there too)" : hud.status == "terminal" ? "Close this terminal" : "End this chat",
+                          hex: ThemeStore.shared.hex("--red"), action: onEnd)
+            }
         }
         .font(.mono(10.5))
         .lineLimit(1)
@@ -687,8 +702,13 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
     private var tabs: [NSView] = []
     private var activeTab = 0
     private(set) var extras: [ExtraPane] = []
+    /// Every AI session running in this window's panes (Claude, Codex, Antigravity), by session id: the dashboard's
+    /// briefs whose host is this window.
+    private(set) var paneBriefs: [String: SessionBrief] = [:]
     private var paneTop: NSLayoutConstraint!
     private var paneTopUnderTabs: NSLayoutConstraint!
+    /// One row for names only; two once a tab has an AI session's figures (context, tools · web · err) to show.
+    private lazy var tabBarHeight = tabBar.heightAnchor.constraint(equalToConstant: 24)
     /// ⇧⌘↩: only the pane in front shows in its tab.
     private var zoomed = false
     /// Terminals in the order they had the keyboard, the latest last (a tab shown again gives it back to its latest).
@@ -831,9 +851,9 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
         let header = HeaderHostingView(rootView: ChatHeaderView(
             hud: hud,
             onTogglePin: { [weak self] in self?.togglePin() },
-            onDashboard: { [weak self] in self?.manager?.showDashboard() },
             onEnd: { [weak self] in self?.endChat() },
-            onCopyReply: { [weak self] in self?.copyLastReply() }))
+            onCopyReply: { [weak self] in self?.copyLastReply() },
+            onToggleFavorite: { [weak self] in self?.toggleFavorite() }))
         let ticker = NSHostingView(rootView: ChatTickerView(hud: hud))
         glowing = [header, ticker, paneArea, tabBar]
 
@@ -882,7 +902,7 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
             tabBar.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 4),
             tabBar.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 14),
             tabBar.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -10),
-            tabBar.heightAnchor.constraint(equalToConstant: 24),
+            tabBarHeight,
             paneTop,
             paneArea.bottomAnchor.constraint(equalTo: ticker.topAnchor, constant: -4),
             paneArea.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 14),
@@ -941,8 +961,17 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
 
     // MARK: show / hide with the old-TV effect
 
+    /// Set when the mascot closes this window: until then only a user's own click on a card may bring it back (a show()
+    /// during the 0.55 s power-off would set `reopenAfterHide` and the window would flicker back open).
+    var mascotShieldUntil = Date.distantPast
+    var isHiding: Bool { hiding }
+
     func show() {
         guard let w = window else { return }
+        if Date() < mascotShieldUntil {
+            if (manager?.userOpenDepth ?? 0) == 0 { return }
+            mascotShieldUntil = .distantPast
+        }
         if hiding {
             reopenAfterHide = true
             return
@@ -976,6 +1005,16 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
         runPowerOn()
         manager?.chatVisibilityChanged()
     }
+
+    /// For the mascot: the close (X) button's frame in screen coordinates (nil while it is hidden by an animation).
+    var closeButtonScreenRect: CGRect? {
+        guard let w = window, isShown, let b = w.standardWindowButton(.closeButton), !b.isHidden else { return nil }
+        return w.convertToScreen(b.convert(b.bounds, to: nil))
+    }
+
+    /// Whether pressing the X only hides the window (windowShouldClose's last branch). A mirror or an exited chat
+    /// does something else, so the mascot never presses the real button then.
+    var closeOnlyHides: Bool { !hud.mirror && !hud.exited }
 
     /// Powers the window off and orders it out; false when it can't (hidden already, or still animating).
     @discardableResult
@@ -1072,6 +1111,24 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
     }
 
     // MARK: actions
+
+    /// Star this chat in the sidebar's favourites. No sessionId yet (Claude hasn't opened its transcript): a beep —
+    /// nothing to star. A terminal with no Claude in it is not a chat either.
+    func toggleFavorite() {
+        guard let sid = sessionId, let sidebar = manager?.sidebar else { return NSSound.beep() }
+        if sidebar.favorites.remove(sid) == nil {
+            sidebar.favorites.insert(sid)
+            if sidebar.archived.contains(sid) { sidebar.archived.remove(sid) }
+        }
+        hud.isFavorite = sidebar.favorites.contains(sid)
+    }
+
+    /// The star in the HUD syncs with the sidebar: the session id came in late (a new chat) or changed (a resume), or
+    /// the sidebar was changed from its own row. Called on every brief update and once per sidebar favourites change.
+    func syncFavorite() {
+        let sid = sessionId
+        hud.isFavorite = sid.map { manager?.sidebar.favorites.contains($0) ?? false } ?? false
+    }
 
     /// The pin: on top of every app's windows (Discord, Chrome…), on any desktop. A window rides above the dashboard
     /// by default, as its child, and goes behind other apps with it; pinned, it leaves the dashboard (a child takes
@@ -1502,16 +1559,20 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
         return true
     }
 
-    /// A tab's × (iTerm2 asks the same way when something runs in it).
+    /// A tab's ×, the same as ⌘W on it: what runs in it exits at once (its planet or car leaves the orbit) and the other
+    /// tabs stay.
     private func closeTab(_ i: Int) {
         guard tabs.indices.contains(i) else { return }
-        let panes = terminals(in: i).compactMap { extra(of: $0) }
-        // The tab with this window's own chat or terminal closes the window, which keeps it running.
-        guard panes.count == terminals(in: i).count else {
+        let ts = terminals(in: i)
+        let panes = ts.compactMap { extra(of: $0) }
+        let own = panes.count < ts.count
+        // A mirror's own chat runs in the other build of the app: closing its tab only closes the window, as before.
+        if own, hud.mirror {
             if hide() { manager?.closed(id) }
             return
         }
-        for pane in panes { close(pane) }
+        if own { endOwnTab(confirm: false) }
+        endPanes(panes)
     }
 
     /// ⌘]/⌘[: the next or previous pane in the shown tab; false with only one.
@@ -1590,29 +1651,23 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
         return true
     }
 
-    /// ⌘W: a pane besides this window's own closes, as in iTerm2. False for the window's own pane: the window itself
-    /// closes then (hides; its chat keeps running).
+    /// ⌘W, as in iTerm2: the terminal in front exits at once, whatever runs in it (Claude, Codex, Antigravity, a shell):
+    /// its planet or car leaves the orbit, nothing is kept running. The other tabs and panes stay; the last one takes the
+    /// window with it. Only a chat copied from iTerm2 asks first, since its original tab there closes too. False for a
+    /// mirror: its chat runs in the other app, so the window only closes.
     func closeFocusedPane() -> Bool {
-        guard let pane = extra(of: focusedTerminal) else { return false }
-        close(pane)
-        return true
-    }
-
-    /// Closes a pane as a window closes: what runs in it goes on, a car on the orbit until it's opened again (a click,
-    /// ⇧⌘T) or the window's End Session ends it. A pane without a session of its own (screen couldn't start) just stops.
-    private func close(_ pane: ExtraPane) {
-        if zoomed { _ = toggleZoom() }
-        let folder = pane.currentFolder
-        removePaneView(pane.terminal)
-        extras.removeAll { $0 === pane }
-        if let name = pane.link?.name {
-            pane.detach()
-            manager?.closedPane(of: self, session: name, kind: pane.kind, cwd: folder)
-        } else {
-            pane.end()
+        let tv = focusedTerminal
+        if let pane = extra(of: tv) {
+            endPanes([pane])
+            return true
         }
-        refreshPanes()
-        focus(focusTarget(in: activeTab))
+        guard !hud.mirror else { return false }
+        if allTerminals.count > 1 {
+            endOwnTab(confirm: false)
+        } else {
+            endChat(confirm: origin != nil)
+        }
+        return true
     }
 
     /// A pane's shell exited: the pane goes, as in iTerm2.
@@ -1637,11 +1692,13 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
 
     private func refreshPanes() {
         let many = tabs.count > 1
+        hud.tabCount = tabs.count
         tabBar.isHidden = !many
         if many {
             paneTop.isActive = false
             paneTopUnderTabs.isActive = true
             tabBar.show(titles: tabs.indices.map(tabTitle), active: activeTab)
+            updateTabStats()
         } else {
             paneTopUnderTabs.isActive = false
             paneTop.isActive = true
@@ -1771,8 +1828,18 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
     private func endTab(_ i: Int, confirm: Bool) {
         let panes = terminals(in: i).compactMap { extra(of: $0) }
         if confirm, busy(panes), !ask("End this tab?", "What runs in it stops.", "End Tab") { return }
+        endPanes(panes)
+    }
+
+    /// Extra panes end: their shells and what runs in them stop. An AI session in one leaves the orbit at once (its
+    /// planet blows up), rather than when the engine next notices its process gone.
+    private func endPanes(_ panes: [ExtraPane]) {
+        guard !panes.isEmpty else { return }
         if zoomed { _ = toggleZoom() }
         for pane in panes {
+            for b in paneBriefs.values where Self.isUnder(b.pid, shell: pane.shellPid) {
+                manager?.dismiss(sessionId: b.id, pid: b.pid)
+            }
             if let name = pane.link?.name { manager?.terminalEnding("s:" + name) }
             removePaneView(pane.terminal)
             extras.removeAll { $0 === pane }
@@ -1780,6 +1847,17 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
         }
         refreshPanes()
         focus(focusTarget(in: activeTab))
+    }
+
+    /// Whether process `pid` runs under `shell` (its parent, or a few levels up).
+    static func isUnder(_ pid: Int32?, shell: Int32) -> Bool {
+        guard var cur = pid, shell > 0 else { return false }
+        for _ in 0..<8 {
+            if cur == shell { return true }
+            guard let parent = Proc.parent(cur), parent > 1 else { return false }
+            cur = parent
+        }
+        return false
     }
 
     /// End Session on the window's own tab while others are open: its chat or terminal ends and its tab goes; the
@@ -1890,6 +1968,29 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
         if !hide(then: finish) { finish() }
     }
 
+    func applyHosted(_ list: [SessionBrief]) {
+        paneBriefs = Dictionary(list.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        if tabs.count > 1 { updateTabStats() }
+    }
+
+    /// Each tab's chip shows the AI session running in it: the one in its pane in front, else in any of its panes.
+    private func updateTabStats() {
+        let stats: [TabStats?] = tabs.indices.map { i in
+            let front = focusTarget(in: i)
+            let ordered = [front] + terminals(in: i).filter { $0 !== front }
+            for tv in ordered {
+                let shell = tv === terminal ? shellPid : extra(of: tv)?.shellPid ?? 0
+                if let b = paneBriefs.values.first(where: { Self.isUnder($0.pid, shell: shell) }) {
+                    return TabStats(ctx: b.ctx, ctxMax: b.ctxMax, tools: b.tools, web: b.web, errors: b.errors)
+                }
+            }
+            return nil
+        }
+        let height: CGFloat = stats.contains { $0 != nil } ? 36 : 24
+        if tabBarHeight.constant != height { tabBarHeight.constant = height }
+        tabBar.setStats(stats)
+    }
+
     func apply(_ brief: SessionBrief?) {
         if let brief {
             if hud.brief != brief { hud.brief = brief }
@@ -1899,6 +2000,7 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
         }
         if hud.terminalDir != nil, brief?.live != true { sessionId = nil }
         border.setStatus(hud.status)
+        syncFavorite()
     }
 
     /// The window's title (Mission Control's, the Window menu's, its first tab's): made up in streamer mode.
@@ -1917,7 +2019,7 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
         if tabs.count > 1 { tabBar.show(titles: tabs.indices.map(tabTitle), active: activeTab) }
     }
 
-    func setFont(_ size: CGFloat) { for tv in allTerminals { tv.font = Theme.mono(size) } }
+    func setFont(_ size: CGFloat) { for tv in allTerminals { tv.font = TerminalFont.font(size) } }
 
     /// The process that is Claude's parent: the shell inside the detached session, or our own shell.
     var shellPid: Int32 {

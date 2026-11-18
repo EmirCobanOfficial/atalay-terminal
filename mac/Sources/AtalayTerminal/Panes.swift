@@ -337,6 +337,12 @@ final class PaneTabBar: NSView {
         }
     }
 
+    /// Each tab's AI session figures, in tab order (nil: no AI in that tab). Updated in place, so a chip being dragged
+    /// isn't rebuilt under the pointer.
+    func setStats(_ stats: [TabStats?]) {
+        for (chip, s) in zip(stack.arrangedSubviews.compactMap { $0 as? TabChip }, stats) { chip.stats = s }
+    }
+
     /// Where a tab let go at `point` (window coordinates) goes: before the tab whose middle is past it; nil off the bar.
     func slot(at point: NSPoint) -> Int? {
         let p = convert(point, from: nil)
@@ -354,14 +360,29 @@ final class PaneTabBar: NSView {
     }
 }
 
+/// What a tab's chip shows of the AI session in it (Claude, Codex, Antigravity): its context and today's counts.
+struct TabStats: Equatable {
+    var ctx: Int, ctxMax: Double, tools: Int, web: Int, errors: Int
+}
+
 private final class TabChip: NSView {
     var onSelect: (() -> Void)?
     var onClose: (() -> Void)?
     var onDrag: ((TabDrag) -> Void)?
+    var stats: TabStats? {
+        didSet {
+            guard stats != oldValue else { return }
+            fillStats()
+            needsLayout = true
+        }
+    }
     private var pressedAt: NSPoint?
     private var dragging = false
     private let label = NSTextField(labelWithString: "")
     private let close = NSButton(title: "×", target: nil, action: nil)
+    private let meter = CtxMeter()
+    private let ctxText = NSTextField(labelWithString: "")
+    private let counts = NSTextField(labelWithString: "")
 
     init(title: String, number: Int, active: Bool) {
         super.init(frame: .zero)
@@ -373,33 +394,76 @@ private final class TabChip: NSView {
         label.stringValue = number <= 9 ? "\(number)  \(title)" : title
         label.font = Theme.mono(11, active ? .semibold : .regular)
         label.textColor = ThemeStore.shared.color(active ? "--accent-soft" : "--dim")
-        label.lineBreakMode = .byTruncatingTail
-        label.alignment = .center
         // A long title (a chat named after its whole first prompt) is cut short with "…": it neither widens its tab past
-        // the others' nor the window past the screen (the window grows for anything that resists harder than this).
-        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        label.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        // the others' nor the window past the screen. Frames are set in layout(), so nothing here pushes the window.
+        label.lineBreakMode = .byTruncatingTail
+        ctxText.font = Theme.mono(10)
+        ctxText.textColor = ThemeStore.shared.color("--txt")
+        counts.font = Theme.mono(10)
+        counts.lineBreakMode = .byTruncatingTail
         close.isBordered = false
         close.font = Theme.mono(13, .medium)
         close.contentTintColor = ThemeStore.shared.color(active ? "--accent-soft" : "--dim")
         close.target = self
         close.action = #selector(closeTab)
-        close.toolTip = "Close Tab"
-        for v in [label, close] as [NSView] {
-            v.translatesAutoresizingMaskIntoConstraints = false
-            addSubview(v)
-        }
-        NSLayoutConstraint.activate([
-            label.centerYAnchor.constraint(equalTo: centerYAnchor),
-            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 22),
-            label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -22),
-            close.centerYAnchor.constraint(equalTo: centerYAnchor),
-            close.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -5),
-            close.widthAnchor.constraint(equalToConstant: 16),
-        ])
+        close.toolTip = "End this tab (⌘W)"
+        for v in [label, meter, ctxText, counts, close] as [NSView] { addSubview(v) }
+        fillStats()
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
+
+    override var isFlipped: Bool { true }
+
+    private func fillStats() {
+        guard let s = stats else { return }
+        meter.frac = s.ctxMax > 0 ? min(1, Double(s.ctx) / s.ctxMax) : 0
+        ctxText.stringValue = Self.tok(s.ctx)
+        let num: [NSAttributedString.Key: Any] = [.font: Theme.mono(10, .semibold), .foregroundColor: ThemeStore.shared.color("--txt")]
+        let dim: [NSAttributedString.Key: Any] = [.font: Theme.mono(10), .foregroundColor: ThemeStore.shared.color("--dim")]
+        var err = num
+        if s.errors > 0 { err[.foregroundColor] = ThemeStore.shared.color("--red") }
+        let a = NSMutableAttributedString()
+        for (text, attrs) in [("\(s.tools)", num), (" tools · ", dim), ("\(s.web)", num), (" web · ", dim), ("\(s.errors)", err), (" err", dim)] {
+            a.append(NSAttributedString(string: text, attributes: attrs))
+        }
+        counts.attributedStringValue = a
+    }
+
+    /// Two rows when there's room: the name with the context meter, then the counts. Narrower, the counts go first, then
+    /// the meter; the name always stays.
+    override func layout() {
+        super.layout()
+        let w = bounds.width, h = bounds.height
+        close.frame = NSRect(x: w - 21, y: (h - 16) / 2, width: 16, height: 16)
+        let right = w - 26
+        let showCounts = stats != nil && w >= 230
+        let showMeter = stats != nil && w >= 150
+        meter.isHidden = !showMeter
+        ctxText.isHidden = !showMeter
+        counts.isHidden = !showCounts
+        let titleY = showCounts ? h / 2 - 15 : (h - 15) / 2
+        var titleRight = right
+        if showMeter {
+            ctxText.sizeToFit()
+            let tw = ctxText.frame.width
+            ctxText.frame = NSRect(x: right - tw, y: titleY, width: tw, height: 15)
+            meter.frame = NSRect(x: right - tw - 6 - 44, y: titleY + 5, width: 44, height: 5)
+            titleRight = meter.frame.minX - 8
+        }
+        label.alignment = stats == nil ? .center : .left
+        let titleX: CGFloat = stats == nil ? 22 : 10
+        label.frame = NSRect(x: titleX, y: titleY, width: max(0, titleRight - titleX), height: 15)
+        if showCounts { counts.frame = NSRect(x: 10, y: h / 2 + 1, width: max(0, right - 10), height: 14) }
+    }
+
+    private static func tok(_ n: Int) -> String {
+        let d = Double(n)
+        if d >= 1e6 { return String(format: "%.1fM", d / 1e6) }
+        if d >= 1e4 { return "\(Int((d / 1e3).rounded()))k" }
+        if d >= 1e3 { return String(format: "%.1fk", d / 1e3) }
+        return "\(n)"
+    }
 
     // A click selects the tab when it's let go; a press that moves a few points drags it instead.
     override func mouseDown(with event: NSEvent) {
@@ -430,4 +494,17 @@ private final class TabChip: NSView {
     }
 
     @objc private func closeTab() { onClose?() }
+}
+
+/// A tab chip's context meter: the header's context bar, small (the accent fading to amber on a faint track).
+private final class CtxMeter: NSView {
+    var frac = 0.0 { didSet { if frac != oldValue { needsDisplay = true } } }
+
+    override func draw(_ dirtyRect: NSRect) {
+        NSColor.white.withAlphaComponent(0.08).setFill()
+        bounds.fill()
+        guard frac > 0 else { return }
+        let fill = NSRect(x: 0, y: 0, width: bounds.width * frac, height: bounds.height)
+        NSGradient(starting: ThemeStore.shared.color("--accent"), ending: ThemeStore.shared.color("--amber"))?.draw(in: fill, angle: 0)
+    }
 }

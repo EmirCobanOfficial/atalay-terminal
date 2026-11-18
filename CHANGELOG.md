@@ -3,6 +3,30 @@
 Each version's lines are its release notes: the app lists them on its "what's new" screen
 (`app/scripts/release.sh <version> "<one line per change>"`).
 
+## 0.24.0
+
+- Tokens board: everyone is on it again, also with one AI picked, and two new switches in Settings keep your name or your AI and model off it
+- Badges come from the server now, and Founder shows your number among the first 1,000
+- ⌘W ends the terminal in front, whatever runs in it, as in iTerm2; ⇧⌘W only closes its window
+- Each tab shows its AI session's context and today's counts
+- A star on the chat's strip adds it to your favourites in one click
+- When Claude runs Codex, Antigravity or Gemini in a shell, a drone orbits it while it works
+- The context bar drops right after /compact, and the orbit map is lighter on the GPU
+
+Windows:
+
+- Ctrl+W ends the terminal in front, whatever runs in it, as a tab closes in Chrome; Ctrl+Shift+W only closes its window
+- Each terminal's top strip shows its AI session's context and today's counts, and a star adds the chat to your favourites
+
+## 0.23.0
+
+- Leaderboard and profile redesign: a podium, the week day by day, past weeks, your own weeks and tokens by AI
+- Tokens board: pick an AI, model or effort to compare only with your friends
+- Messages are encrypted on the server now, so every computer of your account shows the whole history
+- Antigravity keeps orbiting while it goes on by itself after its turn
+- The app is called Orbiterm everywhere now
+- Updates always reach you now, even if the app's own update button stops working
+
 ## 0.22.3 (Windows only)
 
 - Updates: the app also asks the server which version is current, so an update is always found and offered, even if the app's own check goes wrong

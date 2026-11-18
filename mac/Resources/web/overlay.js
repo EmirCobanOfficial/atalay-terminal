@@ -15,7 +15,7 @@ function toast(msg) {
 
 window.Overlay = {
   shortcuts(x, y) {
-    window.Shortcuts.open(x, y);
+    window.Shortcuts.show(x, y);
   },
   newTerminal() {
     window.Picker.open({

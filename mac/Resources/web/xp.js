@@ -34,9 +34,10 @@ window.Xp = (() => {
   const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
   const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
   const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
-  const week = (days, color, end) => {
+  // `fmt` and `floor`: another measure on the same bars (the leaderboard's tokens), its numbers and the least top.
+  const week = (days, color, end, fmt = dur, floor = 4 * 3600) => {
     if (!days || !days.length) return '';
-    const max = Math.max(4 * 3600, ...days.filter((s) => s != null));
+    const max = Math.max(floor, ...days.filter((s) => s != null));
     const yours = new Date().toLocaleDateString('sv');
     const mine = !end || end === yours;
     const last = new Date(`${end || yours}T12:00:00Z`);
@@ -49,7 +50,7 @@ window.Xp = (() => {
           const isLast = i === days.length - 1;
           const name = isLast && mine ? 'today' : `${DAYS[d.getUTCDay()]} ${d.getUTCDate()}`;
           const h = s ? Math.max(3, (s / max) * 100) : 0;
-          return `<div class="xw-d${isLast ? ' today' : ''}" title="${DAYS[d.getUTCDay()]} ${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]}: ${s == null ? 'hidden' : dur(s)}"><em>${s ? dur(s) : ''}</em>` +
+          return `<div class="xw-d${isLast ? ' today' : ''}" title="${DAYS[d.getUTCDay()]} ${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]}: ${s == null ? 'hidden' : fmt(s)}"><em>${s ? fmt(s) : ''}</em>` +
             `<b><i style="height:${h.toFixed(1)}%"></i></b><span>${name}</span></div>`;
         })
         .join('') +

@@ -72,12 +72,15 @@ in `src/main.js` and pushes to them with `window.__radar.*`, `window.__messages.
 | `src/preload.js` | `window.webkit.messageHandlers` over IPC, the values the Mac injects into pages | RadarView, Messages, Overlay |
 | `src/engine.js` | Claude Code's sessions and transcripts (`%USERPROFILE%\.claude`) into the dashboard's state, and what the other AI tools do from their own records (Codex's logs, Antigravity's databases through `node:sqlite`), counted with Claude's; while a Codex runs, its account limits from `codex app-server` | Engine/*.swift |
 | `src/ledger.js` | spend.ledger's history: each past day's spend by project and model, read once from the transcripts and kept in `%LOCALAPPDATA%\atalay-terminal\ledger.json` (Claude Code deletes transcripts after 30 days) | Ledger.swift |
+| `src/tokenledger.js` | the leaderboard's Tokens view: tokens burned by Claude Code, Codex and Antigravity, read from their own records by day, tool, model and effort, kept in `tokens.json` (+ `.seen` hashes) beside the spend ledger and sent to the API a day at a time (`node:sqlite` for Antigravity's older generations) | TokenLedger.swift |
 | `src/terminals.js` | shells and Claude in ConPTY, one per chat or terminal window, in the session host | ChatTerminal, Detached |
 | `src/host.cs`, `src/sessionhost.js` | the session host, which keeps them running without the app, and the app's line to it | Detached (screen) |
 | `src/git.js` | Source Control's requests: the repos, diffs, history, commit, push | Git.swift |
 | `src/cloud.js` | the API: hacker name, heartbeat (XP, the AI tools at work for their badges), friends and messages, the Roadmap, the account (signing out and deleting it keep the token here), the live socket, notifications | Cloud, Social, ClientKey |
+| `src/unseal.js` | the messages sealed end to end before it was retired: with the keys this PC still has (the vault file, sealed by Windows), it hands the server each old message's own key, read only | Unseal |
 | `src/files.js` | Source Control's editor's files: a text file Ctrl-clicked in a terminal opens there (the path worked out from the shell's folder, a path Claude wrapped joined again), read and written only once opened; anything else in its app, a program only shown in its folder | FileEditor.swift, ChatTerminal |
 | `src/power.js` | power save: the map's switch, on by itself below 20% on battery or in Energy Saver (read with the process list) | PowerSaver.swift |
+| `src/termfont.js` | the terminals' font family picked in Settings: the monospaced families of this PC (one PowerShell call, kept for the session), the pick kept and checked | TerminalFont.swift |
 | `src/themes.js` | the themes: every colour token from a palette, into each page; Settings' interface font and text size | Themes.swift |
 | `src/aicolors.js` | the AI tools in the theme's colours: Claude Code, Codex and Antigravity on their themes that use the terminal's 16 colours, each one's own given back when it's turned off | AIColors.swift |
 | `src/runaways.js` | the process list: what burns a core where nobody sees it (DANGER), what closed terminals left running (amber cars), what runs in the app's terminals (their cars), the AI tools besides Claude running in a terminal (Codex, Gemini…: planets) | Runaways, MainWindowController, RadarEngine |
@@ -85,6 +88,8 @@ in `src/main.js` and pushes to them with `window.__radar.*`, `window.__messages.
 | `src/limits.js` | Claude's 5-hour and weekly limits for the top bar: a script of the app's as Claude Code's status line, a status line of the user's own run through it | Limits |
 | `src/overlay.js` | the shortcut wheel's and the folder picker's folders (overlay.html) | Overlay.swift |
 | `src/chatlist.js`, `pages/chats.*` | the chats list beside the dashboard (a view of its own in the dashboard window): every saved chat by project, each folder a card with the app's terminals in it, folders opened from the list, favourites, the archive (Settings lists it) | Sidebar.swift |
+| `src/notewindow.js` | a note out of the dashboard in a window of its own (web/note.html): above the dashboard, or pinned above every app; its place and pin kept, the notes left out at the last quit reopened; the dashboard's page stays the notes' one writer | NoteWindow.swift |
+| `src/feedpanel.js` | the community feed's lines (web/feed.html) in a see-through, click-through window at the top left of the screen | FeedPanel.swift |
 | `pages/terminal.*` | a chat or terminal window: xterm.js and its header | ChatWindow |
 
 ### The session host
@@ -102,11 +107,12 @@ chats run in the app, through node-pty, and end with it.
 
 - Closing the dashboard keeps the app going while a chat or terminal runs (starting the app again brings it back, as
   the Dock does on the Mac); with none, it quits.
-- No tabs or split panes: every terminal is a window of its own. Closing one (Ctrl+W, its ×) keeps it running as a car
-  on the orbit, as a closed tab does on the Mac; a click opens it again, End Session ends it and all it runs.
+- No tabs or split panes: every terminal is a window of its own. Ctrl+W ends the terminal in front and all it runs, as
+  ⌘W does on the Mac (and as Ctrl+W closes a tab in Chrome); closing its window (Ctrl+Shift+W, its ×) keeps it running
+  as a car on the orbit, as ⇧⌘W does on the Mac; a click opens it again.
 - No four-finger click (Mac trackpads only): Ctrl and the middle mouse button (or Ctrl+K) open the shortcut wheel,
-  Ctrl+N a new file in Source Control's editor, Ctrl+Shift+N a new terminal and Ctrl+W closes the window, in the
-  terminal windows too (where they'd otherwise go to the shell); Ctrl++ and Ctrl+- there are the terminals' text size,
+  Ctrl+N a new file in Source Control's editor, Ctrl+Shift+N a new terminal, Ctrl+W ends the terminal in front and
+  Ctrl+Shift+W closes the window, in the terminal windows too (where they'd otherwise go to the shell); Ctrl++ and Ctrl+- there are the terminals' text size,
   as ⌘+ and ⌘− on the Mac. While Antigravity runs in one, its Ctrl+K is Antigravity's, which approves its subagents'
   steps with it.
   Ctrl+B (⌘B) opens and closes the chats list in the dashboard window only: in a terminal it stays the shell's (and

@@ -34,6 +34,10 @@ window.Account = (() => {
     email_failed: "the e-mail didn't go out · try again",
     email_unavailable: 'e-mail sign-in is off on this server',
     github_unavailable: 'GitHub sign-in is off on this server',
+    // A GitHub sign-in that came back without signing in (the API's githubFailed).
+    github_denied: "GitHub didn't sign you in · try again",
+    github_failed: "GitHub didn't finish the sign-in · try again",
+    github_expired: 'that took too long · try again',
     code_expired: 'that code expired · send a new one',
     wrong_code: "that code isn't right",
     too_many_attempts: 'too many tries · send a new code',
@@ -58,7 +62,7 @@ window.Account = (() => {
     A = r;
     render();
     paintIcon();
-    // profile.js's Settings → PROFILE follows the account (its picture, its links, whether the server takes them).
+    // profile.js's Settings row and the profile's edit panel follow the account (its picture, its links, whether the server takes them).
     window.dispatchEvent(new CustomEvent('account'));
     if (A.pending && (!was || !was.pending || was.pending.id !== A.pending.id)) mergeDialog();
     if (A.signedIn) Sync.start(A);
@@ -66,139 +70,11 @@ window.Account = (() => {
     return A;
   }
 
-  // ---------- end-to-end encryption (E2EE.swift) ----------
-  // Messages are sealed on this computer before they go. Here: whether this computer has the key, the recovery key one
-  // click away, another of your computers waiting for the key, and the recovery key typed in when nothing else can help.
-  let E = null; // E2EE.swift's state: phase, recovery, waiting, sas, friends
-  const ef = { show: false, key: '', confirmNew: false, confirmOver: false, msg: '', bad: false, busy: false };
-  const keysCall = (action, extra) => cloud({ type: 'e2ee', action, ...(extra || {}) }).then((r) => r || { error: 'offline' });
-  const KEY_ERRORS = {
-    bad_recovery: "that isn't a recovery key (ORBI- and 32 letters and digits)",
-    wrong_recovery: "that recovery key isn't this account's",
-    no_backup: 'this account has no recovery copy',
-    locked: 'this computer has no key to give yet',
-    not_found: 'that computer is gone',
-  };
-  async function loadKeys() {
-    const r = await keysCall('state');
-    if (r && !r.error) {
-      E = r;
-      render();
-    }
-  }
-  window.Social?.on?.((ev) => {
-    if (ev.type !== 'e2ee_state') return;
-    const { type, ...st } = ev;
-    E = st;
-    render();
-  });
-  const keySay = (msg, bad = false) => {
-    ef.msg = msg;
-    ef.bad = bad;
-    render();
-  };
-  const where = (d) => [d.os, d.app ? `app ${d.app}` : ''].filter(Boolean).join(' · ');
-
-  function keysHTML() {
-    if (!E) return '';
-    let html = '<div class="acct-e2ee"><div class="acct-e2ee-h"><b>🔒 end-to-end encrypted messages</b>';
-    if (E.phase === 'ready') {
-      html += '<small>on · your messages are sealed on this computer before they leave it: only you and the friend you write to can read them, the server can\'t</small></div>';
-      if (ef.show && ef.key) {
-        html +=
-          `<div class="acct-rk"><code>${esc(ef.key)}</code><button type="button" class="mn-btn" data-acct="rk-copy">copy</button><button type="button" class="mn-btn" data-acct="rk-hide">hide</button></div>` +
-          '<p class="acct-why">Keep it somewhere safe, like a password manager. It opens your messages on a new computer when none of yours is around to approve it.</p>';
-      } else {
-        const hint = E.recovery === 'new'
-          ? 'new · save it now: it opens your messages if you lose your computers'
-          : E.recovery === 'elsewhere' ? 'it was made on another of your computers' : 'opens your messages on a new computer when no other one is around';
-        html +=
-          `<div class="hk-row${E.recovery === 'new' ? ' acct-rk-new' : ''}"><span>recovery key<small>${hint}</small></span><span class="acct-rk-btns">` +
-          (E.recovery !== 'elsewhere' ? '<button type="button" class="mn-btn go" data-acct="rk-show">show</button>' : '') +
-          `<button type="button" class="mn-btn" data-acct="rk-new">${ef.confirmNew ? 'sure? the old one stops working' : 'new key…'}</button></span></div>`;
-      }
-      for (const d of E.waiting || []) {
-        html +=
-          `<div class="hk-row"><span>${isWin(d.os) ? 'a Windows PC' : 'a Mac'} of yours is waiting for your messages<small>${esc(where(d))}</small></span>` +
-          `<button type="button" class="mn-btn go" data-acct="approve" data-id="${esc(d.id)}">approve…</button></div>`;
-      }
-    } else if (E.phase === 'locked') {
-      html +=
-        '<small>locked on this computer · your messages are sealed with a key it doesn\'t have yet</small></div>' +
-        '<p class="acct-why">Open Orbiterm on another of your computers: it offers to approve this one, and both screens show a code to compare. Or enter your recovery key:</p>' +
-        '<div class="acct-form"><label class="hk-field"><span class="hk-prompt">⚿</span><input class="acct-rk-in" spellcheck="false" autocomplete="off" placeholder="ORBI-XXXX-XXXX-…"></label>' +
-        `<button type="button" class="mn-btn go" data-acct="rk-open"${ef.busy ? ' disabled' : ''}>unlock</button></div>` +
-        '<div class="hk-row"><span>lost every computer and the recovery key?<small>start over with a new key: messages sealed before stay closed, and your friends see your security code change</small></span>' +
-        `<button type="button" class="mn-btn acct-del" data-acct="rk-over">${ef.confirmOver ? 'sure? start over' : 'start over…'}</button></div>`;
-    } else {
-      html += `<small>${E.phase === 'starting' ? 'getting ready…' : 'starts once this computer reaches the server'}</small></div>`;
-    }
-    if (ef.msg) html += `<p class="hk-status acct-status ${ef.bad ? 'bad' : 'ok'}">${esc(ef.msg)}</p>`;
-    return html + '</div>';
-  }
-
-  async function keysClick(act, b) {
-    if (act === 'rk-show') {
-      const r = await keysCall('recovery', { seen: true });
-      ef.key = r.key || '';
-      ef.show = !!r.key;
-      return render();
-    }
-    if (act === 'rk-hide') {
-      ef.show = false;
-      ef.key = '';
-      return render();
-    }
-    if (act === 'rk-copy') {
-      try {
-        await navigator.clipboard.writeText(ef.key);
-        return keySay('recovery key copied');
-      } catch {
-        return keySay("couldn't copy it · select it and copy", true);
-      }
-    }
-    if (act === 'rk-new') {
-      if (!ef.confirmNew) {
-        ef.confirmNew = true;
-        render();
-        return setTimeout(() => ((ef.confirmNew = false), render()), 5000);
-      }
-      ef.confirmNew = false;
-      const r = await keysCall('newRecovery');
-      if (r.error) return keySay(errText(r.error), true);
-      ef.key = r.key;
-      ef.show = true;
-      keysCall('recovery', { seen: true });
-      return keySay('new recovery key · the old one no longer opens anything');
-    }
-    if (act === 'rk-open') {
-      const input = host.querySelector('.acct-rk-in');
-      const key = (input && input.value.trim()) || '';
-      if (!key) return input && input.focus();
-      ef.busy = true;
-      keySay('opening…');
-      const r = await keysCall('recover', { key });
-      ef.busy = false;
-      if (r.error) return keySay(KEY_ERRORS[r.error] || errText(r.error), true);
-      return keySay('unlocked · your messages open on this computer now');
-    }
-    if (act === 'rk-over') {
-      if (!ef.confirmOver) {
-        ef.confirmOver = true;
-        render();
-        return setTimeout(() => ((ef.confirmOver = false), render()), 5000);
-      }
-      ef.confirmOver = false;
-      const r = await keysCall('startOver');
-      if (r.error) return keySay(errText(r.error), true);
-      return keySay('a new key is ready · save the new recovery key');
-    }
-    if (act === 'approve') {
-      const r = await keysCall('approve', { device: b.dataset.id });
-      if (r.error) return keySay(KEY_ERRORS[r.error] || errText(r.error), true);
-      return keySay('compare the code on both screens (bottom right)');
-    }
-  }
+  // Where the message keys' block was (that encryption was retired on 2026-11-15): one honest line about where messages
+  // are kept. They're encrypted on the way and at rest on the server (api/src/msgcrypt.ts), which can read them, so the
+  // history shows on every computer.
+  const msgsLine = () =>
+    '<p class="acct-why acct-msgs">Messages are encrypted on the way and on our servers, so your history shows on all your computers.</p>';
 
   // ---------- Settings → ACCOUNT ----------
   const ago = (at) => {
@@ -209,6 +85,7 @@ window.Account = (() => {
   const GH = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>';
 
   function render() {
+    paintDanger();
     if (!host || !host.isConnected) return;
     if (!A) return setHTML(host, '<p class="acct-why">loading…</p>');
     const status = form.msg ? `<p class="hk-status acct-status ${form.bad ? 'bad' : 'ok'}">${esc(form.msg)}</p>` : '';
@@ -230,8 +107,7 @@ window.Account = (() => {
           '</div>' +
           mail +
           status +
-          keysHTML() +
-          '<div class="acct-end"><button type="button" class="mn-btn acct-del" data-acct="delete">delete my data…</button></div>',
+          msgsLine(),
       );
       const input = host.querySelector('.acct-email, .acct-code');
       if (input && document.activeElement !== input) {
@@ -268,12 +144,11 @@ window.Account = (() => {
         hint +
         (add || mail ? `<div class="acct-add">${add}</div>${mail}` : '') +
         `<div class="acct-devs">${devices}</div>` +
-        '<div class="hk-row"><span>sync settings across your computers<small>theme, interface font and size, terminal text size, sound, token savers, AI colours, updates · as VS Code\'s Settings Sync</small></span>' +
+        '<div class="hk-row"><span>sync settings across your computers<small>theme, interface and terminal fonts and text sizes, sound, token savers, AI colours, updates · as VS Code\'s Settings Sync</small></span>' +
         `<button type="button" class="hk-sw acct-sync${on ? ' on' : ''}" role="switch" aria-checked="${on}" title="Sync settings across your computers"><i></i></button></div>` +
         status +
-        keysHTML() +
-        '<div class="acct-end"><button type="button" class="mn-btn" data-acct="signout">sign out on this computer</button>' +
-        '<button type="button" class="mn-btn acct-del" data-acct="delete">delete account…</button></div>',
+        msgsLine() +
+        '<div class="acct-end"><button type="button" class="mn-btn" data-acct="signout">sign out on this computer</button></div>',
     );
   }
 
@@ -353,6 +228,11 @@ window.Account = (() => {
         return say2('');
       }
       await load();
+      // GitHub came back without signing in: why, and no more waiting.
+      if (A && A.githubFailed) {
+        clearInterval(waiting);
+        return say2(errText(A.githubFailed), true);
+      }
       if ((A && (A.signedIn !== was || A.github !== had)) || (A && A.pending)) {
         clearInterval(waiting);
         signedIn();
@@ -395,6 +275,8 @@ window.Account = (() => {
     if (!r || r.error) return say2(errText(r?.error), true);
     A = r.account;
     render();
+    // No live event comes for an e-mail sign in, so tell the profile's edit panel and the others here, as load() does.
+    window.dispatchEvent(new CustomEvent('account'));
     if (r.result === 'merge') {
       form.mode = '';
       say2('');
@@ -438,8 +320,6 @@ window.Account = (() => {
         });
       }
       if (act === 'signout') return signOut();
-      if (act === 'delete') return deleteData();
-      if (act.startsWith('rk-') || act === 'approve') return keysClick(act, b);
     }
     if (e.target.closest('.acct-sync')) {
       Sync.enable(!Sync.enabled());
@@ -451,7 +331,6 @@ window.Account = (() => {
     if (e.key !== 'Enter') return;
     if (e.target.closest('.acct-email')) sendCode();
     if (e.target.closest('.acct-code')) verify();
-    if (e.target.closest('.acct-rk-in')) keysClick('rk-open');
   }
 
   // cloud.js's Settings page gives the section to fill while the menu is open.
@@ -462,7 +341,29 @@ window.Account = (() => {
     host.addEventListener('keydown', onKey);
     render();
     load();
-    loadKeys();
+  }
+
+  // ---------- Settings → DANGER ZONE ----------
+  // Deleting has its own section at the very end of Settings, apart from what's used every day (GitHub's Danger Zone,
+  // Discord's Account Removal, Apple: a destructive action never sits where it's clicked by habit): "delete account…"
+  // once signed in, "delete my data…" as a guest. deleteData() asks before anything goes.
+  let dangerHost = null;
+  function paintDanger() {
+    if (!dangerHost || !dangerHost.isConnected) return;
+    if (!A) return setHTML(dangerHost, '');
+    const all = A.signedIn;
+    setHTML(
+      dangerHost,
+      '<div class="hk-h danger-h">DANGER ZONE</div><div class="danger-zone"><div class="hk-row">' +
+        `<span>${all ? 'delete account' : 'delete my data'}<small>${all ? 'your name, XP, friends, messages and synced settings, on all your computers' : 'your name, XP, friends and messages, here and on the server'} · chats and terminals stay on this computer</small></span>` +
+        `<button type="button" class="mn-btn acct-del" data-danger="delete">${all ? 'delete account…' : 'delete my data…'}</button></div></div>`,
+    );
+  }
+  function mountDanger(el) {
+    dangerHost = el;
+    if (!el) return;
+    el.onclick = (e) => e.target.closest('[data-danger=delete]') && deleteData();
+    paintDanger();
   }
 
   // ---------- the activity bar's menu ----------
@@ -477,40 +378,92 @@ window.Account = (() => {
   const outside = (e) => {
     if (menuEl && !menuEl.contains(e.target) && !e.target.closest('#activity [data-view=account]')) closeMenu();
   };
-  const escape = (e) => e.key === 'Escape' && closeMenu();
+  // Esc closes the status's small menu first, then this one.
+  const escape = (e) => {
+    if (e.key !== 'Escape') return;
+    const pick = menuEl && menuEl.querySelector('.mn-pick');
+    if (!pick) {
+      // Only the menu takes this Esc: the page behind it (cloud.js's view handler) must not also step back.
+      e.preventDefault();
+      e.stopPropagation();
+      return closeMenu();
+    }
+    e.stopPropagation();
+    statusPick(false);
+    menuEl.querySelector('[data-m=status]')?.focus();
+  };
+  // The status row's small menu (cloud.js statusMenu: online, away, do not disturb, invisible), beside the row, as a
+  // submenu: it opens on the row's hover or click, and closes on another row's hover; a status picked closes it all.
+  function statusPick(open) {
+    const row = menuEl && menuEl.querySelector('.acct-st');
+    const b = row && row.querySelector('[data-m=status]');
+    if (!b || !window.Cloud?.statusMenu) return;
+    const shown = !!row.querySelector('.mn-pick');
+    if (open === shown) return;
+    window.Cloud.statusMenu(row, () => closeMenu());
+    b.setAttribute('aria-expanded', String(open));
+  }
 
+  // Who you are, your status and your account, Slack's and Discord's way: at the top your picture and name#tag (a click
+  // opens your profile; ⧉ copies the name#tag for a friend), your status under it, then your profile, Settings and the
+  // account's own items.
   async function menu() {
     if (menuEl) return closeMenu();
     if (!A) await load();
     refreshPic(false);
     if (!A) return say(errText('offline'));
     const ab = document.querySelector('#activity [data-view=account]');
-    const who = A.signedIn
-      ? `<span class="acct-ok">✓ signed in</span><b>${esc(A.name)}<i>${tagText(A.tag)}</i></b><small>${esc(A.github ? `GitHub · ${A.github}` : A.email)}${A.devices.length > 1 ? ` · ${A.devices.length} computers` : ''}</small>`
-      : `<b>${esc(A.name)}<i>${tagText(A.tag)}</i></b><small>not signed in · this computer only</small>`;
-    const profile = `<button type="button" data-m="profile">${icon(0xea67)}Profile &amp; badges</button>`;
-    const items = A.signedIn
-      ? profile + `<button type="button" data-m="settings">${icon(0xeb99)}Account settings…</button>` +
-        `<button type="button" data-m="sync">${icon(0xea77)}Settings sync<em>${Sync.enabled() ? 'on' : 'off'}</em></button>` +
-        `<button type="button" data-m="signout">${icon(0xea6e)}Sign out on this computer</button>` +
-        `<hr><button type="button" class="danger" data-m="delete">${icon(0xea81)}Delete account…</button>`
-      : profile + (A.methods.github ? `<button type="button" data-m="github">${GH}Sign in with GitHub</button>` : '') +
-        (A.methods.email ? `<button type="button" data-m="email">${icon(0xeb1c)}Sign in with e-mail…</button>` : '') +
-        `<hr><button type="button" class="danger" data-m="delete">${icon(0xea81)}Delete my data…</button>`;
+    const line = A.signedIn
+      ? `<span class="acct-ok-t">✓ signed in</span> · ${esc(A.github ? `GitHub · ${A.github}` : A.email)}${A.devices.length > 1 ? ` · ${A.devices.length} computers` : ''}`
+      : 'not signed in · this computer only';
+    // A picture, square as on Steam: the GitHub one once signed in with it, the name's first letter otherwise.
+    const pic = A.signedIn && A.avatar
+      ? `<img class="acct-avatar" alt="" src="${esc(A.avatar)}">`
+      : `<b class="acct-me-letter" aria-hidden="true">${esc((A.name || '?').trim().charAt(0).toUpperCase())}</b>`;
+    const me = window.Social?.state()?.me;
+    const st = (me && me.status) || 'offline';
+    const status = window.Social
+      ? `<div class="acct-st"><button type="button" data-m="status" aria-haspopup="menu" aria-expanded="false" title="Your status: what friends see">${window.Social.dot(st)}<span>${esc(window.Social.PRESENCE[st]?.label || st)}</span><em aria-hidden="true">▸</em></button></div><hr>`
+      : '<hr>';
+    const items =
+      `<button type="button" data-m="profile">${icon(0xea67)}Profile</button>` +
+      `<button type="button" data-m="settings">${icon(0xeb99)}Settings…</button>` +
+      (A.signedIn
+        ? `<button type="button" data-m="sync">${icon(0xea77)}Settings sync<em>${Sync.enabled() ? 'on' : 'off'}</em></button>` +
+          `<button type="button" data-m="signout">${icon(0xea6e)}Sign out on this computer</button>`
+        : (A.methods.github || A.methods.email ? '<hr>' : '') +
+          (A.methods.github ? `<button type="button" data-m="github">${GH}Sign in with GitHub</button>` : '') +
+          (A.methods.email ? `<button type="button" data-m="email">${icon(0xeb1c)}Sign in with e-mail…</button>` : ''));
     menuEl = document.createElement('div');
     menuEl.className = 'acct-menu';
-    const pic = A.signedIn && A.avatar ? `<img class="acct-avatar" alt="" src="${esc(A.avatar)}">` : '';
-    menuEl.innerHTML = `<div class="acct-menu-who">${pic}${who}</div>${items}`;
+    menuEl.innerHTML =
+      '<div class="acct-me">' +
+      `<button type="button" class="acct-me-open" data-m="profile" title="Your profile"><span class="acct-me-pic">${pic}</span>` +
+      `<span class="acct-me-txt"><b>${esc(A.name)}<i>${tagText(A.tag)}</i></b><small>${line}</small></span></button>` +
+      '<button type="button" class="acct-copy" data-m="copy" title="Copy your name#tag, so friends can add you" aria-label="Copy your name#tag">⧉</button>' +
+      '</div>' +
+      status +
+      items;
     document.body.appendChild(menuEl);
     // Beside the icon, its bottom level with the icon's (VS Code's accounts menu opens the same way).
     const r = ab ? ab.getBoundingClientRect() : { right: 60, bottom: innerHeight - 80 };
     menuEl.style.left = `${Math.round(r.right + 8)}px`;
     menuEl.style.top = `${Math.round(Math.max(8, Math.min(innerHeight - menuEl.offsetHeight - 8, r.bottom - menuEl.offsetHeight)))}px`;
+    menuEl.onmouseover = (e) => {
+      const b = e.target.closest('button');
+      if (b && !b.closest('.mn-pick')) statusPick(b.dataset.m === 'status');
+    };
     menuEl.onclick = (e) => {
       const b = e.target.closest('[data-m]');
       if (!b) return;
       const m = b.dataset.m;
+      // Hovering opened it already; a click keeps it open (as a Mac's submenu), from the keys it takes them in.
+      if (m === 'status') {
+        statusPick(true);
+        return e.detail === 0 && menuEl.querySelector('.mn-pick button')?.focus();
+      }
       closeMenu();
+      if (m === 'copy') return window.Cloud?.copyHandle();
       if (m === 'github') return github();
       if (m === 'profile') return window.Cloud?.openProfile();
       if (m === 'email' || m === 'settings') {
@@ -519,7 +472,6 @@ window.Account = (() => {
       }
       if (m === 'sync') return Sync.enable(!Sync.enabled());
       if (m === 'signout') return signOut();
-      if (m === 'delete') return deleteData();
     };
     setTimeout(() => {
       document.addEventListener('mousedown', outside, true);
@@ -572,25 +524,98 @@ window.Account = (() => {
   async function deleteData() {
     if (!A) return;
     const all = A.signedIn;
-    const ok = await confirmBox(
+    // The API (leaving.ts) hides the account at once and signs out every computer, keeps it `days` days for its owner to
+    // sign in again and get it back, then erases it. "Why are you leaving?" goes with it: optional, one answer, never in
+    // the way. Its reasons are the admin panel's: the box opens at once with this copy of them and takes the server's when
+    // they come (unless one was picked already), as it takes the server's number of days.
+    const DEFAULT_REASONS = [
+      { id: 'not_using', label: "I don't use Orbiterm anymore" },
+      { id: 'broken', label: "Something didn't work right" },
+      { id: 'missing', label: "It's missing something I need" },
+      { id: 'privacy', label: "I don't want my data on a server" },
+      { id: 'other_account', label: 'I have another account' },
+    ];
+    const fetching = api('GET', 'v1/account/leave-reasons');
+    let days = 30;
+    const D = () => `<span class="leave-days">${days}</span>`;
+    const n = A.devices.length;
+    const back = [A.github && `GitHub (${esc(A.github)})`, A.email && `your e-mail (${esc(A.email)})`].filter(Boolean).join(' or ');
+    const facts = all
+      ? `<li><em>Right away</em>You're signed out on ${n > 2 ? `all ${n} of your computers` : n === 2 ? 'both your computers' : 'this computer'}, and nobody sees you anymore: not on the leaderboards, not in friends' lists.</li>` +
+        `<li><em>Changed your mind?</em>Sign in again with ${back} within ${D()} days and it all comes back.</li>` +
+        `<li class="leave-end"><em>After ${D()} days</em>It's erased for good: your name, XP and hours, friends and messages, votes, badges and synced settings. Server backups keep a copy until they're replaced.</li>`
+      : '<li><em>Right away</em>This computer starts over, and nobody sees you anymore: not on the leaderboards, not in friends\' lists.</li>' +
+        `<li class="leave-end"><em>After ${D()} days</em>It's erased from the server for good: your name, XP and hours, friends and messages, votes and badges. A guest has no sign-in, so there's no way to get it back. Server backups keep a copy until they're replaced.</li>`;
+    const options = (reasons) => [...reasons, { id: 'other', label: 'Something else' }]
+      .map((x) => `<label class="leave-opt"><input type="radio" name="leave" value="${esc(x.id)}"><span>${esc(x.label)}</span></label>`)
+      .join('');
+    const asking = confirmBox(
       'danger',
       `<b>${all ? 'Delete your account?' : 'Delete your data?'}</b>` +
-        `<div class="acct-warn">${all ? `All your data will be deleted, here and on the server, on all your computers${A.devices.length > 1 ? ` (${A.devices.length})` : ''}` : 'All your data will be deleted, here and on the server'}: ` +
-        'your name, XP and hours, friends and messages, Roadmap votes, notifications, feedback and synced settings. <b>This can\'t be undone.</b></div>' +
-        `<p>${all ? 'Your computers' : 'This computer'} start${all ? '' : 's'} over as on the first launch. Chats and terminals on this computer stay; they were never on the server.</p>`,
-      'delete everything',
+        `<ul class="leave-facts">${facts}</ul>` +
+        `<fieldset class="leave-why"><legend>Why are you leaving? <small>optional</small></legend><div class="leave-opts">${options(DEFAULT_REASONS)}</div>` +
+        '<div class="leave-more" hidden><label for="leave-text">In your own words</label><textarea id="leave-text" rows="3" maxlength="1000"></textarea></div>' +
+        `<p class="leave-note">Your answer stays after ${all ? 'the account is' : 'your data is'} erased, without your name.</p></fieldset>` +
+        '<p class="leave-keep">Chats and terminals on this computer stay; they were never on the server.</p>',
+      all ? 'delete account' : 'delete data',
     );
+    const box = document.querySelector('.acct-confirm');
+    box.querySelector('.acct-ask').classList.add('acct-leave');
+    const more = box.querySelector('.leave-more');
+    const words = box.querySelector('#leave-text');
+    fetching.then((got) => {
+      if (!box.isConnected || !got || got.error) return;
+      if (Number.isInteger(got.days) && got.days > 0) {
+        days = got.days;
+        box.querySelectorAll('.leave-days').forEach((x) => (x.textContent = days));
+      }
+      if (Array.isArray(got.reasons) && got.reasons.length && !box.querySelector('input[name=leave]:checked')) {
+        setHTML(box.querySelector('.leave-opts'), options(got.reasons));
+      }
+    });
+    // A second click on the picked reason takes it back (the question is optional); "Something else" opens the field.
+    let was = null;
+    box.querySelector('.leave-why').addEventListener('pointerdown', (e) => {
+      const o = e.target.closest('.leave-opt');
+      was = o && o.querySelector('input').checked ? o.querySelector('input') : null;
+    });
+    box.querySelector('.leave-why').addEventListener('click', (e) => {
+      const input = e.target.closest('.leave-opt input');
+      if (!input) return;
+      if (input === was) input.checked = false;
+      was = null;
+      const other = input.checked && input.value === 'other';
+      more.hidden = !other;
+      if (other) words.focus();
+    });
+    // Selecting text in the field and letting go over the dark around the box doesn't close it (and lose the words).
+    let downInside = false;
+    box.addEventListener('mousedown', (e) => (downInside = !!e.target.closest('.acct-ask')));
+    const closeOnBackdrop = box.onclick;
+    box.onclick = (e) => (e.target === box && downInside ? undefined : closeOnBackdrop(e));
+    const ok = await asking;
     if (!ok) return;
-    const r = await cloud({ type: 'deleteAccount' });
+    const picked = box.querySelector('input[name=leave]:checked')?.value || '';
+    const text = picked === 'other' ? words.value.trim().slice(0, 1000) : '';
+    const r = await cloud({ type: 'deleteAccount', reason: picked, text });
+    if (r?.error === 'last_admin') return say("you're the admin panel's only admin · add someone to its team first");
     if (!r || r.error) return say(errText(r?.error || 'offline'));
     Sync.stop();
     A = null;
-    say(all ? 'your account is deleted' : 'your data is deleted');
+    say(all ? `your account is deleted · sign in within ${days} days to get it back` : 'your data is deleted');
     window.Cloud?.close?.();
     if (r.state) window.Cloud?.render(r.state);
   }
 
   // ---------- merging: which name stays ----------
+  // Esc does nothing while the merge or the settings question is up: its "not now" drops the merge (only signing in
+  // again brings it back), so a stray key mustn't decide, and the page behind (a profile, Settings) mustn't close under
+  // it either (Atalay, 2026-11-15). On the window in the capture phase, ahead of every other Esc handler.
+  addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape' || !document.querySelector('.acct-merge:not(.acct-confirm), .acct-conflict')) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+  }, true);
   function mergeDialog() {
     const p = A && A.pending;
     if (!p || !p.mine || !p.theirs) return;
@@ -600,13 +625,24 @@ window.Account = (() => {
       `<span>Level ${who.level} · ${esc(who.rank)}</span><em>${who.hours} h · ${who.friends} ${who.friends === 1 ? 'friend' : 'friends'} · ${who.devices} ${who.devices === 1 ? 'computer' : 'computers'}</em></button>`;
     const el = document.createElement('div');
     el.className = 'mn-confirm acct-merge';
-    el.innerHTML =
-      '<div class="mn-ask acct-ask"><b>Join your other computer\'s account</b>' +
-      `<p>${p.kind === 'github' ? 'This GitHub account' : 'This e-mail address'} is already used by another of your computers. Pick the name to keep: the two become one account.</p>` +
-      `<div class="acct-sides">${side(p.mine, 'mine', 'this computer')}${side(p.theirs, 'theirs', 'your other computer')}</div>` +
-      '<ul class="acct-fine"><li>hours and XP add up (time on both at once counts once)</li><li>friends and messages come together</li><li>the other name is freed</li></ul>' +
-      '<div class="mn-ask-btns"><button type="button" class="mn-btn" data-ans="cancel">not now</button><button type="button" class="mn-btn go" data-ans="merge" disabled>merge</button></div></div>';
-    let keep = '';
+    const via = p.kind === 'github' ? 'This GitHub account' : 'This e-mail address';
+    // The other one is an account its owner deleted (the API's leaving.ts), kept for them: this brings it back, under its
+    // own name unless they pick this computer's.
+    const back = !!p.theirs.deleted;
+    const until = back && p.theirs.keptUntil ? new Date(p.theirs.keptUntil).toLocaleDateString(undefined, { day: 'numeric', month: 'long' }) : '';
+    el.innerHTML = back
+      ? '<div class="mn-ask acct-ask"><b>Bring back your deleted account</b>' +
+        `<p>${via} belongs to the account you deleted${until ? `, kept until ${esc(until)}` : ''}. Bring it back under its own name, or pick this computer's.</p>` +
+        `<div class="acct-sides">${side(p.theirs, 'theirs', 'your deleted account')}${side(p.mine, 'mine', 'this computer')}</div>` +
+        '<ul class="acct-fine"><li>its friends, messages and badges come back</li><li>hours and XP add up (time on both at once counts once)</li><li>the other name is freed</li></ul>' +
+        '<div class="mn-ask-btns"><button type="button" class="mn-btn" data-ans="cancel">not now</button><button type="button" class="mn-btn go" data-ans="merge">bring it back</button></div></div>'
+      : '<div class="mn-ask acct-ask"><b>Join your other computer\'s account</b>' +
+        `<p>${via} is already used by another of your computers. Pick the name to keep: the two become one account.</p>` +
+        `<div class="acct-sides">${side(p.mine, 'mine', 'this computer')}${side(p.theirs, 'theirs', 'your other computer')}</div>` +
+        '<ul class="acct-fine"><li>hours and XP add up (time on both at once counts once)</li><li>friends and messages come together</li><li>the other name is freed</li></ul>' +
+        '<div class="mn-ask-btns"><button type="button" class="mn-btn" data-ans="cancel">not now</button><button type="button" class="mn-btn go" data-ans="merge" disabled>merge</button></div></div>';
+    let keep = back ? 'theirs' : '';
+    if (back) el.querySelector('.acct-side[data-keep=theirs]').classList.add('on');
     el.onclick = async (e) => {
       const s = e.target.closest('.acct-side');
       if (s) {
@@ -630,7 +666,7 @@ window.Account = (() => {
       A = r.account;
       render();
       paintIcon();
-      say(`one account now: ${A.name}${tagText(A.tag)}`);
+      say(back ? `your account is back: ${A.name}${tagText(A.tag)}` : `one account now: ${A.name}${tagText(A.tag)}`);
       refreshCloud();
       window.Social?.load();
       Sync.restart(A);
@@ -651,6 +687,9 @@ window.Account = (() => {
     { key: 'caveman', label: 'caveman', def: true, set: (v) => saversCall({ type: 'set', which: 'caveman', on: v }) },
     { key: 'updateRightAway', label: 'install updates right away', def: false, set: (v) => cloud({ type: 'updateRightAway', on: v }).then((s) => s && window.Cloud?.render(s)) },
     { key: 'terminalFontSize', label: 'terminal text size', def: undefined, show: (v) => `${v} pt`, set: (v) => cloud({ type: 'terminalFont', size: v }) },
+    // Only a picked one, as the size: a computer without that font refuses it (TerminalFont.swift) and keeps its own,
+    // without sending it back.
+    { key: 'terminalFont', label: 'terminal font', def: undefined, set: (v) => cloud({ type: 'terminalFont', family: v }) },
     { key: 'sound', label: 'sound', def: false, set: (v) => window.__sound?.set(v) },
   ];
   const show = (it, v) => (typeof v === 'boolean' ? (v ? 'on' : 'off') : it.show ? it.show(v) : String(v));
@@ -674,6 +713,7 @@ window.Account = (() => {
       caveman: sav && sav.caveman && sav.caveman.available ? !!sav.caveman.on : undefined,
       updateRightAway: st ? !!st.updateRightAway : undefined,
       terminalFontSize: font && font.chosen ? font.size : undefined,
+      terminalFont: font && font.family ? font.family : undefined,
       sound: window.__sound ? window.__sound.on() : undefined,
     };
   }
@@ -803,5 +843,6 @@ window.Account = (() => {
   });
   setTimeout(load, 2500);
 
-  return { mount, load, menu, state: () => A };
+  // errText and GH: the welcome's sign-in says the same (cloud.js openFirst).
+  return { mount, mountDanger, deleteData: () => deleteData(), load, menu, state: () => A, errText, GH };
 })();

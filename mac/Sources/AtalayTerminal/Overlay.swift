@@ -201,6 +201,8 @@ final class OverlayController: NSObject, WKScriptMessageHandlerWithReply, WKNavi
         present(on: screen) { [weak self] in
             self?.webView.evaluateJavaScript("Overlay.shortcuts(\(point.x - f.minX), \(f.maxY - point.y))")
         }
+        // Found it: the dashboard stops offering its tip.
+        manager?.wheelOpened()
     }
 
     /// Folder picker for a new terminal.

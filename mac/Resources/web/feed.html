@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Orbiterm · feed</title>
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="feed.css">
+<link rel="stylesheet" href="themes/mur47.css">
+<style>
+  /* The community feed's panel: only the lines, on a see-through window that never takes a click. */
+  html, body { overflow: hidden; background: transparent !important; }
+  body::before, body::after { display: none; }
+  #killfeed { top: 0; left: 0; max-width: calc(100vw - 8px); }
+</style>
+</head>
+<body>
+<div id="killfeed" role="log" aria-live="polite" aria-label="Community feed"></div>
+<script src="feed-draw.js"></script>
+<script src="feed.js"></script>
+</body>
+</html>

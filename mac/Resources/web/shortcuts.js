@@ -71,7 +71,7 @@
     const step = 360 / SLOT_COUNT;
     SLOTS.forEach((s, i) => {
       const mid = midOf(i);
-      const g = el('g', { class: `slice slice-in${s ? '' : ' empty'}${i === flashSlot ? ' filled' : ''}` }, svg);
+      const g = el('g', { class: `slice slice-in${s ? (s.missing ? ' missing' : '') : ' empty'}${i === flashSlot ? ' filled' : ''}` }, svg);
       g.style.setProperty('--dx', `${-Math.cos(rad(mid)) * 30}px`);
       g.style.setProperty('--dy', `${-Math.sin(rad(mid)) * 30}px`);
       g.style.animationDelay = `${60 + i * 45}ms`;
@@ -116,6 +116,16 @@
     root.classList.add('on');
   }
 
+  // From the app (its key, the mouse): the saved folders are read again first. The page stays loaded between opens, so a
+  // folder renamed or deleted since would stay on the wheel (the Windows app leaves out a folder that is gone). A close
+  // before they're in (the overlay hidden) drops the open.
+  let showing = 0;
+  async function show(x, y) {
+    const n = ++showing;
+    await loadSlots();
+    if (n === showing) open(x, y);
+  }
+
   function setHot(i) {
     if (!pie) return;
     pie.querySelectorAll('.slice').forEach((g, k) => {
@@ -130,7 +140,7 @@
       sub.textContent = SLOTS.some(Boolean) ? 'pick a folder' : 'add your folders';
     } else {
       title.textContent = s ? s.name.slice(0, 12) : `SLOT ${i + 1}`;
-      sub.textContent = s ? 'terminal here' : 'choose a folder';
+      sub.textContent = s ? (s.missing ? 'folder not found' : 'terminal here') : 'choose a folder';
     }
   }
 
@@ -189,6 +199,7 @@
 
   // keepOverlay: the picker or a chat window follows, so the app's overlay panel must stay up.
   function close(instant, keepOverlay) {
+    showing++;
     if (!pie || closing) return;
     if (instant) {
       root.classList.remove('on');
@@ -224,5 +235,5 @@
   }, true);
 
   loadSlots();
-  window.Shortcuts = { open, close, slots: () => SLOTS };
+  window.Shortcuts = { open, show, close, slots: () => SLOTS };
 })();

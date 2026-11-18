@@ -161,6 +161,29 @@
 .npw-del { flex: none; width: 22px; height: 22px; margin-left: auto; padding: 0; border: 0; border-radius: 4px; background: none; color: var(--dim); line-height: 22px; cursor: pointer; }
 .npw-del:hover { background: rgba(255, 77, 77, 0.16); color: var(--red); }
 .npw-del + .npw-x { margin-left: 2px; }
+
+/* A note in an app window of its own (note.html, the Mac): the page is the window, edge to edge; the window draws the
+   shadow, the page the rounded box and its accent edge. */
+.np-win.np-native { position: relative; width: 100%; height: 100%; min-width: 0; min-height: 0; max-width: none; max-height: none; resize: none; box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12), inset 0 0 0 1px rgba(var(--accent-rgb), 0.5); }
+/* As see-through as a terminal window (ChatWindowController.windowOpacity, 90% opaque, no frost): what's behind the note
+   shows through it the same way. */
+.np-win.np-native {
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.06) 0%, rgba(255, 255, 255, 0) 30%),
+    linear-gradient(170deg, rgba(var(--glass-top-rgb), 0.9) 0%, rgba(var(--surface-rgb), 0.9) 45%, rgba(var(--bg-rgb), 0.9) 100%);
+}
+/* Keep on top (the pin): first on the right, the trash can and × after it. Off, a dim pin; on, codicon's pinned in the
+   accent on a lit square, so the two states differ in shape and fill, not only in colour. Its targets are 24 px. */
+.npw-top { flex: none; width: 24px; height: 24px; margin-left: auto; padding: 0; border: 0; border-radius: 4px; background: none; color: var(--dim); line-height: 24px; cursor: pointer; }
+.npw-top:hover { background: rgba(var(--accent-rgb), 0.18); color: var(--hi); }
+.npw-top.on { background: rgba(var(--accent-rgb), 0.22); color: var(--accent); }
+.npw-top.on:hover { background: rgba(var(--accent-rgb), 0.3); }
+.npw-top + .npw-del { margin-left: 2px; }
+.np-native .npw-del, .np-native .npw-x { width: 24px; height: 24px; line-height: 24px; }
+.np-native .npw-bar button:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
+/* Streamer mode blurs the note as the dashboard's window did, rather than the panel's made-up to-do list. */
+html.streamer #p-notes.np-native .np-ed, html.streamer #p-notes.np-native .np-ed * { visibility: visible !important; }
+html.streamer .np-native #notes::before, html.streamer .np-native #notes::after { content: none; }
 .np-ci { display: inline-block; width: 18px; }
 .pn-ctx .np-ctx-del:hover { color: var(--red); }
 .pn-ctx button[disabled] { opacity: 0.6; cursor: default; }

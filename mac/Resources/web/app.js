@@ -97,6 +97,70 @@ function colorIndex(sid) {
 }
 const sessColor = (sid) => HUES[colorIndex(sid || '?') % HUES.length];
 const sessCss = (sid) => `var(--hue${colorIndex(sid || '?') % HUES.length})`;
+// ---------- demo (staging only: ORBITERM_DEMO=1, windows/src/main.js) ----------
+// A dashboard for screenshots: party mode on from the start with four made-up projects, each with four subagents at
+// work, and nothing real shown (no real sessions, events, terminals or processes).
+const DEMO = window.__DEMO__ ? {
+  common: {
+    host: ['developer.apple.com', 'developer.android.com', 'docs.unity3d.com', 'stripe.com', 'github.com', 'docs.expo.dev'],
+    mcp: ['sentry · crash report', 'figma · export frames', 'github · open PR', 'firebase · deploy preview'],
+  },
+  projects: [
+    {
+      project: 'starfall-legends', branch: 'release/v2.4',
+      title: ['v2.4 update: boss raid + season pass', 'patch 2.4.1: raid matchmaking fixes', 'balance pass for the Frozen Citadel map'],
+      agent: ['Balance boss raid damage', 'Season pass rewards UI', 'Fix shader stutter on Android', 'Frozen Citadel lighting', 'Write v2.4 patch notes', 'Profile raid frame drops', 'Localize new quests (12 langs)'],
+      file: ['Assets/Scripts/Raid/BossController.cs', 'Assets/Scripts/UI/SeasonPassView.cs', 'Assets/Shaders/IceCrystal.shader', 'Assets/Data/loot_tables.json', 'Assets/Scenes/FrozenCitadel.unity', 'Assets/Scripts/Net/RaidLobby.cs', 'CHANGELOG.md'],
+      cmd: ['dotnet test Starfall.Tests', 'unity -batchmode -buildTarget Android', 'python tools/balance_sim.py --raid frost', './gradlew bundleRelease', 'git diff --stat release/v2.3'],
+      grep: ['BossPhase', 'OnRaidComplete', 'SeasonPassTier', 'TODO(v2.4)'],
+      search: ['unity URP shader stutter android', 'season pass reward curve design', 'unity addressables memory spikes'],
+      url: ['docs.unity3d.com/Manual/urp/shaders.html', 'developer.android.com/games/optimize', 'docs.unity3d.com/Packages/addressables'],
+      plan: ['plan: v2.4 release checklist', 'todo: raid balance + QA pass'],
+      reply: ['Boss raid tuned: phase 3 is 18% easier, all 214 tests pass.', 'Season pass UI done: 40 tiers wired to the loot tables.', 'Shader stutter fixed: warm-up cache on load, 60 fps on Pixel 7.'],
+      wait: ['approval: git push origin release/v2.4', 'approval: upload build to Play Console'],
+    },
+    {
+      project: 'pocketchef-mobile', branch: 'feat/recipe-scanner',
+      title: ['ship 3.1: AI recipe scanner on iOS + Android', 'TestFlight build 3.1 (412)', 'fix the onboarding drop-off'],
+      agent: ['Recipe scanner camera flow', 'Meal plan push notifications', 'Fix iOS keyboard overlap', 'App Store screenshots + copy', 'Offline cache for recipes', 'Android target SDK bump', 'Grocery list sync'],
+      file: ['src/screens/ScannerScreen.tsx', 'src/features/mealplan/notify.ts', 'ios/PocketChef/AppDelegate.swift', 'android/app/build.gradle', 'src/store/recipes.ts', 'src/i18n/tr.json', 'app.json'],
+      cmd: ['npx expo run:ios', 'npm test -- scanner', 'eas build --platform all', 'fastlane ios beta', 'npx tsc --noEmit'],
+      grep: ['useCamera', 'scheduleNotification', 'KeyboardAvoidingView', 'offlineCache'],
+      search: ['expo camera barcode scanning ios', 'react native keyboard avoiding view', 'android 16 target sdk changes'],
+      url: ['docs.expo.dev/versions/latest/sdk/camera', 'developer.apple.com/app-store/product-page', 'developer.android.com/about/versions/16'],
+      plan: ['plan: 3.1 store release', 'todo: scanner edge cases'],
+      reply: ['Scanner flow done: 0.4 s to a recipe, tested on iPhone and Pixel.', 'Push notifications scheduled per meal plan, opt-in screen added.', 'Build 3.1 (412) uploaded to TestFlight and the Play beta.'],
+      wait: ['approval: fastlane ios beta', 'approval: eas submit --platform android'],
+    },
+    {
+      project: 'neon-drift', branch: 'patch/1.8-netcode',
+      title: ['patch 1.8: netcode rewrite + 3 night tracks', 'ranked season 4 matchmaking', 'fix desync on drift boost'],
+      agent: ['Rollback netcode for lobbies', 'Night track: Tokyo Loop', 'Matchmaking queue tuning', 'Fix desync on drift boost', 'Replay export to MP4', 'Anti-cheat speed checks', 'Steam leaderboard sync'],
+      file: ['src/net/rollback.cpp', 'src/physics/drift.cpp', 'tracks/tokyo_loop.tscn', 'server/matchmaker.go', 'src/replay/exporter.cpp', 'config/ranked_s4.toml', 'src/net/snapshot.h'],
+      cmd: ['cmake --build build -j16', 'go test ./server/...', './tools/netsim --latency 120', 'ctest --output-on-failure', 'git log --oneline -5'],
+      grep: ['ApplyDriftBoost', 'RollbackFrame', 'MMR_WINDOW', 'desync'],
+      search: ['rollback netcode racing game', 'client side prediction vehicle physics', 'steamworks leaderboards api'],
+      url: ['partner.steamgames.com/doc/features/leaderboards', 'gafferongames.com/post/networked_physics', 'github.com/pond3r/ggpo'],
+      plan: ['plan: patch 1.8 rollout', 'todo: netcode soak test'],
+      reply: ['Rollback netcode in: 8-player lobby holds at 120 ms ping.', 'Tokyo Loop track added with night lighting and 3 shortcuts.', 'Drift boost desync fixed: inputs replayed on the server tick.'],
+      wait: ['approval: deploy matchmaker to staging', 'approval: steamcmd +run_app_build'],
+    },
+    {
+      project: 'nova-shop', branch: 'feat/checkout-v2',
+      title: ['checkout v2: Apple Pay + one-page cart', 'Black Friday performance pass', 'launch product search filters'],
+      agent: ['Apple Pay at checkout', 'Cart page speed pass', 'Stripe webhook retries', 'Product search filters', 'Black Friday banner A/B test', 'Order emails redesign', 'Inventory sync job'],
+      file: ['app/checkout/page.tsx', 'app/api/stripe/webhook/route.ts', 'components/CartDrawer.tsx', 'lib/search/filters.ts', 'prisma/schema.prisma', 'emails/OrderConfirmed.tsx', 'jobs/inventory-sync.ts'],
+      cmd: ['pnpm test checkout', 'pnpm build', 'npx prisma migrate dev', 'stripe trigger payment_intent.succeeded', 'npx playwright test cart'],
+      grep: ['createPaymentIntent', 'useCart', 'revalidateTag', 'applyFilters'],
+      search: ['stripe apple pay next.js', 'next.js partial prerendering cart', 'core web vitals checkout page'],
+      url: ['stripe.com/docs/apple-pay', 'nextjs.org/docs/app/building-your-application/caching', 'web.dev/articles/vitals'],
+      plan: ['plan: checkout v2 launch', 'todo: Black Friday load test'],
+      reply: ['Apple Pay live in checkout, 23 e2e tests green.', 'Cart page LCP down from 2.9 s to 1.1 s.', 'Webhook retries idempotent now, no double orders in the load test.'],
+      wait: ['approval: npx prisma migrate deploy', 'approval: git push origin feat/checkout-v2'],
+    },
+  ],
+} : null;
+
 // ---------- streamer mode (the switch at the map's top right) ----------
 // For a screen that's recorded or shared: every project, chat, file, command, search and reply the dashboard shows is
 // swapped for a made-up one (streamer-names.js), the same one whenever the same real one comes back, on the map, in the
@@ -200,9 +264,17 @@ const Streamer = (() => {
         return ev.l ? { ...ev, l: fake('title', ev.l) } : ev;
     }
   }
-  const terminals = (list) => (!on || !Array.isArray(list) ? list : list.map((t) => ({ ...t, cmd: t.cmd ? fake('cmd', t.cmd) : t.cmd, dir: project(t.dir), cwd: folder(t.cwd) })));
-  const runaways = (list) => (!on || !Array.isArray(list) ? list : list.map((r) => ({ ...r, name: r.name ? fake('proc', r.name) : r.name, cmd: r.cmd ? fake('cmd', r.cmd) : r.cmd })));
-  const spend = (d) => (!on || !d || !Array.isArray(d.projects) ? d : { ...d, projects: d.projects.map((p) => (p.id === '*' ? p : { ...p, label: project(p.path || p.label), path: folder(p.path) })) });
+  const terminals = (list) => (DEMO ? [] : !on || !Array.isArray(list) ? list : list.map((t) => ({ ...t, cmd: t.cmd ? fake('cmd', t.cmd) : t.cmd, dir: project(t.dir), cwd: folder(t.cwd) })));
+  const runaways = (list) => (DEMO ? [] : !on || !Array.isArray(list) ? list : list.map((r) => ({ ...r, name: r.name ? fake('proc', r.name) : r.name, cmd: r.cmd ? fake('cmd', r.cmd) : r.cmd })));
+  const spend = (d) => {
+    // The demo's spend: the real numbers under its four projects' names.
+    if (DEMO && d && Array.isArray(d.projects)) {
+      let i = 0, j = 0;
+      const kept = d.projects.filter((p) => p.id === '*' || i++ < DEMO.projects.length);
+      return { ...d, projects: kept.map((p) => (p.id === '*' ? p : { ...p, label: DEMO.projects[j].project, path: '~/code/' + DEMO.projects[j++].project })) };
+    }
+    return !on || !d || !Array.isArray(d.projects) ? d : { ...d, projects: d.projects.map((p) => (p.id === '*' ? p : { ...p, label: project(p.path || p.label), path: folder(p.path) })) };
+  };
   function set(v) {
     on = !!v;
     document.documentElement.classList.toggle('streamer', on);
@@ -237,11 +309,24 @@ const Party = (() => {
     return l[Math.floor(Math.random() * l.length)];
   };
   const rand = (a, b) => a + Math.random() * (b - a);
+  // In the demo, the texts of the session's own project (its cast), else the common ones, else streamer mode's.
+  const pickFor = (i, kind) => {
+    const l = (DEMO && (DEMO.projects[i]?.[kind] || DEMO.common[kind])) || null;
+    return l ? l[Math.floor(Math.random() * l.length)] : pick(kind);
+  };
+  // A subagent's task in the demo: one its session isn't at already.
+  const task = (s) => {
+    const busy = new Set(s.agents.map((a) => a.desc));
+    const free = DEMO.projects[s.cast].agent.filter((d) => !busy.has(d));
+    return free.length ? free[Math.floor(Math.random() * free.length)] : pickFor(s.cast, 'agent');
+  };
   // How often each kind of call comes, its tool and the kind of made-up text it has.
   const CALLS = [['read', 26, 'Read', 'file'], ['edit', 18, 'Edit', 'file'], ['bash', 16, 'Bash', 'cmd'], ['search', 14, 'Grep', 'grep'],
     ['web', 10, 'WebSearch', 'search'], ['mcp', 6, 'mcp__party__call', 'mcp'], ['plan', 4, 'TodoWrite', 'plan'], ['browser', 3, 'mcp__browser__navigate', 'url']];
   // The five: their AI tool, how many subagents each keeps going, and how many calls at once.
-  const CAST = [['Claude Code', 5, 1], ['Claude Code', 12, 1], ['Codex', 6, 1], ['Claude Code', 0, 3], ['Antigravity', 0, 3]];
+  // The demo's: one Claude Code per project, four subagents each.
+  const CAST = DEMO ? DEMO.projects.map(() => ['Claude Code', 4, 1])
+    : [['Claude Code', 5, 1], ['Claude Code', 12, 1], ['Codex', 6, 1], ['Claude Code', 0, 3], ['Antigravity', 0, 3]];
   // The cards' order, as the engine gives it (RadarEngine's statusOrder): needs you, your turn, working, ended; the
   // latest first.
   const ORDER = { waiting: 0, idle: 1, busy: 2, ended: 3 };
@@ -262,13 +347,13 @@ const Party = (() => {
 
   // One of the five; the first ones as if they had been at it for a while.
   function make(i, old) {
-    const [tool, crew, lanes] = CAST[i], now = Date.now(), proj = pick('project');
+    const [tool, crew, lanes] = CAST[i], now = Date.now(), proj = DEMO ? DEMO.projects[i].project : pick('project');
     return {
-      id: `party:${++seq}`, cast: i, name: tool === 'Claude Code' ? proj : tool, tool, title: pick('title'), lastPrompt: '', cwd: '~/code/' + proj,
-      branch: pick('branch'), model: tool === 'Codex' ? 'gpt-5.5' : tool === 'Antigravity' ? 'gemini-3' : 'opus', effort: 'high', status: 'busy', live: true,
+      id: `party:${++seq}`, cast: i, name: tool === 'Claude Code' ? proj : tool, tool, title: pickFor(i, 'title'), lastPrompt: '', cwd: '~/code/' + proj,
+      branch: DEMO ? DEMO.projects[i].branch : pick('branch'), model: tool === 'Codex' ? 'gpt-5.5' : tool === 'Antigravity' ? 'gemini-3' : 'opus', effort: 'high', status: 'busy', live: true,
       statusSince: now, rank: now, cpu: rand(8, 70), mem: Math.round(rand(180, 900)), kind: 'interactive', entry: '',
       firstTs: old ? now - rand(5, 90) * 60_000 : now, lastTs: now, ctx: Math.round((old ? rand(30, 150) : rand(8, 30)) * 1000), ctxMax: 200_000,
-      turnMs: 0, turnAt: now, tok: { in: 0, out: 0, cr: 0, cw: 0 }, cost: old ? rand(0.4, 7) : 0, tools: old ? Math.round(rand(20, 260)) : 0, errors: 0,
+      ctxCap: rand(0.35, 0.7), turnMs: 0, turnAt: now, tok: { in: 0, out: 0, cr: 0, cw: 0 }, cost: old ? rand(0.4, 7) : 0, tools: old ? Math.round(rand(20, 260)) : 0, errors: 0,
       web: 0, prompts: old ? Math.round(rand(2, 14)) : 0, byCat: {}, pending: [], last: null,
       spark: Array.from({ length: 30 }, () => (old ? Math.round(rand(2, 16)) : 0)), flags: [], agents: [], agentsRunning: 0,
       waitingFor: null, tty: '', pid: 0, host: 'term', tab: null, convId: null, crew, lanes,
@@ -300,7 +385,7 @@ const Party = (() => {
       break;
     }
     if (kind) c = [kind, 0, kind === 'agent' ? 'Agent' : c[2], kind === 'agent' ? 'agent' : c[3]];
-    const [cat, , n, text] = c, l = kind === 'agent' ? a.desc : pick(text);
+    const [cat, , n, text] = c, l = kind === 'agent' ? a.desc : pickFor(s.cast, text);
     const p = { n, c: cat, l, t: now };
     if (kind !== 'agent') (a || s).pending = [p];
     x.pending[cat] = (x.pending[cat] || 0) + 1;
@@ -323,7 +408,8 @@ const Party = (() => {
       }
       s.lastTs = Date.now();
       s.cost += rand(0.003, 0.04);
-      s.ctx = Math.min(s.ctxMax - 2000, s.ctx + Math.round(rand(200, 2600)));
+      // The demo's context fills slowly and stops short of the red (35 to 70%, each its own).
+      s.ctx = DEMO ? Math.min(s.ctxMax * s.ctxCap, s.ctx + Math.round(rand(20, 160))) : Math.min(s.ctxMax - 2000, s.ctx + Math.round(rand(200, 2600)));
       s.spark = [...s.spark.slice(1), s.spark[29] + 1];
       x.tools++;
       x.calls.push(Date.now());
@@ -333,11 +419,11 @@ const Party = (() => {
       if (cat === 'web') {
         x.web++;
         s.web++;
-        x.research.unshift({ id, s: s.id, a: ev.a, kind: 'search', l, hosts: [pick('host')], m: ok ? '200' : '503', d, ok, t: now });
+        x.research.unshift({ id, s: s.id, a: ev.a, kind: 'search', l, hosts: [pickFor(s.cast, 'host')], m: ok ? '200' : '503', d, ok, t: now });
         if (x.research.length > 20) x.research.pop();
       }
       if (cat === 'read' || cat === 'edit') {
-        const f = x.files.get(l) || { p: '~/code/' + l, short: l, r: 0, w: 0, last: 0, collision: false, clash: [], editors: [] };
+        const f = x.files.get(l) || { p: DEMO ? `${s.cwd}/${l}` : '~/code/' + l, short: l, r: 0, w: 0, last: 0, collision: false, clash: [], editors: [] };
         if (cat === 'read') f.r++;
         else f.w++;
         f.last = Date.now();
@@ -365,18 +451,19 @@ const Party = (() => {
     // A new subagent comes in the session's turn.
     if (s.status !== 'busy') return later(rand(800, 2000), () => spawn(s));
     const now = Date.now();
-    const a = { id: `pa${++seq}`, sid: s.id, desc: pick('agent'), type: 'general-purpose', model: 'sonnet', running: true, pending: [], last: null,
+    const a = { id: `pa${++seq}`, sid: s.id, desc: DEMO ? task(s) : pick('agent'), type: 'general-purpose', model: 'sonnet', running: true, pending: [], last: null,
       tools: 0, cost: 0, errors: 0, firstTs: now, lastTs: now, bg: false };
     s.agents.push(a);
     x.agents++;
     call(s, a, 'agent');
     lane(s, a, true);
-    // Done 1 to 30 seconds after it started; another takes its place a little later.
-    later(rand(1, 30) * 1000, () => {
+    // Done 1 to 30 seconds after it started; another takes its place a little later. The demo's run longer and are
+    // replaced at once, so all four are nearly always at work.
+    later((DEMO ? rand(35, 90) : rand(1, 30)) * 1000, () => {
       a.running = false;
       a.pending = [];
       a.lastTs = Date.now();
-      later(rand(3, 9) * 1000, () => {
+      later((DEMO ? rand(1, 2.5) : rand(3, 9)) * 1000, () => {
         s.agents = s.agents.filter((b) => b !== a);
         spawn(s);
       });
@@ -385,19 +472,20 @@ const Party = (() => {
   // A turn: the prompt, the work, now and then a question for the user on the way, the answer, then the user's turn.
   function turn(s) {
     if (!here(s) || s.status === 'ended') return;
-    s.title = s.lastPrompt = pick('title');
+    s.title = s.lastPrompt = pickFor(s.cast, 'title');
     s.prompts++;
     s.turnAt = Date.now();
     say({ k: 'prompt', t: Date.now(), s: s.id, l: s.lastPrompt, fake: true });
     status(s, 'busy');
     s.rank = Date.now();
-    const long = (s.crew ? rand(35, 80) : rand(12, 30)) * 1000;
-    if (Math.random() < (s.crew ? 0.5 : 0.3)) later(long * rand(0.25, 0.7), () => ask(s));
+    // The demo's turns are long and seldom ask: its planets stay at work.
+    const long = (DEMO ? rand(80, 150) : s.crew ? rand(35, 80) : rand(12, 30)) * 1000;
+    if (Math.random() < (DEMO ? 0.1 : s.crew ? 0.5 : 0.3)) later(long * rand(0.25, 0.7), () => ask(s));
     later(long, () => finish(s));
   }
   function ask(s) {
     if (!here(s) || s.status !== 'busy') return;
-    s.waitingFor = pick('wait');
+    s.waitingFor = pickFor(s.cast, 'wait');
     s.pending = [];
     status(s, 'waiting', `⚠ needs you · ${s.waitingFor}`, 'err');
     later(rand(3, 8) * 1000, () => here(s) && s.status === 'waiting' && status(s, 'busy', '▶ unblocked · working again'));
@@ -407,10 +495,10 @@ const Party = (() => {
     if (s.status === 'waiting') return later(1000, () => finish(s));
     s.turnMs = Date.now() - s.turnAt;
     s.pending = [];
-    say({ k: 'say', t: Date.now(), s: s.id, l: pick('reply'), fake: true });
+    say({ k: 'say', t: Date.now(), s: s.id, l: pickFor(s.cast, 'reply'), fake: true });
     status(s, 'idle', '◆ turn finished · your move');
     if (s.until && Date.now() > s.until) later(rand(3, 6) * 1000, () => leave(s));
-    else later((s.crew ? rand(3, 7) : rand(4, 11)) * 1000, () => turn(s));
+    else later((DEMO ? rand(1.5, 3) : s.crew ? rand(3, 7) : rand(4, 11)) * 1000, () => turn(s));
   }
   // Done: ended for a moment (its card last, its planet dim), then gone (blown up), a new one coming meanwhile.
   function leave(s) {
@@ -434,7 +522,7 @@ const Party = (() => {
     x.made++;
     logLine({ k: 'state', t: Date.now(), s: s.id, l: `● session online · ${s.cwd}`, fake: true }, true);
     for (let k = 0; k < s.lanes; k++) lane(s, null, s.lanes > 1);
-    for (let k = 0; k < s.crew; k++) later(rand(300, 6000), () => spawn(s));
+    for (let k = 0; k < s.crew; k++) later(DEMO ? rand(300, 2500) : rand(300, 6000), () => spawn(s));
     turn(s);
     stir(s);
   }
@@ -481,6 +569,8 @@ const Party = (() => {
       return { ...s, pending: [...s.pending], agents, agentsRunning: agents.filter((a) => a.running).length };
     });
     const live = fake.filter((s) => s.status !== 'ended');
+    // The demo shows its own sessions only: none of the real ones, their files, searches or calls.
+    if (DEMO) V = { ...V, sessions: [], research: [], files: [], ticker: [], totals: { ...V.totals, live: 0, runningAgents: 0 } };
     const T = V.totals, perMin = x.calls.filter((t) => now - t < 60_000).length;
     x.calls = x.calls.filter((t) => now - t < 60_000);
     const sum = (a, b) => {
@@ -550,11 +640,13 @@ function handleInit(d) {
     }
     $('log').innerHTML = '';
     LOGEL.clear();
-    for (const ev of d.log) {
+    // The demo's log has its own lines only.
+    const past = DEMO ? [] : d.log;
+    for (const ev of past) {
       logLine(ev, false);
       marqueePush(ev);
     }
-    map('seed', d.log.map(Streamer.event));
+    map('seed', past.map(Streamer.event));
     setStreak({ n: Hooks.logic.streakOf(STATE.ticker) });
     flushMarquee(true);
     renderAll();
@@ -563,7 +655,7 @@ function handleInit(d) {
 function handleState(next) {
     for (const s of next.sessions) NAMES.set(s.id, s.name);
     Streamer.learn(next);
-    transitions(next);
+    if (!DEMO) transitions(next);
     RAW = next;
     STATE = view(next);
     renderAll();
@@ -577,6 +669,7 @@ try {
   MODES.streamer = sessionStorage.getItem('radar.streamer') === '1';
   MODES.party = sessionStorage.getItem('radar.party') === '1';
 } catch {}
+if (DEMO) MODES.party = true;
 function setMode(which, on) {
   MODES[which] = !!on;
   try {
@@ -647,7 +740,7 @@ function powerTip() {
       (saved < full ? row('resolution', `${full}×`, `${saved}× · ${Math.round(100 * (1 - (saved / full) ** 2))}% fewer pixels`) : '') +
       row('camera tour', 'when you\'re away', 'never') +
       `<div class="d gap">the same either way: ${Q.behind.fps} fps at ${Q.behind.dpr}× behind another window, ${Q.front.fps} fps while you drag or the camera flies, nothing drawn while the dashboard is hidden</div>` +
-      `<div class="d">${s.auto ? `on by itself below ${s.threshold}% on battery and in ${saverName(s)}` : 'never on by itself'} · Settings · POWER</div>` +
+      `<div class="d">${s.auto ? `on by itself below ${s.threshold}% on battery and in ${saverName(s)}` : 'never on by itself'} · Settings · General</div>` +
       `<div class="d">click to turn it ${s.on ? 'off' : 'on'}</div>`,
   );
 }
@@ -667,13 +760,14 @@ function setDiscord(s) {
 // The top bar is every AI's, whichever chat is in front: the Windows app still reports that chat, and nothing here
 // follows it.
 function connect() {
-  window.__radar = { init: handleInit, state: handleState, events: (list) => list.forEach(onEvent), visibility: setVisibility, power: (on) => map('power', on), powerSave: setPowerSave, discord: setDiscord, activeSession: () => {}, cloud: (c) => window.Cloud?.render(c), social: (ev) => window.Social?.event(ev), terminals: (list) => { TERMS = list; map('terminals', Streamer.terminals(list)); }, terminalGone: (id) => map('terminalGone', id), idle: (s) => { map('idle', s); setIdle(Number(s)); }, openUpdate: () => window.Cloud?.openUpdate(), openProfile: () => window.Cloud?.openMenu('profile'), openView: (v) => window.GitView?.view(v), runaways: (list) => { RUNS = list; const runs = Streamer.runaways(list); window.Danger?.update(runs); map('runaways', runs); }, openDanger: () => window.Danger?.open() };
+  window.__radar = { init: handleInit, state: handleState, events: (list) => list.forEach(onEvent), visibility: setVisibility, power: (on) => map('power', on), powerSave: setPowerSave, discord: setDiscord, activeSession: () => {}, cloud: (c) => window.Cloud?.render(c), social: (ev) => window.Social?.event(ev), terminals: (list) => { TERMS = list; map('terminals', Streamer.terminals(list)); }, terminalGone: (id) => map('terminalGone', id), idle: (s) => { map('idle', s); setIdle(Number(s)); }, openUpdate: () => window.Cloud?.openUpdate(), openProfile: () => window.Cloud?.openProfile(), openFriend: (id) => window.Cloud?.openFriend(id), openView: (v) => window.GitView?.view(v), runaways: (list) => { RUNS = list; const runs = Streamer.runaways(list); window.Danger?.update(runs); map('runaways', runs); }, openDanger: () => window.Danger?.open() };
   native({ type: 'ready' });
   // A reloaded page in streamer mode: the app's chats list and windows stay in it too.
   native({ type: 'streamer', on: Streamer.on });
 }
 
 function onEvent(ev) {
+  if (DEMO) return;
   map('event', Streamer.event(ev));
   switch (ev.k) {
     case 'tool':
@@ -1107,6 +1201,7 @@ function renderTop() {
 const LIMIT_ROWS = [['fiveHour', '5h', '5-hour'], ['week', 'week', 'weekly']];
 // The engine's list. The Windows app's engine still sends Claude's limits apart and Codex's on its chats.
 function limitsByAI() {
+  if (!STATE) return [];
   if (STATE.limitsByAI) return STATE.limitsByAI;
   const list = [];
   if (STATE.limits) list.push({ id: 'claude', name: 'claude', tool: 'Claude Code', ...STATE.limits });
@@ -1955,4 +2050,133 @@ connect();
 (() => {
   const kpis = document.querySelector('#top .kpis');
   if (kpis) new ResizeObserver(() => kpis.classList.toggle('clip', kpis.scrollWidth > kpis.clientWidth + 1)).observe(kpis);
+})();
+
+// Mascot (Viktoria, own on/off switch, any theme): report visible dashboard panel rects and allowlisted navigation targets at ~4 Hz while active.
+(() => {
+  const appEl = document.getElementById('app');
+  if (!appEl) return;
+  // Native keeps her switch (UserDefaults mascotEnabled) and sets window.__mascotEnabled, then fires 'mascotchange'.
+  // Not downloaded yet (window.__mascotAsset, MascotAsset.swift) counts as off; without it (Windows) she is just on or off.
+  const isAnime = () => window.__mascotEnabled === true && (window.__mascotAsset?.state ?? 'ready') === 'ready';
+  const NAV_VIEWS = new Set(['dash', 'git', 'notes', 'roadmap', 'friends', 'board', 'themes', 'notifications']);
+  const SPEND_RANGES = new Set(['today', '7d', '30d', '12w', '12m']);
+  const SETTINGS_PANES = new Set(['appearance', 'chats', 'shortcuts', 'general']);
+  const SCROLL_IDS = new Set(['log', 'research', 'files', 'workers', 'call']);
+  let lastAt = 0;
+  let timer = 0;
+  let lastKey = '';
+
+  function rectOf(el) {
+    if (!el || el.hidden || el.offsetParent === null) return null;
+    const cs = getComputedStyle(el);
+    if (cs.display === 'none' || cs.visibility === 'hidden') return null;
+    const r = el.getBoundingClientRect();
+    if (r.width <= 0 || r.height <= 0) return null;
+    return { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) };
+  }
+
+  function sendNow() {
+    timer = 0;
+    if (!isAnime()) return;
+    lastAt = performance.now();
+    const onDash = !appEl.classList.contains('cloud-mode') && !appEl.classList.contains('git-mode');
+    const panels = [];
+    const nav = [];
+    if (onDash) {
+      document.querySelectorAll('section.panel').forEach((el) => {
+        const r = rectOf(el);
+        if (r) panels.push({ id: el.id || '', ...r });
+      });
+      document.querySelectorAll('#spend-tabs button[data-r]').forEach((el) => {
+        if (!SPEND_RANGES.has(el.dataset.r)) return;
+        const r = rectOf(el);
+        if (r) nav.push({ id: `spend:${el.dataset.r}`, ...r });
+      });
+      SCROLL_IDS.forEach((sid) => {
+        const el = document.getElementById(sid);
+        if (!el || el.scrollHeight <= el.clientHeight + 8) return;
+        const r = rectOf(el);
+        if (r) nav.push({ id: `scroll:${sid}`, ...r });
+      });
+    }
+    document.querySelectorAll('.vs-ab[data-view]').forEach((el) => {
+      const v = el.dataset.view;
+      if (!NAV_VIEWS.has(v)) return;
+      const r = rectOf(el);
+      if (r) nav.push({ id: `view:${v}`, ...r });
+    });
+    const gear = rectOf(document.getElementById('settings'));
+    if (gear) nav.push({ id: 'settings:open', ...gear });
+
+    let friends = null;
+    const fb = nav.find((n) => n.id === 'view:friends');
+    if (fb) friends = { x: fb.x, y: fb.y, w: fb.w, h: fb.h };
+
+    const key = JSON.stringify([panels, nav]);
+    if (key === lastKey) return;
+    lastKey = key;
+    native({ type: 'mascotPanels', panels, friends, nav });
+  }
+
+  function schedule(force = false) {
+    if (!isAnime()) return;
+    if (force) lastKey = '';
+    const wait = Math.max(0, 250 - (performance.now() - lastAt));
+    if (wait === 0) {
+      if (timer) { clearTimeout(timer); timer = 0; }
+      sendNow();
+    } else if (!timer) {
+      timer = setTimeout(sendNow, wait);
+    }
+  }
+
+  // Explicit allowlist of read-only navigation actions the mascot may trigger.
+  // The user (a real click, not her own synthesized one) opens the theme chooser or Settings > Appearance: the mascot may sulk (Mascot.swift).
+  document.addEventListener('click', (e) => {
+    if (!e.isTrusted || !isAnime()) return;
+    if (e.target.closest?.('.vs-ab[data-view="themes"], .st-theme, .st-nav button[data-pane="appearance"]')) native({ type: 'mascotThemeGuard' });
+    // The gear opens the category used last: when that is Appearance (her switch lives there), she sulks too.
+    else if (e.target.closest?.('#settings')) {
+      setTimeout(() => {
+        if (document.querySelector('#cloudui .mn-settings .st-nav button.on[data-pane="appearance"]')) native({ type: 'mascotThemeGuard' });
+      }, 200);
+    }
+  }, true);
+
+  window.__mascotNav = (id) => {
+    if (typeof id !== 'string') return;
+    if (id.startsWith('view:')) {
+      const v = id.slice(5);
+      if (NAV_VIEWS.has(v)) document.querySelector(`.vs-ab[data-view="${v}"]`)?.click();
+    } else if (id.startsWith('spend:')) {
+      const r = id.slice(6);
+      if (SPEND_RANGES.has(r)) document.querySelector(`#spend-tabs button[data-r="${r}"]`)?.click();
+    } else if (id === 'settings:open') {
+      document.getElementById('settings')?.click();
+      // Never show the remembered pane (it may be Account): switch to Appearance at once.
+      document.querySelector('#cloudui .mn-settings .st-nav button[data-pane="appearance"]')?.click();
+    } else if (id.startsWith('settings:pane:')) {
+      const p = id.slice(14);
+      if (SETTINGS_PANES.has(p)) document.querySelector(`#cloudui .mn-settings .st-nav button[data-pane="${p}"]`)?.click();
+    } else if (id === 'settings:close') {
+      document.querySelector('#cloudui .menu .l-close')?.click();
+    } else if (id.startsWith('scroll:')) {
+      const sid = id.slice(7);
+      if (!SCROLL_IDS.has(sid)) return;
+      const el = document.getElementById(sid);
+      if (el) el.scrollBy({ top: el.scrollTop > 40 ? -60 : 60, behavior: 'smooth' });
+    }
+  };
+
+  const ro = new ResizeObserver(() => schedule());
+  ro.observe(appEl);
+  document.querySelectorAll('section.panel').forEach((el) => ro.observe(el));
+  new MutationObserver(() => schedule()).observe(appEl, { attributes: true, attributeFilter: ['class'] });
+  addEventListener('resize', () => schedule());
+  addEventListener('scroll', () => schedule(), true);
+  addEventListener('themechange', () => schedule(true));
+  addEventListener('mascotchange', () => schedule(true));
+  addEventListener('mascotasset', () => schedule(true));
+  if (isAnime()) schedule(true);
 })();

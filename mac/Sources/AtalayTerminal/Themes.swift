@@ -376,6 +376,8 @@ final class ThemeBridge: NSObject, WKScriptMessageHandlerWithReply {
             // The AI tools in the theme's colours: once their settings are written.
             if let on = body["aiColors"] as? Bool { return AIColors.set(on) { replyHandler(store.uiJSON, nil) } }
             store.setUI(font: body["font"] as? String, scale: (body["scale"] as? NSNumber)?.doubleValue)
+            // The chat list's width in the page's px changes with its zoom (the menus centre on the whole window by it).
+            MainWindowController.shared?.pushSide()
             replyHandler(store.uiJSON, nil)
         default: replyHandler(nil, "unknown request")
         }

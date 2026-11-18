@@ -22,8 +22,22 @@ window.Notes = (() => {
   const WIN_KEY = 'notes.pad.window';
   // The app keeps the notes (NotesStore.swift on the Mac, notesstore.js on Windows); the page reads them once it
   // starts, and writes nothing before.
-  const STORE = window.webkit?.messageHandlers?.notes || null;
-  let ready = !STORE;
+  // On the Mac a note opened out of the dashboard is an app window of its own (NoteWindow.swift), so the terminals,
+  // the dashboard's child windows, no longer cover it: note.html runs this page for that one note (WINDOW), and its
+  // note goes through the app to the dashboard's page, the one that writes the notes (`fromWindow`). On the
+  // dashboard (NATIVE), `out` is the notes open in their windows: they're written there, never here.
+  const WINDOW = window.__NOTE_WINDOW__ || null;
+  const STORE = (WINDOW ? window.webkit?.messageHandlers?.noteWindow : window.webkit?.messageHandlers?.notes) || null;
+  const NATIVE = !WINDOW && !!STORE && window.__noteWindows === true;
+  const out = new Set();
+  const toApp = (msg) => {
+    try {
+      window.webkit.messageHandlers.radar.postMessage(msg);
+    } catch {}
+  };
+  let loaded;
+  const isLoaded = new Promise((r) => (loaded = r));
+  let ready = !STORE && !WINDOW;
   const host = document.getElementById('notes');
   const panel = document.getElementById('p-notes');
   const meta = document.getElementById('m-notes');
@@ -121,7 +135,8 @@ window.Notes = (() => {
     const l = (Array.isArray(list) ? list : []).filter((b) => b && TYPES[b.type]).map((b) => mk(b.type, String(b.text ?? ''), { checked: !!b.checked, indent: level(b.indent) }));
     return l.length ? l : [mk()];
   };
-  const blocksOf = (n) => (n === cur ? plain(blocks) : n.blocks);
+  // A note out in its window has its blocks from there (fromWindow), not the panel's.
+  const blocksOf = (n) => (n === cur && !out.has(n.id) ? plain(blocks) : n.blocks);
 
   const readHere = () => {
     try {
@@ -199,6 +214,7 @@ window.Notes = (() => {
   let saveTimer = 0;
   function save() {
     clearTimeout(saveTimer);
+    if (out.has(cur.id)) return;
     const json = JSON.stringify(plain(blocks));
     if (json === kept) return;
     kept = json;
@@ -240,10 +256,11 @@ window.Notes = (() => {
       tag.title = name === cur.name ? NAME_HINT : name;
       tile.setAttribute('aria-label', name);
     }
-    tile.querySelector('.np-mini').innerHTML = mini(plain(blocks));
+    tile.querySelector('.np-mini').innerHTML = mini(blocksOf(cur));
   }
 
   // The panel's strip names the pinned note and when it last changed; the window's strip, the note in it.
+  let titled = ''; // the name the app has for the note's own window
   function stamp() {
     if (!cur) return;
     const edited = (n) => (n.at && blocksOf(n).some((b) => b.text || b.type !== 'p') ? `edited ${ago(n.at)}` : '');
@@ -252,7 +269,20 @@ window.Notes = (() => {
       meta.textContent = (unsaved ? 'not saved · ' : '') + (edited(p) ? `${nameOf(p)} · ${edited(p)}` : nameOf(p));
       meta.title = unsaved ? `Not saved on this computer: ${unsaved}` : '';
     }
-    if (win) {
+    if (WINDOW) {
+      // The note's own window: its strip, and its name for the app (Mission Control, the Window menu).
+      if (!ready) return;
+      const name = nameOf(cur);
+      const tag = panel.querySelector('.npw-name');
+      tag.textContent = name;
+      tag.title = name === cur.name ? NAME_HINT : name;
+      const m = panel.querySelector('.npw-meta');
+      m.textContent = (unsaved ? 'not saved · ' : '') + edited(cur);
+      m.title = unsaved ? `Not saved on this computer: ${unsaved}` : '';
+      // On stream the app's window list shows a plain name, not the note's first line.
+      const shown = document.documentElement.classList.contains('streamer') ? 'Note' : name;
+      if (shown !== titled) STORE?.postMessage({ type: 'title', name: (titled = shown) }).catch(() => {});
+    } else if (win) {
       const name = nameOf(cur);
       const tag = win.querySelector('.npw-name');
       tag.textContent = name;
@@ -1052,8 +1082,15 @@ window.Notes = (() => {
   panel.querySelector(':scope > header')?.appendChild(pop);
   pop.addEventListener('click', (e) => {
     e.stopPropagation();
+    if (NATIVE) return out.has(pinned) ? dock() : undock();
     return win && !win.hidden ? dock() : undock();
   });
+  // ⤢ lit while the pinned note is out in its app window (NATIVE).
+  function popState() {
+    const on = out.has(pinned);
+    pop.classList.toggle('on', on);
+    pop.title = on ? 'Put it back in the dashboard' : 'Open in a window';
+  }
 
   const away = document.createElement('div');
   away.className = 'np-away';
@@ -1069,6 +1106,12 @@ window.Notes = (() => {
   // What the panel holds while a note is out in its window: the pinned note to read, or, when the pinned note is the
   // one in the window, where it is.
   function paintAway() {
+    // The Mac's app windows: the panel writes the pinned note unless it's out in its window (then: where it is).
+    if (NATIVE) {
+      if (out.has(pinned)) host.replaceChildren(away);
+      else if (ed.parentNode !== host) host.replaceChildren(ed);
+      return;
+    }
     if (!win || win.hidden) return;
     const p = pinnedNote();
     if (p === cur) return host.replaceChildren(away);
@@ -1132,7 +1175,21 @@ window.Notes = (() => {
     } catch {}
   }
 
+  // A note out in an app window of its own (NATIVE): the panel keeps the pinned note, the window writes this one.
+  function openOut(id) {
+    out.add(id);
+    toApp({ type: 'noteWindow', id });
+    paintAway();
+    popState();
+    stamp();
+    drawBoard();
+  }
+
   function undock() {
+    if (NATIVE) {
+      save();
+      return openOut(cur.id);
+    }
     if (!win) build();
     let g = null;
     try {
@@ -1154,6 +1211,11 @@ window.Notes = (() => {
   }
 
   function dock() {
+    // The app closes the pinned note's window; the panel writes it again once it's closed (windowClosed).
+    if (NATIVE) {
+      if (out.has(pinned)) toApp({ type: 'noteWindowClose', id: pinned, flush: true });
+      return;
+    }
     if (!win || win.hidden) return;
     keepWindow();
     closeMenu();
@@ -1179,6 +1241,11 @@ window.Notes = (() => {
   function openNote(id) {
     const n = notes.find((x) => x.id === id);
     if (!n) return;
+    if (NATIVE) {
+      if (n === cur) save();
+      write();
+      return openOut(id);
+    }
     if (n !== cur) {
       save();
       closeMenu();
@@ -1200,6 +1267,20 @@ window.Notes = (() => {
   function pinNote(id) {
     const n = notes.find((x) => x.id === id);
     if (!n) return;
+    if (NATIVE) {
+      // The panel's note from now on, even out in its window: written here again once that closes (windowClosed).
+      save();
+      pinned = n.id;
+      closeMenu();
+      letGo();
+      bind(n);
+      render(null);
+      paintAway();
+      popState();
+      write();
+      stamp();
+      return drawBoard();
+    }
     pinned = n.id;
     if (win && !win.hidden) paintAway();
     else if (n !== cur) {
@@ -1240,6 +1321,14 @@ window.Notes = (() => {
     const n = notes.find((x) => x.id === id);
     if (!n) return;
     const q = { title: 'Delete this note?', text: `Are you sure you want to delete “${nameOf(n)}”?`, ok: 'Delete' };
+    if (WINDOW) {
+      // Asked on the note's own window; what was typed last reaches the dashboard first (its undo keeps it), then the
+      // dashboard deletes it.
+      const r = STORE && ready ? await STORE.postMessage({ type: 'confirm', ...q }).catch(() => null) : null;
+      if (!r || !r.yes) return;
+      await flush();
+      return STORE.postMessage({ type: 'delete' }).catch(() => {});
+    }
     const yes = typeof askBox === 'function' ? await askBox(q) : window.confirm(q.text);
     if (yes) removeNote(id);
   }
@@ -1249,6 +1338,11 @@ window.Notes = (() => {
     const i = notes.findIndex((x) => x.id === id);
     if (i < 0) return;
     if (notes[i] === cur) save();
+    // Out in its window: the window closes (nothing more of it kept), its place forgotten.
+    if (NATIVE && out.has(id)) {
+      out.delete(id);
+      toApp({ type: 'noteWindowClose', id, flush: false, deleted: true });
+    }
     if (gone) clearTimeout(gone.timer);
     gone = { note: notes[i], index: i, timer: setTimeout(() => ((gone = null), drawBoard()), 6000) };
     notes.splice(i, 1);
@@ -1256,13 +1350,15 @@ window.Notes = (() => {
     // The pinned note gone, the first on the board takes its place in the panel.
     if (gone.note.id === pinned) pinned = notes[0].id;
     if (gone.note === cur) {
-      if (win && !win.hidden) dock();
+      if (!NATIVE && win && !win.hidden) dock();
       else {
         letGo();
         bind(pinnedNote());
         render(null);
+        if (NATIVE) paintAway();
       }
     } else paintAway();
+    if (NATIVE) popState();
     write();
     stamp();
     drawBoard();
@@ -2072,12 +2168,13 @@ window.Notes = (() => {
 
   function tile(n) {
     // Its marks: pinned (the note the dashboard's panel shows), open (the note in the window).
-    const where = [n.id === pinned ? `${PIN} pinned` : '', n === cur && win && !win.hidden ? 'open' : ''].filter(Boolean).join(' · ');
+    const open = NATIVE ? out.has(n.id) : n === cur && win && !win.hidden;
+    const where = [n.id === pinned ? `${PIN} pinned` : '', open ? 'open' : ''].filter(Boolean).join(' · ');
     const when = n.at ? `edited ${ago(n.at)}` : 'empty';
     // The note coming down is drawn hidden in its place until its copy is there.
     const coming = landing && landing.id === n.id ? ' np-coming' : '';
     return (
-      `<section class="panel np-tile${n === cur ? ' cur' : ''}${coming}" role="listitem" tabindex="0" data-id="${esc(n.id)}" aria-label="${esc(nameOf(n))}">` +
+      `<section class="panel np-tile${n === cur || open ? ' cur' : ''}${coming}" role="listitem" tabindex="0" data-id="${esc(n.id)}" aria-label="${esc(nameOf(n))}">` +
       `<header><span class="tag np-name" title="${esc(nameOf(n) === n.name ? NAME_HINT : nameOf(n))}">${esc(nameOf(n))}</span>` +
       `<span class="meta">${where ? `<b>${where}</b> · ` : ''}${when}</span>` +
       `<button type="button" class="np-del" title="Delete note" aria-label="Delete note">${TRASH}</button></header>` +
@@ -2136,6 +2233,9 @@ window.Notes = (() => {
     const mod = MAC ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey;
     if (!mod || !e.shiftKey || e.altKey || e.code !== 'KeyJ') return;
     e.preventDefault();
+    if (WINDOW) return refocus();
+    if (NATIVE && out.has(pinned)) return toApp({ type: 'noteWindow', id: pinned });
+    if (NATIVE && !ed.offsetParent) return undock();
     if (!ed.offsetParent) undock();
     refocus();
   });
@@ -2157,7 +2257,143 @@ window.Notes = (() => {
     return writing;
   }
 
-  if (STORE) {
+  // ---------- the dashboard's side of the note windows (NATIVE; NoteWindow.swift calls these) ----------
+  // A note's window asks for its note: from now on it's written there.
+  async function windowNote(id) {
+    await isLoaded;
+    const n = notes.find((x) => x.id === id);
+    if (!n) return null;
+    if (n === cur && !out.has(id)) save();
+    out.add(id);
+    paintAway();
+    popState();
+    stamp();
+    drawBoard();
+    return JSON.stringify({ v: 3, ordered: true, pinned: id, current: id, notes: [{ id: n.id, name: n.name, created: n.created, at: n.at, blocks: blocksOf(n) }] });
+  }
+  // What a note's window wrote, kept with every other note: its blocks and when (its name and order stay this page's).
+  async function fromWindow(note) {
+    await isLoaded;
+    const n = note && notes.find((x) => x.id === note.id);
+    if (!n) return { error: 'this note was deleted' };
+    const fresh = !out.has(n.id);
+    out.add(n.id);
+    if (Array.isArray(note.blocks)) n.blocks = plain(liveOf(note.blocks));
+    n.at = Number(note.at) || Date.now();
+    if (fresh) {
+      paintAway();
+      popState();
+    }
+    const ok = await write();
+    stamp();
+    drawBoard();
+    return ok ? { ok: true } : { error: unsaved || 'not saved' };
+  }
+  // Its window closed: the pinned note is written in the panel again, as its window left it.
+  function windowClosed(id) {
+    if (!out.delete(id)) return;
+    if (cur && id === cur.id) {
+      letGo();
+      bind(cur);
+      render(null);
+    }
+    paintAway();
+    popState();
+    stamp();
+    drawBoard();
+  }
+  // The notes out in their windows, as the app has them (this page loaded again, or at launch).
+  function windowsOpen(ids) {
+    save();
+    const was = cur && out.has(cur.id);
+    out.clear();
+    for (const id of ids || []) out.add(id);
+    if (was && !out.has(cur.id)) {
+      letGo();
+      bind(cur);
+      render(null);
+    }
+    paintAway();
+    popState();
+    stamp();
+    drawBoard();
+  }
+
+  // ---------- one note in an app window of its own (WINDOW: note.html) ----------
+  // Its strip: the note's name, when it last changed, then Keep on top (codicon's pin, pinned while on), the trash can
+  // and ×. Dragged by the strip, the app moves the window; its edges size it.
+  const post = (msg) => {
+    try {
+      return Promise.resolve(STORE ? STORE.postMessage(msg) : null).catch(() => null);
+    } catch {
+      return Promise.resolve(null);
+    }
+  };
+  let onTop = false;
+  function setTop(on) {
+    onTop = !!on;
+    const b = panel.querySelector('.npw-top');
+    if (!b) return;
+    b.classList.toggle('on', onTop);
+    b.setAttribute('aria-pressed', String(onTop));
+    b.title = onTop ? 'Stop keeping on top' : 'Keep on top';
+    b.innerHTML = `<i class="np-glyph" aria-hidden="true">${onTop ? '&#xEBA0;' : '&#xEB2B;'}</i>`;
+  }
+  function windowBar() {
+    panel.querySelector('.npw-x')?.addEventListener('click', () => post({ type: 'close' }));
+    panel.querySelector('.npw-del')?.addEventListener('click', () => ready && askDelete(cur.id));
+    panel.querySelector('.npw-top')?.addEventListener('click', () => post({ type: 'onTop', on: !onTop }).then((r) => r && setTop(r.onTop)));
+    const bar = panel.querySelector('.npw-bar');
+    bar?.addEventListener('mousedown', (e) => {
+      if (e.button !== 0 || e.target.closest('button')) return;
+      e.preventDefault();
+      closeMenu();
+      post({ type: 'dragStart' });
+      const move = () => post({ type: 'drag' });
+      const up = () => {
+        removeEventListener('mousemove', move);
+        removeEventListener('mouseup', up);
+        post({ type: 'dragEnd' });
+      };
+      addEventListener('mousemove', move);
+      addEventListener('mouseup', up);
+    });
+  }
+
+  if (WINDOW) {
+    // Nothing is written till the dashboard's page sends the note (a note it no longer has isn't made again here).
+    windowBar();
+    setTop(WINDOW.onTop);
+    document.documentElement.classList.toggle('streamer', !!WINDOW.streamer);
+    // The window's name follows streamer mode when it is switched later.
+    new MutationObserver(() => stamp()).observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+    loadAll(null);
+    render(null);
+    // The dashboard's page still loading answers { wait }: asked again a moment later.
+    const ask = (tries) => post({ type: 'load' }).then((r) => (r && r.wait && tries > 0 ? new Promise((ok) => setTimeout(ok, 700)).then(() => ask(tries - 1)) : r));
+    ask(15).then((r) => {
+      if (r && 'onTop' in r) setTop(r.onTop);
+      if (r && 'streamer' in r) document.documentElement.classList.toggle('streamer', !!r.streamer);
+      let v = null;
+      try {
+        v = r && typeof r.json === 'string' ? JSON.parse(r.json) : null;
+      } catch {}
+      if (!v || !Array.isArray(v.notes) || !v.notes.length) {
+        const gone = document.createElement('div');
+        gone.className = 'np-away';
+        gone.textContent = "This note isn't on the dashboard anymore";
+        host.replaceChildren(gone);
+        post({ type: 'close' });
+        return;
+      }
+      ready = true;
+      loadAll(v);
+      render(null);
+      stamp();
+      refocus();
+      loaded();
+    });
+  } else if (STORE) {
     // An empty note until the app's are read (nothing is written till then), and nothing of them in the page's storage:
     // notes written there before the app kept them go to the app once, then leave it.
     const before = readHere();
@@ -2189,10 +2425,29 @@ window.Notes = (() => {
         drawBoard();
         if (carried) write().then((kept) => kept && forget());
         else if (!unsaved) forget();
+        loaded();
+        // The app opens the notes left out at the last quit, and says which are out (this page loaded again).
+        if (NATIVE) toApp({ type: 'notesReady' });
       });
   } else {
     loadAll(readHere());
     render(null);
+    loaded();
   }
-  return { focus: refocus, open: undock, close: dock, mountBoard, showBoard, hideBoard, newNote, flush, icon: ICON };
+  return {
+    focus: refocus,
+    open: undock,
+    close: dock,
+    mountBoard,
+    showBoard,
+    hideBoard,
+    newNote,
+    flush,
+    icon: ICON,
+    windowNote,
+    fromWindow,
+    windowClosed,
+    windowsOpen,
+    removeFromWindow: (id) => removeNote(id),
+  };
 })();

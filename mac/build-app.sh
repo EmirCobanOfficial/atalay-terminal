@@ -21,6 +21,10 @@ GEN=Sources/AtalayTerminal/ClientKey+Build.swift
 # With the key, the SHA-256 of every page file goes into the program too (WebIntegrity.swift): the app signs nothing
 # while its pages aren't these.
 MANIFEST=Sources/AtalayTerminal/WebManifest+Build.swift
+# The bundle carries none of Viktoria's files (her model, clips and Live2D): the app downloads her (MascotAsset.swift).
+# The pages' folder is staged without them, and both the integrity list and the bundle's copy come from the stage.
+WEBSRC="$(mktemp -d)/web"
+rsync -a --exclude '/mascot/vrm' --exclude '/mascot/live2d' Resources/web/ "$WEBSRC/"
 FLAGS=()
 if [ -f "$KEYFILE" ]; then
   python3 - "$KEYFILE" "$GEN" <<'PY'
@@ -46,7 +50,7 @@ with open(sys.argv[2], 'w') as f:
             f'    static let slot = {keys.index(real)}\n'
             '}\n')
 PY
-  python3 - Resources/web "$MANIFEST" <<'PY'
+  python3 - "$WEBSRC" "$MANIFEST" <<'PY'
 import hashlib, os, sys
 root, out = sys.argv[1], sys.argv[2]
 files = {}
@@ -122,7 +126,8 @@ if [ "${STAGING:-}" = 1 ]; then
   # Plain http to the local API is for staging only; the released app reaches its API over https alone.
   /usr/libexec/PlistBuddy -c 'Add :NSAppTransportSecurity dict' -c 'Add :NSAppTransportSecurity:NSAllowsLocalNetworking bool true' "$P"
 fi
-cp -R Resources/web "$APP/Contents/Resources/web"
+cp -R "$WEBSRC" "$APP/Contents/Resources/web"
+rm -rf "$(dirname "$WEBSRC")"
 cp "$ICON" "$APP/Contents/Resources/AppIcon.icns"
 # The token savers (TokenSavers.swift): rtk, fetched by scripts/fetch-rtk.sh (a pinned release, checked against its
 # checksums) the first time a Mac builds, and caveman's rules.

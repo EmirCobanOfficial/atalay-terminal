@@ -1,0 +1,21 @@
+/* Settings' fonts (fonts.js, cloud.js renderUI). INTERFACE: each font's button is written in that font, so the choice
+   shows itself. TERMINALS: the font list, the size stepper and a line of a terminal drawn in them. */
+.ui-font button[data-font=mono] { font-family: "SF Mono", ui-monospace, Menlo, monospace; }
+.ui-font button[data-font=system] { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
+.ui-font button[data-font=rounded] { font-family: ui-rounded, "SF Pro Rounded", -apple-system, "Segoe UI", sans-serif; }
+
+.tf-font { flex: none; height: 26px; max-width: 230px; padding: 0 8px; border: 1px solid rgba(var(--accent-rgb), 0.45); border-radius: 6px; background: transparent; color: var(--txt); font: inherit; cursor: pointer; }
+.tf-font:hover { border-color: var(--accent); color: var(--hi); }
+.tf-font:disabled { opacity: 0.5; cursor: default; }
+.tf-font option { background: rgb(var(--panel-rgb)); color: var(--txt); }
+
+.tf-size { display: flex; flex: none; align-items: center; overflow: hidden; border: 1px solid rgba(var(--accent-rgb), 0.45); border-radius: 6px; }
+.hk-row .tf-size button { width: 30px; height: 24px; padding: 0; border: 0; color: var(--accent-soft); font-size: 1.2em; line-height: 1; }
+.hk-row .tf-size button:hover { background: var(--accent); color: var(--ink); box-shadow: none; }
+.hk-row .tf-size button:disabled:hover { background: transparent; color: var(--accent-soft); }
+.tf-size b { min-width: 54px; border-left: 1px solid rgba(var(--accent-rgb), 0.25); border-right: 1px solid rgba(var(--accent-rgb), 0.25); color: var(--hi); line-height: 24px; text-align: center; }
+
+.tf-demo { margin: 8px 0 6px; padding: 10px 12px; overflow: hidden; border: 1px solid rgba(var(--accent-rgb), 0.22); border-radius: 6px; background: var(--code-bg); color: var(--code-fg); line-height: 1.35; white-space: nowrap; text-overflow: ellipsis; }
+.tf-demo b { color: var(--a2); font-weight: 400; }
+.tf-demo i { color: var(--a3); font-style: normal; }
+.tf-demo em { margin-left: 1.6em; color: var(--dim); font-style: normal; }

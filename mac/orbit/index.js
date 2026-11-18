@@ -71,6 +71,11 @@ let THEME = readTheme();
 const scene = new THREE.Scene();
 scene.background = new THREE.Color();
 const camera = new THREE.PerspectiveCamera(40, 1, 2, 12000);
+// Each frame used to walk the scene graph twice: once in composer.render() and once in labels.render() right after.
+// The renderers skip their own walk and frame() runs one scene.updateMatrixWorld() ahead of them both. Only the scene
+// (never moved, so its own matrix stays identity): the flag also stops updateMatrixWorld() from computing the
+// object's own world matrix, and on the camera it froze the view.
+scene.matrixWorldAutoUpdate = false;
 
 const ambient = new THREE.AmbientLight(0xffffff, 0.75);
 const sunLight = new THREE.PointLight(0xffffff, 4.2, 0, 0);
@@ -135,10 +140,13 @@ composer.addPass(new OutputPass());
 // switch on the map, a low battery or Low Power Mode on the Mac; on battery on Windows) it never goes past `saver`, in
 // front either, and the cinematic camera doesn't start on its own.
 // Dragging the view, or the camera flying somewhere, gets the front rate anywhere.
+// At Retina the renderer and the bloom pipeline run at pixelRatio × canvas pixels; DPR 2 is 4× the fragment work of
+// DPR 1, and bloom's five-level mip chain pays that cost every frame. 1.5 keeps stylised low-poly looking the same
+// (fine rings and text barely soften) while cutting compositor and GPU load on macOS WindowServer.
 const QUALITY = {
-  front: { fps: 60, dpr: 2 },
+  front: { fps: 60, dpr: 1.5 },
   behind: { fps: 20, dpr: 1.25 },
-  saver: { fps: 30, dpr: 1.5 },
+  saver: { fps: 30, dpr: 1.25 },
 };
 // What the app reports through activity() and power(); a hidden page also stops on its own.
 const ACT = { visible: true, focused: true, saver: false, until: 0 };
@@ -1854,7 +1862,18 @@ function poke(ms = 1500) {
   ACT.until = performance.now() + ms;
   wake();
 }
+// In throttled modes the loop sleeps on a timer between frames instead of an animation frame.
+let frameTimer = 0;
+function nextFrame() {
+  frameTimer = 0;
+  if (!rafId && ACT.visible && !document.hidden) rafId = requestAnimationFrame(frame);
+}
 function wake() {
+  // A sleeping loop (an interaction raised the rate): its frame comes now. lastFrame stays, or the frame would wait again.
+  if (frameTimer) {
+    clearTimeout(frameTimer);
+    return nextFrame();
+  }
   if (rafId || !ACT.visible || document.hidden) return;
   lastFrame = performance.now();
   rafId = requestAnimationFrame(frame);
@@ -1868,8 +1887,16 @@ document.addEventListener('visibilitychange', wake);
 function frame(now) {
   rafId = 0;
   if (!ACT.visible || document.hidden) return;
+  // Throttled (behind a chat, power save): an animation frame each display refresh only to skip it kept the main thread
+  // awake at 60–120 Hz. A frame more than ~1.5 refreshes away sleeps on a timer instead. At 60 fps it stays on rAF.
+  const target = 1000 / targetFps(now);
+  const dueIn = target - (now - lastFrame) - 2;
+  if (dueIn > 12) {
+    frameTimer = setTimeout(nextFrame, dueIn);
+    return;
+  }
   rafId = requestAnimationFrame(frame);
-  if (now - lastFrame < 1000 / targetFps(now) - 2) return;
+  if (now - lastFrame < target - 2) return;
   const dt = Math.min(0.05, Math.max(0, (now - lastFrame) / 1000));
   lastFrame = now;
   if (!SIZE.w) return;
@@ -1934,9 +1961,13 @@ function frame(now) {
   }
   if (textTick) refreshCore();
 
+  // One scene traversal for both renderers (the scene's auto-update is off).
+  scene.updateMatrixWorld();
   composer.render();
   labels.render(scene, camera);
-  if (now - lastMinimap > 120) {
+  // 4 Hz: drawMinimap() traces each orbit with 40 applyQuaternion steps and a full-DPR clearRect. 8 Hz was overkill for
+  // a corner widget — 4 still tracks hover and session moves without lag.
+  if (now - lastMinimap > 250) {
     lastMinimap = now;
     drawMinimap();
   }

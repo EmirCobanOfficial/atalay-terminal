@@ -5,8 +5,8 @@ import WebKit
 /// (Swift tells the page which part it is):
 /// - notices: a new message, friend request or new friend pops up at the bottom-right corner of the screen, above
 ///   every window, and goes away on its own; clicking one opens the chat;
-/// - chats: one panel per friend whose conversation is open, so several sit on screen side by side, each a window the
-///   user drags by its header like any other (the first where the last was left, the next ones cascading from it).
+/// - chat: one window for the open conversations, a tab for each as on Steam's friend chat, dragged by its tabs and made
+///   larger or smaller from its edges like any other window (it opens where it was left, at the size it was left at).
 /// ⌘V, ⌘C, ⌘X and ⌘A work in all of them through `editKey`. Chats sit among the terminals pinned above the dashboard,
 /// so whichever window was clicked last is on top, and like them they step aside while a dashboard menu is open.
 /// The notices also say when a new version of the app is out; a click on that one shows the dashboard's "what's new".
@@ -20,8 +20,9 @@ final class MessagePanel: NSObject, WKScriptMessageHandler, WKNavigationDelegate
     enum Role: String { case notices, chat }
 
     static let notices = MessagePanel(.notices)
-    /// Open conversations, by friend id.
-    private static var chats: [String: MessagePanel] = [:]
+    /// The chat window (its page holds every open conversation, a tab each); none while no chat is open.
+    private static var chatPanel: MessagePanel?
+    private static var chats: [MessagePanel] { chatPanel.map { [$0] } ?? [] }
     /// The dashboard window the chats are pinned above, like the terminals.
     static weak var dashboard: NSWindow?
     /// Out of the way of a dashboard menu.
@@ -30,8 +31,12 @@ final class MessagePanel: NSObject, WKScriptMessageHandler, WKNavigationDelegate
     private static var showing = Set<String>()
     /// The update notice was clicked (the main window shows what's new).
     static var onOpenUpdate: (() -> Void)?
+    /// The "updated" note was clicked (the main window shows what's new in the version you're on).
+    static var onOpenWhatsNew: (() -> Void)?
     /// The daily bonus notice was clicked (the main window shows your profile).
     static var onOpenProfile: (() -> Void)?
+    /// A friend's picture or name was clicked in the chat (the main window shows their card, by their id).
+    static var onOpenFriend: ((String) -> Void)?
     /// A notification from the developer was clicked.
     static var onOpenNotifications: (() -> Void)?
     /// The danger alarm (a runaway process): Details, and END IT (its pid and start, as the page had them).
@@ -74,6 +79,12 @@ final class MessagePanel: NSObject, WKScriptMessageHandler, WKNavigationDelegate
     /// Scripts that arrived before the page finished loading.
     private var waiting: [String] = []
     private static let originKey = "chatWindowTopLeft"
+    /// The chat window's size as it was left, without the 8 pt ring for its glow (the page starts at Steam's 740×650).
+    private static let sizeKey = "chatWindowSize"
+    private static var savedSize: String {
+        guard let s = UserDefaults.standard.array(forKey: sizeKey) as? [Double], s.count == 2, s.allSatisfy({ $0 >= 1 }) else { return "null" }
+        return "[\(Int(s[0])), \(Int(s[1]))]"
+    }
 
     private init(_ role: Role, friend: String? = nil) {
         self.role = role
@@ -86,7 +97,7 @@ final class MessagePanel: NSObject, WKScriptMessageHandler, WKNavigationDelegate
         config.mediaTypesRequiringUserActionForPlayback = []
         config.lockInspector()
         let ucc = WKUserContentController()
-        ucc.addUserScript(WKUserScript(source: "window.__MESSAGES_ROLE__ = '\(role.rawValue)'; window.__MESSAGES_FRIEND__ = \(Self.literal(friend));",
+        ucc.addUserScript(WKUserScript(source: "window.__MESSAGES_ROLE__ = '\(role.rawValue)'; window.__MESSAGES_FRIEND__ = \(Self.literal(friend)); window.__CHAT_SIZE__ = \(Self.savedSize);",
                                        injectionTime: .atDocumentStart, forMainFrameOnly: true))
         config.userContentController = ucc
         webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 380, height: 140), configuration: config)
@@ -113,6 +124,8 @@ final class MessagePanel: NSObject, WKScriptMessageHandler, WKNavigationDelegate
             panel.level = .normal
             panel.collectionBehavior = [.fullScreenAuxiliary]
             panel.delegate = self
+            // The see-through ring around the box takes the mouse too: it's where the window is made larger or smaller.
+            panel.ignoresMouseEvents = false
             Self.watchScreens()
         }
         let root = NSView(frame: webView.frame)
@@ -169,6 +182,11 @@ final class MessagePanel: NSObject, WKScriptMessageHandler, WKNavigationDelegate
         run("window.__messages && __messages.skip && __messages.skip()")
     }
 
+    /// The bell's "Replay animation" (inbox.js): a badge's reveal again, the same takeover; nothing awarded or marked seen.
+    func replayBadge(id: String, tier: Int) {
+        run("window.__messages && __messages.reveal && __messages.reveal(\(Self.literal(id)), \(tier))")
+    }
+
     /// A live event from the API (JSON text).
     func push(_ json: String) {
         run("window.__messages && __messages.event(\(json))")
@@ -182,8 +200,9 @@ final class MessagePanel: NSObject, WKScriptMessageHandler, WKNavigationDelegate
     }
 
     /// The app updated itself since it last ran: a note in the corner, so a restart while the user was away isn't a mystery.
-    func announce(updated version: String) {
-        run("window.__messages && __messages.updated && __messages.updated(\(Self.literal(version)))")
+    /// It stays until closed, with the version's top changes (its build finds its notes, whatsnew.js).
+    func announce(updated version: String, build: Int) {
+        run("window.__messages && __messages.updated && __messages.updated(\(Self.literal(version)), \(build))")
     }
 
     /// Processes left burning a core where nobody sees them (Runaways): the alarm in the middle of the screen.
@@ -233,22 +252,31 @@ final class MessagePanel: NSObject, WKScriptMessageHandler, WKNavigationDelegate
 
     /// ⌘W in a friend's chat: it closes the way its × does. False when no chat is in front.
     static func closeKeyChat() -> Bool {
-        guard let chat = chats.values.first(where: { $0.panel.isKeyWindow }) else { return false }
+        guard let chat = chats.first(where: { $0.panel.isKeyWindow }) else { return false }
         chat.run("window.__messages && __messages.close && __messages.close()")
         return true
     }
 
-    /// Opens the conversation with a friend: their panel to the front, or a new one next to the others.
+    /// The chat window made ahead of time, hidden, so the first chat opened doesn't wait for a web view, its page and
+    /// the friends list to load.
+    static func warmChat() {
+        guard chatPanel == nil else { return }
+        let p = MessagePanel(.chat)
+        chatPanel = p
+        p.run("window.__messages && __messages.warm && __messages.warm()")
+    }
+
+    /// Opens the conversation with a friend in the chat window: their tab to the front, a new tab, or the window itself.
     static func openChat(friend id: String) {
         guard !id.isEmpty else { return }
-        let p = chats[id] ?? MessagePanel(.chat, friend: id)
-        chats[id] = p
+        let p = chatPanel ?? MessagePanel(.chat)
+        chatPanel = p
         p.run("window.__messages && __messages.open(\(literal(id)))")
     }
 
     /// A live event for every open conversation.
     static func pushToChats(_ json: String) {
-        for p in chats.values { p.push(json) }
+        for p in chats { p.push(json) }
     }
 
     /// ⌘V, ⌘C, ⌘X and ⌘A in a message panel (AppDelegate's key monitor): the page edits, Swift does the clipboard.
@@ -257,7 +285,7 @@ final class MessagePanel: NSObject, WKScriptMessageHandler, WKNavigationDelegate
     static func editKey(_ event: NSEvent) -> Bool {
         guard event.modifierFlags.intersection([.command, .control, .option, .shift]) == .command,
               let key = event.charactersIgnoringModifiers?.lowercased(), ["c", "x", "v", "a"].contains(key),
-              let p = ([notices] + Array(chats.values)).first(where: { $0.panel === event.window }) else { return false }
+              let p = ([notices] + chats).first(where: { $0.panel === event.window }) else { return false }
         switch key {
         case "v":
             if let text = NSPasteboard.general.string(forType: .string) {
@@ -285,7 +313,7 @@ final class MessagePanel: NSObject, WKScriptMessageHandler, WKNavigationDelegate
 
     /// The display chats belong on: the dashboard's while it's on screen (they're pinned to it, and a full-screen
     /// dashboard's space shows nothing of a chat sitting on another display), else the one in use.
-    private static func home() -> NSScreen {
+    static func home() -> NSScreen {
         if let d = dashboard, d.isVisible, let s = d.screen { return s }
         return NSScreen.main ?? NSScreen.screens[0]
     }
@@ -314,7 +342,7 @@ final class MessagePanel: NSObject, WKScriptMessageHandler, WKNavigationDelegate
                 let window = note.object as? NSWindow
                 MainActor.assumeIsolated {
                     guard displays || (window != nil && window === dashboard) else { return }
-                    for p in chats.values where p.panel.isVisible { p.panel.setFrame(whole(p.panel.frame), display: true) }
+                    for p in chats where p.panel.isVisible { p.panel.setFrame(whole(p.panel.frame), display: true) }
                 }
             }
         }
@@ -323,7 +351,7 @@ final class MessagePanel: NSObject, WKScriptMessageHandler, WKNavigationDelegate
     /// The dashboard came to the front: chats opened while it was away pin above it too, so a click on it doesn't bury
     /// them.
     static func pinAll() {
-        for p in chats.values where p.panel.isVisible { p.pin() }
+        for p in chats where p.panel.isVisible { p.pin() }
     }
 
     /// Clicked: on top of the other windows pinned above the dashboard (AppKit doesn't reorder children on a click).
@@ -336,7 +364,7 @@ final class MessagePanel: NSObject, WKScriptMessageHandler, WKNavigationDelegate
     /// A menu opened on the dashboard (friends, settings, an update): the chats on screen step out of its way and come
     /// back when it closes, like the terminals.
     static func stepAside(_ aside: Bool) {
-        for p in chats.values {
+        for p in chats {
             if aside, p.panel.isVisible {
                 p.steppedAside = true
                 p.panel.parent?.removeChildWindow(p.panel)
@@ -349,11 +377,13 @@ final class MessagePanel: NSObject, WKScriptMessageHandler, WKNavigationDelegate
         }
     }
 
-    /// A chat closed: its panel goes (a new one loads when it's opened again).
+    /// The chat window closed: it's only hidden. Its page, the friends list and the conversations already loaded stay
+    /// (live events keep them current), so the next open just shows it.
     private func closed() {
-        guard role == .chat, let friend, Self.chats[friend] === self else { return }
-        Self.chats[friend] = nil
-        if Self.showing.remove(friend) != nil { Self.tellShowing() }
+        guard role == .chat, Self.chatPanel === self else { return }
+        guard !Self.showing.isEmpty else { return }
+        Self.showing = []
+        Self.tellShowing()
     }
 
     private static func tellShowing() {
@@ -401,6 +431,14 @@ final class MessagePanel: NSObject, WKScriptMessageHandler, WKNavigationDelegate
                 panel.orderOut(nil)
                 return closed()
             }
+            if role == .chat, body["live"] as? Bool == true, panel.isVisible {
+                // An edge being dragged: one frame change per screen refresh and nothing else (no glass fade, no
+                // re-pin, no forced redraw); the left/top edges move the corner in the same call.
+                let f = panel.frame
+                let top = f.maxY - number("dy"), left = f.minX + number("dx")
+                panel.setFrame(Self.whole(NSRect(x: left, y: top - size.height, width: size.width, height: size.height)), display: false)
+                return
+            }
             let place = role == .notices ? body["place"] as? String : nil
             let wide = place == "screen" || place == "fire"
             frost(!wide, duration: wide ? 0 : 0.3)
@@ -418,8 +456,12 @@ final class MessagePanel: NSObject, WKScriptMessageHandler, WKNavigationDelegate
             guard role == .chat else { return }
             panel.setFrame(Self.whole(panel.frame), display: true)
             UserDefaults.standard.set([panel.frame.minX, panel.frame.maxY], forKey: Self.originKey)
+            // Its size too, after the page made it larger or smaller from an edge (the same message ends that).
+            UserDefaults.standard.set([panel.frame.width - 16, panel.frame.height - 16], forKey: Self.sizeKey)
         case "openUpdate":
             Self.onOpenUpdate?()
+        case "openWhatsNew":
+            Self.onOpenWhatsNew?()
         case "openProfile":
             Self.onOpenProfile?()
         case "openNotifications":
@@ -437,10 +479,18 @@ final class MessagePanel: NSObject, WKScriptMessageHandler, WKNavigationDelegate
             // Never longer than 4 s, whatever the page asks.
             Self.keysLockedUntil = ProcessInfo.processInfo.systemUptime + min(max(number("ms"), 0), 4000) / 1000
         case "showing":
-            // This chat shows its friend (or no one anymore): no pop-ups for the friends on screen.
-            guard role == .chat, let friend else { return }
-            if body["id"] as? String == friend { Self.showing.insert(friend) } else { Self.showing.remove(friend) }
+            // The friends whose tabs are open in the chat window (or no one anymore): no pop-ups for them.
+            guard role == .chat else { return }
+            if let ids = body["ids"] as? [String] {
+                Self.showing = Set(ids)
+            } else if let friend {
+                if body["id"] as? String == friend { Self.showing.insert(friend) } else { Self.showing.remove(friend) }
+            }
             Self.tellShowing()
+        case "openFriend":
+            // A friend's picture or name in the chat: their card in the friends view.
+            guard role == .chat, let id = body["id"] as? String, !id.isEmpty else { return }
+            Self.onOpenFriend?(id)
         case "openChat":
             // Another friend's chat, from this one: a panel of its own.
             Self.openChat(friend: body["id"] as? String ?? "")
@@ -507,7 +557,7 @@ final class MessagePanel: NSObject, WKScriptMessageHandler, WKNavigationDelegate
     /// full-screen dashboard, or grew past the bottom of the screen.
     private func placeChat(_ size: CGSize, focus: Bool) {
         var topLeft: NSPoint
-        let others = Self.chats.values.filter { $0 !== self && $0.panel.isVisible }.map(\.panel)
+        let others = Self.chats.filter { $0 !== self && $0.panel.isVisible }.map(\.panel)
         if panel.isVisible {
             topLeft = NSPoint(x: panel.frame.minX, y: panel.frame.maxY)
         } else if let front = NSApp.orderedWindows.first(where: { w in others.contains { $0 === w } }) {
@@ -521,7 +571,7 @@ final class MessagePanel: NSObject, WKScriptMessageHandler, WKNavigationDelegate
         }
         panel.setFrame(Self.whole(NSRect(x: topLeft.x, y: topLeft.y - size.height, width: size.width, height: size.height)), display: true)
         // While the dashboard has a menu open, a chat opened from elsewhere waits for it to close.
-        if Self.chats.values.contains(where: { $0.steppedAside }) {
+        if Self.chats.contains(where: { $0.steppedAside }) {
             steppedAside = true
             return
         }

@@ -1,7 +1,7 @@
 {
   "name": "atalay-terminal",
   "productName": "Orbiterm",
-  "version": "0.22.3",
+  "version": "0.25.2",
   "description": "A HUD for running many Claude Code sessions: every session on a live orbit map, each chat in its own window",
   "author": "atalay karahan",
   "license": "SEE LICENSE IN ../LICENSE",
@@ -47,7 +47,12 @@
     "extraResources": [
       {
         "from": "../mac/Resources/web",
-        "to": "web"
+        "to": "web",
+        "filter": [
+          "**/*",
+          "!mascot/live2d/**",
+          "!mascot/vrm/**"
+        ]
       },
       {
         "from": "../mac/Resources/caveman",

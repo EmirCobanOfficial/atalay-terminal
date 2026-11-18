@@ -424,6 +424,55 @@
       b.classList.toggle('hidden', !on);
     },
   };
+  // Viktoria (the roaming mascot, the Mac's mascotPlatform in Sidebar.swift): while she is on, the list reports the strips
+  // she can walk on, in this page's px, at most 4 times a second: the top bar, FAVORITES, each folder's strip and the
+  // scrolling list itself (what scrolled out of it isn't there to stand on). The app turns them into where she stands.
+  // `window.__mascotEnabled` is set by the app (and a 'mascotchange' event comes with a change).
+  let mascotKey = '', mascotAt = 0, mascotTimer = 0;
+  function mascotSend() {
+    mascotTimer = 0;
+    if (window.__mascotEnabled !== true) return;
+    mascotAt = performance.now();
+    const rects = [];
+    const add = (id, el) => {
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      if (r.width <= 0 || r.height <= 0) return;
+      rects.push({ id, x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) });
+    };
+    add('side:top', $('top'));
+    add('__scroll__', $('list'));
+    add('side:favorites', $('list').querySelector('.sec'));
+    for (const h of $('list').querySelectorAll('.head[data-key]')) add(`side:${h.dataset.key}`, h);
+    const key = JSON.stringify(rects);
+    if (key === mascotKey) return;
+    mascotKey = key;
+    post({ type: 'mascotRects', rects });
+  }
+  function mascotSchedule(force) {
+    if (window.__mascotEnabled !== true) return;
+    if (force) mascotKey = '';
+    const wait = Math.max(0, 250 - (performance.now() - mascotAt));
+    if (!wait) {
+      if (mascotTimer) clearTimeout(mascotTimer);
+      mascotSend();
+    } else if (!mascotTimer) {
+      mascotTimer = setTimeout(mascotSend, wait);
+    }
+  }
+  new MutationObserver(() => mascotSchedule()).observe($('list'), { childList: true, subtree: true });
+  new ResizeObserver(() => mascotSchedule()).observe(document.body);
+  $('list').addEventListener('scroll', () => mascotSchedule(), { passive: true });
+  addEventListener('resize', () => mascotSchedule());
+  addEventListener('mascotchange', () => mascotSchedule(true));
+  // She walked to a folder's strip and tapped it: it folds shut or open, as a click on it does. Only a folder that is shown.
+  window.__mascotFold = (key) => {
+    if (typeof key !== 'string') return;
+    for (const h of $('list').querySelectorAll('.head[data-key]')) {
+      if (h.dataset.key === key) return fold(key);
+    }
+  };
+
   // "5m", "2h": the times move on.
   setInterval(render, 30_000);
   render();
