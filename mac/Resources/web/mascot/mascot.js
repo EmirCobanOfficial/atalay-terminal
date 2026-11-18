@@ -277,8 +277,14 @@ import { VRMAnimationLoaderPlugin, createVRMAnimationClip } from '@pixiv/three-v
   let nextIdleSwitchAt = 18;
   let nextFidgetAt = 30;
 
-  // Physics state for drop, jump-down, hop-up
-  const phys = { active: false, vx: 0, vy: 0, isDrop: false, isHop: false, hopTargetId: null, thrown: false };
+  // Physics state for drop, jump-down, hop-up, and a planned jump to another height (arc)
+  const phys = { active: false, vx: 0, vy: 0, isDrop: false, isHop: false, hopTargetId: null, thrown: false, arc: null };
+  // She never walks up or down through the air: a move to another height walks along what she stands on to within
+  // ARC_REACH of the spot, then jumps there (ARC_APEX over the higher end, at most ARC_VX px/s sideways).
+  const CLIMB_STEP = 12;
+  const ARC_REACH = 220;
+  const ARC_APEX = 28;
+  const ARC_VX = 600;
   // Throwing: pointer samples of the drag (last ~100 ms), the screen crossing in flight, the slide after landing.
   let dragSamples = []; // [{ t, x, y }]
   let crossFlight = null; // { t0, vx, vy } flying into the neighbouring screen, waiting for native's arrive
@@ -892,6 +898,7 @@ import { VRMAnimationLoaderPlugin, createVRMAnimationClip } from '@pixiv/three-v
     grab = null;
     crossFlight = null;
     slide = null;
+    phys.arc = null;
     phys.thrown = false;
     phys.active = false;
     phys.vx = 0;
@@ -908,6 +915,7 @@ import { VRMAnimationLoaderPlugin, createVRMAnimationClip } from '@pixiv/three-v
     pendingNav = null;
     currentPlatId = null;
     phys.active = true;
+    phys.arc = null;
     phys.vx = 0;
     phys.vy = 0;
     phys.thrown = false;
@@ -920,6 +928,7 @@ import { VRMAnimationLoaderPlugin, createVRMAnimationClip } from '@pixiv/three-v
     pendingJump = null;
     currentPlatId = null;
     phys.active = true;
+    phys.arc = null;
     phys.thrown = false;
     phys.vx = dir * 135;
     phys.vy = -255;
@@ -937,6 +946,7 @@ import { VRMAnimationLoaderPlugin, createVRMAnimationClip } from '@pixiv/three-v
     const vy0 = -Math.sqrt(2 * GRAVITY * (dy + apexExtra));
     const flightTime = (-vy0 + Math.sqrt(2 * GRAVITY * apexExtra)) / GRAVITY;
     phys.active = true;
+    phys.arc = null;
     phys.thrown = false;
     phys.vx = (targetX - pos.x) / Math.max(0.25, flightTime);
     phys.vy = vy0;
@@ -944,6 +954,59 @@ import { VRMAnimationLoaderPlugin, createVRMAnimationClip } from '@pixiv/three-v
     phys.isHop = true;
     phys.hopTargetId = surf.id;
     pos.facingLeft = targetX < pos.x;
+  }
+
+  // The x range she can walk on where she stands (the floor or a surface top at her height), or null in the air.
+  function supportUnder() {
+    const lo = EDGE_MARGIN;
+    const hi = Math.max(EDGE_MARGIN, vw() - EDGE_MARGIN);
+    if (Math.abs(pos.y - bottomY()) <= 2) return { lo, hi };
+    for (const s of allSurfaces()) {
+      if (Math.abs(s.y - pos.y) <= 2 && pos.x >= s.x + 10 && pos.x <= s.x + s.w - 10) {
+        return { lo: Math.max(lo, s.x + 10), hi: Math.min(hi, s.x + s.w - 10) };
+      }
+    }
+    return null;
+  }
+
+  // A jump that lands exactly on (x1, y1): up to ARC_APEX over the higher end, higher when the spot is far to the side.
+  function startArc(x1, y1) {
+    const x0 = pos.x;
+    const y0 = pos.y;
+    const dur = (top) => Math.sqrt((2 * (y0 - top)) / GRAVITY) + Math.sqrt((2 * (y1 - top)) / GRAVITY);
+    let top = Math.min(y0, y1) - ARC_APEX;
+    // Never so high that her head leaves the screen (the throw's ceiling): a far spot near the top is a faster jump.
+    const highest = Math.min(top, Math.max(TARGET_HEIGHT * 0.85, Math.min(y0, y1) - 400));
+    while (Math.abs(x1 - x0) / dur(top) > ARC_VX && top - 20 >= highest) top -= 20;
+    const T = dur(top);
+    phys.arc = { x0, y0, x1, y1, vy0: -Math.sqrt(2 * GRAVITY * (y0 - top)), T, t: 0 };
+    phys.active = true;
+    phys.thrown = false;
+    phys.isDrop = false;
+    phys.isHop = false;
+    phys.vx = (x1 - x0) / T;
+    phys.vy = phys.arc.vy0;
+    if (Math.abs(x1 - x0) > 8) pos.facingLeft = x1 < x0;
+  }
+
+  // The arc by time, so she lands on the spot exactly (no snap); what she stood on is whatever is there on landing.
+  function stepArc(dt) {
+    const a = phys.arc;
+    a.t = Math.min(a.T, a.t + dt);
+    pos.x = a.x0 + (a.x1 - a.x0) * (a.t / a.T);
+    pos.y = a.y0 + a.vy0 * a.t + 0.5 * GRAVITY * a.t * a.t;
+    phys.vy = a.vy0 + GRAVITY * a.t;
+    if (a.t < a.T) return;
+    pos.x = pos.tx = a.x1;
+    pos.y = pos.ty = a.y1;
+    phys.arc = null;
+    phys.active = false;
+    phys.vx = 0;
+    phys.vy = 0;
+    landSquash = 1.0;
+    needsSpringReset = true;
+    const s = allSurfaces().find((q) => Math.abs(q.y - pos.y) <= 2 && pos.x >= q.x + 10 && pos.x <= q.x + q.w - 10);
+    if (s) currentPlatId = s.id;
   }
 
   function moveTo(x, y) {
@@ -1901,6 +1964,8 @@ import { VRMAnimationLoaderPlugin, createVRMAnimationClip } from '@pixiv/three-v
     // Physics: drop / jump-down / hop-up
     if (phys.active && phys.thrown && !dragging) {
       stepThrow(dt);
+    } else if (phys.active && phys.arc && !dragging) {
+      stepArc(dt);
     } else if (phys.active && !dragging) {
       const W = vw();
       const prevY = pos.y;
@@ -2123,8 +2188,17 @@ import { VRMAnimationLoaderPlugin, createVRMAnimationClip } from '@pixiv/three-v
       const dx = pos.tx - pos.x;
       const dy = pos.ty - pos.y;
       const dist = Math.hypot(dx, dy);
-      if (dist > 6 && mode !== 'sleep') walking = true;
-      if (dist > 1) {
+      // Another height: walk along what she stands on to the take-off point, then jump (never a walk through the air).
+      const climb = Math.abs(dy) > CLIMB_STEP && mode !== 'sleep';
+      const sup = climb ? supportUnder() : null;
+      const takeOff = sup ? clamp(pos.tx - Math.sign(dx) * Math.min(Math.abs(dx), ARC_REACH), sup.lo, sup.hi) : 0;
+      if (climb && (!sup || Math.abs(takeOff - pos.x) <= 3)) {
+        startArc(pos.tx, pos.ty);
+      } else if (sup) {
+        walking = true;
+        pos.x += Math.sign(takeOff - pos.x) * Math.min(Math.abs(takeOff - pos.x), 210 * dt);
+      } else if (dist > 1) {
+        if (dist > 6 && mode !== 'sleep') walking = true;
         const step = Math.min(dist, 210 * dt);
         pos.x += (dx / dist) * step;
         pos.y += (dy / dist) * step;
