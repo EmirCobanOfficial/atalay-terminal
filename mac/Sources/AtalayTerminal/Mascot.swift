@@ -928,10 +928,18 @@ final class Mascot: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
     func pushTerminalsNow() {
         guard Self.isEnabled, loaded, shown, let panel else { return }
         var list: [[String: Any]] = []
-        if dashboardOnThisScreen(), let doff = dashboardOffset(), let coff = cgToPanelOffset(),
+        // Terminal windows count on any screen and with the dashboard minimized (a pinned one stays up): their frames are
+        // dashboard-relative only as a reference, and the window list says whether each is on screen.
+        if let doff = dashboardOffset(), let coff = cgToPanelOffset(),
            let snapshots = manager?.mascotTerminalSnapshots() {
             let dashOcc = occluders(inFrontOf: dashboard?.windowNumber, off: coff)
+            // Her X press parks the keyboard on the dashboard first (mascotParkKey): not while it is minimized or hidden.
+            let canPark = !NSApp.isHidden && dashboard?.isVisible == true && dashboard?.isMiniaturized == false
             for var t in snapshots {
+                if !canPark {
+                    t["canClose"] = false
+                    for k in ["cx", "cy", "cw", "ch"] { t.removeValue(forKey: k) }
+                }
                 guard let x = (t["x"] as? NSNumber)?.doubleValue,
                       let y = (t["y"] as? NSNumber)?.doubleValue,
                       let w = (t["w"] as? NSNumber)?.doubleValue else { continue }
@@ -941,7 +949,9 @@ final class Mascot: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
                 guard mid >= 0, mid <= Double(panel.frame.width), py >= -40, py <= Double(panel.frame.height) else { continue }
                 // The terminal's own window, else the dashboard's: the windows of other apps in front of it hide its title bar.
                 let wn = (t["wn"] as? NSNumber)?.intValue
-                guard let occ = occluders(inFrontOf: wn, off: coff) ?? dashOcc else { continue }
+                // A pinned terminal floats over every other app: nothing covers its title bar.
+                let floating = (t.removeValue(forKey: "floating") as? Bool) == true
+                guard let occ = occluders(inFrontOf: wn, off: coff) ?? (floating ? [] : dashOcc) else { continue }
                 let segs = visibleSegments(px, px + w, y: py + 6, occ: occ)
                 guard let best = segs.max(by: { $0.1 - $0.0 < $1.1 - $1.0 }), best.1 - best.0 >= 60 else { continue }
                 t["x"] = Int(best.0.rounded())

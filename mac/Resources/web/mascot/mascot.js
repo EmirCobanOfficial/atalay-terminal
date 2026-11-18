@@ -1967,7 +1967,8 @@ import { VRMAnimationLoaderPlugin, createVRMAnimationClip } from '@pixiv/three-v
     // She reaches the terminal's title bar, says her line, and only then hides it.
     if (pendingHide) {
       const t = findTerminal(pendingHide.id);
-      if (!t || t.status !== 'idle' || waitingTermId || dragging || elapsed > pendingHide.until) {
+      // canClose false: native can't close it now (the dashboard minimized or hidden), so she gives up, not later.
+      if (!t || t.status !== 'idle' || t.canClose === false || waitingTermId || dragging || elapsed > pendingHide.until) {
         pendingHide = null;
       } else if (!phys.active && Math.hypot(pos.tx - pos.x, pos.ty - pos.y) <= 10) {
         const ph = pendingHide;

@@ -713,8 +713,12 @@ function createMascot(o) {
     const z = zoom();
     const W = panelB.width / z, H = panelB.height / z;
     const list = [];
-    if (dashboardOnThisScreen()) {
-      const dashOcc = occluders(handleOf(o.dash()));
+    // Terminal windows count on any screen and with the dashboard minimized: the window list says what is on screen.
+    {
+      const dashOcc = dashboardOnThisScreen() ? occluders(handleOf(o.dash())) : null;
+      // Her close parks the keys on the dashboard first (main.js parkKeys): not while it is minimized or hidden.
+      const d = o.dash();
+      const canPark = !!d && !d.isDestroyed() && d.isVisible() && !d.isMinimized();
       for (const t of o.terminals()) {
         if (!t.win || t.win.isDestroyed()) continue;
         const hwnd = handleOf(t.win);
@@ -730,10 +734,10 @@ function createMascot(o) {
         const best = segs.reduce((a, b) => (!a || b[1] - b[0] > a[1] - a[0] ? b : a), null);
         if (!best || best[1] - best[0] < 60) continue;
         const item = {
-          id: t.id, sid: t.sid, canClose: !!t.canClose, status: t.status,
+          id: t.id, sid: t.sid, canClose: !!t.canClose && canPark, status: t.status,
           x: Math.round(best[0]), y: Math.round(l.y), w: Math.round(best[1] - best[0]), h: Math.round(l.h),
         };
-        if (t.canClose) {
+        if (item.canClose) {
           const c = t.win.getContentBounds();
           const cap = clamp(c.y - rect.y, 24, 48);
           const cl = toLocal({ x: c.x + c.width - CLOSE_W, y: rect.y, width: CLOSE_W, height: cap });
