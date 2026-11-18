@@ -1955,7 +1955,7 @@ ipcMain.on('term:open', (e, uri) => {
   if (/^https?:\/\//i.test(clean)) shell.openExternal(clean).catch(() => {});
 });
 
-// ---------- the overlay: the shortcut wheel and the new-terminal folder picker, over the whole screen ----------
+// ---------- the overlay: the Ring and the new-terminal folder picker, over the whole screen ----------
 let over = null, overReady = false, overPending = null;
 function showOverlay(js) {
   if (!over || over.isDestroyed()) {
@@ -2008,7 +2008,7 @@ function pushWhatsNew() {
   const state = { unread: settings.get('whatsNewUnread') === app.getVersion(), wheel: settings.get('tipUsedWheel') === true };
   toDash(`whatsNew(${JSON.stringify({ state })})`);
 }
-// The shortcut wheel opened at least once: its tip on the dashboard is only for someone who never did.
+// The Ring opened at least once: its tip on the dashboard is only for someone who never did.
 function wheelOpened() {
   if (settings.get('tipUsedWheel') === true) return;
   settings.set('tipUsedWheel', true);
@@ -2739,7 +2739,7 @@ ipcMain.handle('atl:post', async (e, name, body) => {
           const dir = await overlay.locate(asked);
           if (dir) openChatWindow({ cwd: dir, claudeArgs: null, title: path.basename(dir) });
           // Gone (deleted, moved elsewhere): the user is told, as the Mac's "Folder not found" does, and the shortcut stays.
-          // No parent window: the dashboard may be minimized while the wheel opened over a chat.
+          // No parent window: the dashboard may be minimized while the Ring opened over a chat.
           else dialog.showMessageBox({ type: 'warning', message: 'Folder not found', detail: `${tildify(asked)}\n\nIt was moved or deleted. Right-click its shortcut to change or remove it.`, noLink: true });
           return true;
         }
@@ -2803,7 +2803,7 @@ function buildMenu() {
         // Mac's ⌘N and ⇧⌘N.
         { label: 'New File', accelerator: 'CmdOrCtrl+N', click: () => newFile() },
         { label: 'New Terminal…', accelerator: 'CmdOrCtrl+Shift+N', click: () => showOverlay('Overlay.newTerminal()') },
-        { label: 'Shortcut Wheel', accelerator: 'CmdOrCtrl+K', click: () => showShortcuts() },
+        { label: 'Ring', accelerator: 'CmdOrCtrl+K', click: () => showShortcuts() },
         // No key of its own: Ctrl+0 is Actual Size's (the text size, ⌘0 on the Mac), and two items on one key leave only
         // one of them working.
         { label: 'Dashboard', click: () => showDashboard() },

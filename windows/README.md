@@ -86,7 +86,7 @@ in `src/main.js` and pushes to them with `window.__radar.*`, `window.__messages.
 | `src/runaways.js` | the process list: what burns a core where nobody sees it (DANGER), what closed terminals left running (amber cars), what runs in the app's terminals (their cars), the AI tools besides Claude running in a terminal (Codex, Gemini…: planets) | Runaways, MainWindowController, RadarEngine |
 | `src/savers.js` | the token savers, rtk and caveman, on for Claude Code, Codex and Antigravity (`scripts/fetch-rtk.js` gets rtk for the build) | TokenSavers |
 | `src/limits.js` | Claude's 5-hour and weekly limits for the top bar: a script of the app's as Claude Code's status line, a status line of the user's own run through it | Limits |
-| `src/overlay.js` | the shortcut wheel's and the folder picker's folders (overlay.html) | Overlay.swift |
+| `src/overlay.js` | the Ring's and the folder picker's folders (overlay.html) | Overlay.swift |
 | `src/chatlist.js`, `pages/chats.*` | the chats list beside the dashboard (a view of its own in the dashboard window): every saved chat by project, each folder a card with the app's terminals in it, folders opened from the list, favourites, the archive (Settings lists it) | Sidebar.swift |
 | `src/notewindow.js` | a note out of the dashboard in a window of its own (web/note.html): above the dashboard, or pinned above every app; its place and pin kept, the notes left out at the last quit reopened; the dashboard's page stays the notes' one writer | NoteWindow.swift |
 | `src/feedpanel.js` | the community feed's lines (web/feed.html) in a see-through, click-through window at the top left of the screen | FeedPanel.swift |
@@ -110,7 +110,7 @@ chats run in the app, through node-pty, and end with it.
 - No tabs or split panes: every terminal is a window of its own. Closing its window (Ctrl+W, Ctrl+Shift+W, its ×)
   keeps what runs in it going as a planet or car on the orbit, as ⌘W and ⇧⌘W do on the Mac; a click opens it again.
   Its End button (or Window > End This Terminal) ends it.
-- No four-finger click (Mac trackpads only): Ctrl and the middle mouse button (or Ctrl+K) open the shortcut wheel,
+- No four-finger click (Mac trackpads only): Ctrl and the middle mouse button (or Ctrl+K) open the Ring,
   Ctrl+N a new file in Source Control's editor, Ctrl+Shift+N a new terminal, Ctrl+W and Ctrl+Shift+W close the
   window, in the terminal windows too (where they'd otherwise go to the shell); Ctrl++ and Ctrl+- there are the terminals' text size,
   as ⌘+ and ⌘− on the Mac. While Antigravity runs in one, its Ctrl+K is Antigravity's, which approves its subagents'

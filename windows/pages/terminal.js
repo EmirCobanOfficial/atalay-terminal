@@ -195,10 +195,10 @@
       term.clearSelection();
       return false;
     }
-    // Ctrl+N (a new file in Source Control's editor), Ctrl+Shift+N (a new terminal), Ctrl+K (the shortcut wheel), Ctrl+W
+    // Ctrl+N (a new file in Source Control's editor), Ctrl+Shift+N (a new terminal), Ctrl+K (the Ring), Ctrl+W
     // and Ctrl+Shift+W (close the window: what runs in it goes on) are the app's, as ⌘N, ⇧⌘N, ⌘K, ⌘W and ⇧⌘W are on
     // the Mac: left unhandled, they reach its menu instead of the shell. Antigravity approves its
-    // subagents' steps with Ctrl+K, so while it runs here the key is its own (the wheel is still Ctrl and the middle
+    // subagents' steps with Ctrl+K, so while it runs here the key is its own (the Ring is still Ctrl and the middle
     // mouse button away).
     if (k === 'k' && tool === 'Antigravity') return true;
     if (k === 'n' || k === 'w' || (!e.shiftKey && k === 'k')) return false;

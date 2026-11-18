@@ -1,6 +1,6 @@
 'use strict';
-// The overlay page's data (overlay.html: the shortcut wheel and the new-terminal folder picker), as the Mac app's
-// Overlay.swift has it: the saved shortcut folders (the wheel's 5 slices, the 14 places around the picker), folder
+// The overlay page's data (overlay.html: the Ring and the new-terminal folder picker), as the Mac app's
+// Overlay.swift has it: the saved shortcut folders (the Ring's 5 slices, the 14 places around the picker), folder
 // listings with git / Claude badges, and the places to start from (the usual folders, where Claude ran lately).
 const fs = require('fs');
 const fsp = fs.promises;
@@ -135,7 +135,7 @@ function createOverlay({ dataDir, claudeDir }) {
     return readSlots(s);
   }
 
-  // The folder a click on the wheel or around the picker opens: the path the page has, or, for a slot whose folder was
+  // The folder a click on the Ring or around the picker opens: the path the page has, or, for a slot whose folder was
   // renamed since the page read it, where the slot follows it now (its file updated). '' when it can't be found.
   async function locate(raw) {
     const dir = path.resolve(expand(String(raw || '')));

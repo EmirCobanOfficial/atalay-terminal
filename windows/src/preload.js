@@ -8,7 +8,7 @@ const { contextBridge, ipcRenderer, webFrame } = require('electron');
 const boot = ipcRenderer.sendSync('atl:boot') || {};
 
 // Viktoria's window (main.js's atl:boot says so) gets her own line and nothing else: no other handler, no terminal
-// channels, no shortcut wheel.
+// channels, no Ring.
 const full = !boot.mascot;
 const handlers = {};
 for (const name of full
@@ -52,7 +52,7 @@ if (full) {
   });
 }
 
-// The shortcut wheel: Ctrl and the middle mouse button, anywhere in the app's windows (the Mac opens it with the middle
+// The Ring: Ctrl and the middle mouse button, anywhere in the app's windows (the Mac opens it with the middle
 // button; Ctrl+K still does here too). Neither the page nor the terminal under the pointer gets that press: no orbit
 // zoom, no autoscroll, no click sent to the program. Cancelling the pointer press keeps its mouse events from coming.
 let wheelPress = false;
