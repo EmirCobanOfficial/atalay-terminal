@@ -760,7 +760,7 @@ function setDiscord(s) {
 // The top bar is every AI's, whichever chat is in front: the Windows app still reports that chat, and nothing here
 // follows it.
 function connect() {
-  window.__radar = { init: handleInit, state: handleState, events: (list) => list.forEach(onEvent), visibility: setVisibility, power: (on) => map('power', on), powerSave: setPowerSave, discord: setDiscord, activeSession: () => {}, cloud: (c) => window.Cloud?.render(c), social: (ev) => window.Social?.event(ev), terminals: (list) => { TERMS = list; map('terminals', Streamer.terminals(list)); }, terminalGone: (id) => map('terminalGone', id), idle: (s) => { map('idle', s); setIdle(Number(s)); }, openUpdate: () => window.Cloud?.openUpdate(), openProfile: () => window.Cloud?.openProfile(), openFriend: (id) => window.Cloud?.openFriend(id), openView: (v) => window.GitView?.view(v), runaways: (list) => { RUNS = list; const runs = Streamer.runaways(list); window.Danger?.update(runs); map('runaways', runs); }, openDanger: () => window.Danger?.open() };
+  window.__radar = { init: handleInit, state: handleState, events: (list) => list.forEach(onEvent), visibility: setVisibility, power: (on) => map('power', on), powerSave: setPowerSave, discord: setDiscord, mcp: (s) => { window.__mcp = s; window.dispatchEvent(new Event('mcpchange')); }, activeSession: () => {}, cloud: (c) => window.Cloud?.render(c), social: (ev) => window.Social?.event(ev), terminals: (list) => { TERMS = list; map('terminals', Streamer.terminals(list)); }, terminalGone: (id) => map('terminalGone', id), idle: (s) => { map('idle', s); setIdle(Number(s)); }, openUpdate: () => window.Cloud?.openUpdate(), openProfile: () => window.Cloud?.openProfile(), openFriend: (id) => window.Cloud?.openFriend(id), openView: (v) => window.GitView?.view(v), runaways: (list) => { RUNS = list; const runs = Streamer.runaways(list); window.Danger?.update(runs); map('runaways', runs); }, openDanger: () => window.Danger?.open() };
   native({ type: 'ready' });
   // A reloaded page in streamer mode: the app's chats list and windows stay in it too.
   native({ type: 'streamer', on: Streamer.on });
@@ -1514,6 +1514,8 @@ function panelMenu(e) {
   document.querySelector('.pn-ctx')?.remove();
   const p = e.target.closest('section.panel[id^="p-"]');
   if (!p || !(CLEARABLE.includes(p.id) || window.PanelLayout?.hide)) return;
+  // A note's text keeps the system's menu (Copy, Paste, Select All); the notes script takes the lit blocks' own.
+  if (e.target.closest('.np-ed')) return;
   e.preventDefault();
   const menu = document.createElement('div');
   menu.className = 'pn-ctx';

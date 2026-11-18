@@ -100,8 +100,8 @@ window.WhatsNew = (() => {
   // `at`: the control a tip shows beside on the dashboard (none: Help → Tips only). `key`: the shortcut it names, as the
   // user set it (Settings › Shortcuts); a tip whose keys were taken off is left out of the list.
   const TIPS = [
-    { id: 'wheel', title: 'Shortcut wheel', at: '#newchat', key: 'shortcutsWheel',
-      text: (k) => `Click with four fingers anywhere in the app${k ? `, or ${k},` : ''} to open your shortcut wheel of favourite folders.` },
+    { id: 'wheel', title: 'Ring', at: '#newchat', key: 'shortcutsWheel',
+      text: (k) => `Click with four fingers anywhere in the app${k ? `, or ${k},` : ''} to open the Ring, your favourite folders around the pointer.` },
     { id: 'notes', title: 'Quick note', at: '#p-notes > header',
       text: () => 'Press ⇧⌘J to type in your note from anywhere on the dashboard.' },
     { id: 'streamer', title: 'Streamer mode', at: '#strm',

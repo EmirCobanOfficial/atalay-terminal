@@ -266,6 +266,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             dashboardVisibilityChanged()
             pushPower(force: true)
             pushDiscord()
+            pushMcp()
             pushCloud()
             terminalsJSON = ""
             pushTerminals()
@@ -314,6 +315,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 NoteWindow.close(id: id, flush: msg["flush"] as? Bool != false, deleted: msg["deleted"] as? Bool == true)
             }
         case "notesReady": NoteWindow.notesReady()
+        // A note hidden from AI or shown again (the dashboard's page): its window, if out, is told.
+        case "noteAiHidden": if let id = msg["id"] as? String { NoteWindow.setAiHidden(id: id, on: msg["on"] as? Bool == true) }
         case "log": NSLog("dashboard page: %@", String(describing: msg["msg"] ?? ""))
         // Two chats began (or stopped) writing the same file (files.heat): the corner's notice.
         case "clash":
@@ -519,6 +522,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             lastStatus[b.id] = b.status
         }
         WaitNotifier.shared.update(live)
+        McpHub.shared.update(live)
         DiscordPresence.shared.update(list)
         if sidebar.briefs != briefs { sidebar.briefs = briefs }
         var open = Set(chats.values.compactMap(\.sessionId))
@@ -748,6 +752,23 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     /// Settings · DISCORD shows its switches and whether Discord answers (DiscordPresence).
+    /// Settings › Claude: what the page shows of the local MCP server (Mcp.swift).
+    func pushMcp() { radar.push("mcp", McpHub.shared.json) }
+
+    /// The text of a session's terminal (the end of its scrollback and screen), for Claude's read_session; nil when no window shows it.
+    func terminalText(session name: String) -> String? {
+        var view: ChatTerminalView?
+        for c in chats.values {
+            if c.detached?.name == name { view = c.terminal }
+            else if let e = c.extras.first(where: { $0.link?.name == name }) { view = e.terminal }
+            if view != nil { break }
+        }
+        guard let view else { return nil }
+        var data = view.getBufferAsData(kind: .normal)
+        if data.count < 200 { data = view.getBufferAsData(kind: .alt) }
+        return String(decoding: data.suffix(60_000), as: UTF8.self)
+    }
+
     private func pushDiscord() {
         radar.push("discord", DiscordPresence.shared.json)
         Mascot.shared.pushMischiefToPage()

@@ -23,17 +23,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         controller.showWindow(nil)
         // The token savers this build ships go on by themselves the first time (Settings turns them off).
         TokenSavers.autoStart()
+        // The notes' tools on Orbiterm's MCP server, for the AIs inside Orbiterm and, when the Claude access is on, Claude Desktop / Dispatch, each checked against the notes' own mode at every call;
+        // they reach the AIs through the notes-only launcher, which offers no session tool.
+        McpConnect.writeLauncher()
+        NotesAI.launcher = McpConnect.notesLauncher
+        for t in NotesTools.all {
+            McpRegistry.register(McpTool(name: t.name, title: t.title, description: t.description, props: t.props, required: t.required,
+                                         readOnly: t.readOnly, audience: t.audience, enabled: { NotesAI.mode != .off },
+                                         handler: { a, c in t.handler(a, NotesCaller(peer: c.peer, insideScreen: c.insideScreen, hubMode: c.mode)) }))
+        }
+        NotesAI.autoStart()
         AIColors.autoStart()
         controller.window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         installMonitors()
-        if !Trackpad.start() { NSLog("Orbiterm: trackpad finger tracking unavailable; ⌃ and the middle mouse button open the shortcut wheel") }
+        if !Trackpad.start() { NSLog("Orbiterm: trackpad finger tracking unavailable; ⌃ and the middle mouse button open the Ring") }
         NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { _ in
             Trackpad.start()
             // Sleep kills the live line to the API without a word; open a fresh one.
             MainActor.assumeIsolated { Social.shared.kick() }
         }
         engine.start()
+        McpHub.shared.onChange = { [weak self] in self?.controller.pushMcp() }
+        McpHub.shared.start()
         controller.restoreSessions()
         HangWatchdog.shared.start()
         Cloud.shared.installUpdatesRightAway = CommandLine.arguments.contains("--update")
@@ -63,6 +75,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // A downloaded update waiting for the user to step away goes in now: the next launch is the new build.
     func applicationWillTerminate(_ notification: Notification) {
+        McpHub.shared.stop()
         Cloud.shared.installOnQuit()
     }
 
@@ -229,7 +242,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         keyed(file, "newTabNext", "New Tab Next to Current Tab", #selector(newTab), target: self)
         keyed(file, "splitVertically", "Split Vertically", #selector(splitVertically), target: self)
         keyed(file, "splitHorizontally", "Split Horizontally", #selector(splitHorizontally), target: self)
-        keyed(file, "shortcutsWheel", "Shortcut Wheel", #selector(showShortcuts), target: self)
+        keyed(file, "shortcutsWheel", "Ring", #selector(showShortcuts), target: self)
         file.addItem(.separator())
         keyed(file, "closePane", "Close", #selector(closePane), target: self)
         keyed(file, "closeWindow", "Close Terminal Window", #selector(NSWindow.performClose(_:)))

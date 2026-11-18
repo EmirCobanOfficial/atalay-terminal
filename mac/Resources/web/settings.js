@@ -37,6 +37,7 @@ window.Settings = (() => {
     { id: 'account', name: 'Account', icon: svg('<circle cx="8" cy="5.4" r="2.7"/><path d="M2.6 14c.6-2.8 2.8-4.3 5.4-4.3s4.8 1.5 5.4 4.3"/>') },
     { id: 'appearance', name: 'Appearance', icon: svg('<path d="M8 1.8a6.2 6.2 0 1 0 0 12.4c.9 0 1.3-.6 1.3-1.2 0-.9-.8-1.2-.8-2 0-.7.6-1.2 1.3-1.2h1.6c1.7 0 2.8-1.1 2.8-2.7C14.2 4.1 11.4 1.8 8 1.8z"/><circle cx="4.9" cy="7.4" r=".9"/><circle cx="6.9" cy="4.6" r=".9"/><circle cx="10.2" cy="4.8" r=".9"/>') },
     { id: 'chats', name: 'Chats', icon: svg('<path d="M3 3h10a1.5 1.5 0 0 1 1.5 1.5v5.5A1.5 1.5 0 0 1 13 11.5H8.2L5 14v-2.5H3A1.5 1.5 0 0 1 1.5 10V4.5A1.5 1.5 0 0 1 3 3z"/><path d="M4.6 6.2 6.2 7.4 4.6 8.6M7.6 8.6h3"/>') },
+    { id: 'claude', name: 'Claude', icon: svg('<circle cx="4.2" cy="8" r="2.1"/><circle cx="11.8" cy="8" r="2.1"/><path d="M6.3 8h3.4"/>') },
     // Right after Chats: both are about working in the terminals (Arc's word: the wheel opens with the mouse too).
     { id: 'shortcuts', name: 'Shortcuts', icon: svg('<rect x="1.5" y="4" width="13" height="8.5" rx="1.5"/><path d="M4.2 6.7h.01M6.4 6.7h.01M8.6 6.7h.01M10.8 6.7h.01M4.8 9.8h6.4"/>') },
     { id: 'privacy', name: 'Privacy', icon: svg('<rect x="3" y="7" width="10" height="7.2" rx="1.4"/><path d="M5.2 7V5a2.8 2.8 0 0 1 5.6 0v2"/><path d="M8 10v1.6"/>') },
@@ -131,12 +132,34 @@ window.Settings = (() => {
       '<input type="search" class="ks-find" placeholder="search shortcuts" aria-label="Search shortcuts" spellcheck="false" autocomplete="off" autocapitalize="off"></label>' +
       '<div class="mn-keys"></div>';
 
+    // Claude Desktop and Claude Code on this Mac reaching the chats (Mcp.swift, the "mcp" handler): off until turned on, and the app
+    // asks in its own window when it is, so this page can only ask.
+    const MCP_MODES = [['off', 'Off'], ['watch', 'Watch only'], ['write', 'Watch and type']];
+    const claude =
+      group('claude can use orbiterm',
+        row('let Claude use my chats', { cls: 'mcp-note', text: '…' },
+          `<span class="lb-seg ui-seg st-mcp-mode">${MCP_MODES.map(([m, n]) => `<button type="button" data-mode="${m}">${n}</button>`).join('')}</span>`)) +
+      `<div class="st-mcp-more" hidden>` +
+      group('connect',
+        row('Claude Desktop', { cls: 'mcp-desktop-note', text: '…' }, '<button type="button" class="st-btn mcp-desktop"></button>') +
+        row('Claude Code', { cls: 'mcp-code-note', text: '…' }, '<button type="button" class="st-btn mcp-code"></button>') +
+        row('as a Claude extension', "if Claude Desktop, or Dispatch on your phone, doesn't show Orbiterm · Claude asks you to confirm", '<button type="button" class="st-btn mcp-ext">install…</button>')) +
+      '</div>' +
+      '<p class="st-note mcp-error" hidden></p>' +
+      '<p class="st-note">Your notes follow Settings > Privacy > AI tools and my notes: Claude Desktop can read them, and edit them only if that is set to Read and edit.</p>' +
+      "<p class=\"st-note\">Claude only sees Claude Code, Codex and Antigravity chats, never a plain terminal. Passwords, keys and tokens are masked before anything leaves Orbiterm. It can't answer approvals, and can't type into a chat started with permissions bypassed. While it's on, a sign shows in the menu bar with a way to turn it off.</p>";
+
     const privacy =
       group('friends and leaderboard',
         row('show my active time to friends', 'today, this week and in total · your level shows either way', sw('act', 'Show my active time to friends', true)) +
         row('show my name on the leaderboard', 'off: you show as Anonymous, and nobody can add you from there', sw('brd', 'Show my name on the leaderboard', true)) +
         row('show my name on the Tokens board', 'off: Anonymous on the Tokens board only · your total still counts', sw('tkn', 'Show my name on the Tokens board', true)) +
         row('let friends see which AI and model I use', 'opening your row on the Tokens board · off: only your total shows, to everyone', sw('tkd', 'Let friends see which AI and model I use', true))) +
+      (c.notesai
+        ? group('AI tools and my notes',
+            row('let AI read and edit my notes', { cls: 'na-note', text: '…' },
+              '<span class="lb-seg ui-seg st-notesai"><button type="button" data-mode="off">Off</button><button type="button" data-mode="read">Read</button><button type="button" data-mode="write">Read and edit</button></span>'))
+        : '') +
       (dc
         ? group('discord',
             row("show what I'm doing on Discord", { cls: 'dc-note', text: '…' }, sw('dc-on', "Show what I'm doing on Discord", false)) +
@@ -162,6 +185,7 @@ window.Settings = (() => {
       pane('account', 'Account', '', account) +
       pane('appearance', 'Appearance', '', appearance) +
       pane('chats', 'Chats', '', chats) +
+      pane('claude', 'Claude', 'let Claude on this Mac see your AI chats, and type into them', claude) +
       (c.keys ? pane('shortcuts', 'Shortcuts', 'click a shortcut, then press the new keys · esc cancels, delete takes them off', shortcuts) : '') +
       pane('privacy', 'Privacy', 'what friends, the leaderboard and Discord can see', privacy) +
       pane('general', 'General', '', general) +
@@ -203,6 +227,45 @@ window.Settings = (() => {
   }
   window.addEventListener('mascotchange', paintMascot);
   window.addEventListener('mascotasset', paintMascot);
+
+  // Claude access: what the app says (window.__mcp), and the buttons that ask it to change.
+  const mcpHandler = () => window.webkit?.messageHandlers?.mcp;
+  function paintMcp() {
+    if (!page) return;
+    const s = window.__mcp;
+    const mode = s ? s.mode : 'off';
+    page.querySelectorAll('.st-mcp-mode button').forEach((b) => {
+      b.classList.toggle('on', b.dataset.mode === mode);
+      b.disabled = !s;
+    });
+    const note = page.querySelector('.mcp-note');
+    if (note) note.textContent = { off: "Claude can't see Orbiterm · off until you turn it on", watch: 'Claude can see your chats and read their answers · it can\'t type', write: "Claude can also send a prompt to a chat that's waiting for one · it can't answer approvals" }[mode];
+    const more = page.querySelector('.st-mcp-more');
+    if (more) more.hidden = mode === 'off';
+    if (!s) return;
+    const d = page.querySelector('.mcp-desktop'), c = page.querySelector('.mcp-code');
+    d.textContent = s.desktop ? 'remove' : 'connect';
+    d.disabled = !s.desktopFound && !s.desktop;
+    d.dataset.on = s.desktop ? '1' : '';
+    c.textContent = s.code ? 'connected' : 'connect';
+    c.disabled = !!s.code;
+    page.querySelector('.mcp-desktop-note').textContent = !s.desktopFound && !s.desktop ? "Claude Desktop isn't on this Mac" : s.desktop ? 'connected · quit and reopen Claude Desktop once if it was open' : 'adds Orbiterm to Claude Desktop · then quit and reopen it';
+    page.querySelector('.mcp-code-note').textContent = s.code ? 'connected · new Claude Code chats can use it' : 'adds Orbiterm to Claude Code in your terminal';
+  }
+  async function mcpAsk(msg) {
+    const err = page && page.querySelector('.mcp-error');
+    if (err) err.hidden = true;
+    const r = await mcpHandler()?.postMessage(msg).catch(() => null);
+    if (!r) return;
+    const state = r.state || r;
+    if (state.mode) window.__mcp = state;
+    if (r.error && err) {
+      err.textContent = r.error;
+      err.hidden = false;
+    }
+    paintMcp();
+  }
+  window.addEventListener('mcpchange', paintMcp);
 
   function paintSound() {
     const b = page && page.querySelector('.st-sound');
@@ -266,6 +329,18 @@ window.Settings = (() => {
       window.dispatchEvent(new Event('mascotchange'));
       window.webkit?.messageHandlers?.radar?.postMessage({ type: 'mascotMischief', level });
     };
+    const mcpMode = page.querySelector('.st-mcp-mode');
+    if (mcpMode) mcpMode.onclick = (e) => {
+      const b = e.target.closest('button[data-mode]');
+      if (b && !b.classList.contains('on')) mcpAsk({ type: 'mode', mode: b.dataset.mode });
+    };
+    const mcpD = page.querySelector('.mcp-desktop');
+    if (mcpD) mcpD.onclick = () => mcpAsk(mcpD.dataset.on ? { type: 'disconnect' } : { type: 'connect', target: 'desktop' });
+    const mcpC = page.querySelector('.mcp-code');
+    if (mcpC) mcpC.onclick = () => mcpAsk({ type: 'connect', target: 'code' });
+    const mcpE = page.querySelector('.mcp-ext');
+    if (mcpE) mcpE.onclick = () => mcpAsk({ type: 'connect', target: 'extension' });
+    mcpAsk({ type: 'state' });
     show(current);
     paintSound();
     paintTheme();

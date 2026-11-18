@@ -116,6 +116,19 @@ final class NoteWindow: NSObject, NSWindowDelegate, WKNavigationDelegate {
         if deleted { forget(id) }
     }
 
+    /// For the AI tools (NotesTools): the page that holds a note's live text. A note out in its window is written there (that
+    /// page knows what's being typed), so the AI's change goes to it; nil when the note isn't out (the dashboard's page has it).
+    static func liveView(id: String) -> WKWebView? {
+        guard let n = open[id], n.loaded, !n.finished, !n.closing else { return nil }
+        return n.webView
+    }
+
+    /// Where the notes out in windows are: whether the window floats above every app (Keep on top) or rides above the
+    /// dashboard, and whether it is on screen now.
+    static func places() -> [String: (onTop: Bool, visible: Bool)] {
+        open.mapValues { ($0.onTop, $0.loaded && !$0.finished && $0.window.isVisible) }
+    }
+
     /// ⌘W in a note: it closes as its × does. False when no note is in front.
     static func closeKey() -> Bool {
         guard let n = open.values.first(where: { $0.window.isKeyWindow }) else { return false }
@@ -152,6 +165,11 @@ final class NoteWindow: NSObject, NSWindowDelegate, WKNavigationDelegate {
                 n.window.orderFront(nil)
             }
         }
+    }
+
+    /// A note hidden from AI or shown again somewhere else: its window's eye follows.
+    static func setAiHidden(id: String, on: Bool) {
+        open[id]?.webView.evaluateJavaScript("window.Notes && Notes.aiHiddenSet && Notes.aiHiddenSet(\(on)); true", completionHandler: nil)
     }
 
     /// Streamer mode: the note's name and text blur (style.css).
@@ -329,6 +347,13 @@ final class NoteWindow: NSObject, NSWindowDelegate, WKNavigationDelegate {
         case "onTop":
             setOnTop(body["on"] as? Bool == true)
             reply(["onTop": onTop])
+        case "aiHide":
+            // The eye on the note's own window: the dashboard's page keeps the flag (it writes every note) and answers { hidden }.
+            guard let radar = Self.radar else { return reply(["error": "the dashboard isn't open"]) }
+            let js = "const N = window.Notes; return N && N.setAiHidden ? await N.setAiHidden(id, on) : { error: 'the dashboard is loading' };"
+            radar.callNotes(js, ["id": id, "on": body["on"] as? Bool == true]) { value in
+                reply(value as? [String: Any] ?? ["error": "the dashboard didn't answer"])
+            }
         case "close":
             reply(nil)
             close(flush: true)

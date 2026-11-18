@@ -89,16 +89,22 @@ final class ThemeStore: ObservableObject {
     /// The glow on a native view (the terminals, a chat window's header, the chats list): everything drawn in it blooms
     /// in its own colours, as the pages' text glows with its shadow. Off takes it away. `soft`: a faint one, for small
     /// text on a lit background (the chats list), which the full bloom washed out.
+    /// A Core Image filter makes AppKit draw the whole window in the app's own process instead of the window server
+    /// (layerUsesCoreImageFilters), so only a glow that is on asks for it. Set on every window with the glow off, it had
+    /// the dashboard (its map's every frame) and each terminal window (its spinning border) redrawn in the app, and
+    /// dragging a terminal window stuttered on slower Macs (M4).
     static func glow(_ view: NSView, on: Bool, soft: Bool = false) {
         view.wantsLayer = true
-        view.layerUsesCoreImageFilters = true
         guard on, let bloom = CIFilter(name: "CIBloom") else {
+            // The filter goes first: with one still on the layer, false would throw.
             view.layer?.filters = nil
+            view.layerUsesCoreImageFilters = false
             return
         }
         bloom.setDefaults()
         bloom.setValue(soft ? 1.5 : 4, forKey: kCIInputRadiusKey)
         bloom.setValue(soft ? 0.35 : 1.1, forKey: kCIInputIntensityKey)
+        view.layerUsesCoreImageFilters = true
         view.layer?.filters = [bloom]
     }
 
