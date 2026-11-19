@@ -21,6 +21,10 @@
 /* The hint on an empty block: under the cursor, taking no room (it floats with no height). */
 .nb-text.is-empty::before { content: attr(data-ph); float: left; height: 0; color: var(--dim2); pointer-events: none; visibility: hidden; }
 .nb-text.is-empty:focus::before, .np-ed.blank .nb-text.is-empty::before { visibility: visible; }
+/* An empty block keeps its line while a drag across blocks has the text not editable (notes.js setEditable): an empty
+   block that isn't editable has no line box, so every empty line above the pointer folded away as the drag crossed into
+   the next block, and the text jumped up under the pointer, ending the selection lines further down. */
+.nb-text.is-empty[contenteditable="false"]::after { content: '\200b'; }
 
 .nb-h1 .nb-text, .nb-h2 .nb-text, .nb-h3 .nb-text { color: var(--hi); font-weight: 700; line-height: 1.3; }
 .nb-h1 { margin: 10px 0 2px; }
