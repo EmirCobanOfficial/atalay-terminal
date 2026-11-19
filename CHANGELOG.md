@@ -3,6 +3,18 @@
 Each version's lines are its release notes: the app lists them on its "what's new" screen
 (`app/scripts/release.sh <version> "<one line per change>"`).
 
+## 0.26.0
+
+- The four-finger menu is called the Ring now, and a folder renamed in Finder no longer freezes it
+- ⌘W hides the terminal again, and what runs in it keeps running
+- Dragging a terminal window is smooth again on Macs where it stuttered
+- A full-screen terminal no longer heats the Mac
+- Notes: selecting text works as in any editor, across lines, lists and to-dos
+- Notes: the eye button hides a note from AI
+- AI tools can read and edit your notes if you let them (Settings > Privacy, off by default)
+- Claude Desktop can watch and drive your Orbiterm chats and read your notes through a local MCP server (Settings > Claude, off by default)
+- The installer is now called Orbiterm.dmg
+
 ## 0.24.0
 
 - Tokens board: everyone is on it again, also with one AI picked, and two new switches in Settings keep your name or your AI and model off it
