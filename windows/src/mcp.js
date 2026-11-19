@@ -212,11 +212,15 @@ function agyRisk(v, depth = 0) {
   return null;
 }
 
-/** What the terminal itself says it is in (Claude's "bypass permissions on", Codex's full access, a mode changed while running). */
+/**
+ * What the terminal itself says it is in (Claude's "bypass permissions on", Codex's full access, a mode changed while
+ * running). Claude's "auto mode on" too: auto counts as a bypass when a flag or a settings file sets it (flagBypass,
+ * settingsBypass), and a Claude switched to it with Shift+Tab, or starting in it with nothing set, says so only here.
+ */
 function screenSaysBypass(screen) {
   const footer = String(screen || '').split('\n').slice(-14).join('\n').toLowerCase();
   return ['bypass permissions', 'bypasspermissions', 'full access', 'danger-full-access', 'yolo', 'dangerously', 'approval: never', 'never ask',
-    'skip permissions', 'auto-approve', 'auto approve'].some((w) => footer.includes(w));
+    'skip permissions', 'auto-approve', 'auto approve', 'auto mode on'].some((w) => footer.includes(w));
 }
 
 // ---------- the AI's last reply (their own records: the Mac's LastReply and McpReply) ----------
