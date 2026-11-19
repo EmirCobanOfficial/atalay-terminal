@@ -87,7 +87,7 @@ enum NotesTools {
             },
         NotesTool(
             name: "note_write", title: "Rewrite a whole note",
-            description: "Replaces a note's whole text with the Markdown you give. Needs the `version` from note_read and is refused if the note changed since, or if it holds masked secrets (use note_edit then). Prefer note_append and note_edit: they never lose the user's other text.",
+            description: "Replaces a note's whole text with the Markdown you give. Needs the `version` from note_read and is refused if the note changed since, if the note holds masked secrets, or if your text has the mask ‹•••› (use note_edit then). Prefer note_append and note_edit: they never lose the user's other text.",
             props: ["id": idProp, "text": ["type": "string", "description": "The note's new whole text in Markdown, at most 20000 characters."], "version": ["type": "string", "description": "The version note_read gave."]],
             required: ["id", "text", "version"], readOnly: false) { args, caller in
                 guarded(.write, caller) { change(["op": "write", "text": args["text"] as Any, "version": args["version"] as Any], args["id"] as? String, caller) }
@@ -121,6 +121,9 @@ enum NotesTools {
         } else if caller.hubMode == "off" || McpShared.shared.mode == "off" {
             // Outside Orbiterm (Claude Desktop, Dispatch): both the Claude access and the notes' switch must be on, asked at every call.
             return "Claude access is turned off in Orbiterm (Settings, Claude)."
+        } else if need == .write, caller.hubMode != "write" || McpShared.shared.mode != "write" {
+            // And to change a note, the Claude access must be "Watch and type": "Watch only" reads.
+            return "Orbiterm's Claude access is set to 'Watch only', so Claude can read the notes but not change them. The user can switch to 'Watch and type' in Orbiterm > Settings > Claude."
         }
         return nil
     }
@@ -176,7 +179,8 @@ enum NotesTools {
             let inWindow = (n["inWindow"] as? Bool == true) || win != nil
             let panel = n["pinnedToDashboard"] as? Bool == true
             var terminal = false
-            row["title"] = redactMore(clip(n["title"] as? String, 80))
+            // Masked before it is cut (the page cuts the preview at a space, so no secret is cut in it).
+            row["title"] = clip(redactMore(n["title"] as? String), 80)
             row["preview"] = redactMore(n["preview"] as? String)
             if let session = n["session"] as? String {
                 if alive[session] == nil { alive[session] = Detached.shellPid(session) != nil }
@@ -236,9 +240,10 @@ enum NotesTools {
         if note["error"] as? String == "not_found" { return (false, "No note has this id. Call notes_list again.") }
         guard let md = note["markdown"] as? String else { return unreachable }
         let place = rows(caller)?.first { $0["id"] as? String == id }
-        var head: [String: Any] = ["id": id, "title": redactMore(clip(note["title"] as? String, 80)), "version": note["version"] ?? ""]
+        var head: [String: Any] = ["id": id, "title": clip(redactMore(note["title"] as? String), 80), "version": note["version"] ?? ""]
         for k in ["placement", "placements", "pinnedTo", "thisTerminal", "visible", "keepOnTop", "shownInDashboardPanel", "lastEdited"] { head[k] = place?[k] }
-        var body = md
+        // Masked whole before it is cut, so the cut can't leave part of a secret unrecognised.
+        var body = redactMore(md)
         var cut = ""
         if body.count > readMax {
             body = String(body.prefix(readMax))
@@ -271,10 +276,16 @@ enum NotesTools {
         // asks the page about it (the mask check below would tell whether a hidden note holds secrets).
         if hidden().contains(id) { return (false, "No note has this id. List the notes again.") }
         // A note read through the mask has ‹•••› where a secret is: writing that back would destroy the secret.
-        if let s = (req["text"] ?? req["new"]) as? String, s.contains(mask), op != "append" {
-            if op == "edit" { return (false, "new_text has the mask ‹•••›: masked secrets can't be written. Edit around them.") }
+        if op == "edit", (req["new"] as? String)?.contains(mask) == true {
+            return (false, "new_text has the mask ‹•••›: masked secrets can't be written. Edit around them.")
+        }
+        // A whole rewrite never carries the mask, and never goes over a note that holds secrets (it would drop them): as its description says.
+        if op == "write" {
+            if (req["text"] as? String)?.contains(mask) == true {
+                return (false, "The text has the mask ‹•••›: masked secrets can't be written back. Use note_edit or note_append and edit around them.")
+            }
             guard let now = page("return await N.agentRead(id);", ["id": id], owner: ownerOf(id)), let md = now["markdown"] as? String else { return unreachable }
-            if redactMore(md) != md { return (false, "This note holds masked secrets, and the text you sent has the mask: rewriting would destroy them. Use note_edit or note_append.") }
+            if redactMore(md) != md { return (false, "This note holds masked secrets: rewriting it whole would destroy them. Use note_edit or note_append.") }
         }
         let ai = ownerAI(caller)
         req["id"] = id
@@ -291,7 +302,7 @@ enum NotesTools {
         }
         let saved = answer["saved"] as? Bool == false ? " It could not be saved to disk yet; the app will retry." : ""
         return (true, wrap("Done (\(op)). The user sees it now and can undo it with ⌘Z or the Undo link on the note's strip.\(saved) \(envelopeNote)",
-                           "NOTE: \(clip(answer["title"] as? String, 60))\nNEW VERSION: \(answer["version"] as? String ?? "")"))
+                           "NOTE: \(clip(redactMore(answer["title"] as? String), 60))\nNEW VERSION: \(answer["version"] as? String ?? "")"))
     }
 
     private static func pinTerminal(_ id: String?, _ pinned: Bool, _ caller: NotesCaller) -> (ok: Bool, text: String) {

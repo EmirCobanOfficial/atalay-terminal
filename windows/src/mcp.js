@@ -126,8 +126,14 @@ function flagBypass(cmds, kind) {
       if (BYPASS_FLAGS.has(low)) return 'a start flag';
       // Claude's --settings takes a file or inline JSON that can set any permission mode: not read here, so it counts.
       if (low === '--settings' || low.startsWith('--settings=')) return 'a settings flag';
-      if (low === '--permission-mode' && next.includes('bypass')) return 'permission mode';
-      if (low.startsWith('--permission-mode=') && low.includes('bypass')) return 'permission mode';
+      if (low === '--permission-mode' && (next.includes('bypass') || next === 'auto')) return 'permission mode';
+      if (low.startsWith('--permission-mode=') && (low.includes('bypass') || low.endsWith('=auto'))) return 'permission mode';
+      // Claude's --allowedTools with an allow-everything rule (`Bash`, `Bash(*)`, `*`): its values run to the next flag.
+      if (/^--allowed-?tools(=|$)/.test(low)) {
+        const values = low.includes('=') ? [low.slice(low.indexOf('=') + 1)] : [];
+        for (let j = i + 1; j < args.length && !args[j].startsWith('-'); j++) values.push(args[j]);
+        if (values.some(broadRules)) return 'an allowed-tools flag';
+      }
       if ((low === '-a' || low === '--ask-for-approval') && next === 'never') return 'approval policy';
       if (low === '--ask-for-approval=never') return 'approval policy';
       if (low === '--mode' && next === 'auto') return 'mode';
@@ -139,6 +145,73 @@ function flagBypass(cmds, kind) {
   }
   return null;
 }
+/**
+ * Whether a permission rule lets every command run (the Mac's broadRule): `*`, or a command tool (`Bash`, `PowerShell`,
+ * Antigravity's `command`) with no pattern or only wildcards (`Bash(*)`, `Bash(:*)`, `command(regex:.*)`).
+ */
+const COMMAND_TOOLS = new Set(['bash', 'powershell', 'pwsh', 'shell', 'sh', 'command', 'terminal', 'run_command', 'run_terminal_command', 'exec']);
+function broadRule(raw) {
+  const r = String(raw ?? '').replace(/^[\s"']+|[\s"']+$/g, '');
+  if (!r) return false;
+  let name = r.toLowerCase();
+  let spec = null;
+  const open = r.indexOf('(');
+  if (open !== -1 && r.endsWith(')')) {
+    name = r.slice(0, open).trim().toLowerCase();
+    spec = r.slice(open + 1, -1).toLowerCase();
+  }
+  if (/^\*+$/.test(name)) return true;
+  if (!COMMAND_TOOLS.has(name)) return false;
+  if (spec == null) return true;
+  if (spec.startsWith('regex:')) spec = spec.slice(6);
+  return /^[\s*:.^$+?]*$/.test(spec);
+}
+/** A flag's value with several rules in it (`Bash(git log:*),Edit Read`): split at commas and spaces outside the brackets. */
+function broadRules(text) {
+  let depth = 0, cur = '';
+  for (const ch of `${String(text ?? '')} `) {
+    if (ch === '(') depth++;
+    else if (ch === ')') depth = Math.max(0, depth - 1);
+    if (depth === 0 && (ch === ',' || /\s/.test(ch))) {
+      if (broadRule(cur)) return true;
+      cur = '';
+    } else cur += ch;
+  }
+  return false;
+}
+/**
+ * Anywhere in an Antigravity settings file (the Mac's agyRisk): a tool permission or preset that doesn't ask, a skip /
+ * yolo switch that is on, or an allow list with a rule that lets every command run. Why, or null.
+ */
+function agyRisk(v, depth = 0) {
+  if (depth >= 8) return null;
+  if (Array.isArray(v)) {
+    for (const x of v) {
+      const why = agyRisk(x, depth + 1);
+      if (why) return why;
+    }
+    return null;
+  }
+  if (!isObj(v)) return null;
+  for (const [k, value] of Object.entries(v)) {
+    const key = k.toLowerCase();
+    if (['toolpermission', 'permissionpreset', 'autoexecutionpolicy', 'terminalautoexecutionpolicy'].includes(key)) {
+      if (typeof value !== 'string') return `Antigravity's ${k} can't be read`;
+      const norm = value.toLowerCase().replace(/_/g, '-').replace(/^(agent-permission-preset-|tool-permission-|permission-preset-)/, '');
+      if (!['', 'default', 'request-review', 'strict', 'unspecified'].includes(norm)) return `Antigravity's ${k} is ${value}`;
+    }
+    const bare = key.replace(/[_-]/g, '');
+    if (['yolo', 'skippermission', 'dangerous', 'autoapprove', 'alwaysproceed'].some((w) => bare.includes(w)) &&
+      (value === true || (typeof value === 'string' && ['true', 'on', 'yes', '1', 'always', 'enabled'].includes(value.toLowerCase())))) {
+      return `Antigravity's ${k} is on`;
+    }
+    if (key === 'allow' && Array.isArray(value) && value.some((r) => typeof r === 'string' && broadRule(r))) return 'Antigravity allows every command';
+    const why = agyRisk(value, depth + 1);
+    if (why) return why;
+  }
+  return null;
+}
+
 /** What the terminal itself says it is in (Claude's "bypass permissions on", Codex's full access, a mode changed while running). */
 function screenSaysBypass(screen) {
   const footer = String(screen || '').split('\n').slice(-14).join('\n').toLowerCase();
@@ -417,7 +490,10 @@ function createMcp(deps) {
     screens.delete(String(m.rid));
     // Without the empty rows under the last line: a short output leaves the buffer's lower rows blank, and the footer
     // (bypass mode, the input box) must stay in the last rows the checks read.
-    w.done(typeof m.text === 'string' ? m.text.replace(/(?:[ \t]*\r?\n)+[ \t]*$/, '').slice(-60_000) : null);
+    // Its last 60 000 characters, from a line's start: a line cut there could hold the end of a secret, which then isn't seen
+    // as one when it is masked.
+    const text = typeof m.text === 'string' ? m.text.replace(/(?:[ \t]*\r?\n)+[ \t]*$/, '') : null;
+    w.done(text == null ? null : text.length > 60_000 ? text.slice(-60_000).replace(/^[^\n]*\n/, '') : text);
   });
   function screenText(id) {
     const win = deps.chatWindow(id);
@@ -495,11 +571,12 @@ function createMcp(deps) {
     const can = mode === 'write' && !inside ? await Promise.all(ts.map((t) => check(t).then((c) => c.why == null))) : [];
     const rows = ts.map((t, i) => {
       const b = t.brief;
-      // The keys sorted, as the Mac's JSON has them.
+      // The keys sorted, as the Mac's JSON has them. Masked before it is cut: a cut through a secret could leave part of it
+      // unrecognised.
       const row = {
         ai: aiName(t), ...(mode === 'write' && !inside ? { can_send_prompt: can[i] } : {}), folder: path.basename(b.cwd || ''), id: b.id,
-        name: redactMore(clip(b.name, 40)), status: status(b), title: redactMore(clip(b.title, 100)),
-        ...(b.waitingFor ? { waiting_for: redactMore(clip(b.waitingFor, 80)) } : {}),
+        name: clip(redactMore(b.name), 40), status: status(b), title: clip(redactMore(b.title), 100),
+        ...(b.waitingFor ? { waiting_for: clip(redactMore(b.waitingFor), 80) } : {}),
       };
       return row;
     });
@@ -510,8 +587,8 @@ function createMcp(deps) {
     const lines = [];
     for (const t of targets()) {
       const b = t.brief;
-      if (b.status === 'waiting') lines.push(`needs_you | ${b.id} | ${aiName(t)} | ${redactMore(clip(b.name, 40))} | ${redactMore(clip(b.waitingFor || '', 120))}`);
-      else if (b.status === 'idle') lines.push(`idle | ${b.id} | ${aiName(t)} | ${redactMore(clip(b.name, 40))} | waiting for a new prompt`);
+      if (b.status === 'waiting') lines.push(`needs_you | ${b.id} | ${aiName(t)} | ${clip(redactMore(b.name), 40)} | ${clip(redactMore(b.waitingFor || ''), 120)}`);
+      else if (b.status === 'idle') lines.push(`idle | ${b.id} | ${aiName(t)} | ${clip(redactMore(b.name), 40)} | waiting for a new prompt`);
     }
     const body = lines.length ? `type | id | ai | name | detail\n${lines.join('\n')}` : 'Nothing waits.';
     return wrap(`Sessions waiting for the user. needs_you = an approval or a question, answered in Orbiterm by the user. ${envelopeNote}`, body);
@@ -537,14 +614,16 @@ function createMcp(deps) {
   async function terminalTail(t, lines) {
     const text = await screenText(t.screen);
     if (text == null) return null;
-    const rows = text.split('\n').map((r) => r.replace(/ +$/, ''));
+    // Masked whole before the last lines are taken, so a secret over several lines (a PEM key) is still seen as one.
+    const rows = redactMore(text).split('\n').map((r) => r.replace(/ +$/, ''));
     while (rows.length && !rows[rows.length - 1]) rows.pop();
     return rows.slice(-lines).join('\n');
   }
 
   async function read(t, lines) {
     const [reply, end] = await Promise.all([lastReply(t), terminalTail(t, lines)]);
-    let body = `SESSION: ${clip(t.brief.name, 40)}\nSTATUS: ${status(t.brief)}\n\nLAST REPLY:\n${reply ? tail(reply, 6000) : '(none found)'}`;
+    // Masked before anything is cut (wrap masks again, which changes nothing then).
+    let body = `SESSION: ${clip(redactMore(t.brief.name), 40)}\nSTATUS: ${status(t.brief)}\n\nLAST REPLY:\n${reply ? tail(redactMore(reply), 6000) : '(none found)'}`;
     body += `\n\nTERMINAL (end of the screen):\n${end ?? '(not readable)'}`;
     return wrap(`Session read (${aiName(t)}). ${envelopeNote}`, body);
   }
@@ -579,7 +658,7 @@ function createMcp(deps) {
         `WAITING FOR: ${t.brief.waitingFor || '(unknown)'}`);
     }
     const reply = await lastReply(t);
-    return wrap(`finished: the session is idle. Last reply below. ${envelopeNote}`, reply ? tail(reply, 6000) : '(none found)');
+    return wrap(`finished: the session is idle. Last reply below. ${envelopeNote}`, reply ? tail(redactMore(reply), 6000) : '(none found)');
   }
 
   // ----- writing -----
@@ -689,8 +768,45 @@ function createMcp(deps) {
           return "a settings file can't be read";
         }
         if (!isObj(j)) return "a settings file can't be read";
-        const m = (isObj(j.permissions) && typeof j.permissions.defaultMode === 'string' && j.permissions.defaultMode) || (typeof j.defaultMode === 'string' && j.defaultMode) || '';
-        if (m.toLowerCase().includes('bypass')) return 'settings: defaultMode';
+        const m = ((isObj(j.permissions) && typeof j.permissions.defaultMode === 'string' && j.permissions.defaultMode) || (typeof j.defaultMode === 'string' && j.defaultMode) || '').toLowerCase();
+        if (m.includes('bypass') || m === 'auto') return 'settings: defaultMode';
+        // An allow rule that lets every command run (`Bash`, `Bash(*)`, `*`) is the same as bypassing, for what a prompt can do.
+        if (isObj(j.permissions) && j.permissions.allow !== undefined) {
+          if (!Array.isArray(j.permissions.allow)) return "a settings file can't be read";
+          if (j.permissions.allow.some((r) => typeof r === 'string' && broadRule(r))) return 'settings: a rule that allows every command';
+        }
+      }
+    } else if (t.kind === 'agy') {
+      // Antigravity's settings, and the projects' (which take precedence): its Agent Mode must be saved as Default or Plan
+      // (Auto, which approves edits and commands by itself, is what it starts in when none is saved), its tool permission
+      // must ask, and no allow rule may let every command run. Settings that can't be read count as a yes.
+      const gemini = path.join(os.homedir(), '.gemini');
+      let j;
+      try {
+        j = JSON.parse((await fsp.readFile(path.join(gemini, 'antigravity-cli', 'settings.json'), 'utf8')).replace(/^﻿/, ''));
+      } catch {
+        return "Antigravity's settings can't be read";
+      }
+      if (!isObj(j)) return "Antigravity's settings can't be read";
+      if (typeof j.agentMode !== 'string' || !['', 'default', 'plan'].includes(j.agentMode.toLowerCase())) return "Antigravity's Agent Mode isn't saved as Default (it starts in Auto then)";
+      const why = agyRisk(j);
+      if (why) return why;
+      const projects = path.join(gemini, 'config', 'projects');
+      let names = [];
+      try {
+        names = await fsp.readdir(projects);
+      } catch (e) {
+        if (e.code !== 'ENOENT') return "Antigravity's project settings can't be read";
+      }
+      for (const name of names.filter((n) => n.endsWith('.json'))) {
+        let p;
+        try {
+          p = JSON.parse((await fsp.readFile(path.join(projects, name), 'utf8')).replace(/^﻿/, ''));
+        } catch {
+          return "Antigravity's project settings can't be read";
+        }
+        const pw = agyRisk(p);
+        if (pw) return pw;
       }
     } else if (t.kind === 'codex') {
       const home = process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
@@ -856,9 +972,18 @@ function createMcp(deps) {
       return false;
     }
     if (quitting) return false;
-    const child = cp.spawn(exe, ['--serve', KEY], { stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true });
+    // A program that can't start throws here or says so with an 'error' event: either one never reaches the main process.
+    let child;
+    try {
+      child = cp.spawn(exe, ['--serve', KEY], { stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true });
+    } catch (e) {
+      console.error('mcp: the server could not be started:', e.message);
+      return false;
+    }
+    child.on('error', (e) => console.error('mcp: the server:', e.message));
     const s = { child, token: null, rid: 0, procs: new Map(), at: Date.now() };
     child.stdin.on('error', () => {});
+    child.stdout.on('error', () => {});
     return new Promise((resolve) => {
       let settled = false;
       const settle = (ok) => {

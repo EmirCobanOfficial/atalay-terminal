@@ -485,9 +485,10 @@ extension McpTools {
     private static func listSessions(mode: String, inside: Bool) -> String {
         let rows: [[String: Any]] = targets().map { t in
             let b = t.brief
-            var row: [String: Any] = ["id": b.id, "name": redactMore(clip(b.name, 40)), "title": redactMore(clip(b.title, 100)), "ai": ai(t),
+            // Masked before it is cut: a cut through a secret could leave part of it unrecognised.
+            var row: [String: Any] = ["id": b.id, "name": clip(redactMore(b.name), 40), "title": clip(redactMore(b.title), 100), "ai": ai(t),
                                       "folder": (b.cwd as NSString).lastPathComponent, "status": status(b)]
-            if let w = b.waitingFor, !w.isEmpty { row["waiting_for"] = redactMore(clip(w, 80)) }
+            if let w = b.waitingFor, !w.isEmpty { row["waiting_for"] = clip(redactMore(w), 80) }
             if mode == "write" && !inside { row["can_send_prompt"] = sendBlock(t) == nil }
             return row
         }
@@ -502,9 +503,9 @@ extension McpTools {
             if b.status == "waiting" {
                 var what = b.actionLabel.isEmpty ? (b.waitingFor ?? "") : b.actionLabel
                 if what.isEmpty, t.kind == "codex", let conv = b.convId { what = CodexHooks.waiting()[conv]?.command ?? "" }
-                lines.append("needs_you | \(b.id) | \(ai(t)) | \(redactMore(clip(b.name, 40))) | \(redactMore(clip(what, 120)))")
+                lines.append("needs_you | \(b.id) | \(ai(t)) | \(clip(redactMore(b.name), 40)) | \(clip(redactMore(what), 120))")
             } else if b.status == "idle" {
-                lines.append("idle | \(b.id) | \(ai(t)) | \(redactMore(clip(b.name, 40))) | waiting for a new prompt")
+                lines.append("idle | \(b.id) | \(ai(t)) | \(clip(redactMore(b.name), 40)) | waiting for a new prompt")
             }
         }
         let body = lines.isEmpty ? "Nothing waits." : "type | id | ai | name | detail\n" + lines.joined(separator: "\n")
@@ -516,7 +517,8 @@ extension McpTools {
     private static func read(_ t: Target, lines: Int) -> String {
         let reply = lastReply(t)
         let tail = terminalTail(t, lines: lines)
-        var body = "SESSION: \(clip(t.brief.name, 40))\nSTATUS: \(status(t.brief))\n\nLAST REPLY:\n" + (reply.map { String($0.suffix(6000)) } ?? "(none found)")
+        // Masked before anything is cut (wrap masks again, which changes nothing then).
+        var body = "SESSION: \(clip(redactMore(t.brief.name), 40))\nSTATUS: \(status(t.brief))\n\nLAST REPLY:\n" + (reply.map { String(redactMore($0).suffix(6000)) } ?? "(none found)")
         body += "\n\nTERMINAL (end of the screen):\n" + (tail ?? "(not readable)")
         return wrap("Session read (\(ai(t))). \(envelopeNote)", body)
     }
@@ -533,8 +535,11 @@ extension McpTools {
     private static func terminalTail(_ t: Target, lines: Int) -> String? {
         var text: String?
         DispatchQueue.main.sync { text = MainActor.assumeIsolated { MainWindowController.shared?.terminalText(session: t.screen) } }
-        guard let text else { return nil }
-        var rows = text.components(separatedBy: "\n").map { String($0.reversed().drop(while: { $0 == " " }).reversed()) }
+        guard var text else { return nil }
+        // The terminal gives its last 60 000 bytes: cut there, the first line may be part of one (a secret's end among it), so it goes.
+        if text.utf8.count >= 59_000, let nl = text.firstIndex(of: "\n") { text = String(text[text.index(after: nl)...]) }
+        // Masked whole before the last lines are taken, so a secret over several lines (a PEM key) is still seen as one.
+        var rows = redactMore(text).components(separatedBy: "\n").map { String($0.reversed().drop(while: { $0 == " " }).reversed()) }
         while rows.last?.isEmpty == true { rows.removeLast() }
         return rows.suffix(lines).joined(separator: "\n")
     }
@@ -568,7 +573,7 @@ extension McpTools {
         what == "needs_you"
             ? wrap("needs_you: the session waits for the user's approval or answer in Orbiterm. This server can't answer it. \(envelopeNote)",
                    "WAITING FOR: " + (t.brief.actionLabel.isEmpty ? (t.brief.waitingFor ?? "(unknown)") : t.brief.actionLabel))
-            : wrap("finished: the session is idle. Last reply below. \(envelopeNote)", lastReply(t).map { String($0.suffix(6000)) } ?? "(none found)")
+            : wrap("finished: the session is idle. Last reply below. \(envelopeNote)", lastReply(t).map { String(redactMore($0).suffix(6000)) } ?? "(none found)")
     }
 
     // MARK: writing
@@ -652,9 +657,17 @@ extension McpTools {
             for (i, a) in args.enumerated() {
                 let low = a.lowercased()
                 if flags.contains(low) { return "a start flag" }
+                // Claude's and Antigravity's --settings take a file or inline JSON that can set any permission: not read here, so it counts.
+                if low == "--settings" || low.hasPrefix("--settings=") { return "a settings flag" }
                 let next = args.indices.contains(i + 1) ? args[i + 1].lowercased() : ""
-                if low == "--permission-mode", next.contains("bypass") { return "permission mode" }
-                if low.hasPrefix("--permission-mode="), low.contains("bypass") { return "permission mode" }
+                if low == "--permission-mode", next.contains("bypass") || next == "auto" { return "permission mode" }
+                if low.hasPrefix("--permission-mode="), low.contains("bypass") || low.hasSuffix("=auto") { return "permission mode" }
+                // Claude's --allowedTools with an allow-everything rule (`Bash`, `Bash(*)`, `*`): its values run to the next flag.
+                if low == "--allowedtools" || low == "--allowed-tools" || low.hasPrefix("--allowedtools=") || low.hasPrefix("--allowed-tools=") {
+                    var values = low.contains("=") ? [String(low[low.index(after: low.firstIndex(of: "=")!)...])] : []
+                    for v in args.dropFirst(i + 1) { if v.hasPrefix("-") { break }; values.append(v) }
+                    if values.contains(where: { McpTools.broadRules($0) }) { return "an allowed-tools flag" }
+                }
                 if low == "-a" || low == "--ask-for-approval", next == "never" { return "approval policy" }
                 if low == "--ask-for-approval=never" { return "approval policy" }
                 if low == "--mode", next == "auto" { return "mode" }
@@ -688,8 +701,14 @@ extension McpTools {
             for dir in dirs { files += [dir + "/.claude/settings.json", dir + "/.claude/settings.local.json"] }
             for f in files where fm.fileExists(atPath: f) {
                 guard let data = fm.contents(atPath: f), let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return "a settings file can't be read" }
-                let mode = ((j["permissions"] as? [String: Any])?["defaultMode"] as? String) ?? (j["defaultMode"] as? String) ?? ""
-                if mode.lowercased().contains("bypass") { return "settings: defaultMode" }
+                let perms = j["permissions"] as? [String: Any]
+                let mode = ((perms?["defaultMode"] as? String) ?? (j["defaultMode"] as? String) ?? "").lowercased()
+                if mode.contains("bypass") || mode == "auto" { return "settings: defaultMode" }
+                // An allow rule that lets every command run (`Bash`, `Bash(*)`, `*`) is the same as bypassing, for what a prompt can do.
+                if let allow = perms?["allow"] {
+                    guard let list = allow as? [Any] else { return "a settings file can't be read" }
+                    if list.contains(where: { ($0 as? String).map(broadRule) ?? false }) { return "settings: a rule that allows every command" }
+                }
             }
         case "codex":
             let home = ProcessInfo.processInfo.environment["CODEX_HOME"] ?? HOME + "/.codex"
@@ -700,9 +719,97 @@ extension McpTools {
                 guard let text = try? String(contentsOfFile: f, encoding: .utf8) else { return "a config file can't be read" }
                 if rx.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil { return "config.toml" }
             }
-        default: break
+        default:
+            return agySettingsBypass()
         }
         return nil
+    }
+
+    /// Antigravity's settings (~/.gemini/antigravity-cli/settings.json, and the projects' in ~/.gemini/config/projects, which take
+    /// precedence): its Agent Mode must be saved as Default or Plan (Auto, which approves edits and commands by itself, is what it
+    /// starts in when none is saved), its tool permission must ask (`request-review`, `strict`), and no allow rule may let every
+    /// command run. Settings that can't be read count as a yes.
+    private static func agySettingsBypass() -> String? {
+        let fm = FileManager.default
+        let main = HOME + "/.gemini/antigravity-cli/settings.json"
+        guard let data = fm.contents(atPath: main), let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return "Antigravity's settings can't be read"
+        }
+        guard let mode = j["agentMode"] as? String, ["", "default", "plan"].contains(mode.lowercased()) else {
+            return "Antigravity's Agent Mode isn't saved as Default (it starts in Auto then)"
+        }
+        if let why = agyRisk(j, depth: 0) { return why }
+        let projects = HOME + "/.gemini/config/projects"
+        guard fm.fileExists(atPath: projects) else { return nil }
+        guard let names = try? fm.contentsOfDirectory(atPath: projects) else { return "Antigravity's project settings can't be read" }
+        for name in names where name.hasSuffix(".json") {
+            guard let data = fm.contents(atPath: projects + "/" + name), let p = try? JSONSerialization.jsonObject(with: data) else {
+                return "Antigravity's project settings can't be read"
+            }
+            if let why = agyRisk(p, depth: 0) { return why }
+        }
+        return nil
+    }
+
+    /// Anywhere in an Antigravity settings file: a tool permission or preset that doesn't ask, a skip / yolo switch that is on, or
+    /// an allow list with a rule that lets every command run.
+    private static func agyRisk(_ v: Any, depth: Int) -> String? {
+        guard depth < 8 else { return nil }
+        if let list = v as? [Any] { return list.lazy.compactMap { agyRisk($0, depth: depth + 1) }.first }
+        guard let d = v as? [String: Any] else { return nil }
+        for (k, value) in d {
+            let key = k.lowercased()
+            if ["toolpermission", "permissionpreset", "autoexecutionpolicy", "terminalautoexecutionpolicy"].contains(key) {
+                guard let s = value as? String else { return "Antigravity's \(k) can't be read" }
+                var norm = s.lowercased().replacingOccurrences(of: "_", with: "-")
+                for p in ["agent-permission-preset-", "tool-permission-", "permission-preset-"] where norm.hasPrefix(p) { norm.removeFirst(p.count) }
+                if !["", "default", "request-review", "strict", "unspecified"].contains(norm) { return "Antigravity's \(k) is \(s)" }
+            }
+            if ["yolo", "skippermission", "dangerous", "autoapprove", "alwaysproceed"].contains(where: { key.replacingOccurrences(of: "_", with: "").replacingOccurrences(of: "-", with: "").contains($0) }),
+               (value as? Bool == true) || ((value as? String).map { ["true", "on", "yes", "1", "always", "enabled"].contains($0.lowercased()) } ?? false) {
+                return "Antigravity's \(k) is on"
+            }
+            if key == "allow", let list = value as? [Any], list.contains(where: { ($0 as? String).map(broadRule) ?? false }) {
+                return "Antigravity allows every command"
+            }
+            if let why = agyRisk(value, depth: depth + 1) { return why }
+        }
+        return nil
+    }
+
+    /// Whether a permission rule lets every command run: `*`, or a command tool (`Bash`, `PowerShell`, Antigravity's `command`) with
+    /// no pattern or only wildcards (`Bash(*)`, `Bash(:*)`, `command(regex:.*)`).
+    static func broadRule(_ raw: String) -> Bool {
+        let commandTools: Set<String> = ["bash", "powershell", "pwsh", "shell", "sh", "command", "terminal", "run_command", "run_terminal_command", "exec"]
+        let r = raw.trimmingCharacters(in: CharacterSet(charactersIn: " \t\n\"'"))
+        guard !r.isEmpty else { return false }
+        var name = r.lowercased()
+        var spec: String?
+        if let open = r.firstIndex(of: "("), r.hasSuffix(")") {
+            name = r[..<open].trimmingCharacters(in: .whitespaces).lowercased()
+            spec = String(r[r.index(after: open)..<r.index(before: r.endIndex)]).lowercased()
+        }
+        if !name.isEmpty, name.allSatisfy({ $0 == "*" }) { return true }
+        guard commandTools.contains(name) else { return false }
+        guard var s = spec else { return true }
+        if s.hasPrefix("regex:") { s.removeFirst(6) }
+        return s.allSatisfy { " *:.^$+?".contains($0) }
+    }
+
+    /// A flag's value with several rules in it (`Bash(git log:*),Edit Read`): split at commas and spaces outside the brackets.
+    static func broadRules(_ text: String) -> Bool {
+        var depth = 0
+        var cur = ""
+        for ch in text + " " {
+            if ch == "(" { depth += 1 } else if ch == ")" { depth = max(0, depth - 1) }
+            if depth == 0, ch == "," || ch.isWhitespace {
+                if broadRule(cur) { return true }
+                cur = ""
+            } else {
+                cur.append(ch)
+            }
+        }
+        return false
     }
 
     /// One line of plain text: controls (Esc among them), invisible and direction marks go, line breaks become spaces.

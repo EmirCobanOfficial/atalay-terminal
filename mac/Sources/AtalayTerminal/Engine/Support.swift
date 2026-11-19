@@ -215,8 +215,9 @@ private let extraPatterns: [NSRegularExpression] = [
 /// `Authorization: Bearer <token>`: the token, which the generic key-and-value mask would leave behind (it takes "Bearer" for the value).
 private let bearerToken = try! NSRegularExpression(pattern: #"(\b(?:bearer|basic|token)[ \t]+)[A-Za-z0-9._~+/=-]{8,}"#, options: [.caseInsensitive])
 /// A name with a secret word in it (any text around the word, `_` and `-` included: `\b` doesn't stop at `_`), then `:` or `=`, then the value.
+/// At most 64 characters around the word each side: unbounded, a long run of word characters (`token_token_…`) backtracked for seconds.
 private let namedSecret = try! NSRegularExpression(
-    pattern: #"([A-Za-z0-9_.-]*(?:pass(?:word|wd|phrase)?|secret|token|api[_-]?key|apikey|authorization|private[_-]?key|access[_-]?key|credential|auth)[A-Za-z0-9_.-]*["']?[ \t]*[:=][ \t]*["']?)([^\s"'&;,]{4,})"#,
+    pattern: #"([A-Za-z0-9_.-]{0,64}(?:pass(?:word|wd|phrase)?|secret|token|api[_-]?key|apikey|authorization|private[_-]?key|access[_-]?key|credential|auth)[A-Za-z0-9_.-]{0,64}["']?[ \t]*[:=][ \t]*["']?)([^\s"'&;,]{4,})"#,
     options: [.caseInsensitive])
 private let envLine = try! NSRegularExpression(
     pattern: #"(^|[\s❯›>$%#])((?:export[ \t]+)?[A-Z][A-Z0-9_]*(?:KEY|SECRET|TOKEN|PASSWORD|PASSWD|PASS|DSN|URL|URI|CREDENTIALS?|AUTH)[A-Z0-9_]*[ \t]*=[ \t]*)("[^"\n]*"|'[^'\n]*'|\S+)"#,

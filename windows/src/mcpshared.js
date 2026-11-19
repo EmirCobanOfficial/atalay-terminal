@@ -31,8 +31,9 @@ const EXTRA = [
 // for the value).
 const BEARER = /(\b(?:bearer|basic|token)[ \t]+)[A-Za-z0-9._~+/=-]{8,}/gi;
 // A name with a secret word in it (any text around the word, `_` and `-` included: `\b` doesn't stop at `_`), then `:`
-// or `=`, then the value.
-const NAMED = /([A-Za-z0-9_.-]*(?:pass(?:word|wd|phrase)?|secret|token|api[_-]?key|apikey|authorization|private[_-]?key|access[_-]?key|credential|auth)[A-Za-z0-9_.-]*["']?[ \t]*[:=][ \t]*["']?)([^\s"'&;,]{4,})/gi;
+// or `=`, then the value. The text around the word is at most 64 characters each side: unbounded, a long run of word
+// characters (`token_token_…`) backtracked for seconds on the main process.
+const NAMED = /([A-Za-z0-9_.-]{0,64}(?:pass(?:word|wd|phrase)?|secret|token|api[_-]?key|apikey|authorization|private[_-]?key|access[_-]?key|credential|auth)[A-Za-z0-9_.-]{0,64}["']?[ \t]*[:=][ \t]*["']?)([^\s"'&;,]{4,})/gi;
 // An .env line: the Mac's, and on Windows one PowerShell sets too (`$env:DATABASE_URL = "…"`: the name after a colon).
 const ENV_LINE = /(^|[\s❯›>$%#:])((?:export[ \t]+)?[A-Z][A-Z0-9_]*(?:KEY|SECRET|TOKEN|PASSWORD|PASSWD|PASS|DSN|URL|URI|CREDENTIALS?|AUTH)[A-Z0-9_]*[ \t]*=[ \t]*)("[^"\n]*"|'[^'\n]*'|\S+)/gm;
 

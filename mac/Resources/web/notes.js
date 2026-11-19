@@ -2769,7 +2769,8 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
         changed: n.at || null,
         version: hashOf(md),
         chars: md.length,
-        preview: md.slice(0, 160),
+        // Cut at a space: the app masks secrets in it after this, and a secret cut in two might not be seen as one.
+        preview: md.length > 160 ? md.slice(0, 160).replace(/\S*$/, '') : md,
         pinnedToDashboard: n.id === pinned,
         inWindow: out.has(n.id),
         session: n.session || null,

@@ -110,6 +110,9 @@ function createNotesTools({ mode, mcpMode, notesStore, noteWindows, terminals, d
     } else if (caller.mode === 'off' || mcpMode() === 'off') {
       // Outside Orbiterm (Claude Desktop): both the Claude access and the notes' switch must be on, asked at every call.
       return 'Claude access is turned off in Orbiterm (Settings, Claude).';
+    } else if (need === 'write' && (caller.mode !== 'write' || mcpMode() !== 'write')) {
+      // And to change a note, the Claude access must be "Watch and type": "Watch only" reads.
+      return "Orbiterm's Claude access is set to 'Watch only', so Claude can read the notes but not change them. The user can switch to 'Watch and type' in Orbiterm > Settings > Claude.";
     }
     return null;
   }
@@ -141,7 +144,8 @@ function createNotesTools({ mode, mcpMode, notesStore, noteWindows, terminals, d
         const inWindow = n.inWindow === true || !!win;
         const panel = n.pinnedToDashboard === true;
         let terminal = false;
-        row.title = redactMore(clip(n.title, 80));
+        // Masked before it is cut (the page cuts the preview at a space, so no secret is cut in it).
+        row.title = clip(redactMore(n.title), 80);
         row.preview = redactMore(n.preview);
         if (typeof n.session === 'string' && n.session) {
           // A note's terminal is one of this build's terminals, by its id (the Mac's detached session name).
@@ -215,11 +219,12 @@ function createNotesTools({ mode, mcpMode, notesStore, noteWindows, terminals, d
     const md = note.markdown;
     const got = await rows(caller);
     const place = got.list ? got.list.find((r) => r.id === id) : null;
-    const head = { id, title: redactMore(clip(note.title, 80)), version: note.version ?? '' };
+    const head = { id, title: clip(redactMore(note.title), 80), version: note.version ?? '' };
     for (const k of ['placement', 'placements', 'pinnedTo', 'thisTerminal', 'visible', 'keepOnTop', 'shownInDashboardPanel', 'lastEdited']) {
       if (place && place[k] !== undefined) head[k] = place[k];
     }
-    let body = md;
+    // Masked whole before it is cut, so the cut can't leave part of a secret unrecognised.
+    let body = redactMore(md);
     let cut = '';
     if (body.length > READ_MAX) {
       body = Array.from(body).slice(0, READ_MAX).join('');
@@ -251,7 +256,12 @@ function createNotesTools({ mode, mcpMode, notesStore, noteWindows, terminals, d
       const now = await page(ownerOf(id), 'return await N.agentRead(id);', { id });
       if (!now || typeof now.markdown !== 'string') return failed(now);
       const md = now.markdown;
-      for (let at = md.indexOf(req.old); at !== -1; at = md.indexOf(req.old, at + 1)) {
+      // Only the place the page will change: old_text there once (the page counts it the same way, without overlaps, and
+      // refuses more). One check of one line range, whatever the note and old_text are: a short old_text in a long note
+      // checked at every place it was found masked the whole note again and again on the main process.
+      const at = md.indexOf(req.old);
+      if (at !== -1) {
+        if (md.indexOf(req.old, at + req.old.length) !== -1) return { ok: false, text: 'That text is in the note more than once. Give a longer piece that is there once.' };
         const from = at > 0 ? md.lastIndexOf('\n', at - 1) + 1 : 0;
         const nl = md.indexOf('\n', at + req.old.length);
         const lines = md.slice(from, nl === -1 ? md.length : nl);
@@ -260,12 +270,15 @@ function createNotesTools({ mode, mcpMode, notesStore, noteWindows, terminals, d
         }
       }
     }
-    if (op !== 'append' && sent.includes(MASK)) {
-      if (op === 'edit') return { ok: false, text: 'new_text has the mask ‹•••›: masked secrets can\'t be written. Edit around them.' };
+    if (op === 'edit' && sent.includes(MASK)) return { ok: false, text: 'new_text has the mask ‹•••›: masked secrets can\'t be written. Edit around them.' };
+    // A whole rewrite never carries the mask, and never goes over a note that holds secrets (it would drop them): as its
+    // description says.
+    if (op === 'write') {
+      if (sent.includes(MASK)) return { ok: false, text: 'The text has the mask ‹•••›: masked secrets can\'t be written back. Use note_edit or note_append and edit around them.' };
       const now = await page(ownerOf(id), 'return await N.agentRead(id);', { id });
       if (!now || typeof now.markdown !== 'string') return failed(now);
       if (redactMore(now.markdown) !== now.markdown) {
-        return { ok: false, text: 'This note holds masked secrets, and the text you sent has the mask: rewriting would destroy them. Use note_edit or note_append.' };
+        return { ok: false, text: 'This note holds masked secrets: rewriting it whole would destroy them. Use note_edit or note_append.' };
       }
     }
     const full = { ...req, id, by: ownerAI(caller) };
@@ -286,7 +299,7 @@ function createNotesTools({ mode, mcpMode, notesStore, noteWindows, terminals, d
       ok: true,
       text: wrap(
         `Done (${op}). The user sees it now and can undo it with Ctrl+Z or the Undo link on the note's strip.${saved} ${ENVELOPE}`,
-        `NOTE: ${clip(answer.title, 60)}\nNEW VERSION: ${typeof answer.version === 'string' ? answer.version : ''}`,
+        `NOTE: ${clip(redactMore(answer.title), 60)}\nNEW VERSION: ${typeof answer.version === 'string' ? answer.version : ''}`,
       ),
     };
   }
@@ -422,7 +435,7 @@ function createNotesTools({ mode, mcpMode, notesStore, noteWindows, terminals, d
     },
     {
       name: 'note_write', title: 'Rewrite a whole note', readOnly: false, audience: 'both',
-      description: "Replaces a note's whole text with the Markdown you give. Needs the `version` from note_read and is refused if the note changed since, or if it holds masked secrets (use note_edit then). Prefer note_append and note_edit: they never lose the user's other text.",
+      description: "Replaces a note's whole text with the Markdown you give. Needs the `version` from note_read and is refused if the note changed since, if the note holds masked secrets, or if your text has the mask ‹•••› (use note_edit then). Prefer note_append and note_edit: they never lose the user's other text.",
       props: {
         id: idProp,
         text: { type: 'string', description: "The note's new whole text in Markdown, at most 20000 characters." },

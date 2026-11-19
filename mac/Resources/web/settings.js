@@ -151,7 +151,7 @@ window.Settings = (() => {
       '</div>' +
       '<p class="st-note mcp-error" hidden></p>' +
       // Only where the notes' AI switch is (Settings > Privacy, the "notesai" handler).
-      (c.notesai ? '<p class="st-note">Your notes follow Settings > Privacy > AI tools and my notes: Claude Desktop can read them, and edit them only if that is set to Read and edit.</p>' : '') +
+      (c.notesai ? '<p class="st-note">Your notes also follow Settings > Privacy > AI tools and my notes. Claude Desktop can read them while both are on, and change them only when this is Watch and type and that is Read and edit.</p>' : '') +
       `<p class="st-note">Claude only sees Claude Code, Codex and Antigravity chats, never a plain terminal. Passwords, keys and tokens are masked before anything leaves Orbiterm. It can't answer approvals, and can't type into a chat started with permissions bypassed. While it's on, ${WIN ? 'an icon shows in the system tray' : 'a sign shows in the menu bar'} with a way to turn it off.</p>`;
 
     const privacy =

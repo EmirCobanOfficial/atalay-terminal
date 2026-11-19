@@ -955,7 +955,9 @@ window.Cloud = (() => {
     const note = q('.na-note');
     if (!st || !note) return;
     root.querySelectorAll('.st-notesai button').forEach((b) => b.classList.toggle('on', b.dataset.mode === st.mode));
-    note.textContent = NA_NOTE[st.mode] + (st.mode !== 'off' ? ' · Claude Desktop gets them too while Settings > Claude is on' : '') + ' · hide a note from AI with the eye on it, or right-click it on the board' + (st.mode !== 'off' && !st.ready ? ' · starts with the next build that has the MCP server' : '');
+    // Claude Desktop, outside Orbiterm, also needs Settings > Claude: on to read, Watch and type to change a note (NotesTools).
+    const desk = { read: ' · Claude Desktop can read them too while Settings > Claude is on', write: ' · Claude Desktop can read them while Settings > Claude is on, and change them only when it is Watch and type' };
+    note.textContent = NA_NOTE[st.mode] + (desk[st.mode] || '') + ' · hide a note from AI with the eye on it, or right-click it on the board' + (st.mode !== 'off' && !st.ready ? ' · starts with the next build that has the MCP server' : '');
   }
   async function renderNotesAI() {
     if (!NOTESAI || !q('.st-notesai')) return;
