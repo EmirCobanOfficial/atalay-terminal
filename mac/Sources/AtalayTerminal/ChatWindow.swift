@@ -468,32 +468,46 @@ final class PassThroughVeil: NSVisualEffectView {
 // MARK: - neon border, flash, beam
 
 /// Rotating conic-gradient edge around the window; colour and speed follow the session status.
+/// The look is drawn in four edge strips (top, bottom, left, right), each clipped to its own rectangle. One layer
+/// spanning the window made the spin and the shadow pulse dirty the whole window every frame; on a full-screen,
+/// see-through chat that meant WindowServer recompositing the entire screen at 120 Hz. Each strip holds the same
+/// full-window geometry offset by its origin, so it shows exactly the pixels the single layer showed there.
 final class NeonBorderView: NSView {
-    private let ring = CALayer()
-    private let gradient = CAGradientLayer()
-    private let ringMask = CAShapeLayer()
-    private let glow = CAShapeLayer()
+    private final class Strip {
+        let clip = CALayer()
+        let ring = CALayer()
+        let gradient = CAGradientLayer()
+        let ringMask = CAShapeLayer()
+        let glow = CAShapeLayer()
+        init() {
+            clip.masksToBounds = true
+            ring.mask = ringMask
+            ring.addSublayer(gradient)
+            clip.addSublayer(glow)
+            clip.addSublayer(ring)
+            gradient.type = .conic
+            gradient.startPoint = CGPoint(x: 0.5, y: 0.5)
+            gradient.endPoint = CGPoint(x: 0.5, y: 0)
+            ringMask.fillColor = nil
+            ringMask.strokeColor = NSColor.black.cgColor
+            ringMask.lineWidth = 2.5
+            glow.fillColor = nil
+            glow.lineWidth = 1
+            glow.shadowOffset = .zero
+            glow.shadowRadius = 9
+            glow.shadowOpacity = 0.8
+        }
+    }
+    /// Ring is 2.5 pt, its glow reaches about 1.25 + 9 * 1.5 pt inward and the corner radius is 12: 28 pt clips none of it.
+    private static let stripThickness: CGFloat = 28
+    private let strips = (0..<4).map { _ in Strip() }
     private var current = ""
 
     override init(frame: NSRect) {
         super.init(frame: frame)
         layer = CALayer()
         wantsLayer = true
-        layer!.addSublayer(glow)
-        ring.mask = ringMask
-        ring.addSublayer(gradient)
-        layer!.addSublayer(ring)
-        gradient.type = .conic
-        gradient.startPoint = CGPoint(x: 0.5, y: 0.5)
-        gradient.endPoint = CGPoint(x: 0.5, y: 0)
-        ringMask.fillColor = nil
-        ringMask.strokeColor = NSColor.black.cgColor
-        ringMask.lineWidth = 2.5
-        glow.fillColor = nil
-        glow.lineWidth = 1
-        glow.shadowOffset = .zero
-        glow.shadowRadius = 9
-        glow.shadowOpacity = 0.8
+        for s in strips { layer!.addSublayer(s.clip) }
         setStatus("starting")
     }
 
@@ -515,16 +529,31 @@ final class NeonBorderView: NSView {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         let b = bounds
-        ring.frame = b
-        ringMask.frame = b
-        glow.frame = b
+        let t = min(Self.stripThickness, b.height / 2)
+        let w = min(Self.stripThickness, b.width / 2)
+        // Top and bottom take the full width; left and right only the height between them, so nothing is drawn twice.
+        let rects = [
+            CGRect(x: 0, y: b.height - t, width: b.width, height: t),
+            CGRect(x: 0, y: 0, width: b.width, height: t),
+            CGRect(x: 0, y: t, width: w, height: max(0, b.height - 2 * t)),
+            CGRect(x: b.width - w, y: t, width: w, height: max(0, b.height - 2 * t)),
+        ]
         let d = hypot(b.width, b.height) * 1.05
-        gradient.bounds = CGRect(x: 0, y: 0, width: d, height: d)
-        gradient.position = CGPoint(x: b.midX, y: b.midY)
         let path = CGPath(roundedRect: b.insetBy(dx: 1.25, dy: 1.25), cornerWidth: 12, cornerHeight: 12, transform: nil)
-        ringMask.path = path
-        glow.path = path
-        glow.shadowPath = path.copy(strokingWithWidth: 2, lineCap: .round, lineJoin: .round, miterLimit: 1)
+        let shadowPath = path.copy(strokingWithWidth: 2, lineCap: .round, lineJoin: .round, miterLimit: 1)
+        for (s, r) in zip(strips, rects) {
+            s.clip.frame = r
+            // The old whole-window geometry, shifted so this strip's window is the part that shows.
+            let whole = CGRect(x: -r.minX, y: -r.minY, width: b.width, height: b.height)
+            s.ring.frame = whole
+            s.glow.frame = whole
+            s.ringMask.frame = CGRect(origin: .zero, size: b.size)
+            s.gradient.bounds = CGRect(x: 0, y: 0, width: d, height: d)
+            s.gradient.position = CGPoint(x: b.midX, y: b.midY)
+            s.ringMask.path = path
+            s.glow.path = path
+            s.glow.shadowPath = shadowPath
+        }
         CATransaction.commit()
     }
 
@@ -542,26 +571,32 @@ final class NeonBorderView: NSView {
         case "idle", "terminal": colors = [h("--cyan"), h("--idle-deep"), h("--violet"), h("--cyan")]; spin = 9; glowHex = h("--cyan")
         default: colors = [h("--dim2"), h("--ended-deep"), h("--dim2")]; spin = 0; glowHex = h("--dim2")
         }
-        gradient.colors = colors.map { NSColor(hex: $0).cgColor }
-        gradient.removeAnimation(forKey: "spin")
-        if spin > 0 {
-            let a = CABasicAnimation(keyPath: "transform.rotation.z")
-            a.fromValue = 0
-            a.toValue = -2 * Double.pi
-            a.duration = spin
-            a.repeatCount = .infinity
-            gradient.add(a, forKey: "spin")
+        // One start time for all four strips, so the spin and the pulse stay in step and the seams stay invisible.
+        let start = CACurrentMediaTime()
+        for s in strips {
+            s.gradient.colors = colors.map { NSColor(hex: $0).cgColor }
+            s.gradient.removeAnimation(forKey: "spin")
+            if spin > 0 {
+                let a = CABasicAnimation(keyPath: "transform.rotation.z")
+                a.fromValue = 0
+                a.toValue = -2 * Double.pi
+                a.duration = spin
+                a.repeatCount = .infinity
+                a.beginTime = s.gradient.convertTime(start, from: nil)
+                s.gradient.add(a, forKey: "spin")
+            }
+            s.glow.strokeColor = NSColor(hex: glowHex, alpha: 0.5).cgColor
+            s.glow.shadowColor = NSColor(hex: glowHex).cgColor
+            s.glow.removeAnimation(forKey: "pulse")
+            let p = CABasicAnimation(keyPath: "shadowOpacity")
+            p.fromValue = 0.2
+            p.toValue = 0.95
+            p.duration = 1.6
+            p.autoreverses = true
+            p.repeatCount = .infinity
+            p.beginTime = s.glow.convertTime(start, from: nil)
+            s.glow.add(p, forKey: "pulse")
         }
-        glow.strokeColor = NSColor(hex: glowHex, alpha: 0.5).cgColor
-        glow.shadowColor = NSColor(hex: glowHex).cgColor
-        glow.removeAnimation(forKey: "pulse")
-        let p = CABasicAnimation(keyPath: "shadowOpacity")
-        p.fromValue = 0.2
-        p.toValue = 0.95
-        p.duration = 1.6
-        p.autoreverses = true
-        p.repeatCount = .infinity
-        glow.add(p, forKey: "pulse")
     }
 
     /// The theme changed: the same status in its colours.
@@ -1152,6 +1187,7 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
             w.collectionBehavior = [.fullScreenAuxiliary, .moveToActiveSpace]
             if let parent = manager?.window, parent.isVisible { parent.addChildWindow(w, ordered: .above) }
         }
+        manager?.dashboardVisibilityChanged()
     }
 
     // MARK: tiling (Fn+Control+arrows, like macOS)
@@ -1748,6 +1784,7 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
         steppedAside = true
         w.parent?.removeChildWindow(w)
         w.orderOut(nil)
+        manager?.dashboardVisibilityChanged()
     }
 
     func stepBack() {
@@ -1756,6 +1793,7 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
         guard isShown else { return }
         if hud.attached, let parent = manager?.window, parent.isVisible { parent.addChildWindow(w, ordered: .above) }
         w.orderFront(nil)
+        manager?.dashboardVisibilityChanged()
     }
 
     /// `confirm` false: asked already (a dashboard card's red button).

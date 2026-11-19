@@ -705,10 +705,10 @@ function applyModes() {
 }
 // What the user can see decides the work: the app reports whether the dashboard is visible and in front;
 // a hidden page pauses CSS animations and the 3D view.
-function setVisibility(visible, focused) {
+function setVisibility(visible, focused, covered) {
   document.documentElement.classList.toggle('paused', !visible);
   document.documentElement.classList.toggle('behind', visible && !focused);
-  map('activity', visible, focused);
+  map('activity', visible, focused, covered);
 }
 // Power save (the app decides and keeps it: PowerSaver.swift, the Windows app's power.js): the switch at the map's top
 // right, on when the map draws fewer and smaller frames, with why when it came on by itself (a low battery, the

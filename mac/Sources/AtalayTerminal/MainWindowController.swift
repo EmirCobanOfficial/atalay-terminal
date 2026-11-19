@@ -720,6 +720,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         for name in windowNames {
             nc.addObserver(self, selector: #selector(dashboardVisibilityChanged), name: name, object: window)
         }
+        // A full-screen chat covers the map even though it is see-through, so any window's move, resize, minimize or close
+        // may change whether the dashboard is covered (the handler is cheap and only pushes when the answer changes).
+        let anyWindowNames: [Notification.Name] = [NSWindow.didResizeNotification, NSWindow.didMoveNotification,
+                                                   NSWindow.didMiniaturizeNotification, NSWindow.didDeminiaturizeNotification,
+                                                   NSWindow.willCloseNotification, NSWindow.didBecomeKeyNotification,
+                                                   NSWindow.didChangeOcclusionStateNotification]
+        for name in anyWindowNames {
+            nc.addObserver(self, selector: #selector(dashboardVisibilityChanged), name: name, object: nil)
+        }
         let appNames: [Notification.Name] = [NSApplication.didHideNotification, NSApplication.didUnhideNotification,
                                              NSApplication.didBecomeActiveNotification, NSApplication.didResignActiveNotification]
         for name in appNames {
@@ -727,14 +736,27 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
-    @objc private func dashboardVisibilityChanged() {
+    @objc func dashboardVisibilityChanged() {
         guard let w = window else { return }
         let visible = w.isVisible && w.occlusionState.contains(.visible) && !w.isMiniaturized && !NSApp.isHidden
         let focused = visible && NSApp.isActive
-        let state = "\(visible),\(focused)"
+        let covered = visible && chatCoversDashboard(w)
+        let state = "\(visible),\(focused),\(covered)"
         guard state != lastVisibility else { return }
         lastVisibility = state
-        radar.webView.evaluateJavaScript("window.__radar && window.__radar.visibility && window.__radar.visibility(\(visible), \(focused)); true", completionHandler: nil)
+        radar.webView.evaluateJavaScript("window.__radar && window.__radar.visibility && window.__radar.visibility(\(visible), \(focused), \(covered)); true", completionHandler: nil)
+    }
+
+    /// A shown chat window over at least 95% of the dashboard hides the map for practical purposes, though the window is
+    /// see-through and occlusionState still says visible; the map then draws at its behind rate.
+    private func chatCoversDashboard(_ dash: NSWindow) -> Bool {
+        let area = dash.frame.width * dash.frame.height
+        guard area > 0 else { return false }
+        return chats.values.contains { c in
+            guard let cw = c.window, cw.parent === dash, cw.isVisible, !cw.isMiniaturized, cw.alphaValue > 0.05 else { return false }
+            let i = cw.frame.intersection(dash.frame)
+            return !i.isNull && i.width * i.height >= 0.95 * area
+        }
     }
 
     /// In power save the map draws fewer and smaller frames (PowerSaver); the switch on the map and Settings show it.
@@ -1245,6 +1267,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         c.endPanes()
         c.window?.parent?.removeChildWindow(c.window!)
         c.window?.orderOut(nil)
+        dashboardVisibilityChanged()
         if activeTerminalWindow == id { activeTerminalWindow = activeChat?.id }
         syncShells()
         pushWinOpen()
@@ -1261,6 +1284,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     func chatVisibilityChanged() {
         if let id = activeTerminalWindow, chats[id]?.isShown != true { activeTerminalWindow = activeChat?.id }
+        dashboardVisibilityChanged()
         pushWinOpen()
         pushActiveSession()
         Mascot.shared.pushTerminalsNow()

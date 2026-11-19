@@ -153,9 +153,10 @@ const QUALITY = {
 // What the app reports through activity() and power(); a hidden page also stops on its own, and so does a map whose box
 // is gone (shown: Source Control's view, git-mode, and the activity bar's views, cloud-mode, put #mapwrap out of the
 // layout; Settings is a window over the dashboard and leaves it there).
-const ACT = { visible: true, focused: true, saver: false, until: 0, shown: true };
+// `covered`: a chat window over the dashboard hides the map, see-through or not, so the map has no use for 60 fps then.
+const ACT = { visible: true, focused: true, saver: false, covered: false, until: 0, shown: true };
 function wantDpr() {
-  const d = !ACT.saver || ACT.focused ? QUALITY.front.dpr : QUALITY.behind.dpr;
+  const d = (!ACT.saver || ACT.focused) && !ACT.covered ? QUALITY.front.dpr : QUALITY.behind.dpr;
   return Math.min(d, ACT.saver ? QUALITY.saver.dpr : d, window.devicePixelRatio || 1);
 }
 // Sharper at once; less sharp only once it has stayed that way a moment, so a menu or a click through a chat window
@@ -1862,7 +1863,7 @@ function wake() {
 }
 function targetFps(now) {
   if (press || camAnim) return QUALITY.front.fps;
-  const fps = ACT.focused || now < ACT.until ? QUALITY.front.fps : QUALITY.behind.fps;
+  const fps = (ACT.focused && !ACT.covered) || now < ACT.until ? QUALITY.front.fps : QUALITY.behind.fps;
   return ACT.saver ? Math.min(fps, QUALITY.saver.fps) : fps;
 }
 document.addEventListener('visibilitychange', wake);
@@ -1955,9 +1956,10 @@ function frame(now) {
 wake();
 
 // ---------- API for app.js ----------
-function activity(visible, focused) {
+function activity(visible, focused, covered) {
   ACT.visible = visible;
   ACT.focused = focused;
+  ACT.covered = !!covered;
   if (visible && pendingFollow) followBox(pendingFollow);
   applyQuality();
   wake();
