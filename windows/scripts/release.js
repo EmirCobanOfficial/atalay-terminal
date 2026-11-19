@@ -7,7 +7,8 @@
 //   latest.yml                          what the installed copies read (the version, the installer's SHA-512, the notes)
 //   Atalays-Terminal-Setup-<v>.exe      what they download, with its .blockmap (the next update downloads only the
 //                                       parts that changed); the version before stays for that, older ones go
-//   Atalays-Terminal-Setup.exe          the same installer under a name that's always the newest, for new users' links
+//   Orbiterm-Setup.exe                  the same installer under a name that's always the newest, for new users' links
+//   Atalays-Terminal-Setup.exe          the same again under the old name, so links shared before the rename keep working
 //
 //   npm run release -- "what changed" ["what else"]     notes: one line per change
 //   npm run release -- --dry-run                        builds, then only shows what would go up
@@ -31,7 +32,8 @@ const args = process.argv.slice(2);
 const dry = args.includes('--dry-run');
 const only = args.includes('--build-only');
 const notes = args.filter((a) => a !== '--dry-run' && a !== '--build-only').map((a) => a.trim()).filter(Boolean).join('\n');
-const STABLE = 'Atalays-Terminal-Setup.exe';
+const STABLE = 'Orbiterm-Setup.exe';
+const STABLE_OLD = 'Atalays-Terminal-Setup.exe';
 
 function fail(msg) {
   console.error(`release: ${msg}`);
@@ -215,6 +217,7 @@ async function freshKey(keyFile, token) {
     [exe, exe],
     [`${exe}.blockmap`, `${exe}.blockmap`],
     [exe, STABLE],
+    [exe, STABLE_OLD],
     ['latest.yml', 'latest.yml'],
   ];
 

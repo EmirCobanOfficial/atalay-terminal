@@ -44,7 +44,7 @@ Installed copies look for updates every minute (and on waking or unlocking the P
 electron-updater only when it names a newer version, so a release shows within a minute of going out. It's a pre-release, so it never becomes the repo's latest, the Mac's `.dmg` link keeps working, and a newer
 Mac release can't hide the Windows files. An update downloads by itself and goes in when the app quits, or right away
 when nothing would be stopped by a restart and the PC has been left alone for 10 minutes (or "right away" is on in
-Settings). New users download `Atalays-Terminal-Setup.exe` from that release; it's always the newest.
+Settings). New users download `Orbiterm-Setup.exe` from that release (also there under the old name, `Atalays-Terminal-Setup.exe`); it's always the newest.
 
 A release, on the Windows PC:
 

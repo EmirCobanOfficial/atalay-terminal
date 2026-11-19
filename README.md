@@ -11,9 +11,11 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/atalaykarahan/orbiterm-releases/releases/latest/download/Atalays-Terminal.dmg"><b>⬇&nbsp; Download for macOS</b></a>
+  <a href="https://orbiterm.dev/"><b>orbiterm.dev</b></a>
   &nbsp;·&nbsp;
-  <a href="https://github.com/atalaykarahan/orbiterm-releases/releases/download/windows/Atalays-Terminal-Setup.exe"><b>⬇&nbsp; Download for Windows</b></a>
+  <a href="https://github.com/atalaykarahan/orbiterm-releases/releases/latest/download/Orbiterm.dmg"><b>⬇&nbsp; Download for macOS</b></a>
+  &nbsp;·&nbsp;
+  <a href="https://github.com/atalaykarahan/orbiterm-releases/releases/download/windows/Orbiterm-Setup.exe"><b>⬇&nbsp; Download for Windows</b></a>
   &nbsp;·&nbsp;
   <a href="https://github.com/atalaykarahan/orbiterm-releases">Install notes and screenshots</a>
 </p>
