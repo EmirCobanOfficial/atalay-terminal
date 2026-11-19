@@ -47,7 +47,10 @@ Works with Claude Code, Codex and Antigravity; not affiliated with Anthropic, Op
 
 - The dashboard reads Claude Code's own files on your Mac (`~/.claude`: the session list and transcripts), and Codex's
   and Antigravity's own logs (`~/.codex/sessions`, `~/.gemini/antigravity-cli`), read only.
-  None of it leaves your Mac: no prompts, no code, no transcripts, no file names, no token counts.
+  None of it leaves your Mac: no prompts, no code, no transcripts, no file names. The one exception is your token
+  counts (how many tokens each AI and model used per day, never what was in them), which the app sends to show the
+  Tokens leaderboard. To keep your name off that board, turn off "Show my name on the Tokens board" in Settings
+  (you then show as Anonymous; your total still counts).
 - The app talks to its server only for the social parts, feedback and updates: your hacker name and tag, the app and
   macOS version, whether you're working each minute (for XP) and your time zone, your friends, requests, messages and
   status, the leaderboard, and the feedback you send (kept with your name#tag and the time, no e-mail).
