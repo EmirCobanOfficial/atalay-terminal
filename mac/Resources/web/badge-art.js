@@ -98,7 +98,7 @@ window.BadgeArt = (() => {
   let cat = null;
   try { cat = JSON.parse(localStorage.getItem(KEY) || 'null'); } catch { cat = null; }
   let loading = null;
-  /** Asks the API for the catalog again (a badge it didn't know of came in); resolves once it's here (or failed). */
+  /** Asks the API for the catalog again (a badge it didn't know of came in, or was drawn); resolves once it's here (or failed). */
   function refresh() {
     const h = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.cloud;
     if (!h) return Promise.resolve();
@@ -144,7 +144,17 @@ window.BadgeArt = (() => {
     size = cleanSize(size);
     const pic = src(id, tier);
     if (pic) return img(pic, tier, size);
+    ask(id);
     return draw(id, tier, size);
+  }
+  // A badge this page's catalog doesn't name: one that came out after the page opened (the catalog is fetched when it
+  // opens, and the window stays open all day), seen on a profile or in a list. Asked for again, at most once a minute;
+  // the coin drawn meanwhile turns into its picture when the catalog is here (upgrade).
+  let askedAt = 0;
+  function ask(id) {
+    if (known(id) || Date.now() - askedAt < 60_000) return;
+    askedAt = Date.now();
+    setTimeout(refresh, 0);
   }
   // An attribute's value, escaped (src() already lets only the bucket's own addresses through).
   const attr = (s) => String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
