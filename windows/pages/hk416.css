@@ -1,0 +1,71 @@
+/* HK-416 styling for the Windows terminal. */
+@container style(--theme-id: hk416) {
+  body:has(> #hud) {
+    font-family: 'JetBrains Mono', 'Cascadia Code', 'SF Mono', Consolas, monospace;
+  }
+
+  #hud {
+    height: 34px;
+    border-bottom: 1px solid var(--accent);
+    box-shadow: inset 0 -2px 0 rgba(var(--accent-rgb), 0.45), 0 2px 10px rgba(0, 0, 0, 0.6);
+    background:
+      repeating-linear-gradient(90deg, transparent 0 36px, rgba(0, 0, 0, 0.22) 36px 39px, transparent 39px 45px),
+      linear-gradient(180deg, #32353a, #1d1f23 55%, #131417);
+  }
+
+  #hud::before {
+    content: '416';
+    padding-right: 10px;
+    border-right: 1px solid rgba(255, 255, 255, 0.12);
+    color: var(--accent);
+    font: 700 14px/1 'JetBrains Mono', 'Cascadia Code', 'SF Mono', Consolas, monospace;
+    letter-spacing: 0.12em;
+    text-shadow: 0 0 8px rgba(var(--accent-rgb), 0.7);
+  }
+
+  #hud #title {
+    color: #f3f5f7;
+    font-family: inherit;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+  }
+
+  #hud #status {
+    text-shadow: 0 1px 0 rgba(0, 0, 0, 0.7);
+  }
+
+  #hud #where {
+    color: #cbd1d6;
+    text-shadow: 0 1px 0 rgba(0, 0, 0, 0.6);
+  }
+
+  #hud button {
+    border-color: rgba(var(--accent-rgb), 0.6);
+    border-radius: 2px;
+    background: rgba(18, 19, 21, 0.7);
+    color: var(--accent);
+    font-family: inherit;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+
+  #hud button:hover {
+    background: rgba(var(--accent-rgb), 0.16);
+    color: #edf0f2;
+  }
+
+  /* HK-416 watermark in bottom right */
+  body:has(> #hud)::after {
+    content: 'HK-416 // 5.56 NATO';
+    position: fixed;
+    right: 14px;
+    bottom: 6px;
+    z-index: 10;
+    color: rgba(var(--accent-rgb), 0.25);
+    font: 700 9px/1 'JetBrains Mono', 'Cascadia Code', 'SF Mono', Consolas, monospace;
+    letter-spacing: 0.2em;
+    pointer-events: none;
+  }
+}
