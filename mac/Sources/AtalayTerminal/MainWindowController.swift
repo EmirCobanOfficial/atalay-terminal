@@ -1465,6 +1465,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 "id": c.id,
                 "sid": c.sessionId ?? "",
                 "wn": tw.windowNumber,
+                // Pinned: above every app's windows, so not in Mascot's window list (layer 0 only).
+                "floating": tw.level.rawValue > NSWindow.Level.normal.rawValue && tw.isOnActiveSpace,
                 "x": Int((tf.minX - df.minX).rounded()),
                 "y": Int((df.maxY - tf.maxY).rounded()),
                 "w": Int(tf.width.rounded()),

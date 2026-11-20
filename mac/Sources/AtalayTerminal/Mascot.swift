@@ -768,8 +768,14 @@ final class Mascot: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
         decisionHandler(url.standardizedFileURL.path == ours ? .allow : .cancel)
     }
 
-    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+    /// Her page says 'ready' once window.__mascot exists. Not at didFinish: WebKit finishes the document before its module
+    /// script has run, so everything sent then went nowhere (the Mischief level, her page then stayed at its own Crazy;
+    /// the screen and its neighbours; her first drop) and the lists sent were taken for delivered.
+    private func pageReady() {
         loaded = true
+        // A new page (also one that started over after a crash) has none of the lists yet.
+        lastTerminalsJSON = ""
+        lastPlatformsJSON = ""
         sendEvent(["type": "mischief", "level": mischief])
         sendScreenInfo()
         syncActive()
@@ -804,6 +810,8 @@ final class Mascot: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
         // Her actions on the app (views, taps, closing terminals) stop the moment she is switched off or hidden.
         if ["openView", "navTap", "closeTerminal", "hideTerminal"].contains(type), !Self.isEnabled || !shown { return }
         switch type {
+        case "ready":
+            pageReady()
         case "loadFailed":
             // The page couldn't read her download (mascot.js): the file goes, the UI offers Try again.
             MascotAsset.shared.loadFailed()
@@ -920,10 +928,18 @@ final class Mascot: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
     func pushTerminalsNow() {
         guard Self.isEnabled, loaded, shown, let panel else { return }
         var list: [[String: Any]] = []
-        if dashboardOnThisScreen(), let doff = dashboardOffset(), let coff = cgToPanelOffset(),
+        // Terminal windows count on any screen and with the dashboard minimized (a pinned one stays up): their frames are
+        // dashboard-relative only as a reference, and the window list says whether each is on screen.
+        if let doff = dashboardOffset(), let coff = cgToPanelOffset(),
            let snapshots = manager?.mascotTerminalSnapshots() {
             let dashOcc = occluders(inFrontOf: dashboard?.windowNumber, off: coff)
+            // Her X press parks the keyboard on the dashboard first (mascotParkKey): not while it is minimized or hidden.
+            let canPark = !NSApp.isHidden && dashboard?.isVisible == true && dashboard?.isMiniaturized == false
             for var t in snapshots {
+                if !canPark {
+                    t["canClose"] = false
+                    for k in ["cx", "cy", "cw", "ch"] { t.removeValue(forKey: k) }
+                }
                 guard let x = (t["x"] as? NSNumber)?.doubleValue,
                       let y = (t["y"] as? NSNumber)?.doubleValue,
                       let w = (t["w"] as? NSNumber)?.doubleValue else { continue }
@@ -933,7 +949,9 @@ final class Mascot: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
                 guard mid >= 0, mid <= Double(panel.frame.width), py >= -40, py <= Double(panel.frame.height) else { continue }
                 // The terminal's own window, else the dashboard's: the windows of other apps in front of it hide its title bar.
                 let wn = (t["wn"] as? NSNumber)?.intValue
-                guard let occ = occluders(inFrontOf: wn, off: coff) ?? dashOcc else { continue }
+                // A pinned terminal floats over every other app: nothing covers its title bar.
+                let floating = (t.removeValue(forKey: "floating") as? Bool) == true
+                guard let occ = occluders(inFrontOf: wn, off: coff) ?? (floating ? [] : dashOcc) else { continue }
                 let segs = visibleSegments(px, px + w, y: py + 6, occ: occ)
                 guard let best = segs.max(by: { $0.1 - $0.0 < $1.1 - $1.0 }), best.1 - best.0 >= 60 else { continue }
                 t["x"] = Int(best.0.rounded())
