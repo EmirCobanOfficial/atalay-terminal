@@ -256,7 +256,7 @@ enum McpBridge {
         let notOpen = "Orbiterm isn't open, or Claude access is turned off. Open Orbiterm and turn it on in Settings > Claude."
         guard let token = KeyFile.load(McpPaths.tokenName).flatMap({ String(data: $0, encoding: .utf8) }),
               var addr = Sock.address(McpPaths.socket) else { return (false, notOpen) }
-        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+        let fd = Sessions.cloexec(socket(AF_UNIX, SOCK_STREAM, 0))
         guard fd >= 0 else { return (false, notOpen) }
         defer { close(fd) }
         Sock.timeout(fd, seconds: 40)
@@ -339,7 +339,7 @@ final class McpServer: @unchecked Sendable {
         KeyFile.save(McpPaths.tokenName, Data(raw.map { String(format: "%02x", $0) }.joined().utf8))
         unlink(McpPaths.socket)
         guard var addr = Sock.address(McpPaths.socket) else { return false }
-        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+        let fd = Sessions.cloexec(socket(AF_UNIX, SOCK_STREAM, 0))
         guard fd >= 0 else { return false }
         // The folder is 0700, so nobody else gets to the socket meanwhile; no process-wide umask change.
         let bound = withUnsafePointer(to: &addr) { p in
@@ -364,7 +364,7 @@ final class McpServer: @unchecked Sendable {
         while lock.withLock({ generation == mine }) {
             var p = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
             if poll(&p, 1, 300) <= 0 { continue }
-            let c = Darwin.accept(fd, nil, nil)
+            let c = Sessions.cloexec(Darwin.accept(fd, nil, nil))
             if c < 0 { continue }
             DispatchQueue.global(qos: .userInitiated).async { [self] in serve(c) }
         }

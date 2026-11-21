@@ -1418,7 +1418,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         let name = Detached.prefix + UUID().uuidString.lowercased()
         // The window opens at this size, so the shell (and Claude) start at it, not at a default they would redraw from.
         let content = frame ?? nextChatFrame()
-        _ = Sessions.start(name: name, cwd: cwd, claudeArgs: claudeArgs, fontSize: fontSize, ai: Self.resuming(claudeArgs), size: content.size)
+        _ = Sessions.start(name: name, cwd: cwd, claudeArgs: claudeArgs, fontSize: fontSize, ai: Self.resuming(claudeArgs),
+                           size: ChatWindowController.terminalSize(forContent: content.size))
         let c = openWindow(cwd: cwd, claudeArgs: claudeArgs, sessionId: sessionId, title: title, detached: DetachedLink(name: name), frame: frame,
                            contentFrame: content)
         c.origin = origin
@@ -1764,14 +1765,19 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func inspect(_ s: PtySession, shell: Int32) -> SessionRun {
-        let b = briefs.values.first { $0.live && $0.status != "ended" && ChatWindowController.isUnder($0.pid, shell: shell) }
+        // The session's own AI is the one nearest its shell: a Codex that Claude runs through its Bash tool is under the same
+        // shell, further down.
+        let b = nearestBrief(under: shell)
         if let b {
+            var found: (tool: String, id: String)?
             if !b.id.hasPrefix("ai:") {
-                s.ai = ("claude", b.id)
+                found = ("claude", b.id)
             } else if let conv = b.convId {
-                if b.name == "Codex" { s.ai = ("codex", conv) }
-                if b.name == "Antigravity" { s.ai = ("agy", conv) }
+                if b.name == "Codex" { found = ("codex", conv) }
+                if b.name == "Antigravity" { found = ("agy", conv) }
             }
+            // A nested AI of another tool never replaces the one the session runs while that one still runs.
+            if let found, !(s.ai.map { $0.tool != found.tool && Self.toolRuns($0.tool, under: shell) } ?? false) { s.ai = found }
         }
         if let a = s.ai {
             if Self.toolRuns(a.tool, under: shell) {
@@ -1784,10 +1790,35 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
         let aiRuns = ChatWindowController.runsAgent(shell)
         var job: String?
-        if !aiRuns, let group = Proc.foregroundGroup(shell), group != shell, !Proc.isClaude(group), Proc.otherAI(group) == nil {
-            job = Proc.arguments(group).map(Self.commandLabel) ?? Proc.name(group) ?? "a command"
+        if !aiRuns {
+            if let group = Proc.foregroundGroup(shell), group != shell, !Proc.isClaude(group), Proc.otherAI(group) == nil {
+                job = Proc.arguments(group).map(Self.commandLabel) ?? Proc.name(group) ?? "a command"
+            } else if let child = Proc.children(of: shell).first(where: { pid in
+                // A background job (`npm run dev &`): a direct child that isn't a shell (a prompt's helper subshell) or an AI.
+                guard let name = Proc.name(pid) else { return false }
+                return !["zsh", "bash", "fish", "sh", "ksh", "tcsh", "csh"].contains(name) && !Proc.isClaude(pid) && Proc.otherAI(pid) == nil
+            }) {
+                job = Proc.arguments(child).map(Self.commandLabel) ?? Proc.name(child) ?? "a command"
+            }
         }
         return SessionRun(ai: s.ai, aiRuns: aiRuns, brief: b, job: job)
+    }
+
+    /// The live AI brief nearest `shell` (the shortest parent chain from its process to the shell).
+    private func nearestBrief(under shell: Int32) -> SessionBrief? {
+        var best: (brief: SessionBrief, distance: Int)?
+        for b in briefs.values where b.live && b.status != "ended" {
+            guard var pid = b.pid else { continue }
+            for distance in 0..<8 {
+                if pid == shell {
+                    if best == nil || distance < best!.distance { best = (b, distance) }
+                    break
+                }
+                guard let parent = Proc.parent(pid), parent > 1 else { break }
+                pid = parent
+            }
+        }
+        return best?.brief
     }
 
     /// Whether a process of `tool` ("claude", "codex", "agy") runs under `shell`.

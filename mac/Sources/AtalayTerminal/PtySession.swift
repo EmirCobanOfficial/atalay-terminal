@@ -157,6 +157,14 @@ enum Sessions {
         return session
     }
 
+    /// Marks one descriptor close-on-exec the moment it is made (a socket, an accepted connection), so a shell started by
+    /// another thread in between never inherits it. Returns `fd`.
+    @discardableResult
+    nonisolated static func cloexec(_ fd: Int32) -> Int32 {
+        if fd >= 0 { _ = fcntl(fd, F_SETFD, fcntl(fd, F_GETFD) | FD_CLOEXEC) }
+        return fd
+    }
+
     /// Every descriptor the app has open (from 3 up) closes when a process is started. SwiftTerm's child does a bare fork and
     /// exec, and the pty masters and the app's sockets (the MCP listener…) aren't close-on-exec: without this, each new shell
     /// and everything it starts (Claude, a daemon) would hold the masters of every earlier session, which then never hang

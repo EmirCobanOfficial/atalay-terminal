@@ -949,6 +949,8 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
             terminal = TerminalFactory.makeIdle(chatId: id, fontSize: fontSize, delegate: self)
             onPty = true
             unavailable = true
+            // Not linked to the session either: ending this dead window must not end what the other window shows.
+            self.detached = nil
         } else if detached != nil {
             terminal = TerminalFactory.makeIdle(chatId: id, fontSize: fontSize, delegate: self)
         } else {
@@ -1158,6 +1160,12 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
             streamVeil.leadingAnchor.constraint(equalTo: paneArea.leadingAnchor),
             streamVeil.trailingAnchor.constraint(equalTo: paneArea.trailingAnchor),
         ])
+    }
+
+    /// The terminal's size in a window whose content is `content`: what buildLayout leaves of it between the header (62 pt and
+    /// 6 below it), the footer ticker (26 pt and 4 above it) and the sides (14 pt left, 6 right). Keep in step with buildLayout.
+    static func terminalSize(forContent content: NSSize) -> NSSize {
+        NSSize(width: max(0, content.width - 20), height: max(0, content.height - 98))
     }
 
     private static func lineCount(_ text: String) -> Int {

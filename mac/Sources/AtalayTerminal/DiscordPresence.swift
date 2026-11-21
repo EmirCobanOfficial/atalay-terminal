@@ -213,7 +213,7 @@ final class DiscordPresence {
                     buf.copyBytes(from: bytes)
                     buf[bytes.count] = 0
                 }
-                let s = socket(AF_UNIX, SOCK_STREAM, 0)
+                let s = Sessions.cloexec(socket(AF_UNIX, SOCK_STREAM, 0))
                 guard s >= 0 else { continue }
                 // Discord gone mid-write is an error to handle, not a SIGPIPE that ends the app.
                 var on: Int32 = 1
