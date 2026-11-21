@@ -74,6 +74,8 @@ enum Updater {
         case noKey, download(Int), badSignature, badBundle, cancelled
         /// The folder holding the app can't be written to (or macOS privacy settings refused it).
         case notWritable
+        /// The download went past `Download.limit`, or the server said it would: no release comes near that.
+        case tooLarge
 
         /// Short code the dashboard page turns into a message.
         var code: String { if case .notWritable = self { return "not_writable" }; return "failed" }
@@ -87,7 +89,9 @@ enum Updater {
         guard let url = URL(string: release.url) else { throw Failure.download(0) }
         let file = try await Download(onProgress: { f in Task { @MainActor in fraction(f) } }).run(url)
         defer { try? FileManager.default.removeItem(at: file) }
-        let data = try Data(contentsOf: file)
+        // Mapped rather than read in: the signature covers the whole zip, so the check needs all of it at once, and this
+        // way its pages come from the file as the checks reach them instead of all being copied into memory first.
+        let data = try Data(contentsOf: file, options: .alwaysMapped)
         let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
         guard digest == release.sha256, let signature = Data(base64Encoded: release.signature),
               key.isValidSignature(signature, for: data) else { throw Failure.badSignature }
@@ -165,6 +169,10 @@ enum Updater {
 /// The update's zip, telling how much of it has come as it comes (URLSession's own download says nothing until the end,
 /// and a long one looked frozen). Done once: one task in its own session.
 private final class Download: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
+    /// The most it takes, in bytes: about ten times a real release's zip (some 20 MB). The link comes from the API, and
+    /// the signature check only runs once the whole file is here, so without a cap a bad link could fill the disk first.
+    static let limit: Int64 = 200 << 20
+
     private let onProgress: @Sendable (Double) -> Void
     private var continuation: CheckedContinuation<URL, Error>?
     private let lock = NSLock()
@@ -182,12 +190,20 @@ private final class Download: NSObject, URLSessionDownloadDelegate, @unchecked S
 
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData _: Int64,
                     totalBytesWritten written: Int64, totalBytesExpectedToWrite total: Int64) {
+        // Past the cap, or announced as bigger than it (the size is -1 when the server gives none): stop here. It fails
+        // as any other download does, and the cancelled task's own error then finds the wait already over.
+        guard written <= Download.limit, total <= Download.limit else {
+            finish(.failure(Updater.Failure.tooLarge))
+            return downloadTask.cancel()
+        }
         if total > 0 { onProgress(min(1, Double(written) / Double(total))) }
     }
 
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
         let status = (downloadTask.response as? HTTPURLResponse)?.statusCode ?? 0
         guard status == 200 else { return finish(.failure(Updater.Failure.download(status))) }
+        // Progress comes now and then, so the last bytes may not have passed the check above.
+        guard downloadTask.countOfBytesReceived <= Download.limit else { return finish(.failure(Updater.Failure.tooLarge)) }
         // The file is gone once this returns: keep it.
         let kept = FileManager.default.temporaryDirectory.appendingPathComponent("atalay-terminal-update-\(UUID().uuidString).zip")
         do {
