@@ -114,6 +114,9 @@ enum Updater {
         return Staged(build: release.build, version: release.version, url: staged)
     }
 
+    /// True while an update's restart quits the app: the detached sessions stay for the new build (AppDelegate).
+    nonisolated(unsafe) static var relaunching = false
+
     /// Once this process has quit: swap the bundles (back to the old one if that fails), drop the download quarantine
     /// and, with `relaunch`, start the new build. With `relaunch` the app quits now; without, it's the user's quit.
     /// The new build goes in under its own name (CFBundleName: "Orbiterm.app", where "Atalay's Terminal.app" was),
@@ -140,6 +143,9 @@ enum Updater {
         swap.arguments = ["-c", script, "swap", staged.url.path, current.path, dest.path]
         try swap.run()
         guard relaunch else { return }
+        // An update's restart keeps the detached sessions running (the new build adopts them); only a real quit ends them.
+        relaunching = true
+        defer { relaunching = false }
         NSApp.terminate(nil)
         // Still here: quitting was cancelled (chats running outside detached sessions). Keep the current build.
         swap.terminate()

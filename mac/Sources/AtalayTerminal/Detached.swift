@@ -12,8 +12,10 @@ enum Detached {
         guard let id = Bundle.main.bundleIdentifier else { return "atld-" }
         guard id.hasSuffix(".staging") else { return "atl-" }
         // Staging only: a demo recording runs a second set of sessions apart from the usual ones
-        // (ATALAY_SESSION_PREFIX=atdm-, with CLAUDE_CONFIG_DIR pointing at demo data).
-        if let p = ProcessInfo.processInfo.environment["ATALAY_SESSION_PREFIX"], p.count > 1, p.hasSuffix("-") { return p }
+        // (ATALAY_SESSION_PREFIX=atdm-, with CLAUDE_CONFIG_DIR pointing at demo data). Never one that matches another
+        // build's sessions ("atl-", "atl-x-"): quitting ends every session of this prefix.
+        if let p = ProcessInfo.processInfo.environment["ATALAY_SESSION_PREFIX"], p.count > 1, p.hasSuffix("-"),
+           !allPrefixes.contains(where: { p.hasPrefix($0) || $0.hasPrefix(p) }) { return p }
         return "atls-"
     }()
 
@@ -182,6 +184,79 @@ enum Detached {
     private static func hangUp(_ pid: Int32) {
         for child in Proc.children(of: pid) { hangUp(child) }
         kill(pid, SIGHUP)
+    }
+
+    // MARK: quit closes everything
+
+    /// Screen daemons of this build's sessions (`prefix`), current user's only.
+    static func ownedDaemons(prefix: String = Detached.prefix) -> [(pid: Int32, name: String)] {
+        let me = getuid()
+        return Proc.all().compactMap { pid in
+            guard Proc.name(pid) == "screen", Proc.info(pid)?.uid == me, let args = Proc.arguments(pid),
+                  let i = args.firstIndex(of: "-dmS"), i + 1 < args.count, args[i + 1].hasPrefix(prefix) else { return nil }
+            return (pid, args[i + 1])
+        }
+    }
+
+    /// The app quits for good: every session of this build ends with everything running in it. Each session's whole
+    /// process tree gets TERM, after about 3 s in all what is left gets KILL (with whatever the tree started meanwhile),
+    /// then screen closes the session and this build's dead sockets are wiped. Blocks (call it off the main thread).
+    /// Only processes seen as descendants of a session's screen get a signal, each by pid and start time: never a
+    /// process group (a group can hold processes that left the tree, e.g. `nohup … &` from a subshell, now under
+    /// launchd, and a dead leader's group id can be taken by an unrelated process), nor another build's sessions.
+    static func quitAll(prefix: String = Detached.prefix) {
+        let me = getuid()
+        typealias P = (pid: Int32, started: UInt64)
+        var sessions: [(name: String, tree: [P])] = []
+        for d in ownedDaemons(prefix: prefix) {
+            var tree: [P] = []
+            collectOwned(d.pid, uid: me, into: &tree)
+            sessions.append((d.name, tree))
+        }
+        guard !sessions.isEmpty else { return }
+        var all = sessions.flatMap { $0.tree }
+        let alive = { (list: [P]) in list.filter { t in Proc.info(t.pid)?.started == t.started } }
+        for t in alive(all) { kill(t.pid, SIGTERM) }
+        let deadline = Date().addingTimeInterval(3)
+        while !alive(all).isEmpty, Date() < deadline { Thread.sleep(forTimeInterval: 0.1) }
+        // What a process that is still alive (so still the one seen) started during the wait is in the tree too.
+        var left = alive(all)
+        let known = Set(left.map(\.pid))
+        var spawned: [P] = []
+        for t in left { for child in Proc.children(of: t.pid) where !known.contains(child) { collectOwned(child, uid: me, into: &spawned) } }
+        left += spawned
+        all += spawned
+        for t in alive(left) { kill(t.pid, SIGKILL) }
+        for s in sessions {
+            runScreen(["-S", s.name, "-X", "quit"])
+            // The session is gone, so its kept scrollback has nothing to attach to.
+            forgetHistory(s.name)
+        }
+        // Only this build's: a match makes screen take an unreachable session of that name as dead, and leaves the rest.
+        runScreen(["-wipe", prefix])
+        NSLog("Orbiterm: quit closed %d sessions (%@), %d processes, %d needed KILL", sessions.count,
+              sessions.map { "\($0.name):\($0.tree.count)" }.joined(separator: " "), all.count, left.count)
+    }
+
+    /// Runs screen with `args`, waiting at most `timeout` seconds for it (a session that doesn't answer never holds up
+    /// the quit).
+    private static func runScreen(_ args: [String], timeout: TimeInterval = 2) {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: screen)
+        p.arguments = args
+        p.standardOutput = FileHandle.nullDevice
+        p.standardError = FileHandle.nullDevice
+        guard (try? p.run()) != nil else { return }
+        let deadline = Date().addingTimeInterval(timeout)
+        while p.isRunning, Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
+        if p.isRunning { p.terminate() }
+    }
+
+    /// A process and its descendants owned by `uid`, deepest first (login(1) runs as root and is skipped, its children
+    /// are still walked).
+    private static func collectOwned(_ pid: Int32, uid: uid_t, into tree: inout [(pid: Int32, started: UInt64)]) {
+        for child in Proc.children(of: pid) { collectOwned(child, uid: uid, into: &tree) }
+        if let info = Proc.info(pid), info.uid == uid { tree.append((pid, info.started)) }
     }
 
     // MARK: processes (libproc, no `ps`)

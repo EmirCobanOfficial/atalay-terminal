@@ -85,11 +85,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        let running = controller?.runningChatCount ?? 0
-        if running > 0, !Cloud.shared.overdueForcedUpdate {
+        // An update's restart keeps the sessions; any other quit closes all of them.
+        let closeAll = !Updater.relaunching && Detached.available
+        let total = (controller?.runningChatCount ?? 0) + (closeAll ? Detached.ownedDaemons().count : 0)
+        if total > 0, !Cloud.shared.overdueForcedUpdate {
             let a = NSAlert()
-            a.messageText = running == 1 ? "1 chat is still running" : "\(running) chats are still running"
-            a.informativeText = "Quitting stops Claude in those windows, including hidden ones. The conversations stay saved and can be resumed."
+            a.messageText = total == 1 ? "1 terminal is still running" : "\(total) terminals are still running"
+            a.informativeText = closeAll
+                ? "Quitting closes every terminal and everything running in it: chats, panes, plain terminals and their programs, including hidden ones. Conversations stay saved and can be resumed."
+                : "Quitting stops Claude in those windows, including hidden ones. The conversations stay saved and can be resumed."
             a.alertStyle = .warning
             a.addButton(withTitle: "Quit")
             a.addButton(withTitle: "Cancel")
@@ -99,7 +103,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let controller else { return .terminateNow }
         controller.flushFiles {
             controller.terminateAll()
-            NSApp.reply(toApplicationShouldTerminate: true)
+            guard closeAll else { return NSApp.reply(toApplicationShouldTerminate: true) }
+            // The reply goes through the run loop, like flushFiles' `done`: a quit asked for from a main-queue job waits
+            // in a run loop nested in that job, where the main queue runs nothing. A block queued from another thread
+            // waits for the run loop's next wake-up, so it is woken.
+            DispatchQueue.global(qos: .userInitiated).async {
+                Detached.quitAll()
+                RunLoop.main.perform(inModes: [.common]) { MainActor.assumeIsolated { NSApp.reply(toApplicationShouldTerminate: true) } }
+                CFRunLoopWakeUp(CFRunLoopGetMain())
+            }
         }
         return .terminateLater
     }
