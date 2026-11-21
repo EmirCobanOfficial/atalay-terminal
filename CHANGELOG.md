@@ -3,6 +3,13 @@
 Each version's lines are its release notes: the app lists them on its "what's new" screen
 (`app/scripts/release.sh <version> "<one line per change>"`).
 
+## Next
+
+- Themes: Fazil416HK, a tactical HUD in titanium and reticle crimson. Thanks to @fazilmemmedzade on GitHub, Fazil416HK#9019 in the app (PR #42)
+- Themes: Emir, a profiler's timeline in graphite and bone. Thanks to @EmirCobanOfficial on GitHub, EmirMac#7124 in the app (PR #47)
+- Viktoria: the Mischief level you pick applies, terminals count while the dashboard is minimized, she no longer walks up through the air, and she sleeps at 10 fps. Thanks to @EmirCobanOfficial on GitHub, EmirMac#7124 in the app (PR #43)
+- Since 0.26.0 the orbit map draws far less behind another app or a full view like Source Control (about 52% of a core down to 29%, and 43% down to 13%). Thanks to @EmirCobanOfficial on GitHub, EmirMac#7124 in the app (PRs #37 and #38, missed in 0.26.0's notes)
+
 ## 0.26.0
 
 - The four-finger menu is called the Ring now, and a folder renamed in Finder no longer freezes it
