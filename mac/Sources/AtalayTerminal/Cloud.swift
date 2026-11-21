@@ -96,6 +96,8 @@ final class Cloud {
         /// Why the API refused a name picked offline ("name_full", …), for the page to show once.
         var nameError: String?
         var xp: XP?
+        /// Settings → Privacy, "share my token counts": off, this Mac sends the API no token counts at all (sendUsage).
+        var shareTokens = UserDefaults.standard.object(forKey: "shareTokens") as? Bool ?? true
     }
 
     /// What became of a name the user picked.
@@ -293,13 +295,18 @@ final class Cloud {
     private var usageAt = Date.distantPast
     private var sendingUsage = false
     private func sendUsage(_ token: String) async {
-        guard !sendingUsage, Date().timeIntervalSince(usageAt) >= 290 else { return }
+        // Settings → Privacy, "share my token counts" off: none go out, nor the past days the first read found. The days
+        // stay marked as changed in the ledger, so turning it on again sends them as before.
+        guard state.shareTokens, !sendingUsage, Date().timeIntervalSince(usageAt) >= 290 else { return }
         sendingUsage = true
         defer { sendingUsage = false }
         usageAt = Date()
         struct Answer: Decodable { let stored: Int; let rejected: [Int]? }
         for _ in 0..<8 {
             guard let batch = await TokenLedger.shared.batch() else { return }
+            // Asked again right before each call: making a batch can take minutes the first time, and the switch may
+            // have been turned off meanwhile.
+            guard state.shareTokens else { return }
             do {
                 let a: Answer = try await call("POST", "v1/usage", body: ["source": batch.source, "days": batch.rows], token: token)
                 if let r = a.rejected, !r.isEmpty { NSLog("Orbiterm: the API left out %d token rows of %d", r.count, batch.rows.count) }
@@ -310,6 +317,13 @@ final class Cloud {
                 return
             }
         }
+    }
+
+    /// Settings → Privacy, "share my token counts" (the "cloud" handler's shareTokens), kept on this Mac. On again, the
+    /// next heartbeat sends what changed meanwhile.
+    func setShareTokens(_ on: Bool) {
+        UserDefaults.standard.set(on, forKey: "shareTokens")
+        state.shareTokens = on
     }
 
     private func identify() async {
@@ -780,6 +794,7 @@ extension Cloud {
             "updateReady": s.updateReady, "updateRightAway": s.updateRightAway, "checking": s.checking,
             "checkedAt": s.checkedAt.map { $0.timeIntervalSince1970 * 1000 } ?? NSNull(), "xpPaused": s.xpPaused,
             "xp": s.xp.flatMap { try? JSONSerialization.jsonObject(with: JSONEncoder().encode($0)) } ?? NSNull(),
+            "shareTokens": s.shareTokens,
         ]
     }
 }
@@ -868,6 +883,10 @@ final class CloudBridge: NSObject, WKScriptMessageHandlerWithReply {
             case "deleteAccount":
                 let error = await cloud.deleteAccount(reason: body["reason"] as? String, text: body["text"] as? String)
                 replyHandler(["error": error.map { $0 as Any } ?? NSNull(), "state": cloud.json], nil)
+            // Settings → Privacy, "share my token counts": kept on this Mac, asked before every call that sends them.
+            case "shareTokens":
+                cloud.setShareTokens(body["on"] as? Bool ?? false)
+                replyHandler(cloud.json, nil)
             // The terminals' text size, for Settings sync: read it, or set one from another computer.
             case "terminalFont":
                 guard let main = MainWindowController.shared else { return replyHandler(nil, nil) }

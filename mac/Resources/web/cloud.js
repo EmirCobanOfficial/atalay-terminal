@@ -640,6 +640,7 @@ window.Cloud = (() => {
     q('.hk-sw.brd').onclick = toggleBoard;
     q('.hk-sw.tkn').onclick = () => toggleTokens('tokensName');
     q('.hk-sw.tkd').onclick = () => toggleTokens('tokensDetail');
+    q('.hk-sw.tks').onclick = toggleShareTokens;
     window.Community?.mountSettings(q('.mn-settings'));
     window.Account?.mount(q('.acct-host'));
     window.Account?.mountDanger?.(q('.danger-host'));
@@ -1408,6 +1409,13 @@ window.Cloud = (() => {
       sw.setAttribute('aria-checked', String(on));
       sw.disabled = !S.xp;
     }
+    // Sharing the token counts is kept by the app, not the API: it can be changed signed out and offline too.
+    const tks = q('.hk-sw.tks');
+    if (tks) {
+      const on = S.shareTokens !== false;
+      tks.classList.toggle('on', on);
+      tks.setAttribute('aria-checked', String(on));
+    }
   }
 
   // Settings · POWER: power save on by itself at low battery, as the Mac app keeps it (app.js setPowerSave).
@@ -1467,6 +1475,18 @@ window.Cloud = (() => {
     toast(key === 'tokensName'
       ? (show ? 'your name shows on the Tokens board again' : "you're Anonymous on the Tokens board · only you see your name there")
       : (show ? 'friends can see which AI and model you use again' : 'only your total shows now · nobody sees which AI or model'));
+  }
+
+  // Settings · whether this computer sends its token counts at all (Cloud.swift's setShareTokens, the Windows app's
+  // cloud.js). Off: none go out, nor the past days not sent yet; on again, what changed meanwhile goes out as before.
+  async function toggleShareTokens() {
+    const on = S.shareTokens === false;
+    const s = await call('shareTokens', { on }).catch(() => null);
+    if (!s) return toast("couldn't change it · try again");
+    // Only this setting from the answer: the Windows app answers without its updates' state, which its push brings.
+    S.shareTokens = s.shareTokens !== false;
+    renderActivity();
+    toast(on ? 'your token counts go to the Tokens board again' : `no token counts leave this ${MACHINE} now · what was sent stays on the board`);
   }
 
   // ---------- the leaderboard: two panes under one floating glass bar (ranking + the week day by day) ----------

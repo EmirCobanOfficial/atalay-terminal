@@ -228,7 +228,8 @@ function createCloud(opts = {}) {
   };
 
   // What the Mac app keeps in UserDefaults, under the same names: the last known name, tag and XP (an offline launch
-  // shows them), a name picked offline, "install updates right away" and a machine ID of its own when there's none.
+  // shows them), a name picked offline, "install updates right away", "share my token counts" and a machine ID of its
+  // own when there's none.
   const settingsFile = path.join(dataDir, 'cloud.json');
   let settings = {};
   try {
@@ -280,6 +281,8 @@ function createCloud(opts = {}) {
     nameError: null,
     // Your level and active time as the API counts them (api/src/xp.ts); the pages show them as they are.
     xp: settings.xp && typeof settings.xp === 'object' ? settings.xp : null,
+    // Settings → Privacy, "share my token counts": off, this PC sends the API no token counts at all (sendUsage).
+    shareTokens: settings.shareTokens !== false,
   };
   let running = false;
 
@@ -292,6 +295,7 @@ function createCloud(opts = {}) {
       update: null, updating: null, updateError: null, nameError: S.nameError,
       updateReady: false, updateRightAway: S.updateRightAway, checking: S.checking, checkedAt: S.checkedAt,
       xpPaused: S.xpPaused, xp: S.xp,
+      shareTokens: S.shareTokens,
     };
   }
 
@@ -396,13 +400,18 @@ function createCloud(opts = {}) {
   let sendingUsage = false;
   async function sendUsage(token) {
     const tokens = opts.tokens;
-    if (!tokens || sendingUsage || Date.now() - usageAt < 290_000) return;
+    // Settings → Privacy, "share my token counts" off: none go out, nor the past days the first read found. The days stay
+    // marked as changed in the ledger, so turning it on again sends them as before.
+    if (!tokens || !S.shareTokens || sendingUsage || Date.now() - usageAt < 290_000) return;
     sendingUsage = true;
     usageAt = Date.now();
     try {
       for (let i = 0; i < 8; i++) {
         const batch = await tokens.batch();
         if (!batch) return;
+        // Asked again right before each call: making a batch can take minutes the first time, and the switch may have
+        // been turned off meanwhile.
+        if (!S.shareTokens) return;
         try {
           const a = await call('POST', 'v1/usage', { source: batch.source, days: batch.rows }, token);
           if (Array.isArray(a.rejected) && a.rejected.length) console.warn(`cloud: the API left out ${a.rejected.length} token rows of ${batch.rows.length}`);
@@ -415,6 +424,13 @@ function createCloud(opts = {}) {
     } finally {
       sendingUsage = false;
     }
+  }
+
+  // Settings → Privacy, "share my token counts" (the "cloud" handler's shareTokens), kept on this PC. On again, the next
+  // heartbeat sends what changed meanwhile.
+  function setShareTokens(on) {
+    save({ shareTokens: on });
+    set({ shareTokens: on });
   }
 
   async function identify() {
@@ -930,6 +946,10 @@ function createCloud(opts = {}) {
         return { error: await signOut(), state: json() };
       case 'deleteAccount':
         return { error: await deleteAccount(b.reason, b.text), state: json() };
+      // Settings → Privacy, "share my token counts": kept on this PC, asked before every call that sends them.
+      case 'shareTokens':
+        setShareTokens(b.on === true);
+        return json();
       default:
         throw new Error('unknown message');
     }

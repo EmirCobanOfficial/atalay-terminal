@@ -159,6 +159,9 @@ window.Settings = (() => {
       group('friends and leaderboard',
         row('show my active time to friends', 'today, this week and in total · your level shows either way', sw('act', 'Show my active time to friends', true)) +
         row('show my name on the leaderboard', 'off: you show as Anonymous, and nobody can add you from there', sw('brd', 'Show my name on the leaderboard', true)) +
+        // Kept by the app on this computer, not by the API (Cloud.swift, the Windows app's cloud.js): off, no token counts
+        // leave it at all. The two under it are about how the counts it sent show on the board.
+        row('share my token counts for the Tokens board', `how many tokens each AI, model and effort used a day, never what was in them · off: none leave this ${MACHINE}, and what was sent stays`, sw('tks', 'Share my token counts for the Tokens board', true)) +
         row('show my name on the Tokens board', 'off: Anonymous on the Tokens board only · your total still counts', sw('tkn', 'Show my name on the Tokens board', true)) +
         row('let friends see which AI and model I use', 'opening your row on the Tokens board · off: only your total shows, to everyone', sw('tkd', 'Let friends see which AI and model I use', true))) +
       (c.notesai
