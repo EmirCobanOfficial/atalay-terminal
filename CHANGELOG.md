@@ -5,6 +5,7 @@ Each version's lines are its release notes: the app lists them on its "what's ne
 
 ## Next
 
+- Security fix: Source Control no longer runs the commands a folder's own git settings name (an fsmonitor, a filter, a textconv), so a downloaded folder that a terminal is in can't start them, on the Mac and Windows. Found by @EmirCobanOfficial on GitHub, EmirMac#7124 in the app
 - Themes: Fazil416HK, a tactical HUD in titanium and reticle crimson. Thanks to @fazilmemmedzade on GitHub, Fazil416HK#9019 in the app (PR #42)
 - Themes: Emir, a profiler's timeline in graphite and bone. Thanks to @EmirCobanOfficial on GitHub, EmirMac#7124 in the app (PR #47)
 - Viktoria: the Mischief level you pick applies, terminals count while the dashboard is minimized, she no longer walks up through the air, and she sleeps at 10 fps. Thanks to @EmirCobanOfficial on GitHub, EmirMac#7124 in the app (PR #43)

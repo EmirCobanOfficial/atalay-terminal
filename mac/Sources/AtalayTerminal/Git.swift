@@ -112,6 +112,8 @@ enum Git {
     private static var roots: [String: (root: String?, at: Double)] = [:]
     /// The page asks every few seconds; the repos are looked at again after two.
     private static var cache: (at: Double, repos: [[String: Any]]) = (0, [])
+    /// Folder -> the settings its reads run with (readGuards), asked again after ten seconds.
+    private static var guards: [String: (args: [String], at: Double)] = [:]
 
     /// The repos Source Control last listed: the ones its Open File may open a file in (FileEditor.swift).
     static func listedRoots() -> [String] {
@@ -138,10 +140,12 @@ enum Git {
     private final class Output: @unchecked Sendable { var data = Data() }
 
     /// Runs git in `dir`; nil if it couldn't start. A run longer than `timeout` is stopped.
+    /// Never the folder's own fsmonitor: a repo's config can name any command as core.fsmonitor, and every status would
+    /// run it, so a folder from a zip or a download would run it as soon as a terminal is in it.
     private static func exec(_ dir: String, _ args: [String], timeout: Double, locks: Bool) -> (status: Int32, out: Data, err: Data)? {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: executable)
-        p.arguments = ["-C", dir] + args
+        p.arguments = ["-C", dir, "-c", "core.fsmonitor=false"] + args
         var env = environment
         // Reads don't take the index lock (VS Code's way): the page asking every few seconds mustn't get in the way of
         // a git command Claude or the user runs at the same time.
@@ -165,9 +169,36 @@ enum Git {
         return (p.terminationReason == .exit ? p.terminationStatus : -1, data, errors.data)
     }
 
+    /// Reads run none of the commands a repo's own config (or a file it includes) names for a filter driver: the
+    /// background status and diffs would run a filter's clean on every changed file, unasked. Each such driver of the
+    /// repo's own config gets an empty clean, smudge and process, so its files are compared as they are; the user's
+    /// global and system drivers (Git LFS) stay, as do changes (stage, commit), which the user asked for. Reads show no
+    /// signatures either (gpg.program is the repo's to name), and a diff or blame is shown without textconv
+    /// (--no-textconv: a diff driver's textconv is a command too).
+    private static func readGuards(_ dir: String) -> [String] {
+        let now = nowMs()
+        lock.lock()
+        let hit = guards[dir]
+        lock.unlock()
+        if let hit, now - hit.at < 10_000 { return hit.args }
+        var args = ["-c", "log.showSignature=false"]
+        if let r = exec(dir, ["config", "--show-scope", "--includes", "--name-only", "--get-regexp", "^filter\\..+\\.(clean|smudge|process)$"],
+                        timeout: 6, locks: false), r.status == 0 {
+            for line in String(decoding: r.out, as: UTF8.self).split(separator: "\n") {
+                let f = line.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: "\t", maxSplits: 1).map(String.init)
+                if f.count == 2, f[0] == "local" || f[0] == "worktree" { args += ["-c", f[1] + "="] }
+            }
+        }
+        lock.lock()
+        if guards.count > 500 { guards.removeAll() }
+        guards[dir] = (args, now)
+        lock.unlock()
+        return args
+    }
+
     /// What git printed, or nil when it failed (or printed more than `max`).
     private static func read(_ dir: String, _ args: [String], max: Int = 8 << 20) -> String? {
-        guard let r = exec(dir, args, timeout: 6, locks: false), r.status == 0, r.out.count <= max else { return nil }
+        guard let r = exec(dir, readGuards(dir) + args, timeout: 6, locks: false), r.status == 0, r.out.count <= max else { return nil }
         return String(decoding: r.out, as: UTF8.self)
     }
 
@@ -320,10 +351,10 @@ enum Git {
         guard let abs = inside(root, file) else { return ["error": "outside the repo"] }
         if !commit.isEmpty {
             guard isHash(commit) else { return ["error": "bad commit"] }
-            let shown = read(root, ["show", "--first-parent", "-m", "--no-color", "--no-ext-diff", "-U1000000", "--pretty=format:", commit, "--", file], max: 32 << 20)
+            let shown = read(root, ["show", "--first-parent", "-m", "--no-color", "--no-ext-diff", "--no-textconv", "-U1000000", "--pretty=format:", commit, "--", file], max: 32 << 20)
             return shown.map { $0.isEmpty ? ["abs": abs, "note": "no differences"] : ["diff": $0, "abs": abs] } ?? ["abs": abs, "note": "no differences"]
         }
-        let out = read(root, ["diff"] + (staged ? ["--cached"] : []) + ["--no-color", "--no-ext-diff", "-U1000000", "--", file], max: 32 << 20)
+        let out = read(root, ["diff"] + (staged ? ["--cached"] : []) + ["--no-color", "--no-ext-diff", "--no-textconv", "-U1000000", "--", file], max: 32 << 20)
         if let out, !out.isEmpty { return ["diff": out, "abs": abs] }
         // Untracked: the whole file is new.
         guard let size = (try? FileManager.default.attributesOfItem(atPath: abs))?[.size] as? Int else {
@@ -371,7 +402,7 @@ enum Git {
     /// Who last changed a line, and when and why (GitLens's line blame): in the working tree, or as of a commit.
     private static func blame(_ root: String, _ file: String, line: Int, commit: String) -> [String: Any] {
         guard inside(root, file) != nil, line > 0 else { return ["error": "bad line"] }
-        let out = read(root, ["blame", "--porcelain", "-L", "\(line),\(line)"] + (commit.isEmpty ? [] : [commit]) + ["--", file]) ?? ""
+        let out = read(root, ["blame", "--no-textconv", "--porcelain", "-L", "\(line),\(line)"] + (commit.isEmpty ? [] : [commit]) + ["--", file]) ?? ""
         var info: [String: Any] = [:]
         for (i, l) in out.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
             if i == 0 { info["hash"] = String(l.split(separator: " ").first ?? "") }
