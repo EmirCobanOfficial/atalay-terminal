@@ -14,6 +14,9 @@ enum KeyFile {
 
     static func load(_ name: String) -> Data? { try? Data(contentsOf: url(name)) }
 
+    /// Deleted for good (the old message keys, once nothing is left that they open: Unseal). True when it was there.
+    static func remove(_ name: String) -> Bool { unlink(url(name).path) == 0 }
+
     /// Written whole or not at all (a file beside it, moved onto its name), and never readable by anyone else on the
     /// way. With `fresh`, only when there's none yet: two copies of the app starting at once keep one key, not two.
     @discardableResult

@@ -664,7 +664,8 @@ function createCloud(opts = {}) {
   // ---------- the messages sealed end to end before (unseal.js, the Mac's Unseal.swift) ----------
   // Messages are encrypted on the server now. The keys the old versions kept sit in a file of the app's folder sealed by
   // Windows for this user, one per API as the token is; unseal.js reads them and hands the server what it needs to open
-  // the old messages. Nothing is ever written to that file.
+  // the old messages. Nothing is ever written to that file; once the server has no sealed message of this account left,
+  // unseal.js has it deleted, so the old keys stop existing.
   const vaultFile = path.join(dataDir, `e2ee-vault-${host}${base.port ? `-${base.port}` : ''}`);
   const unseal =
     opts.protect && typeof opts.protect.open === 'function'
@@ -679,6 +680,9 @@ function createCloud(opts = {}) {
               throw e;
             }
             return opts.protect.open(sealed);
+          },
+          dropVault() {
+            fs.rmSync(vaultFile, { force: true });
           },
         })
       : null;

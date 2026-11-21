@@ -5,12 +5,15 @@ import Foundation
 /// so every computer shows the whole history, but the server can't open the ones sealed before. A Mac that still has the
 /// keys Orbiterm 0.21 and 0.22 kept (their file, KeyFile "messages-<api>") opens what it can and hands the server each
 /// message's own key; the server checks that the key opens the message exactly as it was sealed and keeps it like any
-/// other message (api/src/social.ts /v1/messages/unseal). Read only: nothing here makes, sends or changes an account
-/// key, and the key file stays as it is. What nobody can open shows as "🔒 older encrypted message".
+/// other message (api/src/social.ts /v1/messages/unseal). Nothing here makes, sends or changes an account key, and the
+/// key file is only read until nothing is left for it to open: then it's deleted, so the old keys stop existing
+/// (`done`). What nobody can open shows as "🔒 older encrypted message".
 @MainActor
 enum Unseal {
     /// The parts of 0.22's key file (its E2EEVault) read here.
     private struct Vault: Decodable {
+        /// The account whose keys it held, as 0.22 last saw it.
+        var account: String?
         var devicePriv: Data?
         var seeds: [String: Data]?
     }
@@ -22,12 +25,13 @@ enum Unseal {
 
     /// The live line (re)connected: a pass, only with a key file, and at most every half hour once one went through.
     static func run() {
+        let file = "messages-" + Cloud.shared.apiName
         guard !running, passedAt.map({ Date().timeIntervalSince($0) > 1800 }) ?? true,
-              let data = KeyFile.load("messages-" + Cloud.shared.apiName),
+              let data = KeyFile.load(file),
               let vault = try? JSONDecoder().decode(Vault.self, from: data) else { return }
         running = true
         Task { @MainActor in
-            if await pass(vault) { passedAt = Date() }
+            if await pass(vault, file: file) { passedAt = Date() }
             running = false
         }
     }
@@ -37,14 +41,23 @@ enum Unseal {
         return r?["error"] == nil ? r : nil
     }
 
-    /// Every sealed message of this account's conversations, 200 at a time; true once it went through them all.
-    private static func pass(_ vault: Vault) async -> Bool {
+    /// Every sealed message of this account's conversations, 200 at a time; true once it went through them all. A page
+    /// that doesn't move `after` on would come back the same at once, and so would every one after it: that, or 500
+    /// pages (100,000 messages, far more than were ever sealed), ends the pass as not gone through.
+    private static func pass(_ vault: Vault, file: String) async -> Bool {
         var seeds = vault.seeds ?? [:]
-        if let me = await call("GET", "v1/e2ee/me") { unlock(me, devicePriv: vault.devicePriv, seeds: &seeds) }
-        guard !seeds.isEmpty else { return true }
+        let me = await call("GET", "v1/e2ee/me")
+        if let me { unlock(me, devicePriv: vault.devicePriv, seeds: &seeds) }
+        // Whether every sealed message met opened here and the server took its key, in a file that's this account's.
+        var clean = me.map { ours(vault, $0) } ?? false
+        guard !seeds.isEmpty else {
+            await done(clean, file: file)
+            return true
+        }
         var after = 0
-        while true {
+        for _ in 0 ..< 500 {
             guard let page = await call("GET", "v1/messages/sealed?after=\(after)") else { return false }
+            let was = after
             var xs: [String: Data] = [:]
             for k in page["keys"] as? [[String: Any]] ?? [] {
                 guard let kid = k["kid"] as? String, let x = (k["x"] as? String).flatMap({ Data(base64Encoded: $0) }),
@@ -53,21 +66,52 @@ enum Unseal {
             }
             var keys: [[String: Any]] = []
             for m in page["messages"] as? [[String: Any]] ?? [] {
-                guard let id = m["id"] as? Int else { continue }
+                guard let id = m["id"] as? Int else { clean = false; continue }
                 after = max(after, id)
-                guard !skip.contains(id) else { continue }
+                guard !skip.contains(id) else { clean = false; continue }
                 if let key = messageKey(m, seeds: seeds, xs: xs) {
                     keys.append(["id": id, "key": key.base64EncodedString()])
                 } else {
                     skip.insert(id)
+                    clean = false
                 }
             }
             for i in stride(from: 0, to: keys.count, by: 100) {
                 guard let r = await call("POST", "v1/messages/unseal", ["keys": Array(keys[i ..< min(i + 100, keys.count)])]) else { return false }
-                for id in r["failed"] as? [Int] ?? [] { skip.insert(id) }
+                for id in r["failed"] as? [Int] ?? [] {
+                    skip.insert(id)
+                    clean = false
+                }
             }
-            if page["more"] as? Bool != true { return true }
+            if page["more"] as? Bool != true {
+                await done(clean, file: file)
+                return true
+            }
+            if after == was { return false }
         }
+        return false
+    }
+
+    /// After a pass that opened every sealed message it met, each key taken by the server: once the server, asked again,
+    /// has none left in this account's conversations, the key file is deleted, so the old keys stop existing. None can
+    /// come after: the API has turned down every sealed message since 2026-11-15 (`stale_key`) and makes no keys, and a
+    /// merge brings an account's sealed messages along with its keys.
+    private static func done(_ clean: Bool, file: String) async {
+        guard clean, let left = await call("GET", "v1/messages/sealed?after=0"),
+              (left["messages"] as? [Any])?.isEmpty == true, left["more"] as? Bool != true else { return }
+        if KeyFile.remove(file) { NSLog("Orbiterm: no sealed message is left, so the old message keys were deleted") }
+    }
+
+    /// Whether all the key file holds is this account's: it was the file of this account, or of one merged into it (whose
+    /// keys came along), and each key in it is one of the account's. A file 0.22 left from another account (this Mac
+    /// signed out since, and 0.23 doesn't clear it) may still open that account's messages, so it stays.
+    private static func ours(_ vault: Vault, _ me: [String: Any]) -> Bool {
+        let keys = me["keys"] as? [[String: Any]] ?? []
+        let kids = Set(keys.compactMap { $0["kid"] as? String })
+        var accounts = Set(keys.compactMap { $0["account"] as? String })
+        if let a = me["account"] as? String { accounts.insert(a) }
+        guard let account = vault.account, accounts.contains(account) else { return false }
+        return (vault.seeds ?? [:]).allSatisfy { kids.contains($0.key) && kidOf(seed: $0.value) == $0.key }
     }
 
     /// A message's own key, as 0.22 sealed it (E2EECrypto.sealMessage): the conversation's key from this account's key

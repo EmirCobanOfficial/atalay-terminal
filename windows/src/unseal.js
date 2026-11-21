@@ -4,8 +4,9 @@
 // every computer shows the whole history, but the server can't open the ones sealed before. A PC that still has the keys
 // the old versions kept (the vault file, sealed by Windows for this user) opens what it can and hands the server each
 // message's own key; the server checks that the key opens the message exactly as it was sealed and keeps it like any
-// other message (api/src/social.ts /v1/messages/unseal). Read only: nothing here makes, sends or changes an account key,
-// and the vault file stays as it is. What nobody can open shows as "older encrypted message". Ports the Mac's Unseal.swift.
+// other message (api/src/social.ts /v1/messages/unseal). Nothing here makes, sends or changes an account key, and the
+// vault file is only read until nothing is left for it to open: then it's deleted, so the old keys stop existing (`done`).
+// What nobody can open shows as "older encrypted message". Ports the Mac's Unseal.swift.
 
 const crypto = require('node:crypto');
 
@@ -147,10 +148,24 @@ function unlock(me, devicePriv, seeds) {
   }
 }
 
+// Whether all the vault file holds is this account's (GET /v1/e2ee/me): it was the file of this account, or of one merged
+// into it (whose keys came along), and each key in it is one of the account's. A file the old version left from another
+// account (this PC signed out since, and nothing clears it now) may still open that account's messages, so it stays.
+function ours(vault, me) {
+  const keys = list(me.keys);
+  const kids = new Set(keys.map((k) => k.kid).filter((kid) => typeof kid === 'string'));
+  const accounts = new Set(keys.map((k) => k.account).filter((a) => typeof a === 'string'));
+  if (typeof me.account === 'string') accounts.add(me.account);
+  if (typeof vault.account !== 'string' || !accounts.has(vault.account)) return false;
+  if (vault.seeds != null && !isObj(vault.seeds)) return false;
+  return Object.entries(vault.seeds || {}).every(([kid, v]) => kids.has(kid) && kidOfSeed(unb64(v)) === kid);
+}
+
 // Options:
 // - social(method, path, body): cloud.js's call to the API; an answer with `error` is a failure
 // - loadVault(): async, the vault file's text (sealed by Windows, opened), or null when there's no file
-function createUnseal({ social, loadVault }) {
+// - dropVault(): deletes the vault file (may be async), once nothing is left for its keys to open
+function createUnseal({ social, loadVault, dropVault }) {
   let running = false;
   let passedAt = 0;
   // Messages that didn't open (here, or on the server): not tried again until the app starts again.
@@ -165,7 +180,25 @@ function createUnseal({ social, loadVault }) {
     }
   };
 
-  // Every sealed message of this account's conversations, 200 at a time; true once it went through them all.
+  // After a pass that opened every sealed message it met, each key taken by the server: once the server, asked again, has
+  // none left in this account's conversations, the vault file is deleted, so the old keys stop existing. None can come
+  // after: the API has turned down every sealed message since 2026-11-15 (`stale_key`) and makes no keys, and a merge
+  // brings an account's sealed messages along with its keys.
+  async function done(clean) {
+    if (!clean) return;
+    const left = await call('GET', 'v1/messages/sealed?after=0');
+    if (!left || !Array.isArray(left.messages) || left.messages.length || left.more === true) return;
+    try {
+      await dropVault();
+      console.log('unseal: no sealed message is left, so the old message keys were deleted');
+    } catch (e) {
+      console.error('unseal: deleting the old message keys', e);
+    }
+  }
+
+  // Every sealed message of this account's conversations, 200 at a time; true once it went through them all. A page that
+  // doesn't move `after` on would come back the same at once, and so would every one after it: that, or 500 pages
+  // (100,000 messages, far more than were ever sealed), ends the pass as not gone through.
   async function pass(vault) {
     const seeds = {};
     if (isObj(vault.seeds)) {
@@ -176,11 +209,17 @@ function createUnseal({ social, loadVault }) {
     }
     const me = await call('GET', 'v1/e2ee/me');
     if (me) unlock(me, unb64(vault.devicePriv), seeds);
-    if (!Object.keys(seeds).length) return true;
+    // Whether every sealed message met opened here and the server took its key, in a file that's this account's.
+    let clean = !!me && ours(vault, me);
+    if (!Object.keys(seeds).length) {
+      await done(clean);
+      return true;
+    }
     let after = 0;
-    for (;;) {
+    for (let n = 0; n < 500; n++) {
       const page = await call('GET', `v1/messages/sealed?after=${after}`);
       if (!page) return false;
+      const was = after;
       const xs = {};
       for (const k of list(page.keys)) {
         const x = unb64(k.x);
@@ -190,20 +229,40 @@ function createUnseal({ social, loadVault }) {
       }
       const keys = [];
       for (const m of list(page.messages)) {
-        if (!Number.isInteger(m.id)) continue;
+        if (!Number.isInteger(m.id)) {
+          clean = false;
+          continue;
+        }
         after = Math.max(after, m.id);
-        if (skip.has(m.id)) continue;
+        if (skip.has(m.id)) {
+          clean = false;
+          continue;
+        }
         const key = messageKey(m, seeds, xs);
         if (key) keys.push({ id: m.id, key: key.toString('base64') });
-        else skip.add(m.id);
+        else {
+          skip.add(m.id);
+          clean = false;
+        }
       }
       for (let i = 0; i < keys.length; i += 100) {
         const r = await call('POST', 'v1/messages/unseal', { keys: keys.slice(i, i + 100) });
         if (!r) return false;
-        if (Array.isArray(r.failed)) for (const id of r.failed) if (Number.isInteger(id)) skip.add(id);
+        if (Array.isArray(r.failed)) {
+          for (const id of r.failed) {
+            if (!Number.isInteger(id)) continue;
+            skip.add(id);
+            clean = false;
+          }
+        }
       }
-      if (page.more !== true) return true;
+      if (page.more !== true) {
+        await done(clean);
+        return true;
+      }
+      if (after === was) return false;
     }
+    return false;
   }
 
   // The live line (re)connected: a pass, only with a vault file, and at most every half hour once one went through.
