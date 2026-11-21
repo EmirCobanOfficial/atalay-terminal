@@ -59,9 +59,9 @@ enum NotesTools {
             description: """
             Lists every note in the user's Orbiterm notes app and says where each one is, so you can tell which the user means. \
             Each note has `placement` (where it mainly is: "screen", "terminal" or "dashboard") and `placements` (every place it is in). \
-            "screen" = pinned on the user's screen as a floating note window of its own (the user says: the note on my screen, the pinned note window, the sticky note; keepOnTop=true means it floats above all apps). \
+            "screen" = open on the user's screen as a note window of its own (note_show/note_hide change it) (the user says: the note on my screen, the pinned note window, the sticky note; keepOnTop=true means it floats above all apps). \
             "terminal" = pinned to a terminal session (`pinnedTo` names it; thisTerminal=true marks the note of the terminal you yourself run in, only when you run inside one of Orbiterm's terminals: "this terminal's note"; it is always false for Claude Desktop and other callers outside Orbiterm). \
-            "dashboard" = it is on the dashboard's Notes board, which holds every note; shownInDashboardPanel=true marks the one note shown open in the dashboard's panel ("the note pinned on the dashboard"). \
+            "dashboard" = it is on the dashboard's Notes board, which holds every note; shownInDashboardPanel=true marks the one note shown open in the dashboard's panel ("the note pinned on the dashboard"; note_pin/note_unpin change it). \
             `visible` says whether the note is open on the user's display right now (false = it sits on the board behind, not open anywhere). \
             "My notes on the dashboard" means every note here; "my note on screen" means placement screen; "the pinned note" means shownInDashboardPanel. \
             Notes the user hid from AI are not in the list (only how many are hidden is said) and can't be read or changed. Use `where` to narrow the list. Returns title, last edit, a short preview and a `version` per note; call note_read for the text.
@@ -97,6 +97,29 @@ enum NotesTools {
             description: "Pins a note to the terminal you are running in (or lets go with pinned=false), so the user can say \"this terminal's note\" and you find it again with notes_list where=this_terminal. A terminal has one note: pinning another lets the old one go. Only do it when the user asks.",
             props: ["id": idProp, "pinned": ["type": "boolean", "description": "true to pin (default), false to let go."]],
             required: ["id"], readOnly: false, audience: .inside) { args, caller in guarded(.write, caller) { pinTerminal(args["id"] as? String, args["pinned"] as? Bool ?? true, caller) } },
+        NotesTool(
+            name: "note_create", title: "Open a new note",
+            description: "Creates a new note in the user's Orbiterm notes (\"open a new note\", \"make a note about…\", \"write this down in a new note\"). The title becomes the note's first line (a heading) and its name; text is the Markdown below it (`- [ ] task` makes a to-do). It goes first on the notes board and is not opened anywhere or pinned: use note_pin to show it in the dashboard's notes panel and note_show to put it on the user's screen, only if the user asked. Returns its id and where it is. The user can undo it (Undo on the panel's strip while it is the panel's note, or the trash can). Don't make notes the user didn't ask for.",
+            props: ["title": ["type": "string", "description": "The note's title, one line, at most 80 characters."],
+                    "text": ["type": "string", "description": "The note's Markdown after the title, at most 20000 characters (may be empty)."]],
+            required: ["title"], readOnly: false) { args, caller in guarded(.write, caller) { createNote(args["title"] as? String, args["text"] as? String ?? "", caller) } },
+        NotesTool(
+            name: "note_pin", title: "Pin a note to the dashboard",
+            description: "Pins a note to the user's dashboard: the dashboard's Notes panel shows this note open from now on (\"pin it to my dashboard\", \"show this note on the dashboard\"). Another pinned note is replaced (only one note is pinned; it stays on the board), so use it to change which note is pinned too. This is not a floating window (note_show) nor a terminal's note (note_pin_terminal). The user can undo it with the strip's Undo. Only do it when the user asks.",
+            props: ["id": idProp], required: ["id"], readOnly: false) { args, caller in guarded(.write, caller) { pinDashboard(args["id"] as? String, unpin: false, caller) } },
+        NotesTool(
+            name: "note_unpin", title: "Unpin the dashboard's note",
+            description: "Lets go of the note pinned to the dashboard (\"unpin it\"). The notes panel always shows one note, so it goes back to showing the first note on the notes board; no note is deleted or changed. Only do it when the user asks.",
+            readOnly: false) { _, caller in guarded(.write, caller) { pinDashboard(nil, unpin: true, caller) } },
+        NotesTool(
+            name: "note_show", title: "Put a note on the screen",
+            description: "Opens a note in a window of its own on the user's screen (\"put it on my screen\", \"open the note in a window\", \"show me that note\"). It does not take the keyboard from what the user is doing. keepOnTop=true makes it float above all apps (a sticky note); false lets it ride only above the Orbiterm dashboard; leave it out to keep how that note's window was before. A note already open is brought forward. Close it with note_hide.",
+            props: ["id": idProp, "keepOnTop": ["type": "boolean", "description": "true = float above every app; false = normal window. Omit to keep the window's last setting."]],
+            required: ["id"], readOnly: false) { args, caller in guarded(.write, caller) { windowNote(args["id"] as? String, open: true, args["keepOnTop"] as? Bool, caller) } },
+        NotesTool(
+            name: "note_hide", title: "Close a note's window",
+            description: "Closes the note's window on the user's screen (\"take it off my screen\", \"close the note window\"). The note itself stays on the board with everything in it; if it is pinned to the dashboard it keeps showing in the panel.",
+            props: ["id": idProp], required: ["id"], readOnly: false) { args, caller in guarded(.write, caller) { windowNote(args["id"] as? String, open: false, nil, caller) } },
     ]
 
     // MARK: who may, how much
@@ -110,22 +133,56 @@ enum NotesTools {
         return run()
     }
 
+    /// Claude Desktop / Dispatch (outside Orbiterm) changing notes: false (decided) = the notes' own level (Off / Read / Read and
+    /// edit) alone decides, and Claude access (Settings > Claude) only has to be on. "Watch and type" governs typing into terminals only.
+    static let outsideWritesNeedWatchAndType = false
+
     /// The switches as they are now (nil: allowed). Asked again right before a change lands, so one turned off while the call
-    /// waited for the page stops it.
+    /// waited for the page stops it. Who is asking comes first, then the level; an AI that is who it should be but not allowed
+    /// yet is told to the page (a dot on the notes board's chip), at most once a minute each.
     private static func refusal(_ need: Need, _ caller: NotesCaller) -> String? {
-        let mode = NotesAI.mode
-        guard mode != .off else { return "The user has turned off AI access to their notes in Orbiterm Settings (Privacy)." }
-        if need == .write, mode != .write { return "The user allowed AI to read their notes, not to change them (Orbiterm Settings, Privacy)." }
         if let screen = caller.insideScreen {
             guard screen.hasPrefix(Detached.prefix) else { return "Notes are only for AI sessions running in this Orbiterm's own terminals." }
         } else if caller.hubMode == "off" || McpShared.shared.mode == "off" {
-            // Outside Orbiterm (Claude Desktop, Dispatch): both the Claude access and the notes' switch must be on, asked at every call.
-            return "Claude access is turned off in Orbiterm (Settings, Claude)."
-        } else if need == .write, caller.hubMode != "write" || McpShared.shared.mode != "write" {
-            // And to change a note, the Claude access must be "Watch and type": "Watch only" reads.
-            return "Orbiterm's Claude access is set to 'Watch only', so Claude can read the notes but not change them. The user can switch to 'Watch and type' in Orbiterm > Settings > Claude."
+            // Outside Orbiterm (Claude Desktop, Dispatch): the Claude access must be on and asked at every call.
+            return "Claude Desktop isn't connected to Orbiterm. The user can connect it in Orbiterm: Notes › AI › Claude Desktop."
+        }
+        let mode = NotesAI.mode
+        guard mode != .off else {
+            tellPage(caller, need: .read)
+            return "The user hasn't let AI use their notes. They can allow it in Orbiterm: open Notes and click the AI button at the top (or Settings › Privacy)."
+        }
+        if need == .write, mode != .write {
+            tellPage(caller, need: .write)
+            return "The user lets AI read their notes, not change them. They can choose Read and edit in Orbiterm: Notes › AI."
+        }
+        if need == .write, !caller.inside, outsideWritesNeedWatchAndType, caller.hubMode != "write" || McpShared.shared.mode != "write" {
+            // Only if the switch is turned back on: changing a note from outside then needs "Watch and type" too.
+            return "Orbiterm's Claude access is set to 'Watch only', so Claude can read the notes but not change them. The user can switch it in Orbiterm > Settings > Claude."
         }
         return nil
+    }
+
+    private static let askedLock = NSLock()
+    nonisolated(unsafe) private static var askedAt: [String: Date] = [:]
+
+    /// An AI reached for the notes without being allowed: the board's chip gets a dot (web/notes.js `Notes.aiAsked`).
+    private static func tellPage(_ caller: NotesCaller, need: Need) {
+        let by = ownerAI(caller)
+        askedLock.lock()
+        let now = Date()
+        if let t = askedAt[by], now.timeIntervalSince(t) < 60 {
+            askedLock.unlock()
+            return
+        }
+        askedAt[by] = now
+        askedLock.unlock()
+        let ask: [String: Any] = ["by": by, "need": need == .write ? "write" : "read", "at": now.timeIntervalSince1970 * 1000]
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated {
+                NoteWindow.radar?.callNotes("window.Notes && Notes.aiAsked && Notes.aiAsked(ask); return true", ["ask": ask])
+            }
+        }
     }
 
     // MARK: the page, the one writer
@@ -303,6 +360,88 @@ enum NotesTools {
         let saved = answer["saved"] as? Bool == false ? " It could not be saved to disk yet; the app will retry." : ""
         return (true, wrap("Done (\(op)). The user sees it now and can undo it with ⌘Z or the Undo link on the note's strip.\(saved) \(envelopeNote)",
                            "NOTE: \(clip(redactMore(answer["title"] as? String), 60))\nNEW VERSION: \(answer["version"] as? String ?? "")"))
+    }
+
+    // MARK: creating, pinning, windows (always through the dashboard's page)
+
+    private static func createNote(_ title: String?, _ text: String, _ caller: NotesCaller) -> (ok: Bool, text: String) {
+        guard let title, !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return (false, "title is needed.") }
+        if title.count > 200 || text.count > writeMax { return (false, "That is too long: the title is at most 80 characters and the text at most \(writeMax). Add the rest with note_append.") }
+        if title.contains(mask) || text.contains(mask) { return (false, "The text has the mask ‹•••›: masked secrets can't be written.") }
+        if let why = refusal(.write, caller) { return (false, why) }
+        let req: [String: Any] = ["title": title, "text": text, "by": ownerAI(caller)]
+        guard let answer = page("return await N.agentCreate(req);", ["req": req], timeout: 30) else { return unreachable }
+        let ok = answer["ok"] as? Bool == true
+        NotesAudit.log("note_create", caller, ok: ok, chars: title.count + text.count, note: ok ? "" : (answer["error"] as? String ?? ""))
+        guard ok, let id = answer["id"] as? String else { return (false, answer["message"] as? String ?? "The note couldn't be created.") }
+        let saved = answer["saved"] as? Bool == false ? " It could not be saved to disk yet; the app will retry." : ""
+        return (true, wrap("Created. It is first on the notes board (placement dashboard), not opened or pinned yet.\(saved) The user can undo it. \(envelopeNote)",
+                           "ID: \(id)\nTITLE: \(clip(redactMore(answer["title"] as? String), 80))\nVERSION: \(answer["version"] as? String ?? "")"))
+    }
+
+    private static func pinDashboard(_ id: String?, unpin: Bool, _ caller: NotesCaller) -> (ok: Bool, text: String) {
+        var req: [String: Any] = ["by": ownerAI(caller)]
+        let tool = unpin ? "note_unpin" : "note_pin"
+        if unpin { req["unpin"] = true } else {
+            guard let id, NotesStore.validName(id) else { return (false, "Give a note id from notes_list.") }
+            if hidden().contains(id) { return (false, "No note has this id. Call notes_list again.") }
+            req["id"] = id
+        }
+        if let why = refusal(.write, caller) { return (false, why) }
+        guard let answer = page("return await N.agentPin(req);", ["req": req]) else { return unreachable }
+        let ok = answer["ok"] as? Bool == true
+        NotesAudit.log(tool, caller, ok: ok, chars: 0, note: ok ? "" : (answer["error"] as? String ?? ""))
+        guard ok else {
+            switch answer["error"] as? String {
+            case "busy": return (false, "The user is typing in the dashboard's note right now. Try again in a few seconds.")
+            case "locked": return (false, "The note pinned to the dashboard now is not one you may change, so it stays pinned. The user can pin another note themselves.")
+            default: return (false, "No note has this id. Call notes_list again.")
+            }
+        }
+        // A note the user hid from AI is never named here: the app's own list decides, again.
+        let nid = answer["id"] as? String ?? ""
+        let name = hidden().contains(nid) ? "a note" : clip(redactMore(answer["title"] as? String), 80)
+        if answer["unchanged"] as? Bool == true {
+            return (true, wrap(unpin ? "Nothing to change: the panel already shows the first note on the board. \(envelopeNote)" : "That note is already pinned to the dashboard. \(envelopeNote)", "NOTE: \(name)"))
+        }
+        return (true, wrap(unpin ? "Unpinned: the dashboard's panel now shows the board's first note. The user can undo it. \(envelopeNote)"
+                                 : "Pinned: the dashboard's Notes panel now shows this note (shownInDashboardPanel). The user can undo it. \(envelopeNote)", "NOTE: \(name)"))
+    }
+
+    private static func windowNote(_ id: String?, open: Bool, _ keepOnTop: Bool?, _ caller: NotesCaller) -> (ok: Bool, text: String) {
+        guard let id, NotesStore.validName(id) else { return (false, "Give a note id from notes_list.") }
+        if hidden().contains(id) { return (false, "No note has this id. Call notes_list again.") }
+        if let why = refusal(.write, caller) { return (false, why) }
+        let tool = open ? "note_show" : "note_hide"
+        let busy = (ok: false, text: "The user is typing in that note right now. Try again in a few seconds.")
+        // A window being typed in isn't closed or re-layered under the user's keys: its page waits for a pause (as note_edit does).
+        if !open || keepOnTop != nil, let owner = ownerOf(id) {
+            guard let idle = page("return await N.agentIdle();", [:], owner: owner) else { return unreachable }
+            if idle["ok"] as? Bool != true { return busy }
+        }
+        guard let answer = page("return await N.agentWindow(id, action);", ["id": id, "action": open ? "open" : "close"]) else { return unreachable }
+        guard answer["ok"] as? Bool == true else {
+            let error = answer["error"] as? String ?? ""
+            NotesAudit.log(tool, caller, ok: false, chars: 0, note: error)
+            if error == "busy" { return busy }
+            return (false, error == "unsupported" ? "Note windows aren't available here." : "No note has this id. Call notes_list again.")
+        }
+        // The page checked the note; the window itself is the app's (a note hidden meanwhile is checked once more), and the page
+        // follows when it loads or closes.
+        if hidden().contains(id) { return (false, "No note has this id. Call notes_list again.") }
+        if let why = refusal(.write, caller) { return (false, why) }
+        var wasOpen = false
+        DispatchQueue.main.sync {
+            MainActor.assumeIsolated {
+                wasOpen = NoteWindow.places()[id] != nil
+                if open { NoteWindow.present(id: id, keepOnTop: keepOnTop) } else { NoteWindow.close(id: id, flush: true) }
+            }
+        }
+        NotesAudit.log(tool, caller, ok: true, chars: 0)
+        let name = clip(redactMore(answer["title"] as? String), 80)
+        let said = open ? "Opened on the user's screen without taking the keyboard\(keepOnTop == true ? ", floating above all apps" : "")."
+                        : (wasOpen ? "Closed the note's window; the note stays on the board." : "It had no window open.")
+        return (true, wrap("\(said) \(envelopeNote)", "NOTE: \(name)"))
     }
 
     private static func pinTerminal(_ id: String?, _ pinned: Bool, _ caller: NotesCaller) -> (ok: Bool, text: String) {

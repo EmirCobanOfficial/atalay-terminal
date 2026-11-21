@@ -151,7 +151,8 @@ window.Settings = (() => {
       '</div>' +
       '<p class="st-note mcp-error" hidden></p>' +
       // Only where the notes' AI switch is (Settings > Privacy, the "notesai" handler).
-      (c.notesai ? '<p class="st-note">Your notes also follow Settings > Privacy > AI tools and my notes. Claude Desktop can read them while both are on, and change them only when this is Watch and type and that is Read and edit.</p>' : '') +
+      (c.notesai ? '<p class="st-note">Notes follow your Notes setting, not this one. Set it in <button type="button" class="st-ln st-nai-open">Notes \u203a AI</button>.</p>' : '') +
+      `<p class="st-note">Watch and type lets Claude type into your terminals. Notes follow your Notes setting.</p>` +
       `<p class="st-note">Claude only sees Claude Code, Codex and Antigravity chats, never a plain terminal. Passwords, keys and tokens are masked before anything leaves Orbiterm. It can't answer approvals, and can't type into a chat started with permissions bypassed. While it's on, ${WIN ? 'an icon shows in the system tray' : 'a sign shows in the menu bar'} with a way to turn it off.</p>`;
 
     const privacy =
@@ -161,9 +162,10 @@ window.Settings = (() => {
         row('show my name on the Tokens board', 'off: Anonymous on the Tokens board only · your total still counts', sw('tkn', 'Show my name on the Tokens board', true)) +
         row('let friends see which AI and model I use', 'opening your row on the Tokens board · off: only your total shows, to everyone', sw('tkd', 'Let friends see which AI and model I use', true))) +
       (c.notesai
-        ? group('AI tools and my notes',
-            row('let AI read and edit my notes', { cls: 'na-note', text: '…' },
-              '<span class="lb-seg ui-seg st-notesai"><button type="button" data-mode="off">Off</button><button type="button" data-mode="read">Read</button><button type="button" data-mode="write">Read and edit</button></span>'))
+        ? group('notes and AI',
+            row('what AI can do with my notes', { cls: 'na-note', text: '…' },
+              '<span class="lb-seg ui-seg st-notesai"><button type="button" data-mode="off">Off</button><button type="button" data-mode="read">Read</button><button type="button" data-mode="write">Read and edit</button></span>')) +
+          '<p class="st-note">Hide a note from AI or connect Claude Desktop from <button type="button" class="st-ln st-nai-open">Notes \u203a AI</button></p>'
         : '') +
       (dc
         ? group('discord',
@@ -272,6 +274,7 @@ window.Settings = (() => {
       err.hidden = false;
     }
     paintMcp();
+    return r;
   }
   window.addEventListener('mcpchange', paintMcp);
 
@@ -365,5 +368,5 @@ window.Settings = (() => {
     return page.querySelector('.st-nav button.on');
   }
 
-  return { html, mount, show, focusTarget, current: () => current };
+  return { html, mount, show, focusTarget, mcpAsk, current: () => current };
 })();

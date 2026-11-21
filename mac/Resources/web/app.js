@@ -1520,7 +1520,9 @@ function panelMenu(e) {
   const menu = document.createElement('div');
   menu.className = 'pn-ctx';
   const can = CLEARABLE.includes(p.id) && STATE;
+  const naiOk = p.id === 'p-notes' && window.Notes?.openAi && window.webkit?.messageHandlers?.notesai;
   menu.innerHTML =
+    (naiOk ? `<button type="button" data-ctx="notesai">\u2726 notes and AI\u2026</button>${window.PanelLayout?.hide ? '<hr>' : ''}` : '') +
     (can ? `<button type="button" data-ctx="clear">⌫ clear this panel</button>` : '') +
     (can && clearedOf(p.id) ? `<button type="button" data-ctx="restore">↺ show what was cleared</button>` : '') +
     (window.PanelLayout?.hide ? `${can ? '<hr>' : ''}<button type="button" data-ctx="hide">– hide this panel</button>` : '');
@@ -1532,6 +1534,7 @@ function panelMenu(e) {
     if (!b) return;
     menu.remove();
     if (b.dataset.ctx === 'hide') return PanelLayout.hide(p.id);
+    if (b.dataset.ctx === 'notesai') return window.Notes.openAi();
     setCleared(p.id, b.dataset.ctx === 'clear');
   };
 }
@@ -1986,7 +1989,7 @@ function agentTip(a, parent) {
   return (
     `<div class="h" style="color:#9d6bff">◆ ${esc(a.desc)}</div>` +
     `<div class="d">${esc([a.type, a.model, a.bg ? 'background' : '', parent ? 'from ' + parent.name : ''].filter(Boolean).join(' · '))}</div>` +
-    `<div class="r">${a.running ? 'running ' + clock(Date.now() - a.firstTs) : 'finished ' + ago(a.lastTs) + ' ago'} · ${a.tools} tools · ${fmtUsd(a.cost)} · ${a.errors} err</div>` +
+    `<div class="r">${a.running ? 'running ' + clock(Date.now() - a.firstTs) : a.parked ? 'idle · quiet ' + ago(a.lastTs) : 'finished ' + ago(a.lastTs) + ' ago'} · ${a.tools} tools · ${fmtUsd(a.cost)} · ${a.errors} err</div>` +
     (p ? `<div class="r" style="color:${CAT[p.c]?.color}">▸ ${esc(p.n)} ${esc(p.l)}</div>` : '')
   );
 }

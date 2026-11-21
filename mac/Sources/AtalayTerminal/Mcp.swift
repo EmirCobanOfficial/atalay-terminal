@@ -1238,7 +1238,7 @@ final class McpPageBridge: NSObject, WKScriptMessageHandlerWithReply {
         alert.alertStyle = want == .write ? .warning : .informational
         if want == .write {
             alert.messageText = "Let Claude type into your AI sessions?"
-            alert.informativeText = "Claude will be able to send prompts to the Claude Code, Codex and Antigravity sessions running in Orbiterm, and see what they print. It can't type into a plain terminal or a session started with permissions bypassed, and it can't answer approvals. Secrets are masked before anything leaves Orbiterm. You can turn this off at any time from the menu bar."
+            alert.informativeText = "Claude will be able to send prompts to the Claude Code, Codex and Antigravity sessions running in Orbiterm, and see what they print. It can't type into a plain terminal or a session started with permissions bypassed, and it can't answer approvals. Notes are not affected: they follow your Notes setting. Secrets are masked before anything leaves Orbiterm. You can turn this off at any time from the menu bar."
             alert.addButton(withTitle: "Cancel")
             alert.addButton(withTitle: "Allow typing")
         } else {

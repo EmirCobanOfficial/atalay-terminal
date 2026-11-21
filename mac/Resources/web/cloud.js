@@ -947,25 +947,31 @@ window.Cloud = (() => {
   const NOTESAI = !!(window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.notesai);
   const notesAiCall = (msg) => window.webkit.messageHandlers.notesai.postMessage(msg);
   const NA_NOTE = {
-    off: "off · AI tools can't see your notes",
-    read: 'on · AI tools can read your notes, never change them · passwords and keys are masked',
-    write: 'on · AI tools can read your notes and add to or edit them, every change can be undone · passwords and keys are masked',
+    off: "off · AI can't see your notes",
+    read: 'AI can read your notes, never change them',
+    write: 'AI, Claude Desktop too, can read, add to and change your notes · every change can be undone',
   };
   function showNotesAI(st) {
     const note = q('.na-note');
     if (!st || !note) return;
     root.querySelectorAll('.st-notesai button').forEach((b) => b.classList.toggle('on', b.dataset.mode === st.mode));
-    // Claude Desktop, outside Orbiterm, also needs Settings > Claude: on to read, Watch and type to change a note (NotesTools).
-    const desk = { read: ' · Claude Desktop can read them too while Settings > Claude is on', write: ' · Claude Desktop can read them while Settings > Claude is on, and change them only when it is Watch and type' };
-    note.textContent = NA_NOTE[st.mode] + (desk[st.mode] || '') + ' · hide a note from AI with the eye on it, or right-click it on the board' + (st.mode !== 'off' && !st.ready ? ' · starts with the next build that has the MCP server' : '');
+    note.textContent = NA_NOTE[st.mode];
   }
+  // The same code path as the notes board's popover (Notes.setAiMode): the app asks natively before it goes up, and both follow.
   async function renderNotesAI() {
     if (!NOTESAI || !q('.st-notesai')) return;
     showNotesAI(await notesAiCall({ type: 'state' }).catch(() => null));
     root.querySelectorAll('.st-notesai button').forEach((b) => {
-      b.onclick = async () => showNotesAI(await notesAiCall({ type: 'mode', mode: b.dataset.mode }).catch(() => null));
+      b.onclick = async () => {
+        const mode = b.dataset.mode;
+        showNotesAI((await (window.Notes?.setAiMode ? window.Notes.setAiMode(mode) : notesAiCall({ type: 'mode', mode })).catch(() => null)) || (await notesAiCall({ type: 'state' }).catch(() => null)));
+      };
+    });
+    root.querySelectorAll('.st-nai-open').forEach((b) => {
+      b.onclick = () => window.Notes?.openAi?.();
     });
   }
+  window.addEventListener('notesaichange', () => q('.st-notesai') && showNotesAI(window.Notes?.aiState?.()));
 
   // ---------- shortcuts ----------
   // The keys of the app's actions, as the user wants them (the Mac app's Shortcuts.swift keeps them and sets the menus):

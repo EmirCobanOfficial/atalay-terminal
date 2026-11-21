@@ -80,6 +80,16 @@ const EYE_OFF = '<i class="np-glyph" aria-hidden="true">&#xEAE7;</i>';
   const AI_TIP_SEEN = 'AI can read this note · Click to hide it from AI';
   const AI_TIP_HIDDEN = 'Hidden from AI · Click to let AI read it';
   const AI_HIDDEN_TIP = 'Hidden from AI';
+  // What AI may do with the notes (NotesAI.swift): the dashboard asks the app, a note's window is told (boot, then Notes.aiMode).
+  // Where the app can't say (no handler, an older window), the eye stays as it always was.
+  const NA = !WINDOW ? window.webkit?.messageHandlers?.notesai || null : null;
+  const AI = {
+    mode: WINDOW ? (['off', 'read', 'write'].includes(WINDOW.aiMode) ? WINDOW.aiMode : 'read') : NA ? 'off' : 'read',
+    ready: true,
+    tools: {},
+    outsideNeedsType: false,
+    known: !!NA || !!(WINDOW && WINDOW.aiMode),
+  };
 const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
   // The activity bar's Notes: a notepad with its rings, its lines and a pencil, the sign for notes most people know;
   // drawn in strokes so it sits with the outline icons around it.
@@ -255,7 +265,7 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
   // A note's name: its first line with words in it, whatever kind of block holds it; an empty note is its noteN.
   function nameOf(n) {
     const top = blocksOf(n).find((b) => b.type !== 'divider' && b.text.trim());
-    return top ? top.text.trim().split('\n')[0].trim().slice(0, 80) : n.name;
+    return top ? unlink(top.text).trim().split('\n')[0].trim().slice(0, 80) : n.name;
   }
   const NAME_HINT = 'The first line you write names the note';
 
@@ -286,7 +296,13 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
     return (h >>> 0).toString(36);
   };
   const aiTag = (n) => (lastAi && n && lastAi.id === n.id && Date.now() - lastAi.at < 600000 && hashOf(toText(blocksOf(n))) === lastAi.after ? lastAi : null);
-  const aiText = (a) => `${a.by} edited · ${new Date(a.at).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })} · Undo`;
+  const aiText = (a) => `${a.by} ${a.kind === 'create' ? 'created' : a.kind === 'pin' ? 'pinned' : 'edited'} · ${new Date(a.at).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })} · Undo`;
+  // An AI changed a note (or its change was undone): the board's marks and the popover's last line follow.
+  function aiTouched() {
+    if (WINDOW) return;
+    drawBoard();
+    if (popOpen) paintPop();
+  }
   function stamp() {
     if (!cur) return;
     paintAi();
@@ -335,8 +351,218 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
     const n = el && el.closest && el.closest('.nb');
     return n ? blocks[idx(n.dataset.id)] : null;
   };
-  // A text that ends in a line break shows one more, as a textarea does, so the empty line under it can hold the cursor.
-  const shown = (text) => (text.endsWith('\n') ? `${text}\n` : text);
+  // (A text that ends in a line break is drawn with one more, as a textarea does, so the empty line under it can hold the cursor: paint.)
+
+  // ---------- links ----------
+  // A link is kept in the note as Markdown, [words](https://where), so the AI's note tools, copy and paste and every old
+  // note read it as they always did; a block's text stays exactly what the model holds (the cursor's places are the same
+  // everywhere), and only how it is drawn changes: the brackets and the address are in the text, out of sight, until the
+  // cursor is in the link. A web address typed or pasted as it is gets the same look with nothing added to the note.
+  // Only http, https and mailto are ever links; the page's own links go out through the app's SafeOpen (NoteWindow and
+  // RadarView refuse every navigation but a click on a link, and hand it to SafeOpen), never a bridge of ours.
+  const LK_MD = /\[([^\[\]\n]+)\]\(((?:https?:\/\/|mailto:)[^\s()]+)\)/gi;
+  const LK_EMPTY = /\[\]\((?:https?:\/\/|mailto:)[^\s()]*\)/gi;
+  const LK_URL = /(?:https?:\/\/|www\.)[^\s<>"'`\[\]]+/gi;
+  const unlink = (s) => s.replace(LK_MD, '$1');
+  // The address a link goes to, or null when it's not one the notes open.
+  function safeHref(s) {
+    try {
+      const u = new URL(/^www\./i.test(s) ? `https://${s}` : s);
+      return ['http:', 'https:', 'mailto:'].includes(u.protocol) && (u.protocol === 'mailto:' ? !!u.pathname : !!u.hostname) ? u.href : null;
+    } catch {
+      return null;
+    }
+  }
+  // What was typed in the link box, made an address: "example.com" is https, "a@b.co" a mail; anything else but http, https
+  // and mailto is refused. Spaces and brackets are escaped so the Markdown stays one piece.
+  function addressOf(s) {
+    s = s.trim();
+    if (!s || /\s/.test(s) && !/^(https?:|mailto:)/i.test(s)) return null;
+    // "example.com:8080/x" is an address with a port, not a scheme named "example.com".
+    if (!/^(?:https?|mailto):/i.test(s) && !/^[a-z][a-z0-9+.-]*:(?!\d)/i.test(s)) s =/^[^\s@\/]+@[^\s@\/]+\.[^\s@\/]+$/.test(s) ? `mailto:${s}` : `https://${s}`;
+    if (!safeHref(s)) return null;
+    return s.replace(/\s/g, '%20').replace(/\(/g, '%28').replace(/\)/g, '%29');
+  }
+  // The links in a text, in order: { s, e } its place, md (a named one) with { ts, te } the words' place and href.
+  function scan(text) {
+    const out = [];
+    let m;
+    LK_MD.lastIndex = 0;
+    while ((m = LK_MD.exec(text))) {
+      const href = safeHref(m[2]);
+      if (href) out.push({ s: m.index, e: m.index + m[0].length, md: true, ts: m.index + 1, te: m.index + 1 + m[1].length, href, url: m[2] });
+    }
+    // The rest is searched with the named links blanked out, so an address inside one is not a second link.
+    let rest = text;
+    for (const k of out) rest = rest.slice(0, k.s) + ' '.repeat(k.e - k.s) + rest.slice(k.e);
+    LK_URL.lastIndex = 0;
+    while ((m = LK_URL.exec(rest))) {
+      if (m.index && /[\w@\/.-]/.test(rest[m.index - 1])) continue;
+      let s = m[0];
+      for (;;) {
+        const c = s[s.length - 1];
+        const open = c === ')' ? s.split('(').length - 1 : 0;
+        if (/[.,;:!?'"*_~]/.test(c) || (c === ')' && s.split(')').length - 1 > open)) s = s.slice(0, -1);
+        else break;
+      }
+      if (/^(https?:\/\/|www\.)$/i.test(s) || (/^www\./i.test(s) && !/^www\.[^.]+\.[^.]/.test(s) && !/^www\.[^.\/]{2,}/.test(s))) continue;
+      const href = safeHref(s);
+      if (href) out.push({ s: m.index, e: m.index + s.length, md: false, href });
+    }
+    return out.sort((a, b) => a.s - b.s);
+  }
+  // How a block is cut into pieces, as lengths: what the links call for (sigOf) and what is drawn (domSig). Typing next to a
+  // link's end lands in its span; the two then differ and the block is drawn again.
+  const sigOf = (toks, len) => {
+    const out = [];
+    let at = 0;
+    for (const k of toks) {
+      if (k.s > at) out.push(`t${k.s - at}`);
+      out.push(`${k.md ? 'm' : 'u'}${k.e - k.s}`);
+      at = k.e;
+    }
+    if (len > at) out.push(`t${len - at}`);
+    return out.join(',');
+  };
+  function domSig(t) {
+    const out = [];
+    let run = 0;
+    for (const n of t.childNodes) {
+      if (n.nodeType === 3) run += n.length;
+      else {
+        if (run) out.push(`t${run}`);
+        run = 0;
+        out.push(`${n.classList.contains('lk-m') ? 'm' : 'u'}${n.textContent.length}`);
+      }
+    }
+    if (run) out.push(`t${run}`);
+    return out.join(',');
+  }
+  // A block's text drawn: the same characters, the links wrapped. A code block is never linked.
+  function paint(t, text, type) {
+    const toks = type === 'code' ? [] : scan(text);
+    const frag = document.createDocumentFragment();
+    let at = 0;
+    const raw = (a, z) => a < z && frag.appendChild(document.createTextNode(text.slice(a, z)));
+    const span = (cls, s) => {
+      const el = document.createElement('span');
+      el.className = cls;
+      el.textContent = s;
+      return el;
+    };
+    for (const k of toks) {
+      raw(at, k.s);
+      if (k.md) {
+        const w = span('lk lk-m', '');
+        w.dataset.href = k.href;
+        w.title = k.href;
+        w.append(span('lk-h', '['), span('lk-t', text.slice(k.ts, k.te)), span('lk-h', text.slice(k.te, k.e)));
+        frag.appendChild(w);
+      } else {
+        const w = span('lk lk-u', text.slice(k.s, k.e));
+        w.dataset.href = k.href;
+        w.title = k.href;
+        frag.appendChild(w);
+      }
+      at = k.e;
+    }
+    raw(at, text.length);
+    if (text.endsWith('\n')) frag.appendChild(document.createTextNode('\n'));
+    t.replaceChildren(frag);
+  }
+  // After typing: the links drawn again when they changed, the cursor kept. A named link emptied of its words goes whole.
+  function relink(t, b) {
+    if (b.type === 'code') return;
+    let c = null;
+    if (LK_EMPTY.test(b.text)) {
+      c = caretIn(t);
+      let at = c ? c.start : 0;
+      b.text = b.text.replace(LK_EMPTY, (m, i) => {
+        if (at > i + m.length) at -= m.length;
+        else if (at > i) at = i;
+        return '';
+      });
+      LK_EMPTY.lastIndex = 0;
+      c = { start: at };
+    }
+    LK_EMPTY.lastIndex = 0;
+    if (!c && sigOf(scan(b.text), b.text.length + (b.text.endsWith('\n') ? 1 : 0)) === domSig(t)) return;
+    c = c || caretIn(t);
+    paint(t, b.text, b.type);
+    t.classList.toggle('is-empty', !b.text);
+    if (c && document.activeElement === t) {
+      const at = Math.min(c.start, b.text.length);
+      // The cursor inside a named link (its address being typed, say) keeps it open, so the cursor stays where it was
+      // rather than going to the end of the words.
+      const k = scan(b.text).filter((x) => x.md).findIndex((x) => at > x.s && at < x.e);
+      if (k >= 0) t.querySelectorAll('.lk-m')[k]?.classList.add('open');
+      place(t, at);
+    }
+  }
+  // The same selection read for the clipboard: a link taken whole goes as its Markdown, one taken in part as its words.
+  function copyText(text, a, z) {
+    let out = '';
+    let at = a;
+    for (const k of scan(text)) {
+      if (k.e <= a || k.s >= z) continue;
+      if (k.s >= a && k.e <= z) {
+        out += text.slice(at, k.s) + text.slice(k.s, k.e);
+        at = k.e;
+      } else if (k.md) {
+        out += text.slice(at, Math.max(at, k.s));
+        out += text.slice(Math.max(a, k.ts, at), Math.min(z, k.te));
+        at = Math.min(z, k.e);
+      }
+    }
+    return out + text.slice(at, z);
+  }
+  // A pasted page's text with its links as Markdown, or null when there are none (then the plain text is as good).
+  function htmlText(html) {
+    if (!/<a[\s>]/i.test(html || '')) return null;
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    if (![...doc.querySelectorAll('a[href]')].some((a) => safeHref(a.getAttribute('href') || ''))) return null;
+    const BLOCK = /^(DIV|P|LI|UL|OL|H[1-6]|BLOCKQUOTE|TR|PRE|SECTION|ARTICLE)$/;
+    let s = '';
+    const nl = () => {
+      if (s && !s.endsWith('\n')) s += '\n';
+    };
+    // Inside a <pre> (code on a page) the line breaks and spaces are kept.
+    const walk = (n, pre) => {
+      for (const c of n.childNodes) {
+        if (c.nodeType === 3) s += pre ? c.data : c.data.replace(/\s+/g, ' ');
+        else if (c.nodeType !== 1 || /^(SCRIPT|STYLE|HEAD)$/.test(c.nodeName)) continue;
+        else if (c.nodeName === 'BR') s += '\n';
+        else if (c.nodeName === 'A') {
+          const href = safeHref(c.getAttribute('href') || '');
+          const label = c.textContent.replace(/\s+/g, ' ').replace(/[\[\]]/g, '').trim();
+          const addr = href && addressOf(c.getAttribute('href') || '');
+          s += href && label && addr && label !== addr && label !== href ? `[${label}](${addr})` : c.textContent.replace(/\s+/g, ' ');
+        } else {
+          const blk = BLOCK.test(c.nodeName);
+          if (blk) nl();
+          walk(c, pre || c.nodeName === 'PRE');
+          if (blk) nl();
+        }
+      }
+    };
+    walk(doc.body);
+    return s.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+  }
+  // What a paste brings, as the notes keep it (into a code block, the plain text: it is never linked).
+  const pastedText = (e, plain) => (plain ? null : htmlText(e.clipboardData?.getData('text/html'))) ?? (e.clipboardData?.getData('text/plain') || '');
+  // Opened the way the app opens any link its pages show: an <a> clicked, which WebKit hands to the app's navigation
+  // policy (SafeOpen there; the Windows app's will-navigate opens http and https in the browser).
+  function openLink(href) {
+    const h = safeHref(href || '');
+    if (!h) return;
+    const a = document.createElement('a');
+    a.href = h;
+    a.rel = 'noopener noreferrer';
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }
 
   function render(focus) {
     const top = ed.scrollTop;
@@ -378,7 +604,7 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
     t.setAttribute('contenteditable', 'plaintext-only');
     t.spellcheck = false;
     t.dataset.ph = blank ? "Write something, or type '/' for commands…" : TYPES[b.type].ph;
-    t.textContent = shown(b.text);
+    paint(t, b.text, b.type);
     el.appendChild(t);
     return el;
   }
@@ -427,6 +653,18 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
     while ((node = walker.nextNode())) {
       if (left <= node.length) {
         r.setStart(node, left);
+        // Not in a named link's hidden brackets or address (a cursor there would be typing in what can't be seen): at the
+        // start of its words, their end, or beside the link.
+        const h = node.parentElement && node.parentElement.closest('.lk-h');
+        const w = h && h.parentElement;
+        if (w && !w.classList.contains('open')) {
+          const words = w.querySelector('.lk-t');
+          if (h === w.firstElementChild) {
+            if (left) r.setStart(words.firstChild || words, 0);
+            else r.setStartBefore(w);
+          } else if (left === node.length) r.setStartAfter(w);
+          else r.setStart(words.lastChild || words, words.textContent.length);
+        }
         break;
       }
       left -= node.length;
@@ -1039,7 +1277,7 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
   document.addEventListener('paste', (e) => {
     if (!part || part.drag) return;
     e.preventDefault();
-    const text = (e.clipboardData?.getData('text/plain') || '').replace(/\r\n?/g, '\n');
+    const text = pastedText(e).replace(/\r\n?/g, '\n');
     if (!text) return; // an image, say: the selection stays
     const { a, z } = part;
     const ia = idx(a.id);
@@ -1150,14 +1388,15 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
     const t = e.target.closest && e.target.closest('.nb-text');
     const b = blockOf(t);
     if (!b) return;
-    if (t.querySelector('*')) {
+    if (t.querySelector('br, div, p')) {
       // A <br> or a <div> slipped in (an emptied block keeps a <br>): back to plain text, the cursor where it was.
       const at = caretIn(t)?.start ?? 0;
       const text = read(t);
-      t.textContent = shown(text);
+      paint(t, text, b.type);
       place(t, Math.min(at, text.length));
     }
     b.text = read(t);
+    if (!e.isComposing) relink(t, b);
     firstA = null;
     t.classList.toggle('is-empty', !b.text);
     if (b.type === 'p' && marker(b, t)) return;
@@ -1190,6 +1429,12 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
     if (mod && !e.altKey && !e.shiftKey && e.code === 'KeyY') {
       e.preventDefault();
       return redo();
+    }
+    if (mod && !e.altKey && !e.shiftKey && e.code === 'KeyK') {
+      if (!lkHere()) return;
+      e.preventDefault();
+      lkAt = null;
+      return void askLink();
     }
     if (e.isComposing) return;
     const c = caretIn(t) || { start: 0, end: 0, collapsed: true };
@@ -1267,12 +1512,225 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
     const b = blockOf(t);
     if (!b) return;
     e.preventDefault();
-    const text = (e.clipboardData?.getData('text/plain') || '').replace(/\r\n?/g, '\n');
+    const text = pastedText(e, b.type === 'code').replace(/\r\n?/g, '\n');
     if (!text) return;
-    record('op');
     const c = caretIn(t) || { start: b.text.length, end: b.text.length };
+    // An address pasted over selected words makes them a link, as Notion does.
+    const url = !c.collapsed && b.type !== 'code' && !/\s/.test(text.trim()) && /^(https?:\/\/|www\.|mailto:)/i.test(text.trim()) ? addressOf(text) : null;
+    const words = b.text.slice(c.start, c.end);
+    if (url && !/[\[\]\n]/.test(words) && !scan(b.text).some((k) => k.s < c.end && k.e > c.start)) {
+      record('op');
+      const made = `[${words}](${url})`;
+      b.text = b.text.slice(0, c.start) + made + b.text.slice(c.end);
+      return changed({ id: b.id, at: c.start + made.length });
+    }
+    record('op');
     pasteInto(b, b.text.slice(0, c.start), b.text.slice(c.end), text);
   });
+  // ---------- links: opening, the box that names one ----------
+  // A named link shows its brackets and address while the cursor is in it (and only then).
+  document.addEventListener('selectionchange', () => {
+    const s = getSelection();
+    const n = s.rangeCount && s.isCollapsed ? s.anchorNode : null;
+    const w = n && (n.nodeType === 1 ? n : n.parentElement)?.closest('.np-ed .lk-m');
+    for (const o of ed.querySelectorAll('.lk-m.open')) if (o !== w) o.classList.remove('open');
+    if (w) w.classList.add('open');
+    lkWatch();
+  });
+  addEventListener('compositionend', (e) => {
+    const t = e.target.closest && e.target.closest('.np-ed .nb-text');
+    const b = t && blockOf(t);
+    if (b) relink(t, b);
+  });
+  // A click opens a link with Cmd (Ctrl on Windows) held, or with none when the block wasn't being written in: a click
+  // into the text of the block being written in puts the cursor there instead.
+  let lkDown = null;
+  let lkPress = false;
+  ed.addEventListener(
+    'mousedown',
+    (e) => {
+      lkPress = e.button === 0;
+      const a = e.target.closest && e.target.closest('.lk');
+      lkDown = a && e.button === 0 ? { a, x: e.clientX, y: e.clientY, was: a.closest('.nb-text') === document.activeElement } : null;
+    },
+    true,
+  );
+  addEventListener('mouseup', (e) => {
+    lkPress = false;
+    if (!lkBox.contains(e.target)) lkWatch();
+  });
+  ed.addEventListener('click', (e) => {
+    const d = lkDown;
+    lkDown = null;
+    const a = e.target.closest && e.target.closest('.lk');
+    if (!a || !d || d.a !== a || (MAC && e.ctrlKey) || Math.hypot(e.clientX - d.x, e.clientY - d.y) > 4) return;
+    const mod = MAC ? e.metaKey : e.ctrlKey;
+    if (!mod && (d.was || !getSelection().isCollapsed)) return;
+    e.preventDefault();
+    openLink(a.dataset.href);
+  });
+  // A copy inside one block gives its Markdown: a link taken whole goes with its address.
+  ed.addEventListener('copy', (e) => {
+    if (part) return;
+    const t = e.target.closest && e.target.closest('.nb-text');
+    const b = blockOf(t);
+    const c = b && caretIn(t);
+    if (!c || c.collapsed || !t.querySelector('.lk')) return;
+    e.preventDefault();
+    e.clipboardData.setData('text/plain', copyText(b.text, c.start, c.end));
+  });
+
+  // The box under a link or a selection: on a link, its address with Edit, Open and Unlink; on selected words, "Link".
+  // Cmd+K (Ctrl+K) on selected words, or in a link, opens the address to type.
+  const lkBox = document.createElement('div');
+  lkBox.className = 'lk-pop';
+  lkBox.hidden = true;
+  document.body.appendChild(lkBox);
+  let lkAt = null; // what the box is for: { id, start, end, link } as places in a block's text
+  const lkHere = () => {
+    const s = getSelection();
+    if (!s.rangeCount || !ed.contains(s.anchorNode) || !ed.contains(s.focusNode)) return null;
+    const r = s.getRangeAt(0);
+    const t = textOf2(r.startContainer);
+    const b = t && t === textOf2(r.endContainer) && blockOf(t);
+    const c = b && b.type !== 'code' && caretIn(t);
+    if (!c) return null;
+    const link = scan(b.text).find((k) => (c.collapsed ? c.start >= k.s && c.start <= k.e : c.start >= (k.md ? k.ts : k.s) && c.end <= (k.md ? k.te : k.e)));
+    const text = b.text.slice(c.start, c.end);
+    if (!link && (c.collapsed || /[\[\]\n]/.test(text) || scan(b.text).some((k) => k.s < c.end && k.e > c.start))) return null;
+    if (link && !link.md && c.collapsed) return null;
+    const el = link ? t.querySelector(`.lk:nth-of-type(1)`) && [...t.querySelectorAll('.lk')].find((x) => x.dataset.href === link.href && x.textContent.includes(b.text.slice(link.md ? link.ts : link.s, link.md ? link.te : link.e))) : null;
+    const rect = (el || r).getBoundingClientRect();
+    return { id: b.id, start: c.start, end: c.end, link, rect };
+  };
+  function lkClose() {
+    lkBox.hidden = true;
+    lkBox.textContent = '';
+    lkBox.dataset.html = '';
+    lkAt = null;
+  }
+  function lkPlace(rect) {
+    lkBox.style.left = '0px';
+    lkBox.style.top = '0px';
+    const w = lkBox.offsetWidth;
+    const h = lkBox.offsetHeight;
+    const below = rect.bottom + 6 + h < innerHeight || rect.top - h - 6 < 4;
+    lkBox.style.left = `${Math.max(4, Math.min(rect.left, innerWidth - w - 4))}px`;
+    lkBox.style.top = `${Math.max(4, below ? rect.bottom + 6 : rect.top - h - 6)}px`;
+  }
+  const lkShort = (u) => u.replace(/^https?:\/\/(www\.)?/i, '').replace(/\/$/, '');
+  // The box in the state the selection calls for, unless a press or the address box is in the way.
+  function lkWatch() {
+    if (lkPress || part || lkBox.querySelector('input')) return;
+    const h = lkHere();
+    if (!h) return lkClose();
+    lkAt = h;
+    let html;
+    if (h.link && h.link.md) {
+      html = `<a class="lk-go" title="${esc(h.link.href)}">${esc(lkShort(h.link.href))}</a><button type="button" data-a="edit">Edit</button><button type="button" data-a="open">Open</button><button type="button" data-a="unlink">Unlink</button>`;
+    } else if (!h.link) {
+      html = `<button type="button" data-a="edit">Link <kbd>${MAC ? '\u2318K' : 'Ctrl+K'}</kbd></button>`;
+    } else return lkClose();
+    if (lkBox.hidden || lkBox.dataset.html !== html) {
+      lkBox.innerHTML = html;
+      lkBox.dataset.html = html;
+    }
+    lkBox.hidden = false;
+    lkPlace(h.rect);
+  }
+  // The address to type for the selection (or the link's, to change).
+  function askLink() {
+    const h = lkAt || lkHere();
+    if (!h) return false;
+    lkAt = h;
+    lkBox.dataset.html = '';
+    lkBox.innerHTML = '<input type="text" spellcheck="false" autocomplete="off" placeholder="Paste or type a link" aria-label="Link address"><button type="button" data-a="ok">Add</button>' + (h.link ? '<button type="button" data-a="unlink">Unlink</button>' : '');
+    const input = lkBox.querySelector('input');
+    input.value = h.link ? h.link.url || h.link.href : '';
+    lkBox.hidden = false;
+    lkPlace(h.rect);
+    input.focus();
+    input.select();
+    input.addEventListener('keydown', (e) => {
+      e.stopPropagation();
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        setLink(input.value);
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        giveBack();
+      }
+    });
+    input.addEventListener('input', () => input.classList.remove('bad'));
+    return true;
+  }
+  // The cursor back where the box found it.
+  function giveBack() {
+    const h = lkAt;
+    lkClose();
+    const b = h && blocks[idx(h.id)];
+    if (b && textEl(b.id)) {
+      place(textEl(b.id), h.start);
+      if (h.end > h.start) {
+        const t = textEl(b.id);
+        const s = getSelection();
+        const r = s.rangeCount && s.getRangeAt(0);
+        if (r) {
+          const walker = document.createTreeWalker(t, NodeFilter.SHOW_TEXT);
+          let pos = 0;
+          let n;
+          while ((n = walker.nextNode())) {
+            if (h.end <= pos + n.length) {
+              r.setEnd(n, h.end - pos);
+              break;
+            }
+            pos += n.length;
+          }
+        }
+      }
+    }
+  }
+  // The address given: the selected words become a link, a link's address changes, an empty address unlinks it.
+  function setLink(raw) {
+    const h = lkAt;
+    const b = h && blocks[idx(h.id)];
+    if (!b) return lkClose();
+    const url = raw.trim() ? addressOf(raw) : '';
+    if (url === null) return lkBox.querySelector('input')?.classList.add('bad');
+    const k = h.link;
+    const text = k ? (k.md ? b.text.slice(k.ts, k.te) : b.text.slice(k.s, k.e)) : b.text.slice(h.start, h.end);
+    const from = k ? k.s : h.start;
+    const to = k ? k.e : h.end;
+    if (!k && !url) return giveBack();
+    if (k && !k.md) return giveBack();
+    const made = url ? `[${text}](${url})` : text;
+    if (made === b.text.slice(from, to)) return giveBack();
+    record('op');
+    past[past.length - 1].focus = { i: idx(b.id), at: from };
+    b.text = b.text.slice(0, from) + made + b.text.slice(to);
+    lkClose();
+    changed({ id: b.id, at: from + made.length });
+  }
+  lkBox.addEventListener('mousedown', (e) => {
+    if (!e.target.closest('input')) e.preventDefault(); // the buttons leave the selection as it is
+  });
+  lkBox.addEventListener('click', (e) => {
+    const x = e.target.closest('[data-a]') || (e.target.closest('.lk-go') && { dataset: { a: 'open' } });
+    if (!x || !lkAt) return;
+    const a = x.dataset.a;
+    if (a === 'edit') askLink();
+    else if (a === 'ok') setLink(lkBox.querySelector('input').value);
+    else if (a === 'unlink') {
+      lkAt.link = lkAt.link || null;
+      setLink('');
+    } else if (a === 'open') openLink(lkAt.link.href);
+  });
+  addEventListener('mousedown', (e) => {
+    if (!lkBox.hidden && !lkBox.contains(e.target) && lkBox.querySelector('input')) giveBack();
+  }, true);
+  ed.addEventListener('scroll', lkClose);
+  addEventListener('resize', lkClose);
+
   ed.addEventListener('drop', (e) => {
     if ((e.dataTransfer?.getData('text/plain') || '').includes('\n')) e.preventDefault();
   });
@@ -1508,6 +1966,8 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
     const set = (b, n) => {
       if (!b || !n) return;
       const on = !!n.aiHidden;
+      // The eye only means something while AI has access; a hidden note keeps it so it can be shown again.
+      b.hidden = AI.mode === 'off' && !on;
       if (b.dataset.ai === String(on)) return;
       b.dataset.ai = String(on);
       b.classList.toggle('on', on);
@@ -1553,6 +2013,394 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
     if (on) cur.aiHidden = true;
     else delete cur.aiHidden;
     paintAi();
+  }
+
+  // ---------- notes and AI: the chip on the board, its popover, the first-time hint ----------
+  // The level lives in the app (NotesAI.swift): this page only asks, and the app asks the user natively before it goes up.
+  // Going down is at once. The popover is the board's door; Settings > Privacy is a second one with the same code path.
+  const G = { gear: '', sparkle: '', sparkleF: '', check: '', dash: '', lock: '', term: '', desk: '', eye: '' };
+  const cg = (g) => `<span class="nai-cg" aria-hidden="true">${G[g]}</span>`;
+  const MACHINE = MAC ? 'Mac' : 'PC';
+  const CHIP = { off: 'AI off', read: 'AI can read', write: 'AI can edit' };
+  const LONG = { off: "AI can't see your notes", read: 'AI can read your notes', write: 'AI can read and edit your notes' };
+  const SAY = { off: "AI can't see your notes now.", read: 'AI can read your notes now.', write: 'AI can read and edit your notes now.' };
+  const CAN = [['Read your notes', 'read'], ['Add to a note or change it', 'write'], ['Make a new note', 'write'], ['Pin a note or open it on your screen', 'write']];
+  const PILL = { off: ['Off', ''], read: ['Can read', 'read'], write: ['Can edit', 'write'] };
+  const TOOL_NAMES = [['claude', 'Claude Code'], ['codex', 'Codex'], ['agy', 'Antigravity']];
+  const aiTime = (t) => new Date(t).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+  let popOpen = false;
+  let asked = null; // { by, need, at }: an AI reached for the notes while it wasn't allowed (shown once, in the popover)
+  let dotOn = false;
+  let dotTimer = 0;
+  let say = ''; // the popover's status line
+  let busy = null; // the answer clicked, waiting for the app
+  let connecting = false;
+  let deskAt = 0; // when Claude Desktop was connected from here
+  let slow = 0;
+
+  // The app's answer, or its push (Notes.aiMode): every place that shows the level follows.
+  function aiApply(st) {
+    if (!st || !['off', 'read', 'write'].includes(st.mode)) return;
+    const was = AI.mode;
+    AI.mode = st.mode;
+    if ('ready' in st) AI.ready = !!st.ready;
+    if (st.tools && typeof st.tools === 'object') AI.tools = st.tools;
+    if ('outsideWriteNeedsType' in st) AI.outsideNeedsType = !!st.outsideWriteNeedsType;
+    AI.known = true;
+    paintAi();
+    if (was !== AI.mode && asked && (asked.need === 'read' ? AI.mode !== 'off' : AI.mode === 'write')) askedClear();
+    if (AI.mode !== 'off') hintDone();
+    paintChip();
+    paintHint();
+    if (!WINDOW) {
+      drawBoard();
+      if (popOpen) {
+        paintPop(was);
+        document.querySelector('#nai-pop .nai-can')?.classList.toggle('anim', was !== AI.mode);
+      }
+      if (was === 'off' && AI.mode !== 'off' && chip) {
+        chip.classList.remove('ignite');
+        void chip.offsetWidth;
+        chip.classList.add('ignite');
+      }
+    }
+    if (was !== AI.mode) window.dispatchEvent(new Event('notesaichange'));
+  }
+  async function setAiMode(m) {
+    if (!NA || !['off', 'read', 'write'].includes(m)) return null;
+    const r = await NA.postMessage({ type: 'mode', mode: m }).catch(() => null);
+    if (r) aiApply(r);
+    return r;
+  }
+
+  let chip = null;
+  let naPop = null;
+  function paintChip() {
+    if (!chip) return;
+    chip.dataset.mode = AI.mode;
+    chip.querySelector('.nai-t').textContent = CHIP[AI.mode];
+    chip.querySelector('.nai-dot').hidden = !dotOn;
+    chip.setAttribute('aria-label', `Notes and AI: ${LONG[AI.mode]}${dotOn && asked ? `. ${asked.by} asked for your notes` : ''}`);
+    chip.dataset.tip = dotOn && asked ? `Notes and AI · ${asked.by} asked for your notes at ${aiTime(asked.at)}` : 'Notes and AI · Choose what AI can do with your notes';
+  }
+  function askedClear() {
+    asked = null;
+    dotOn = false;
+    clearTimeout(dotTimer);
+    paintChip();
+  }
+  // An AI reached for the notes and wasn't allowed (the app tells the page): one dot on the chip, gone once the popover was
+  // opened or after an hour.
+  function aiAsked(a) {
+    if (!a || WINDOW || !NA) return;
+    asked = { by: String(a.by || 'An AI').slice(0, 24), need: a.need === 'write' ? 'write' : 'read', at: Number(a.at) || Date.now() };
+    hintDone();
+    paintHint();
+    clearTimeout(dotTimer);
+    if (popOpen) return paintPop();
+    dotOn = true;
+    dotTimer = setTimeout(askedClear, 3600000);
+    paintChip();
+  }
+
+  // ---- the first-time hint: between the tools row and the notes, until answered (or seen on 3 different days) ----
+  const HINT_KEY = 'notes.aiHint';
+  const hintLoad = () => {
+    try {
+      const v = JSON.parse(localStorage.getItem(HINT_KEY) || '{}');
+      return v && typeof v === 'object' ? v : {};
+    } catch {
+      return null;
+    }
+  };
+  const hintSave = (v) => {
+    try {
+      localStorage.setItem(HINT_KEY, JSON.stringify(v));
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  function hintDone() {
+    const was = hintLoad();
+    if (was && !was.done) hintSave({ done: true });
+  }
+  const hintEl = () => board && board.querySelector('.nai-hint');
+  function hintDrop() {
+    hintDone();
+    const el = hintEl();
+    if (!el || el.classList.contains('gone')) return;
+    el.classList.add('gone');
+    setTimeout(() => el.remove(), 200);
+  }
+  function paintHint() {
+    if (!board) return;
+    const el = hintEl();
+    const ok = boardOn && !!NA && AI.mode === 'off' && !popOpen && !asked && notes.some((n) => blocksOf(n).some((b) => b.text));
+    if (!ok) {
+      if (el && !el.classList.contains('gone')) el.remove();
+      return;
+    }
+    if (el) return;
+    const v = hintLoad();
+    if (!v || v.done) return;
+    const days = Array.isArray(v.days) ? v.days : [];
+    const day = new Date().toLocaleDateString('en-CA');
+    if (!days.includes(day)) {
+      if (days.length >= 3) return void hintSave({ done: true });
+      days.push(day);
+      if (!hintSave({ days })) return;
+    }
+    const card = document.createElement('div');
+    card.className = 'nai-hint';
+    card.setAttribute('role', 'note');
+    card.setAttribute('aria-labelledby', 'nai-hint-t');
+    card.innerHTML =
+      `<span class="nai-orb" aria-hidden="true">${cg('sparkleF')}</span>` +
+      '<div><b id="nai-hint-t">AI can help with your notes</b><p>Let Claude Code, Codex or Claude Desktop read them, add to-dos or start a new note. It stays off until you turn it on.</p></div>' +
+      '<div class="nai-acts"><button type="button" class="topbtn primary nai-yes">Set up</button><button type="button" class="nai-no">No thanks</button></div>';
+    board.querySelector('.np-board').insertBefore(card, board.querySelector('.np-grid'));
+    card.querySelector('.nai-yes').onclick = () => {
+      hintDrop();
+      openPop();
+    };
+    card.querySelector('.nai-no').onclick = () => {
+      hintDrop();
+      chip && chip.focus({ preventScroll: true });
+    };
+  }
+
+  // ---- the popover ----
+  const pill = (m) => `<span class="nai-pill ${PILL[m][1]}">${PILL[m][0]}</span>`;
+  const allowed = (need) => (need === 'read' ? AI.mode !== 'off' : AI.mode === 'write');
+  const mcpNow = () => window.__mcp || null;
+  function deskRow() {
+    if (!window.Settings?.mcpAsk) return '';
+    const s = mcpNow();
+    let sub = 'Looking…';
+    let right = '';
+    let out = false;
+    if (s && !s.desktopFound && !s.desktop) {
+      sub = `Not on this ${MACHINE}`;
+      out = true;
+    } else if (s && s.desktop) {
+      const manage = '<button type="button" class="nai-link" id="nai-manage">Manage</button>';
+      const reads = false; // notes follow the Notes setting alone; Watch and type is for typing into terminals
+      if (s.mode === 'off') sub = `Connected · Claude access is off · ${manage}`;
+      else if (Date.now() - deskAt < 600000) sub = `Connected · quit and reopen it once${MAC ? '' : ' from its tray icon'}`;
+      else sub = `Connected · ${manage}`;
+      right = pill(s.mode === 'off' ? 'off' : reads ? 'read' : AI.mode);
+    } else if (s) {
+      sub = s.mode === 'off' ? 'Connecting also lets it see your AI chats' : 'Adds Orbiterm to Claude Desktop';
+      right = `<button type="button" class="nai-btn" id="nai-desk"${connecting ? ' disabled' : ''}>${connecting ? 'Connecting…' : s.mode === 'off' ? 'Connect…' : 'Connect'}</button>`;
+    }
+    return `<div class="nai-row${out ? ' out' : ''}"><span class="nai-ic">${cg('desk')}</span><span><b>Claude Desktop</b><small>${sub}</small></span>${right}</div>`;
+  }
+  function lastAiRow() {
+    for (let i = aiLog.length - 1; i >= 0; i--) {
+      const a = aiLog[i];
+      const n = notes.find((x) => x.id === a.id);
+      if (n) return { a, n };
+    }
+    return null;
+  }
+  function popHTML() {
+    const i = ['off', 'read', 'write'].indexOf(AI.mode);
+    const ask = asked
+      ? `<div class="nai-asked" role="status">${cg('sparkle')}<span><b>${esc(asked.by)} asked ${asked.need === 'read' ? 'for your notes' : 'to change a note'}</b><small>${aiTime(asked.at)} · pick ${asked.need === 'read' ? 'Read' : 'Read and edit'} to let it</small></span></div>`
+      : '';
+    const seg = [['off', 'Off'], ['read', 'Read'], ['write', 'Read and edit']]
+      .map(([m, l]) => `<button type="button" data-mode="${m}" aria-pressed="${m === AI.mode}" tabindex="${m === AI.mode ? 0 : -1}"${busy === m ? ' class="wait"' : ''}>${l}</button>`)
+      .join('');
+    const can =
+      CAN.map(([t, need], n) => {
+        const yes = allowed(need);
+        return `<li class="${yes ? 'yes' : ''}" style="--n:${n}">${cg(yes ? 'check' : 'dash')}<span>${t}<span class="nai-sr">${yes ? ', allowed' : ', not allowed'}</span></span></li>`;
+      }).join('') + `<li class="always">${cg('lock')}<span>Passwords and keys stay hidden from AI.${AI.mode === 'write' ? ' You can undo every change.' : ''}</span></li>`;
+    const names = TOOL_NAMES.filter(([k]) => k in AI.tools).map(([, n]) => n);
+    const tools = !AI.ready ? 'Works from the next update' : names.length ? names.join(', ').replace(/, ([^,]*)$/, ' and $1') : `None of them is on this ${MACHINE} yet`;
+    const term = `<div class="nai-row"><span class="nai-ic">${cg('term')}</span><span><b>AI in Orbiterm's terminals</b><small>${tools}</small></span>${pill(AI.mode)}</div>`;
+    const hidden = notes.filter((n) => n.aiHidden).length;
+    const lr = lastAiRow();
+    const last = lr ? `<button type="button" class="nai-last" id="nai-last" data-id="${esc(lr.n.id)}">${cg('sparkle')}${esc(lr.a.by)} ${lr.a.kind === 'create' ? 'created' : lr.a.kind === 'pin' ? 'pinned' : 'edited'} “${esc(nameOf(lr.n))}” · ${aiTime(lr.a.at)}</button>` : '';
+    return (
+      `<h3 class="nai-h" id="nai-h">Notes and AI</h3>${ask}` +
+      '<p class="nai-q" id="nai-q">What can AI do with your notes?</p>' +
+      `<div class="nai-seg" role="group" aria-labelledby="nai-q" style="--i:${i}"><span class="nai-thumb" aria-hidden="true"></span>${seg}</div>` +
+      `<p class="nai-say" id="nai-say" role="status" aria-live="polite">${esc(say)}</p>` +
+      `<ul class="nai-can" aria-label="What AI can do now">${can}</ul>` +
+      `<h4 class="nai-eb">Who can use them</h4>${term}${deskRow()}` +
+      `<h4 class="nai-eb">Hide a note</h4><div class="nai-hide"><p>Click <span class="nai-key">${cg('eye')}</span> on an open note, or right-click a note here.</p>` +
+      `<small>AI can't find, read or change a hidden note. ${hidden ? `${hidden} note${hidden > 1 ? 's are' : ' is'} hidden.` : 'No note is hidden yet.'}</small></div>` +
+      `<div class="nai-foot">${last}<button type="button" class="nai-link" id="nai-settings">Privacy settings ›</button></div>`
+    );
+  }
+  function paintPop(from) {
+    if (!naPop) return;
+    const inner = naPop.querySelector('.nai-in');
+    const a = document.activeElement;
+    const keep = a && inner.contains(a) ? (a.dataset.mode ? `[data-mode="${a.dataset.mode}"]` : a.id ? `#${a.id}` : '') : '';
+    inner.innerHTML = popHTML();
+    const seg = inner.querySelector('.nai-seg');
+    // The thumb slides from where it was, after the app's answer (never before).
+    if (from && from !== AI.mode) {
+      const to = seg.style.getPropertyValue('--i');
+      seg.style.setProperty('--i', String(['off', 'read', 'write'].indexOf(from)));
+      void seg.offsetWidth;
+      seg.style.setProperty('--i', to);
+    }
+    bindPop(inner);
+    if (keep) inner.querySelector(keep)?.focus({ preventScroll: true });
+  }
+  function placePop() {
+    const c = chip.getBoundingClientRect();
+    const w = naPop.offsetWidth;
+    const left = Math.max(8, Math.min(c.right - w, innerWidth - 8 - w));
+    const top = c.bottom + 9;
+    naPop.style.left = `${Math.round(left)}px`;
+    naPop.style.top = `${Math.round(top)}px`;
+    naPop.style.setProperty('--ax', `${Math.round(c.left + c.width / 2 - left)}px`);
+    naPop.style.setProperty('--maxh', `${Math.round(innerHeight - top - 8)}px`);
+  }
+  function openPop(focus = true) {
+    if (!chip || !chip.isConnected || !boardOn || popOpen) return;
+    hideTip();
+    hintDrop();
+    popOpen = true;
+    say = '';
+    window.Settings?.mcpAsk?.({ type: 'state' }).then(() => popOpen && paintPop());
+    paintPop();
+    naPop.hidden = false;
+    placePop();
+    chip.setAttribute('aria-expanded', 'true');
+    requestAnimationFrame(() => naPop.classList.add('in'));
+    if (focus) naPop.querySelector('.nai-seg button[aria-pressed="true"]')?.focus({ preventScroll: true });
+    // Opened: the dot has done its job (the banner shows this once).
+    dotOn = false;
+    clearTimeout(dotTimer);
+    paintChip();
+  }
+  function closePop(back) {
+    if (!popOpen) return;
+    popOpen = false;
+    naPop.classList.remove('in');
+    chip.setAttribute('aria-expanded', 'false');
+    asked = null;
+    setTimeout(() => !popOpen && (naPop.hidden = true), 130);
+    if (back) chip.focus({ preventScroll: true });
+  }
+  async function pick(m) {
+    if (m === AI.mode || busy) return;
+    busy = m;
+    say = '';
+    clearTimeout(slow);
+    slow = setTimeout(() => {
+      if (busy && !say) {
+        say = 'One moment…';
+        paintPop();
+      }
+    }, 400);
+    paintPop();
+    const r = await setAiMode(m);
+    clearTimeout(slow);
+    busy = null;
+    // Cancel at the app's question: nothing is written and the answer stays where it was.
+    say = r && r.mode === m ? SAY[m] : r && r.refused === 'wait' ? 'Wait a few seconds, then try again.' : '';
+    paintPop();
+    if (popOpen) naPop.querySelector(`.nai-seg button[data-mode="${AI.mode}"]`)?.focus({ preventScroll: true });
+  }
+  async function connectDesk() {
+    const ask = window.Settings?.mcpAsk;
+    if (!ask || connecting) return;
+    connecting = true;
+    say = '';
+    paintPop();
+    try {
+      let s = mcpNow();
+      if (!s || s.mode === 'off') {
+        // Claude access first: the app's own question ("Let Claude see your AI sessions?").
+        const r = await ask({ type: 'mode', mode: 'watch' });
+        s = r && (r.state || r);
+        if (!s || s.mode === 'off') return;
+      }
+      const r = await ask({ type: 'connect', target: 'desktop' });
+      if (r && r.error) say = r.error;
+      else if (r) {
+        deskAt = Date.now();
+        say = 'Claude Desktop is connected.';
+      }
+    } finally {
+      connecting = false;
+      paintPop();
+    }
+  }
+  function bindPop(inner) {
+    const seg = inner.querySelector('.nai-seg');
+    seg.onclick = (e) => {
+      const b = e.target.closest('button[data-mode]');
+      if (b) pick(b.dataset.mode);
+    };
+    // ← → move between the answers; Space or Enter picks one (each pick may bring up a system question).
+    seg.onkeydown = (e) => {
+      const bs = [...seg.querySelectorAll('button')];
+      const at = bs.indexOf(document.activeElement);
+      const to = { ArrowLeft: at - 1, ArrowRight: at + 1, Home: 0, End: bs.length - 1 }[e.key];
+      if (to == null || at < 0) return;
+      e.preventDefault();
+      const b = bs[Math.max(0, Math.min(bs.length - 1, to))];
+      bs.forEach((x) => (x.tabIndex = x === b ? 0 : -1));
+      b.focus();
+    };
+    const go = inner.querySelector('#nai-desk');
+    if (go) go.onclick = connectDesk;
+    const manage = inner.querySelector('#nai-manage');
+    if (manage) manage.onclick = () => (closePop(false), window.Cloud?.openSettings('claude'));
+    const last = inner.querySelector('#nai-last');
+    if (last) last.onclick = () => (closePop(false), openNote(last.dataset.id));
+    inner.querySelector('#nai-settings').onclick = () => (closePop(false), window.Cloud?.openSettings('privacy'));
+  }
+  // The door from elsewhere (the panel's menu, Settings): the board, then the popover.
+  function openAi() {
+    if (WINDOW || !NA) return;
+    window.Cloud?.close?.();
+    window.Cloud?.showView?.('notes');
+    requestAnimationFrame(() => requestAnimationFrame(() => openPop()));
+  }
+  function mountAi(view) {
+    chip = view.querySelector('.nai-chip');
+    if (!chip) return;
+    naPop = document.createElement('div');
+    naPop.className = 'nai-pop';
+    naPop.id = 'nai-pop';
+    naPop.hidden = true;
+    naPop.setAttribute('role', 'dialog');
+    naPop.setAttribute('aria-labelledby', 'nai-h');
+    naPop.innerHTML = '<div class="nai-arrow" aria-hidden="true"></div><div class="nai-in"></div>';
+    document.body.appendChild(naPop);
+    chip.onclick = () => (popOpen ? closePop(true) : openPop());
+    // Esc closes the popover and nothing more (left to go on, cloud.js would take the board away too).
+    addEventListener(
+      'keydown',
+      (e) => {
+        if (e.key !== 'Escape' || !popOpen) return;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        closePop(true);
+      },
+      true,
+    );
+    addEventListener('pointerdown', (e) => {
+      if (popOpen && !e.target.closest('#nai-pop') && !e.target.closest('.nai-chip')) closePop(false);
+    });
+    // Focus going to something else closes it; the window losing focus (the app's own question is up) does not.
+    naPop.addEventListener('focusout', (e) => {
+      const to = e.relatedTarget;
+      if (popOpen && to && !to.closest('#nai-pop') && !to.closest('.nai-chip')) closePop(false);
+    });
+    addEventListener('resize', () => popOpen && placePop());
+    window.addEventListener('mcpchange', () => popOpen && paintPop());
+    paintChip();
+    window.Settings?.mcpAsk?.({ type: 'state' });
   }
 
   // ⤢ lit while the pinned note is out in its app window (NATIVE).
@@ -2033,9 +2881,12 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
       '<section class="panel np-boardp"><header><span class="tag">notes</span><span class="meta np-bmeta"></span></header>' +
       '<div class="body np-board"><div class="np-tools">' +
       '<input class="np-find" type="search" placeholder="search notes…" spellcheck="false" aria-label="Search notes">' +
-      '<span class="np-gone" hidden></span><button type="button" class="topbtn primary np-new">+ new note</button></div>' +
+      '<span class="np-gone" hidden></span>' +
+      (NA ? '<button type="button" class="nai-chip" aria-haspopup="dialog" aria-expanded="false" aria-controls="nai-pop"><span class="nai-cg" aria-hidden="true">\uEB51</span><span class="nai-t">AI off</span><span class="nai-dot" hidden></span></button>' : '') +
+      '<button type="button" class="topbtn primary np-new">+ new note</button></div>' +
       '<div class="np-grid" role="list"></div></div></section>';
     board = view;
+    mountAi(view);
     const find = view.querySelector('.np-find');
     find.addEventListener('input', () => {
       query = find.value.trim().toLowerCase();
@@ -2614,6 +3465,8 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
     stopDrag('cancel');
     endLanding();
     boardOn = false;
+    closePop(false);
+    hintEl()?.remove();
   }
 
   // A note as the panel shows it, only smaller and not to be written in: the same blocks, the same marks.
@@ -2638,12 +3491,19 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
         return (
           `<div class="nb nb-${b.type}${b.checked ? ' done' : ''}"${ind}>` +
           (mark ? `<span class="nb-mark">${mark}</span>` : '') +
-          `<div class="nb-text">${esc(b.text) || '&nbsp;'}</div></div>`
+          `<div class="nb-text">${esc(unlink(b.text)) || '&nbsp;'}</div></div>`
         );
       })
       .join('');
   }
 
+  // A spark beside the trash can while an AI's last change to the note stands (the strip's "Undo" is in the note).
+  function aiMark(n) {
+    const a = AI.mode !== 'off' ? aiTag(n) : null;
+    if (!a) return '';
+    const tip = `${a.by} ${a.kind === 'create' ? 'made' : a.kind === 'pin' ? 'pinned' : 'edited'} this ${ago(a.at)} · Open the note to undo it`;
+    return `<span class="nai-mark" role="img" data-tip="${esc(tip)}" aria-label="${esc(tip)}">${cg('sparkle')}</span>`;
+  }
   function tile(n) {
     // Its marks: pinned (the note the dashboard's panel shows), open (the note in the window).
     const open = NATIVE ? out.has(n.id) : n === cur && win && !win.hidden;
@@ -2655,6 +3515,7 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
       `<section class="panel np-tile${n === cur || open ? ' cur' : ''}${coming}" role="listitem" tabindex="0" data-id="${esc(n.id)}" aria-label="${esc(nameOf(n))}">` +
       `<header><span class="tag np-name" title="${esc(nameOf(n) === n.name ? NAME_HINT : nameOf(n))}">${esc(nameOf(n))}</span>` +
       `<span class="meta">${where ? `<b>${where}</b> · ` : ''}${when}</span>` +
+      aiMark(n) +
       (n.aiHidden ? `<span class="np-aih" data-tip="${AI_HIDDEN_TIP}" role="img" aria-label="${AI_HIDDEN_TIP}">${EYE_OFF}</span>` : '') +
       `<button type="button" class="np-del" title="Delete note" aria-label="Delete note">${TRASH}</button></header>` +
       `<div class="body np-mini">${mini(blocksOf(n))}</div></section>`
@@ -2684,6 +3545,7 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
       list.map(tile).join('') +
       (query && !list.length ? `<div class="np-empty">no note has “${esc(query)}” in it</div>` : '');
     board.querySelector('.np-bmeta').textContent = `${notes.length} note${notes.length === 1 ? '' : 's'}`;
+    paintHint();
     const bar = board.querySelector('.np-gone');
     bar.hidden = !gone;
     if (gone) bar.innerHTML = `deleted ${esc(nameOf(gone.note))} <button type="button">undo</button>`;
@@ -2752,6 +3614,14 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
   // Typing now: a key within the last 1.5 s in this note's editor, or a composition (Türkçe, Japanese…) not finished.
   const typing = () => composing || (ed.contains(document.activeElement) && Date.now() - lastInputAt < 1500);
   const nap = (ms) => new Promise((r) => setTimeout(r, ms));
+  // A pause in the user's typing in this page's note, waited for up to 10 s (as agentApply does): false while they still type.
+  async function pause() {
+    for (let waited = 0; typing(); waited += 200) {
+      if (waited >= 10000) return false;
+      await nap(200);
+    }
+    return true;
+  }
   const AI_MAX = 20000;
 
   // Every note, where it is, never its text (agentRead has that): `pinnedToDashboard` is the note the dashboard's panel shows,
@@ -2865,6 +3735,7 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
     lastAi = { id: n.id, by: String(by || 'AI').slice(0, 24), at: Date.now(), before: keep, after };
     aiLog.push(lastAi);
     if (aiLog.length > 10) aiLog.shift();
+    aiTouched();
     stamp();
     return { ok: true, op, version: after, title: nameOf(n), saved: !unsaved };
   }
@@ -2874,9 +3745,11 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
     const n = notes.find((x) => x.id === id);
     const a = aiTag(n);
     if (!n || !a) return { error: 'nothing_to_undo' };
+    if (a.kind) return agentUndoKind(n, a);
     await setBlocksOf(n, a.before);
     lastAi = null;
     aiLog.splice(0, aiLog.length, ...aiLog.filter((x) => x !== a));
+    aiTouched();
     stamp();
     return { ok: true };
   }
@@ -2903,6 +3776,88 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
     drawBoard();
     return { ok: true };
   }
+
+  // A new note an AI made (title + Markdown), first on the board; it isn't opened or pinned (agentPin / agentWindow do that).
+  async function agentCreate(req) {
+    await isLoaded;
+    if (!req || typeof req !== 'object') return { error: 'bad_request', message: 'Bad request.' };
+    const title = String(req.title ?? '').replace(/\s+/g, ' ').replace(/^#+\s*/, '').trim().slice(0, 80);
+    const text = String(req.text ?? '');
+    // Its name is always the title (never a noteN, numbered among every note, hidden ones too).
+    if (!title) return { error: 'bad_request', message: 'Give a title: one line with words in it.' };
+    if (text.length > AI_MAX) return { error: 'bad_request', message: `The text is longer than ${AI_MAX} characters.` };
+    const md = `# ${title}\n\n${text}`.trimEnd();
+    const n = blank();
+    n.blocks = plain(fromText(md));
+    n.at = Date.now();
+    notes.unshift(n);
+    lastAi = { id: n.id, by: String(req.by || 'AI').slice(0, 24), at: Date.now(), kind: 'create', after: hashOf(toText(blocksOf(n))) };
+    aiLog.push(lastAi);
+    if (aiLog.length > 10) aiLog.shift();
+    aiTouched();
+    const saving = write();
+    stamp();
+    drawBoard();
+    return { ok: true, id: n.id, title: nameOf(n), version: lastAi.after, saved: await saving };
+  }
+
+  // Which note the dashboard's panel shows. `unpin` goes back to the board's first note (the panel always shows one).
+  async function agentPin(req) {
+    await isLoaded;
+    const by = String((req && req.by) || 'AI').slice(0, 24);
+    const gone = { error: 'not_found', message: 'No note has this id. List the notes again.' };
+    // The panel's note changes under the user's keys only after a pause in their typing (as agentApply's rewrites).
+    if (!(await pause())) return { error: 'busy' };
+    const prev = pinnedNote();
+    let n;
+    if (req && req.unpin) n = notes.find((x) => !x.aiHidden);
+    else {
+      n = notes.find((x) => x.id === (req && req.id));
+      if (!n || n.aiHidden) return gone;
+    }
+    // A note the user hid from AI stays pinned: pinning another one, as unpinning, would take it off the panel.
+    if (!prev || prev.aiHidden) return { error: 'locked' };
+    if (!n || n === prev) return { ok: true, unchanged: true, id: prev.id, title: nameOf(prev) };
+    pinNote(n.id);
+    lastAi = { id: n.id, by, at: Date.now(), kind: 'pin', prev: prev ? prev.id : null, after: hashOf(toText(blocksOf(n))) };
+    aiLog.push(lastAi);
+    if (aiLog.length > 10) aiLog.shift();
+    aiTouched();
+    stamp();
+    return { ok: true, id: n.id, title: nameOf(n) };
+  }
+
+  // Undo of an AI's create (the note goes, as the trash can does) or pin (the panel shows the note it showed before).
+  async function agentUndoKind(n, a) {
+    lastAi = null;
+    aiLog.splice(0, aiLog.length, ...aiLog.filter((x) => x !== a));
+    aiTouched();
+    if (a.kind === 'create') removeNote(n.id);
+    else if (a.kind === 'pin') {
+      const p = notes.find((x) => x.id === a.prev);
+      if (p) pinNote(p.id);
+    }
+    stamp();
+    return { ok: true };
+  }
+
+  // A note's own window (NATIVE only): the note checked here; the window itself, opened (and kept on top) or closed, is the
+  // app's (NotesTools), and the page follows once it loads (windowNote) or closes (windowClosed), as at launch. Nothing is
+  // set here first, so a call the app stops halfway leaves no note "out" with no window.
+  async function agentWindow(id, action) {
+    await isLoaded;
+    const n = notes.find((x) => x.id === id);
+    if (!n || n.aiHidden) return { error: 'not_found' };
+    if (!NATIVE) return { error: 'unsupported' };
+    // The panel's own note going out to its window: not under the user's keys.
+    if (action === 'open' && n === cur && !out.has(id)) {
+      if (!(await pause())) return { error: 'busy' };
+      if (!notes.includes(n) || n.aiHidden) return { error: 'not_found' };
+    }
+    return { ok: true, title: nameOf(n) };
+  }
+  // A note's window (its own page): a pause in the user's typing there before the app closes or re-layers it.
+  const agentIdle = async () => ((await pause()) ? { ok: true } : { error: 'busy' });
 
   // ---------- the dashboard's side of the note windows (NATIVE; NoteWindow.swift calls these) ----------
   // A note's window asks for its note: from now on it's written there.
@@ -3082,6 +4037,8 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
     render(null);
     loaded();
   }
+  // The dashboard asks the app where the level stands (the eye follows); a note's window was told at its start.
+  if (NA) NA.postMessage({ type: 'state' }).then(aiApply).catch(() => {});
   return {
     focus: refocus,
     open: undock,
@@ -3102,7 +4059,17 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
     agentApply,
     agentUndo,
     agentSession,
+    agentCreate,
+    agentPin,
+    agentWindow,
+    agentIdle,
+    setTop,
     setAiHidden,
     aiHiddenSet,
+    aiMode: (m) => aiApply({ mode: m }),
+    aiState: () => ({ mode: AI.mode, ready: AI.ready, tools: AI.tools, known: AI.known }),
+    setAiMode,
+    aiAsked,
+    openAi,
   };
 })();

@@ -115,6 +115,8 @@ enum NotesAI {
 
     static func setMode(_ m: Mode, done: (() -> Void)? = nil) {
         UserDefaults.standard.set(m.rawValue, forKey: key)
+        // Every note's window and the dashboard's page show the level (the eye, the chip): they are told at once.
+        NoteWindow.aiModeChanged()
         // The server's socket follows: open while this or the Claude access is on.
         McpHub.shared.refreshServer()
         sync(done: done)
@@ -159,7 +161,8 @@ enum NotesAI {
     static func state() -> [String: Any] {
         var tools: [String: Any] = [:]
         for t in Tool.allCases where t.present { tools[t.rawValue] = t.registered(serverName) != nil }
-        return ["mode": mode.rawValue, "ready": launcher != nil, "tools": tools]
+        return ["mode": mode.rawValue, "ready": launcher != nil, "tools": tools,
+                "outsideWriteNeedsType": NotesTools.outsideWritesNeedWatchAndType]
     }
 }
 
@@ -176,7 +179,14 @@ final class NotesAIBridge: NSObject, WKScriptMessageHandlerWithReply {
         case "mode":
             guard let want = NotesAI.Mode(rawValue: body["mode"] as? String ?? "") else { return replyHandler(NotesAI.state(), nil) }
             let was = NotesAI.mode
-            if want != .off, want != was, !(want == .read && was == .write), !Self.confirm(want) { return replyHandler(NotesAI.state(), nil) }
+            if want != .off, want != was, !(want == .read && was == .write) {
+                // `refused` says why nothing changed: "wait" (a question is up, or one was asked a moment ago) or "cancel" (the user said no).
+                switch Self.confirm(want) {
+                case .yes: break
+                case .wait: return replyHandler(NotesAI.state().merging(["refused": "wait"]) { $1 }, nil)
+                case .cancel: return replyHandler(NotesAI.state().merging(["refused": "cancel"]) { $1 }, nil)
+                }
+            }
             NotesAI.setMode(want) { replyHandler(NotesAI.state(), nil) }
         default: replyHandler(nil, "unknown request")
         }
@@ -185,26 +195,28 @@ final class NotesAIBridge: NSObject, WKScriptMessageHandlerWithReply {
     private static var asking = false
     private static var lastAsk = -Double.infinity
 
-    private static func confirm(_ want: NotesAI.Mode) -> Bool {
+    private enum Answer { case yes, wait, cancel }
+
+    private static func confirm(_ want: NotesAI.Mode) -> Answer {
         // One question at a time, and not more often than every ten seconds: a page can't wear the answer out.
         let now = ProcessInfo.processInfo.systemUptime
-        guard !asking, now - lastAsk >= 10 else { return false }
+        guard !asking, now - lastAsk >= 10 else { return .wait }
         asking = true
         defer { asking = false; lastAsk = ProcessInfo.processInfo.systemUptime }
         let alert = NSAlert()
         alert.alertStyle = want == .write ? .warning : .informational
         if want == .write {
-            alert.messageText = "Let AI tools read and edit your notes?"
-            alert.informativeText = "Claude Code, Codex and Antigravity running in Orbiterm will be able to read all your notes and add to or change them. What they read goes to their provider. Passwords and keys are masked before they leave Orbiterm, but anything else in a note is sent. Every change can be undone from the note's strip or with ⌘Z. You can turn this off at any time."
+            alert.messageText = "Let AI read and edit your notes?"
+            alert.informativeText = "AI in Orbiterm's terminals (Claude Code, Codex, Antigravity) and Claude Desktop, if you connect it, will be able to read all your notes, add to them, change them, make new ones and pin or open them on your screen. What they read goes to their provider. Passwords and keys are hidden first, but everything else in a note is sent. Every change shows on the note with Undo. You can turn this off at any time."
             alert.addButton(withTitle: "Cancel")
             alert.addButton(withTitle: "Allow reading and editing")
         } else {
-            alert.messageText = "Let AI tools read your notes?"
-            alert.informativeText = "Claude Code, Codex and Antigravity running in Orbiterm will be able to read all your notes, never change them. What they read goes to their provider. Passwords and keys are masked before they leave Orbiterm, but anything else in a note is sent. You can turn this off at any time."
+            alert.messageText = "Let AI read your notes?"
+            alert.informativeText = "AI in Orbiterm's terminals (Claude Code, Codex, Antigravity) and Claude Desktop, if you connect it, will be able to read all your notes, never change them. What they read goes to their provider. Passwords and keys are hidden first, but everything else in a note is sent. Hide a note from AI with its eye. You can turn this off at any time."
             alert.addButton(withTitle: "Cancel")
             alert.addButton(withTitle: "Allow reading")
         }
         // Cancel is the one Return presses.
-        return alert.runModal() == .alertSecondButtonReturn
+        return alert.runModal() == .alertSecondButtonReturn ? .yes : .cancel
     }
 }

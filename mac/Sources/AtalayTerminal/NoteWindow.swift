@@ -36,8 +36,8 @@ final class NoteWindow: NSObject, NSWindowDelegate, WKNavigationDelegate {
     private var loaded = false
     /// Shown once its page has its note: true takes the keyboard.
     private var pendingFocus: Bool?
-    /// Asked to open again while it was closing.
-    private var reopen = false
+    /// Asked to open again while it was closing: whether it then takes the keyboard.
+    private var reopen: Bool?
     /// Where the pointer and the window were when the header's drag began.
     private var dragFrom: (mouse: NSPoint, origin: NSPoint)?
 
@@ -51,7 +51,7 @@ final class NoteWindow: NSObject, NSWindowDelegate, WKNavigationDelegate {
         let config = WKWebViewConfiguration()
         config.lockInspector()
         let ucc = WKUserContentController()
-        let boot: [String: Any] = ["id": id, "onTop": onTop, "streamer": Streamer.on]
+        let boot: [String: Any] = ["id": id, "onTop": onTop, "streamer": Streamer.on, "aiMode": NotesAI.mode.rawValue]
         let json = (try? JSONSerialization.data(withJSONObject: boot)).flatMap { String(data: $0, encoding: .utf8) } ?? "null"
         ucc.addUserScript(WKUserScript(source: "window.__NOTE_WINDOW__ = \(json);", injectionTime: .atDocumentStart, forMainFrameOnly: true))
         config.userContentController = ucc
@@ -100,7 +100,7 @@ final class NoteWindow: NSObject, NSWindowDelegate, WKNavigationDelegate {
     static func show(id: String, focus: Bool = true) {
         guard NotesStore.validName(id) else { return }
         if let n = open[id] {
-            if n.closing { n.reopen = true }
+            if n.closing { n.reopen = (n.reopen ?? false) || focus }
             else if n.loaded { n.show(focus: focus) }
             else { n.pendingFocus = (n.pendingFocus ?? false) || focus }
             return
@@ -108,6 +108,16 @@ final class NoteWindow: NSObject, NSWindowDelegate, WKNavigationDelegate {
         let n = NoteWindow(id: id)
         n.pendingFocus = focus
         open[id] = n
+    }
+
+    /// For the AI tools (note_show): the note in its window without taking the keyboard from what the user is doing, and, when
+    /// asked, kept on top (or not). The place is set before the window is made, so it opens the way it was asked to.
+    static func present(id: String, keepOnTop: Bool?) {
+        guard NotesStore.validName(id) else { return }
+        if let on = keepOnTop {
+            if let n = open[id] { n.setOnTop(on, focus: false) } else { update(id) { $0["onTop"] = on } }
+        }
+        show(id: id, focus: false)
     }
 
     /// The dashboard closes it: its × ("bring it back"), or the note deleted there (`flush` false, its place forgotten).
@@ -165,6 +175,15 @@ final class NoteWindow: NSObject, NSWindowDelegate, WKNavigationDelegate {
                 n.window.orderFront(nil)
             }
         }
+    }
+
+    /// What AI may do with the notes changed (NotesAI.setMode): each note's window and the dashboard's page learn it, for the eye
+    /// (shown only while AI has access) and the board's chip.
+    static func aiModeChanged() {
+        let mode = NotesAI.mode.rawValue
+        let js = "window.Notes && Notes.aiMode && Notes.aiMode(mode); return true"
+        for n in open.values { n.webView.callAsyncJavaScript(js, arguments: ["mode": mode], in: nil, in: .page) { _ in } }
+        radar?.callNotes(js, ["mode": mode])
     }
 
     /// A note hidden from AI or shown again somewhere else: its window's eye follows.
@@ -247,7 +266,7 @@ final class NoteWindow: NSObject, NSWindowDelegate, WKNavigationDelegate {
         window.close()
         if Self.open[id] === self { Self.open[id] = nil }
         Self.radar?.callNotes("window.Notes && Notes.windowClosed && Notes.windowClosed(id)", ["id": id])
-        if reopen { Self.show(id: id) }
+        if let focus = reopen { Self.show(id: id, focus: focus) }
     }
 
     // MARK: on top, or above the dashboard
@@ -276,10 +295,22 @@ final class NoteWindow: NSObject, NSWindowDelegate, WKNavigationDelegate {
         d.addChildWindow(window, ordered: .above)
     }
 
-    private func setOnTop(_ on: Bool) {
+    private func setOnTop(_ on: Bool, focus: Bool = true) {
         guard on != onTop else { return }
         onTop = on
         Self.update(id) { $0["onTop"] = on }
+        if !focus {
+            // The AI asked: a window not shown yet opens this way once its page has the note (show); one on screen is ordered
+            // in again, its page's button following, without taking the keyboard, nor losing it when the user was in it.
+            guard loaded, !finished, !closing else { return }
+            applyOnTop()
+            webView.callAsyncJavaScript("window.Notes && Notes.setTop && Notes.setTop(on)", arguments: ["on": on], in: nil, in: .page) { _ in }
+            guard on else { return window.orderFront(nil) }
+            let key = window.isKeyWindow
+            window.orderOut(nil)
+            if key { window.makeKeyAndOrderFront(nil) } else { window.orderFrontRegardless() }
+            return
+        }
         applyOnTop()
         // Ordered in again: off a full-screen dashboard's Space and onto every desktop (as a terminal's pin does).
         if on { window.orderOut(nil) }

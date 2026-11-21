@@ -229,3 +229,152 @@ html.np-dragging, html.np-dragging * { cursor: grabbing !important; }
 /* The strip after an AI changed the note: "Claude edited · 2:14 PM · Undo", the whole line a button until the note changes again. */
 [data-undo]:not([data-undo=""]) { cursor: pointer; color: var(--accent); }
 [data-undo]:not([data-undo=""]):hover { text-decoration: underline; }
+
+/* ---------- links ---------- */
+/* A link: the accent, underlined; a named one keeps its brackets and address out of sight until the cursor is in it. */
+.nb-text .lk { color: var(--accent); text-decoration: underline; text-decoration-color: rgba(var(--accent-rgb), 0.5); text-underline-offset: 2px; cursor: pointer; }
+.nb-text .lk:hover { text-decoration-color: var(--accent); }
+.nb-text .lk-m:not(.open) .lk-h { display: inline-block; width: 0; height: 1px; overflow: hidden; vertical-align: top; white-space: nowrap; color: transparent; }
+.nb-text .lk-m.open .lk-h { color: var(--dim); text-decoration: none; }
+/* A very long address is cut short with an ellipsis, until the block is being written in. */
+.nb-text:not(:focus) .lk-u { display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
+.lk-pop { position: fixed; z-index: 2800; display: flex; align-items: center; gap: 2px; max-width: min(420px, calc(100vw - 8px)); padding: 3px; border: 1px solid rgba(var(--accent-rgb), 0.45); border-radius: 8px; background: linear-gradient(170deg, rgba(var(--glass-top-rgb), 0.97) 0%, rgba(var(--surface-rgb), 0.98) 60%); box-shadow: 0 10px 30px rgba(0, 0, 0, 0.55); color: var(--txt); font: 12px/1.3 var(--font); }
+.lk-pop[hidden] { display: none; }
+.lk-pop button { flex: none; padding: 4px 8px; border: 0; border-radius: 5px; background: none; color: var(--txt); font: inherit; cursor: pointer; }
+.lk-pop button:hover { background: rgba(var(--accent-rgb), 0.18); color: var(--hi); }
+.lk-pop kbd { margin-left: 6px; color: var(--dim); font: inherit; }
+.lk-pop .lk-go { min-width: 0; padding: 4px 8px; overflow: hidden; color: var(--accent); text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+.lk-pop input { flex: 1; min-width: 180px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 5px; background: rgba(0, 0, 0, 0.3); color: var(--hi); font: inherit; outline: none; }
+.lk-pop input:focus { border-color: var(--accent); }
+.lk-pop input.bad { border-color: var(--red); }
+
+/* =====================================================================================================================
+   NEW · Notes and AI (notes.js: the chip on the board, its popover, the first-time hint, the AI trace on a card).
+   Everything is a token of style.css, so every theme recolours it. Sizes in rem scale with the app's text size (zoom).
+   ===================================================================================================================== */
+:root {
+  --nai-spring: linear(0, 0.049, 0.157, 0.285, 0.411, 0.525, 0.624, 0.706, 0.772, 0.825, 0.866, 0.899, 0.924, 0.943, 0.957, 0.968, 0.976, 0.982, 0.987, 0.99, 0.993, 0.995, 0.996, 0.997, 1);
+  --nai-pop: linear(0, 0.042, 0.143, 0.275, 0.415, 0.55, 0.672, 0.774, 0.858, 0.922, 0.969, 1.001, 1.022, 1.033, 1.038, 1.038, 1.035, 1.03, 1.025, 1.02, 1.015, 1.011, 1.007, 1.004, 1);
+  --nai-out: cubic-bezier(0.22, 1, 0.36, 1);
+}
+.np-board { container: npb / inline-size; }
+.nai-cg { font: normal normal normal 14px/1 codicon; -webkit-font-smoothing: antialiased; }
+
+/* ---- the chip: the notes' settings door and their AI status, in the board's tools row, left of "+ new note" ---- */
+.np-tools .nai-chip { margin-left: auto; }
+.np-tools .nai-chip ~ .np-new { margin-left: 0; }
+.nai-chip { position: relative; display: inline-flex; flex: none; align-items: center; gap: 6px; height: 24px; padding: 0 10px 0 8px; border: 1px solid var(--line); background: transparent; color: var(--dim); font: inherit; white-space: nowrap; cursor: pointer; transition: color 0.2s, border-color 0.2s, background-color 0.2s, box-shadow 0.2s; }
+.nai-chip .nai-cg { font-size: 14px; transition: transform 0.3s var(--nai-out); }
+.nai-chip:hover { color: var(--hi); border-color: var(--accent); box-shadow: 0 0 10px rgba(var(--accent-rgb), 0.35); }
+.nai-chip:hover .nai-cg { transform: rotate(30deg); }
+.nai-chip[data-mode="read"] { border-color: rgba(var(--accent-rgb), 0.55); background: rgba(var(--accent-rgb), 0.1); color: var(--accent-soft); }
+.nai-chip[data-mode="write"] { border-color: var(--accent); background: rgba(var(--accent-rgb), 0.18); color: var(--hi); }
+.nai-chip[data-mode="write"] .nai-cg { color: var(--accent); }
+.nai-chip[aria-expanded="true"] { border-color: var(--accent); background: rgba(var(--accent-rgb), 0.24); color: var(--hi); box-shadow: none; }
+.nai-chip:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
+/* An AI asked for the notes and was refused: one quiet dot, gone once the popover has been opened. */
+.nai-dot { position: absolute; top: -4px; right: -4px; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 2px rgb(var(--panel-rgb)), 0 0 8px rgba(var(--accent-rgb), 0.8); animation: nai-dot 0.4s var(--nai-pop) both; }
+.nai-dot[hidden] { display: none; }
+@keyframes nai-dot { from { transform: scale(0); } to { transform: scale(1); } }
+/* Access just turned on: the chip catches fire once. */
+.nai-chip.ignite { animation: nai-ignite 0.9s var(--nai-out); }
+@keyframes nai-ignite { 0% { box-shadow: 0 0 0 0 rgba(var(--accent-rgb), 0.75); } 35% { box-shadow: 0 0 22px 3px rgba(var(--accent-rgb), 0.55); } 100% { box-shadow: 0 0 0 0 rgba(var(--accent-rgb), 0); } }
+
+/* ---- the first-time hint: between the tools row and the notes, until answered (or 3 days seen) ---- */
+.nai-hint { display: grid; grid-template-columns: 2.25rem minmax(0, 1fr) auto; align-items: center; gap: 0.75rem; padding: 0.625rem 0.75rem; border: 1px solid rgba(var(--accent-rgb), 0.35); border-radius: 6px; background: linear-gradient(100deg, rgba(var(--accent-rgb), 0.14) 0%, rgba(var(--accent-rgb), 0.04) 55%, rgba(var(--accent-rgb), 0) 100%); font-family: var(--font-sans); animation: nai-in 0.22s var(--nai-out) both; }
+.nai-hint.gone { overflow: hidden; animation: nai-gone 0.2s ease-in forwards; }
+@keyframes nai-in { from { opacity: 0; transform: translateY(-4px); } }
+@keyframes nai-gone { to { opacity: 0; transform: translateY(-4px); } }
+.nai-orb { display: grid; place-items: center; width: 2.25rem; height: 2.25rem; border-radius: 50%; background: radial-gradient(circle at 50% 42%, rgba(var(--accent-soft-rgb), 0.95) 0%, rgba(var(--accent-rgb), 0.62) 42%, rgba(var(--accent-rgb), 0) 72%); color: var(--ink); }
+.nai-orb .nai-cg { font-size: 16px; }
+.nai-hint b { display: block; color: var(--hi); font-size: 0.8125rem; font-weight: 650; line-height: 1.3; }
+.nai-hint p { margin: 0.125rem 0 0; color: var(--txt2); font-size: 0.75rem; line-height: 1.45; }
+.nai-acts { display: flex; align-items: center; gap: 0.5rem; font: var(--fs)/1.35 var(--font); }
+.nai-acts .topbtn { height: 24px; }
+.nai-no { height: 24px; padding: 0 6px; border: 0; background: none; color: var(--txt3); font: inherit; cursor: pointer; }
+.nai-no:hover { color: var(--hi); text-decoration: underline; text-underline-offset: 2px; }
+.nai-acts button:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
+@container npb (max-width: 34rem) {
+  .nai-hint { grid-template-columns: 2.25rem minmax(0, 1fr); align-items: start; }
+  .nai-acts { grid-column: 2; }
+}
+@container npb (max-width: 30rem) {
+  .np-find { flex: 1 1 100%; }
+}
+
+/* ---- the AI's trace on a card: a spark beside the trash can while an AI's last change stands (the strip's
+   "Claude Code edited · 2:14 PM · Undo" already exists); it sits where the hidden-from-AI eye sits ---- */
+.nai-mark { flex: none; margin-right: 3px; color: var(--accent-soft); line-height: 19px; cursor: default; }
+.nai-mark .nai-cg { font-size: 13px; vertical-align: -2px; }
+
+/* ---- the popover: under the chip, its arrow on the chip; glass, as it floats over the board ---- */
+.nai-pop { position: fixed; z-index: 2750; width: min(22.5rem, calc(100vw - 1rem)); opacity: 0; transform: translateY(-4px) scale(0.98); transform-origin: var(--ax, 90%) 0; transition: opacity 0.12s ease-in, transform 0.12s ease-in; pointer-events: none; }
+.nai-pop.in { opacity: 1; transform: none; transition: opacity 0.18s var(--nai-out), transform 0.18s var(--nai-out); pointer-events: auto; }
+.nai-pop[hidden] { display: none; }
+.nai-arrow { position: absolute; top: -6px; left: calc(var(--ax, 90%) - 6px); width: 12px; height: 12px; border: 1px solid rgba(var(--accent-rgb), 0.45); border-right: 0; border-bottom: 0; background: rgb(var(--glass-top-rgb)); transform: rotate(45deg); }
+.nai-in { box-sizing: border-box; max-height: var(--maxh, calc(100vh - 1rem)); overflow-y: auto; scrollbar-width: thin; padding: 0.875rem 1rem 0.75rem; border: 1px solid rgba(var(--accent-rgb), 0.45); border-radius: 10px; background: linear-gradient(170deg, rgba(var(--glass-top-rgb), 0.97) 0%, rgba(var(--surface-rgb), 0.98) 60%); -webkit-backdrop-filter: blur(16px) saturate(1.4); backdrop-filter: blur(16px) saturate(1.4); box-shadow: 0 16px 44px rgba(0, 0, 0, 0.6), 0 0 22px rgba(var(--accent-rgb), 0.18); color: var(--txt); font: 0.8125rem/1.4 var(--font-sans); }
+.nai-h { margin: 0; color: var(--hi); font-size: 0.9375rem; font-weight: 650; line-height: 1.3; }
+/* An AI asked and was refused (only right after it happened) */
+.nai-asked { display: grid; grid-template-columns: 1rem minmax(0, 1fr); gap: 0.5rem; margin-top: 0.625rem; padding: 0.5rem 0.625rem; border: 1px solid rgba(var(--accent-rgb), 0.35); border-radius: 6px; background: rgba(var(--accent-rgb), 0.12); }
+.nai-asked .nai-cg { color: var(--accent); line-height: 1.25rem; }
+.nai-asked b { display: block; color: var(--hi); font-weight: 600; }
+.nai-asked small { display: block; color: var(--txt3); font-size: 0.75rem; font-variant-numeric: tabular-nums; }
+/* The question, and the three answers */
+.nai-q { margin: 0.75rem 0 0.4375rem; color: var(--txt2); }
+.nai-seg { position: relative; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); height: 1.75rem; padding: 2px; border: 1px solid rgba(var(--accent-rgb), 0.45); border-radius: 7px; }
+.nai-thumb { position: absolute; top: 2px; bottom: 2px; left: 2px; width: calc((100% - 4px) / 3); border-radius: 5px; background: var(--accent); box-shadow: 0 0 12px rgba(var(--accent-rgb), 0.45); transform: translateX(calc(var(--i, 0) * 100%)); transition: transform 0.3s var(--nai-spring); }
+.nai-seg button { position: relative; z-index: 1; min-width: 0; padding: 0 0.25rem; border: 0; border-radius: 5px; background: none; color: var(--txt3); font: 600 0.78125rem/1 var(--font-sans); white-space: nowrap; cursor: pointer; transition: color 0.2s; }
+.nai-seg button:hover { color: var(--hi); }
+.nai-seg button[aria-pressed="true"] { color: var(--ink); }
+.nai-seg button:focus-visible { outline: none; box-shadow: inset 0 0 0 1.5px var(--hi); }
+/* Waiting for the app's answer: a thin glow runs under the answer clicked. */
+.nai-seg button.wait::after { content: ""; position: absolute; left: 20%; right: 20%; bottom: 2px; height: 2px; border-radius: 1px; background: linear-gradient(90deg, transparent, var(--accent-soft), transparent); background-size: 200% 100%; animation: nai-wait 1s linear infinite; }
+@keyframes nai-wait { from { background-position: 100% 0; } to { background-position: -100% 0; } }
+.nai-say { min-height: 1rem; margin: 0.375rem 0 0; color: var(--accent-soft); font-size: 0.75rem; }
+.nai-say:empty { display: none; }
+/* What AI can do, for the answer picked: ✓ yes, – no (never by colour alone) */
+.nai-can { margin: 0.625rem 0 0; padding: 0; list-style: none; }
+.nai-can li { display: grid; grid-template-columns: 1rem minmax(0, 1fr); gap: 0.5rem; padding: 0.15625rem 0; color: var(--dim); transition: color 0.2s; }
+.nai-can li .nai-cg { line-height: 1.125rem; color: var(--faint); }
+.nai-can li.yes { color: var(--txt); }
+.nai-can li.yes .nai-cg { color: var(--accent); }
+/* Only when the answer changes while the popover is open (never on opening it): the new ticks pop in, 40 ms apart. */
+.nai-can.anim li.yes .nai-cg { animation: nai-tick 0.32s var(--nai-pop) both; animation-delay: calc(var(--n, 0) * 40ms); }
+@keyframes nai-tick { from { transform: scale(0.5); opacity: 0; } }
+.nai-can li.always { margin-top: 0.25rem; color: var(--txt3); font-size: 0.75rem; }
+.nai-can li.always .nai-cg { color: var(--txt3); font-size: 13px; }
+/* Sections */
+.nai-eb { margin: 0.875rem 0 0.25rem; padding-top: 0.75rem; border-top: 1px solid var(--line-soft); color: var(--txt3); font: 700 0.6875rem/1 var(--font); letter-spacing: 0.12em; text-transform: uppercase; }
+.nai-row { display: grid; grid-template-columns: 2rem minmax(0, 1fr) auto; align-items: center; gap: 0.625rem; padding: 0.375rem 0; }
+.nai-row + .nai-row { border-top: 1px solid var(--line-soft); }
+.nai-row.out { opacity: 0.6; }
+.nai-ic { display: grid; place-items: center; width: 2rem; height: 2rem; border: 1px solid rgba(var(--accent-rgb), 0.25); border-radius: 0.5rem; background: rgba(var(--accent-rgb), 0.1); color: var(--accent-soft); }
+.nai-ic .nai-cg { font-size: 15px; }
+.nai-row b { display: block; color: var(--hi); font-weight: 600; line-height: 1.3; }
+.nai-row small { display: block; color: var(--txt3); font-size: 0.75rem; line-height: 1.35; }
+.nai-pill { display: inline-flex; align-items: center; height: 1.25rem; padding: 0 0.5rem; border: 1px solid var(--line); border-radius: 0.625rem; color: var(--dim); font: 700 0.6875rem/1 var(--font-sans); white-space: nowrap; }
+.nai-pill.read { border-color: transparent; background: rgba(var(--accent-rgb), 0.16); color: var(--accent-soft); }
+.nai-pill.write { border-color: transparent; background: var(--accent); color: var(--ink); }
+.nai-btn { height: 1.625rem; padding: 0 0.75rem; border: 1px solid var(--accent); border-radius: 5px; background: rgba(var(--accent-rgb), 0.08); color: var(--accent-soft); font: 600 0.75rem/1 var(--font-sans); white-space: nowrap; cursor: pointer; }
+.nai-btn:hover { background: var(--accent); color: var(--ink); }
+.nai-btn:disabled { opacity: 0.55; cursor: progress; }
+.nai-btn:disabled:hover { background: rgba(var(--accent-rgb), 0.08); color: var(--accent-soft); }
+.nai-link { padding: 0; border: 0; background: none; color: var(--accent-soft); font: inherit; cursor: pointer; }
+.nai-link:hover { color: var(--hi); text-decoration: underline; text-underline-offset: 2px; }
+.nai-key { display: inline-grid; place-items: center; width: 1.125rem; height: 1.125rem; margin: 0 0.125rem; border: 1px solid var(--line); border-radius: 4px; color: var(--hi); vertical-align: -0.25rem; }
+.nai-key .nai-cg { font-size: 12px; }
+.nai-hide p { margin: 0.25rem 0 0; color: var(--txt); }
+.nai-hide small { display: block; margin-top: 0.125rem; color: var(--txt3); font-size: 0.75rem; }
+.nai-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 0.375rem 0.75rem; margin-top: 0.75rem; padding-top: 0.625rem; border-top: 1px solid var(--line-soft); font-size: 0.75rem; }
+.nai-last { flex: 1 1 14rem; min-width: 0; padding: 0; border: 0; background: none; color: var(--txt3); font: inherit; text-align: left; cursor: pointer; }
+.nai-last .nai-cg { margin-right: 0.25rem; color: var(--accent); font-size: 12px; vertical-align: -1px; }
+.nai-last:hover { color: var(--hi); }
+.nai-foot .nai-link { flex: none; margin-left: auto; }
+.nai-pop button:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
+.nai-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+@media (prefers-reduced-motion: reduce) {
+  .nai-pop, .nai-pop.in, .nai-thumb, .nai-chip, .nai-chip .nai-cg, .nai-can li { transition-duration: 0.01ms !important; }
+  .nai-hint, .nai-hint.gone, .nai-dot, .nai-chip.ignite, .nai-can.anim li.yes .nai-cg, .nai-seg button.wait::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; }
+}
+/* The eye is gone while AI has no access (unless the note is hidden): the next button takes its place at the right. */
+.npw-ai[hidden] + .npw-top, .npw-ai[hidden] + .npw-del { margin-left: auto; }

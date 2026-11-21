@@ -42,6 +42,9 @@
 .st-val { display: flex; flex: none; align-items: center; gap: 12px; }
 .st-val b { color: var(--hi); font: 600 0.8125rem/1 var(--font); }
 .st-note { margin: 10px 2px 0; color: var(--txt3); font-size: 0.78rem; }
+.st-ln { padding: 0; border: 0; background: none; color: var(--accent-soft); font: inherit; cursor: pointer; }
+.st-ln:hover { color: var(--hi); text-decoration: underline; text-underline-offset: 2px; }
+.st-ln:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
 .mn-settings .st-namebox .hk-status { min-height: 1.3em; margin: 4px 2px 0; font-size: 0.8125rem; }
 .mn-settings .st-namebox .hk-status:empty { min-height: 0; margin: 0; }
 
