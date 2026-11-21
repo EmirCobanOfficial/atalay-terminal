@@ -9,6 +9,7 @@
 #                                      "Orbiterm Staging", built straight into ~/Applications (its only copy,
 #                                      so Spotlight and the Dock always open the latest), its own bundle id and
 #                                      terminals, an icon with a STAGING sash, the next version's number, the local API
+#   DEVELOPER_ID=1 ./build-app.sh      signed with Apple's Developer ID for notarization (below); off by default
 set -euo pipefail
 cd "$(dirname "$0")"
 [[ " $* " == *" --staging "* ]] && STAGING=1 || true
@@ -158,7 +159,25 @@ fi
 # With the hardened runtime: macOS then loads no library into the app that Apple or its signer didn't sign and ignores
 # DYLD_* variables, so nothing can be slipped into the running app; Orbiterm.entitlements lets it still send Apple
 # events (closing iTerm2 tabs, ITerm.swift). It keeps the designated identity, so permissions stay.
-codesign --force --deep --options runtime --entitlements Orbiterm.entitlements --sign "$SIGN" "$APP" >/dev/null
+if [ "${DEVELOPER_ID:-}" = 1 ]; then
+  # DEVELOPER_ID=1: Apple's Developer ID instead, as notarization needs (scripts/notarize.sh sends it): every program
+  # in the bundle signed on its own first, inside out, each with the hardened runtime and Apple's secure timestamp;
+  # then the app, without --deep (which skips code kept in Resources, like rtk). No fallback: without the identity
+  # the build stops. A Developer ID build has another designated identity than the self-signed one, so installed
+  # copies take it only once they run a build whose updater knows it (Updater.signedAs), and macOS asks for its
+  # permissions again, once.
+  DEVID=${ATALAY_DEVELOPER_ID:-"Developer ID Application: ATALAY KARAHAN (8MPHM92P3S)"}
+  security find-identity -v -p codesigning | grep -qF "\"$DEVID\"" \
+    || { echo "build-app: no \"$DEVID\" in the keychain" >&2; exit 1; }
+  BUNDLE_ID=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Contents/Info.plist")
+  if [ -f "$APP/Contents/Resources/bin/rtk" ]; then
+    codesign --force --options runtime --timestamp --identifier "$BUNDLE_ID.rtk" --sign "$DEVID" "$APP/Contents/Resources/bin/rtk"
+  fi
+  codesign --force --options runtime --timestamp --entitlements Orbiterm.entitlements --sign "$DEVID" "$APP"
+  codesign --verify --deep --strict "$APP"
+else
+  codesign --force --deep --options runtime --entitlements Orbiterm.entitlements --sign "$SIGN" "$APP" >/dev/null
+fi
 echo "built $APP"
 
 if [[ " $* " == *" --install "* ]] && [ "$APP" != "$HOME/Applications/$NAME.app" ]; then

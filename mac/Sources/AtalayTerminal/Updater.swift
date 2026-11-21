@@ -38,13 +38,36 @@ enum Updater {
     /// Whether the app at `url` is signed as the one at `reference` is: a valid signature (every architecture, the code
     /// inside it, strictly) that meets `reference`'s designated requirement, the release certificate for a release. Every
     /// release so far carries the same one; a build signed ad hoc (a development one) takes no other build.
+    /// Releases move to Apple's Developer ID (notarized) after this one, so a build signed with Orbiterm's Developer ID
+    /// passes too (`developerID`): the self-signed certificate's requirement can't take it.
     nonisolated static func signedAs(_ reference: URL, _ url: URL) -> Bool {
         var ref: SecStaticCode?, requirement: SecRequirement?, code: SecStaticCode?
         guard SecStaticCodeCreateWithPath(reference as CFURL, [], &ref) == errSecSuccess, let ref,
               SecCodeCopyDesignatedRequirement(ref, [], &requirement) == errSecSuccess, let requirement,
               SecStaticCodeCreateWithPath(url as CFURL, [], &code) == errSecSuccess, let code else { return false }
         let flags = SecCSFlags(rawValue: kSecCSCheckAllArchitectures | kSecCSCheckNestedCode | kSecCSStrictValidate)
-        return SecStaticCodeCheckValidity(code, flags, requirement) == errSecSuccess
+        if SecStaticCodeCheckValidity(code, flags, requirement) == errSecSuccess { return true }
+        guard let developerID = developerID(as: ref) else { return false }
+        return SecStaticCodeCheckValidity(code, flags, developerID) == errSecSuccess
+    }
+
+    /// Orbiterm's Developer ID team (ATALAY KARAHAN).
+    nonisolated private static let team = "8MPHM92P3S"
+
+    /// Orbiterm's Developer ID signature for the app `reference` is: a Developer ID Application certificate Apple issued
+    /// to `team`, for `reference`'s own identifier (the release's, or staging's). Nothing else that team signs passes.
+    nonisolated private static func developerID(as reference: SecStaticCode) -> SecRequirement? {
+        var info: CFDictionary?
+        guard SecCodeCopySigningInformation(reference, [], &info) == errSecSuccess,
+              let id = (info as? [String: Any])?[kSecCodeInfoIdentifier as String] as? String, !id.isEmpty,
+              id.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "." || $0 == "-") }) else { return nil }
+        let text = "identifier \"\(id)\" and anchor apple generic"
+            + " and certificate 1[field.1.2.840.113635.100.6.2.6] exists"   // issued by Apple's Developer ID CA
+            + " and certificate leaf[field.1.2.840.113635.100.6.1.13] exists" // a Developer ID Application certificate
+            + " and certificate leaf[subject.OU] = \"\(team)\""
+        var requirement: SecRequirement?
+        guard SecRequirementCreateWithString(text as CFString, [], &requirement) == errSecSuccess else { return nil }
+        return requirement
     }
 
     enum Failure: Error {

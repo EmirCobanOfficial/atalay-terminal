@@ -25,6 +25,11 @@ fi
 
 APP="build/release/Orbiterm.app"
 [ -d "$APP" ] || { echo "nothing to publish: build it first (scripts/release.sh does)" >&2; exit 1; }
+# DEVELOPER_ID=1: only a notarized build, its ticket stapled (scripts/make-dmg.sh does both), goes out.
+if [ "${DEVELOPER_ID:-}" = 1 ]; then
+  xcrun stapler validate "$APP" >/dev/null && spctl -a -t exec "$APP" 2>/dev/null \
+    || { echo "publish: $APP isn't notarized and stapled (DEVELOPER_ID=1 scripts/make-dmg.sh makes it so)" >&2; exit 1; }
+fi
 VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")
 BUILD=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Contents/Info.plist")
 ZIP="build/atalay-terminal-$VERSION-$BUILD.zip"
