@@ -19,6 +19,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { createUnseal } = require('./unseal');
+const { dayAfterToday } = require('./tokenledger');
 
 const API = 'https://terminal-api.atalaykarahan.com';
 // Where Node's WebSocket reports the pings it answers (the API's, every 25 s); see `watch`.
@@ -228,8 +229,8 @@ function createCloud(opts = {}) {
   };
 
   // What the Mac app keeps in UserDefaults, under the same names: the last known name, tag and XP (an offline launch
-  // shows them), a name picked offline, "install updates right away", "share my token counts" and a machine ID of its
-  // own when there's none.
+  // shows them), a name picked offline, "install updates right away", "share my token counts" (and the first day it lets
+  // go out) and a machine ID of its own when there's none.
   const settingsFile = path.join(dataDir, 'cloud.json');
   let settings = {};
   try {
@@ -400,18 +401,19 @@ function createCloud(opts = {}) {
   let sendingUsage = false;
   async function sendUsage(token) {
     const tokens = opts.tokens;
-    // Settings → Privacy, "share my token counts" off: none go out, nor the past days the first read found. The days stay
-    // marked as changed in the ledger, so turning it on again sends them as before.
+    // Settings → Privacy, "share my token counts" off: none go out, nor the past days the first read found. Turned back
+    // on, only the days after that day go out (shareTokensFrom, setShareTokens).
     if (!tokens || !S.shareTokens || sendingUsage || Date.now() - usageAt < 290_000) return;
     sendingUsage = true;
     usageAt = Date.now();
     try {
       for (let i = 0; i < 8; i++) {
-        const batch = await tokens.batch();
+        const from = shareTokensFrom();
+        const batch = await tokens.batch(500, from);
         if (!batch) return;
         // Asked again right before each call: making a batch can take minutes the first time, and the switch may have
-        // been turned off meanwhile.
-        if (!S.shareTokens) return;
+        // been turned off meanwhile (or off and on again, which moves the first day that may go out).
+        if (!S.shareTokens || shareTokensFrom() !== from) return;
         try {
           const a = await call('POST', 'v1/usage', { source: batch.source, days: batch.rows }, token);
           if (Array.isArray(a.rejected) && a.rejected.length) console.warn(`cloud: the API left out ${a.rejected.length} token rows of ${batch.rows.length}`);
@@ -426,9 +428,18 @@ function createCloud(opts = {}) {
     }
   }
 
-  // Settings → Privacy, "share my token counts" (the "cloud" handler's shareTokens), kept on this PC. On again, the next
-  // heartbeat sends what changed meanwhile.
+  // The first day whose token counts may go out (the ledger's batch), null when "share my token counts" was never turned
+  // back on after being off.
+  const shareTokensFrom = () => (typeof settings.shareTokensFrom === 'string' && settings.shareTokensFrom) || null;
+
+  // Settings → Privacy, "share my token counts" (the "cloud" handler's shareTokens), kept on this PC.
   function setShareTokens(on) {
+    // Back on after being off: only the days after today go out from now on. Today, the days it was off and any day not
+    // sent before it was turned off stay on this PC, since it was off on all or part of them.
+    if (on && !S.shareTokens) {
+      const from = dayAfterToday();
+      if (from > (shareTokensFrom() || '')) save({ shareTokensFrom: from });
+    }
     save({ shareTokens: on });
     set({ shareTokens: on });
   }

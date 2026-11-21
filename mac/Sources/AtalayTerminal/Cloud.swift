@@ -295,18 +295,19 @@ final class Cloud {
     private var usageAt = Date.distantPast
     private var sendingUsage = false
     private func sendUsage(_ token: String) async {
-        // Settings → Privacy, "share my token counts" off: none go out, nor the past days the first read found. The days
-        // stay marked as changed in the ledger, so turning it on again sends them as before.
+        // Settings → Privacy, "share my token counts" off: none go out, nor the past days the first read found. Turned
+        // back on, only the days after that day go out (shareTokensFrom, setShareTokens).
         guard state.shareTokens, !sendingUsage, Date().timeIntervalSince(usageAt) >= 290 else { return }
         sendingUsage = true
         defer { sendingUsage = false }
         usageAt = Date()
         struct Answer: Decodable { let stored: Int; let rejected: [Int]? }
         for _ in 0..<8 {
-            guard let batch = await TokenLedger.shared.batch() else { return }
+            let from = shareTokensFrom
+            guard let batch = await TokenLedger.shared.batch(from: from) else { return }
             // Asked again right before each call: making a batch can take minutes the first time, and the switch may
-            // have been turned off meanwhile.
-            guard state.shareTokens else { return }
+            // have been turned off meanwhile (or off and on again, which moves the first day that may go out).
+            guard state.shareTokens, shareTokensFrom == from else { return }
             do {
                 let a: Answer = try await call("POST", "v1/usage", body: ["source": batch.source, "days": batch.rows], token: token)
                 if let r = a.rejected, !r.isEmpty { NSLog("Orbiterm: the API left out %d token rows of %d", r.count, batch.rows.count) }
@@ -319,9 +320,18 @@ final class Cloud {
         }
     }
 
-    /// Settings → Privacy, "share my token counts" (the "cloud" handler's shareTokens), kept on this Mac. On again, the
-    /// next heartbeat sends what changed meanwhile.
+    /// The first day whose token counts may go out (TokenLedger.batch), nil when "share my token counts" was never turned
+    /// back on after being off.
+    private var shareTokensFrom: String? { UserDefaults.standard.string(forKey: "shareTokensFrom") }
+
+    /// Settings → Privacy, "share my token counts" (the "cloud" handler's shareTokens), kept on this Mac.
     func setShareTokens(_ on: Bool) {
+        // Back on after being off: only the days after today go out from now on. Today, the days it was off and any day
+        // not sent before it was turned off stay on this Mac, since it was off on all or part of them.
+        if on, !state.shareTokens {
+            let from = TokenLedger.dayAfterToday()
+            if from > (shareTokensFrom ?? "") { UserDefaults.standard.set(from, forKey: "shareTokensFrom") }
+        }
         UserDefaults.standard.set(on, forKey: "shareTokens")
         state.shareTokens = on
     }

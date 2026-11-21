@@ -105,9 +105,17 @@ final class TokenLedger: @unchecked Sendable {
     }
 
     /// The days that changed since they last went out, newest first, as the API takes them: at most `max` rows. Nil when
-    /// nothing changed.
-    func batch(max: Int = 500) async -> Batch? {
-        await withCheckedContinuation { c in queue.async { c.resume(returning: self.makeBatch(max)) } }
+    /// nothing changed. `from`: the first day that may go out (Cloud.sendUsage, after "share my token counts" was off);
+    /// the days before it are done at once, as if sent, and never go out.
+    func batch(max: Int = 500, from: String? = nil) async -> Batch? {
+        await withCheckedContinuation { c in queue.async { c.resume(returning: self.makeBatch(max, from)) } }
+    }
+
+    /// The local day after today, as the days are keyed ("2026-11-22"): the first one that may go out once "share my
+    /// token counts" is turned back on.
+    static func dayAfterToday() -> String {
+        let today = Ledger.calendar.startOfDay(for: Date())
+        return Ledger.key(Ledger.calendar.date(byAdding: .day, value: 1, to: today) ?? today.addingTimeInterval(86_400))
     }
 
     /// A batch reached the API: its days are done, unless they changed since.
@@ -471,7 +479,16 @@ final class TokenLedger: @unchecked Sendable {
         try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
     }
 
-    private func makeBatch(_ max: Int) -> Batch? {
+    private func makeBatch(_ max: Int, _ from: String?) -> Batch? {
+        // Days before `from` stay on this Mac: "share my token counts" was off on them, or on part of them. Done here, as
+        // a sent day is, so they never go out, even if they change again.
+        if let from {
+            let held = book.dirty.filter { $0 < from }
+            if !held.isEmpty {
+                book.dirty.subtract(held)
+                save()
+            }
+        }
         var rows: [[String: Any]] = [], days: [String: [String: Counts]] = [:]
         for day in book.dirty.sorted(by: >) {
             let kinds = book.days[day] ?? [:]

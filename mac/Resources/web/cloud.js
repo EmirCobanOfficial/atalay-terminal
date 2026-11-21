@@ -1478,7 +1478,7 @@ window.Cloud = (() => {
   }
 
   // Settings · whether this computer sends its token counts at all (Cloud.swift's setShareTokens, the Windows app's
-  // cloud.js). Off: none go out, nor the past days not sent yet; on again, what changed meanwhile goes out as before.
+  // cloud.js). Off: none go out, nor the past days not sent yet; on again, only the days from tomorrow on go out.
   async function toggleShareTokens() {
     const on = S.shareTokens === false;
     const s = await call('shareTokens', { on }).catch(() => null);
@@ -1486,7 +1486,9 @@ window.Cloud = (() => {
     // Only this setting from the answer: the Windows app answers without its updates' state, which its push brings.
     S.shareTokens = s.shareTokens !== false;
     renderActivity();
-    toast(on ? 'your token counts go to the Tokens board again' : `no token counts leave this ${MACHINE} now · what was sent stays on the board`);
+    toast(on
+      ? `your token counts go to the Tokens board again from tomorrow · today and the days it was off stay on this ${MACHINE}`
+      : `no token counts leave this ${MACHINE} now · what was sent stays on the board`);
   }
 
   // ---------- the leaderboard: two panes under one floating glass bar (ranking + the week day by day) ----------

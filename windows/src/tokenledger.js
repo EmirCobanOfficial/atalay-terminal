@@ -56,6 +56,11 @@ function addCounts(a, b) {
 // ledger.js's dayKeys.
 const pad = (n, w = 2) => String(n).padStart(w, '0');
 const keyOf = (d) => `${pad(d.getFullYear(), 4)}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+// The local day after today: the first one that may go out once "share my token counts" is turned back on (cloud.js).
+function dayAfterToday() {
+  const now = new Date();
+  return keyOf(new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1));
+}
 function dayKeys() {
   let lo = 0, hi = -1, last = '';
   return (ms) => {
@@ -592,7 +597,18 @@ function createTokenLedger({ dir, staging = false, claudeDir, codexDir, agyDir }
     });
   }
 
-  function makeBatch(max) {
+  function makeBatch(max, from) {
+    // Days before `from` stay on this PC: "share my token counts" was off on them, or on part of them. Done here, as a
+    // sent day is, so they never go out, even if they change again.
+    let held = false;
+    if (typeof from === 'string' && from) {
+      for (const day of dirty) {
+        if (day < from) {
+          dirty.delete(day);
+          held = true;
+        }
+      }
+    }
     const rows = [], days = {};
     for (const day of [...dirty].sort().reverse()) {
       const kinds = book.days[day] || {};
@@ -615,11 +631,12 @@ function createTokenLedger({ dir, staging = false, claudeDir, codexDir, agyDir }
     // Days with nothing to send (all their kinds empty) are done at once.
     if (!rows.length) {
       const names = Object.keys(days);
-      if (!names.length) return null;
+      if (!names.length) return held ? save().then(() => null) : null;
       for (const day of names) dirty.delete(day);
       return save().then(() => null);
     }
-    return { source: book.source, rows, days };
+    const batch = { source: book.source, rows, days };
+    return held ? save().then(() => batch) : batch;
   }
 
   const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
@@ -639,9 +656,10 @@ function createTokenLedger({ dir, staging = false, claudeDir, codexDir, agyDir }
     read: () => pass(),
 
     /** The days that changed since they last went out, newest first, as the API takes them: at most `max` rows. Null when
-     *  nothing changed. Waits for a pass in progress. */
-    batch(max = 500) {
-      return enqueue(() => makeBatch(max)).catch((e) => {
+     *  nothing changed. Waits for a pass in progress. `from`: the first day that may go out (cloud.js, after "share my
+     *  token counts" was off); the days before it are done at once, as if sent, and never go out. */
+    batch(max = 500, from = null) {
+      return enqueue(() => makeBatch(max, from)).catch((e) => {
         console.error('tokens:', e && e.message);
         return null;
       });
@@ -661,4 +679,4 @@ function createTokenLedger({ dir, staging = false, claudeDir, codexDir, agyDir }
   };
 }
 
-module.exports = { createTokenLedger, hash, model, effort, splitEffort, fromLabel, generations };
+module.exports = { createTokenLedger, hash, model, effort, splitEffort, fromLabel, generations, dayAfterToday };

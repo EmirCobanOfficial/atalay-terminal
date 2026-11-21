@@ -53,9 +53,9 @@ Works with Claude Code, Codex and Antigravity; not affiliated with Anthropic, Op
   what was in them. They're sent at most every five minutes with a random ID for this computer's counts, and the
   first time the app also sends the past days the AI tools still have on record.
   Turn off "Share my token counts for the Tokens board" in Settings · Privacy and none are sent at all, past days
-  included; what was already sent stays on the board, and turning it back on sends the days not sent yet. To keep
-  your name off that board, turn off "Show my name on the Tokens board" (you then show as Anonymous; your total still
-  counts).
+  included; what was already sent stays on the board. Turned back on, only the days after that day are sent: the
+  days it was off, the day it's turned back on and anything not sent before stay on your computer. To keep your name
+  off that board, turn off "Show my name on the Tokens board" (you then show as Anonymous; your total still counts).
 - The app talks to its server only for the social parts, feedback and updates: your hacker name and tag, the app and
   macOS version, whether you're working each minute (for XP) and your time zone, your friends, requests, messages and
   status, the leaderboard, your token counts (above, unless you turn them off), and the feedback you send (kept with
