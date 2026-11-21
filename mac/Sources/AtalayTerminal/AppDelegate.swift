@@ -49,8 +49,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         controller.restoreSessions()
         HangWatchdog.shared.start()
         Cloud.shared.installUpdatesRightAway = CommandLine.arguments.contains("--update")
-        // An update restarts the app only when that stops nothing: no chat runs outside its detached session.
-        Cloud.shared.canRestart = { [weak self] in (self?.controller?.runningChatCount ?? 0) == 0 && !ShipJobs.running && !(self?.controller?.hasUnsavedEnv ?? false) }
+        // An update restarts the app only when that stops nothing: no AI is working or waiting for the user in a terminal,
+        // no job runs in a plain shell (the restart ends the shells; idle AI chats resume), no worktree job is under way and no
+        // env file holds unsaved changes.
+        Cloud.shared.canRestart = { [weak self] in (self?.controller?.restartInterrupts().isEmpty ?? true) && !ShipJobs.running && !(self?.controller?.hasUnsavedEnv ?? false) }
         Cloud.shared.start()
         UpdateWatch.shared.start()
         // Load the notices' page now, so a message can pop up at any time; the chat window follows a little later,
@@ -145,30 +147,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func quitFlow() -> NSApplication.TerminateReply {
-        // An update's restart keeps the sessions; any other quit closes all of them.
-        let closeAll = !Updater.relaunching && Detached.available
-        let total = (controller?.runningChatCount ?? 0) + (closeAll ? Detached.ownedDaemons().count : 0)
-        if total > 0, !Cloud.shared.overdueForcedUpdate {
-            let a = NSAlert()
-            a.messageText = total == 1 ? "1 terminal is still running" : "\(total) terminals are still running"
-            a.informativeText = closeAll
-                ? "Quitting closes every terminal and everything running in it: chats, panes, plain terminals and their programs, including hidden ones. Conversations stay saved and can be resumed."
-                : "Quitting stops Claude in those windows, including hidden ones. The conversations stay saved and can be resumed."
-            a.alertStyle = .warning
-            a.addButton(withTitle: "Quit")
-            a.addButton(withTitle: "Cancel")
-            if a.runModal() != .alertFirstButtonReturn { return .terminateCancel }
+        // An update's restart ends the terminals too, but they come back with the new build (the snapshot): it only asks when
+        // that would cut something off. Any other quit closes all of them for good.
+        let relaunch = Updater.relaunching
+        let forced = Cloud.shared.overdueForcedUpdate
+        if relaunch {
+            let lost = controller?.restartInterrupts() ?? []
+            if !lost.isEmpty, !forced {
+                let a = NSAlert()
+                a.messageText = "Restart to update?"
+                let shown = lost.prefix(3).joined(separator: ", ") + (lost.count > 3 ? " and \(lost.count - 3) more" : "")
+                a.informativeText = "Orbiterm restarts to update. What runs in its terminals stops: \(shown). Claude, Codex and Antigravity chats come back after the restart and continue where they were."
+                a.alertStyle = .warning
+                a.addButton(withTitle: "Restart")
+                a.addButton(withTitle: "Cancel")
+                if a.runModal() != .alertFirstButtonReturn { return .terminateCancel }
+            }
+        } else {
+            let total = Sessions.live.count + (Detached.available ? Detached.ownedDaemons().count : 0)
+            if total > 0, !forced {
+                let a = NSAlert()
+                a.messageText = total == 1 ? "1 terminal is still running" : "\(total) terminals are still running"
+                a.informativeText = "Quitting closes every terminal and everything running in it: chats, panes, plain terminals and their programs, including hidden ones. Conversations stay saved and can be resumed."
+                a.alertStyle = .warning
+                a.addButton(withTitle: "Quit")
+                a.addButton(withTitle: "Cancel")
+                if a.runModal() != .alertFirstButtonReturn { return .terminateCancel }
+            }
         }
         // A file edited in the last second is saved first (Source Control's editor saves a second after a change).
         guard let controller else { return .terminateNow }
         controller.flushFiles {
-            controller.terminateAll()
-            guard closeAll else { return NSApp.reply(toApplicationShouldTerminate: true) }
+            let shells = controller.terminateAll(relaunching: relaunch)
             // The reply goes through the run loop, like flushFiles' `done`: a quit asked for from a main-queue job waits
             // in a run loop nested in that job, where the main queue runs nothing. A block queued from another thread
             // waits for the run loop's next wake-up, so it is woken.
             DispatchQueue.global(qos: .userInitiated).async {
-                Detached.quitAll()
+                Detached.killTrees(shells)
+                // Screen sessions an older build left: a real quit closes them (the quit-all), an update keeps them.
+                if !relaunch, Detached.available { Detached.quitAll() }
                 RunLoop.main.perform(inModes: [.common]) { MainActor.assumeIsolated { NSApp.reply(toApplicationShouldTerminate: true) } }
                 CFRunLoopWakeUp(CFRunLoopGetMain())
             }

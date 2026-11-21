@@ -820,9 +820,12 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
     let id = UUID().uuidString
     let cwd: String
     var sessionId: String?
-    /// The detached session this window shows; Claude runs there, not under the app. Nil only when screen
-    /// couldn't start it, and the chat then runs in the window itself.
+    /// The session this window shows: a pty of the app's own (PtySession, the window takes its view over) or a screen
+    /// session an older build left (the window attaches to it). Nil would mean the chat runs in the window itself, which
+    /// nothing opens any more.
     private(set) var detached: DetachedLink?
+    /// The window shows a pty of the app's own (not a screen session): nothing to attach, fit or save.
+    private var onPty = false
     /// A copy's original in iTerm2; it ends with this chat.
     var origin: ITermOrigin?
     /// Sessions already looked at for the second-AI note (one look each), and whether the folder picker already said who works here.
@@ -927,7 +930,15 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
         super.init(window: w)
         w.delegate = self
         w.onHeaderPress = { [weak self] in self?.letGoForDrag() }
-        if detached != nil {
+        var adopted = false
+        if let d = detached, let pty = Sessions.live[d.name] {
+            // The session runs already (started by MainWindowController.makeChat, or restored): its view is the window's.
+            terminal = pty.terminal
+            pty.owner = self
+            terminal.chatId = id
+            adopted = true
+            onPty = true
+        } else if detached != nil {
             terminal = TerminalFactory.makeIdle(chatId: id, fontSize: fontSize, delegate: self)
         } else {
             terminal = TerminalFactory.make(chatId: id, cwd: cwd, claudeArgs: claudeArgs, fontSize: fontSize, delegate: self)
@@ -953,21 +964,12 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
         }
         // GPU text rendering: glyphs come from an atlas and cells are drawn as quads, far less CPU than
         // Core Graphics when Claude streams output. Falls back to Core Graphics if Metal can't start.
-        try? terminal.setUseMetal(true)
+        if !adopted { try? terminal.setUseMetal(true) }
         // Until the window is shown there is nothing to draw.
         terminal.suspendsRenderingWhenNotVisible = true
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
-
-    /// screen couldn't start the session: run the chat in this window instead (it then ends with the app).
-    func runLocally(claudeArgs: [String]?) {
-        guard detached != nil, !attached else { return }
-        detached = nil
-        attached = true
-        TerminalFactory.start(terminal, cwd: cwd, claudeArgs: claudeArgs)
-        manager?.chatProcessEnded(id)
-    }
 
     deinit {
         if let themeWatch { NotificationCenter.default.removeObserver(themeWatch) }
@@ -1564,8 +1566,8 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
         pin(v, to: paneArea)
     }
 
-    private func makeExtra(kind: PaneKind, cwd: String) -> ExtraPane {
-        let pane = ExtraPane(owner: self, cwd: cwd, kind: kind, fontSize: terminal.font.pointSize)
+    private func makeExtra(kind: PaneKind, cwd: String, session: String? = nil) -> ExtraPane {
+        let pane = ExtraPane(owner: self, cwd: cwd, kind: kind, fontSize: terminal.font.pointSize, session: session, parent: detached?.name)
         pane.terminal.sessionShell = { [weak pane] in pane?.link?.shellPid ?? 0 }
         pane.terminal.workingDirectory = { [weak pane] in pane?.cwd }
         pane.terminal.onSelection = { [weak self] in self?.showSelection($0) }
@@ -1585,7 +1587,6 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
         let pane = makeExtra(kind: .tab, cwd: currentFolder)
         tabs.append(pane.terminal)
         selectTab(tabs.count - 1)
-        pane.start(session: nil, parent: detached?.name, fit: isShown)
         focus(pane.terminal)
     }
 
@@ -1599,13 +1600,12 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
         insert(pane.terminal, beside: old, vertical: vertical)
         refreshPanes()
         focus(pane.terminal)
-        pane.start(session: nil, parent: detached?.name, fit: isShown)
     }
 
     /// A pane's session still running (⇧⌘T right after closing it, or after the app restarted) comes back: in a tab of
     /// its own or split off the shown tab's last pane.
     func adoptPane(session: String, kind: PaneKind, cwd: String, focus: Bool) {
-        let pane = makeExtra(kind: kind, cwd: cwd)
+        let pane = makeExtra(kind: kind, cwd: cwd, session: session)
         if kind == .tab {
             tabs.append(pane.terminal)
             if focus { selectTab(tabs.count - 1) }
@@ -1615,7 +1615,7 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
         }
         refreshPanes()
         if focus { self.focus(pane.terminal) }
-        pane.start(session: session, parent: detached?.name, fit: isShown)
+        pane.start(session: session, fit: isShown)
     }
 
     /// A text file ⌘-clicked in `tv`: in Source Control's editor, its path shown from the folder `tv` is in. False for a
@@ -2031,7 +2031,7 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
     }
 
     /// Closes a pane as a window closes: what runs in it goes on, a car on the orbit until it's opened again (a click,
-    /// ⇧⌘T) or the window's End Session ends it. A pane without a session of its own (screen couldn't start) just stops.
+    /// ⇧⌘T) or the window's End Session ends it. A pane that never got its session (a screen one not attached yet) just stops.
     private func close(_ pane: ExtraPane) {
         if zoomed { _ = toggleZoom() }
         let folder = pane.currentFolder
@@ -2140,7 +2140,8 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
         terminal.feed(text: "\u{1b}[2m\(line)\u{1b}[0m\r\n")
     }
 
-    /// The app quits: the panes let go of their sessions, which keep running and come back next launch.
+    /// The app quits or restarts: the panes let go of their sessions (a screen session keeps running and comes back next
+    /// launch; a pty's shell ends with the app, its pane comes back from the snapshot).
     func detachPanes() {
         for pane in extras { pane.detach() }
     }
@@ -2423,6 +2424,11 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
     func attachSession() {
         guard let detached, !attached else { return }
         attached = true
+        // A pty session is the window's view already: nothing to attach, and its scrollback came with the restart.
+        if onPty {
+            takesHistory = false
+            return
+        }
         if takesHistory {
             takesHistory = false
             let history = Detached.takeHistory(detached.name)
@@ -2438,7 +2444,7 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
 
     /// On quit: this window's scrollback, for the window that attaches to the session next time.
     func saveHistory() {
-        guard let detached, attached, !hud.mirror, !hud.exited else { return }
+        guard let detached, attached, !onPty, !hud.mirror, !hud.exited else { return }
         let text = String(decoding: terminal.getBufferAsData(kind: .normal), as: UTF8.self)
         Detached.saveHistory(detached.name, text: text, rows: termRows)
     }
@@ -2451,7 +2457,8 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
     /// Ctrl-^, then :fit; straight to the session, not as typing). That can show ":fit" on the bottom row for a moment,
     /// so only then.
     func fitSession() {
-        guard let detached, attached, isShown else { return }
+        // A pty takes its view's size by itself.
+        guard let detached, attached, isShown, !onPty else { return }
         fitWork?.cancel()
         let name = detached.name
         let work = DispatchWorkItem { [weak self] in

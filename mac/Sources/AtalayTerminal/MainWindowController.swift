@@ -465,8 +465,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         guard let b = briefs[sid], b.live, let pid = b.pid else { return dismiss(sessionId: sid, pid: nil) }
         if let name = Detached.sessionName(hosting: pid) {
             if let c = chats.values.first(where: { $0.detached?.name == name }) { return c.endChat(confirm: false) }
-        } else if let c = chat(for: b), c.detached == nil {
-            return c.endChat(confirm: false)
         }
         // Another AI tool ends with all it started (Codex's launcher left its own binary running, a new planet).
         for p in (sid.hasPrefix("ai:") ? Self.tree([pid]).reversed() : [pid]) { kill(p, SIGTERM) }
@@ -478,14 +476,19 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         return chats.values.first(where: { $0.sessionId == brief.id && !$0.hud.exited })
     }
 
-    /// Chats and terminals keep running in their detached sessions when the app quits, crashes or freezes.
-    /// On launch their windows come back attached, so no conversation or terminal is lost.
+    /// Sessions an older build left running in detached screen sessions come back attached, so no conversation or terminal
+    /// is lost; the sessions of an update's restart or a crash (the snapshot) start again in a pty of their own, the AI in
+    /// them resumed (SessionSnapshot).
     func restoreSessions() {
         let registry = engine.registry
+        // Read now, before the first engine state rewrites it (writeSnapshot waits for the restore below).
+        let snapshot = SessionSnapshot.read()
         DispatchQueue.global(qos: .utility).async {
-            let running = Detached.runningSessions(registry: registry)
+            let legacy = Detached.runningSessions(registry: registry)
+            let elsewhere: Set<String> = snapshot.map { $0.reason == "update" ? [] : Self.runningElsewhere($0, registry: registry) } ?? []
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
+                let running = (snapshot.map { self.startRestored($0, elsewhere: elsewhere) } ?? []) + legacy
                 // Everything comes back hidden, so a launch doesn't throw windows on screen: chats are hexagons on the
                 // orbit and in the sidebar, terminals flying (or parked) cars, and a click on one opens its window.
                 // A window's tabs and split panes (sessions named after the window's) go back into it.
@@ -508,8 +511,72 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                                         detached: DetachedLink(name: s.name), show: false, restored: true)
                     }
                 }
+                self.snapshotReady = true
+                self.writeSnapshot()
             }
         }
+    }
+
+    /// The snapshot's sessions start again, each in a pty of its own with what it showed (the scrollback an update's restart
+    /// kept) and a dimmed note on top: why, and whether its AI chat resumes. After a crash a conversation that still runs
+    /// somewhere (`elsewhere`) isn't resumed a second time (Claude would fork it): a plain shell then.
+    private func startRestored(_ snapshot: SessionSnapshot, elsewhere: Set<String>) -> [Detached.RunningSession] {
+        var out: [Detached.RunningSession] = []
+        let why = snapshot.reason == "update" ? "Orbiterm restarted to update." : "Orbiterm closed unexpectedly."
+        for e in snapshot.sessions where e.name.hasPrefix(Detached.prefix) && Sessions.live[e.name] == nil {
+            var isDir: ObjCBool = false
+            let cwd = FileManager.default.fileExists(atPath: e.cwd, isDirectory: &isDir) && isDir.boolValue ? e.cwd : HOME
+            var args: [String]?
+            var resumed: SessionSnapshot.AI?
+            var what = " What ran in this terminal stopped."
+            if let a = e.ai {
+                let names = ["claude": "Claude", "codex": "Codex", "agy": "Antigravity"]
+                switch a.tool {
+                case "claude": args = ["--resume", a.id]
+                case "codex": args = ["codex", "resume", a.id]
+                case "agy": args = ["agy", "--conversation", a.id]
+                default: break
+                }
+                if args != nil, elsewhere.contains(a.id) {
+                    args = nil
+                    what = " This chat still runs somewhere else."
+                } else if args != nil {
+                    resumed = a
+                    what = " Resuming this \(names[a.tool] ?? "AI") chat."
+                }
+            }
+            _ = Sessions.start(name: e.name, cwd: cwd, claudeArgs: args, fontSize: fontSize, ai: resumed.map { ($0.tool, $0.id) },
+                               history: Detached.takeHistory(e.name), notice: why + what)
+            out.append(Detached.RunningSession(name: e.name, sessionId: resumed?.tool == "claude" ? resumed?.id : nil,
+                                               claude: resumed?.tool == "claude", cwd: cwd, title: e.title))
+        }
+        return out
+    }
+
+    /// The snapshot's AI conversations that run somewhere right now (so not in a session of this app: it just started): a
+    /// Claude with a live entry in its session registry, a Codex or Antigravity process with the id in its arguments.
+    /// Reads processes (call it off the main thread).
+    private nonisolated static func runningElsewhere(_ snapshot: SessionSnapshot, registry: String) -> Set<String> {
+        let wanted = snapshot.sessions.compactMap(\.ai)
+        var found = Set<String>()
+        let claudeIds = Set(wanted.filter { $0.tool == "claude" }.map(\.id))
+        if !claudeIds.isEmpty {
+            for file in (try? FileManager.default.contentsOfDirectory(atPath: registry)) ?? [] where file.hasSuffix(".json") {
+                guard let data = FileManager.default.contents(atPath: registry + "/" + file),
+                      let entry = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let sid = entry["sessionId"] as? String, claudeIds.contains(sid),
+                      let pid = (entry["pid"] as? Int) ?? Int(file.dropLast(5)), pid > 0, kill(Int32(pid), 0) == 0 else { continue }
+                found.insert(sid)
+            }
+        }
+        let others = wanted.filter { $0.tool != "claude" }.map(\.id)
+        if !others.isEmpty {
+            for pid in Proc.all() where pid != getpid() {
+                guard let args = Proc.arguments(pid) else { continue }
+                for id in others where args.contains(where: { $0.contains(id) }) { found.insert(id) }
+            }
+        }
+        return found
     }
 
     /// Opening a session needs to know whether it is running somewhere (else a running chat would be
@@ -564,6 +631,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         pushWinOpen()
         pushActiveSession()
         Mascot.shared.updateSessions(list)
+        writeSnapshot()
     }
 
     private func route(_ events: [NativeEvent]) {
@@ -817,8 +885,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     /// The text of a session's terminal (the end of its scrollback and screen), for Claude's read_session; nil when no window shows it.
     func terminalText(session name: String) -> String? {
-        var view: ChatTerminalView?
-        for c in chats.values {
+        // A pty session shows its view with or without a window (a parked pane too).
+        var view: ChatTerminalView? = Sessions.live[name]?.terminal
+        for c in chats.values where view == nil {
             if c.detached?.name == name { view = c.terminal }
             else if let e = c.extras.first(where: { $0.link?.name == name }) { view = e.terminal }
             if view != nil { break }
@@ -1172,6 +1241,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             // Codex in the installed app can be mirrored in staging just like Claude. Previously this path returned
             // without creating a window, so clicking its planet did nothing.
             let own = name.hasPrefix(Detached.prefix)
+            // Another build's terminal lives inside that app (no screen session to attach to): say where it runs.
+            if !own, !Detached.isScreenSession(name) { return otherAppRuns(name, title: b.title.isEmpty ? b.name : b.title, pid: pid) }
             let c = openWindow(cwd: b.cwd, claudeArgs: nil, sessionId: nil, title: b.title.isEmpty ? b.name : b.title,
                                detached: DetachedLink(name: name), mirror: !own)
             c.focusPane(hosting: pid)
@@ -1244,6 +1315,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         // leaves the chat running there, End Session ends it there too.
         if let name = Detached.sessionName(hosting: pid, anyBuild: true) {
             if let c = chats.values.first(where: { $0.detached?.name == name }) { return c.show() }
+            // Only a screen session can be mirrored; another build's own terminal lives inside that app.
+            guard Detached.isScreenSession(name) else { return otherAppRuns(name, title: title, pid: pid) }
             openWindow(cwd: cwd, claudeArgs: [], sessionId: sid, title: "⧉ " + title, detached: DetachedLink(name: name), mirror: true)
             return
         }
@@ -1276,32 +1349,35 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
-    /// Opens a chat window and starts its shell (and Claude, with `claudeArgs`) in a detached session, so it
-    /// outlives the app. The window opens at once; screen starts off the main thread and the window attaches after.
+    /// A session another build of the app runs in its own terminal can't be shown here (nothing to attach to): the click says
+    /// where it runs, and can bring that app forward.
+    private func otherAppRuns(_ name: String, title: String, pid: Int32) {
+        let owner = Detached.owner(name)
+        guard ask("“\(clip(title, 60))” runs in \(owner)", "Open it there: one Orbiterm can't show another's terminals.",
+                  ["Show It There", "Cancel"]) == 0, let host = Detached.hostApp(ofSession: pid) else { return }
+        NSRunningApplication(processIdentifier: host)?.activate(options: [.activateAllWindows])
+    }
+
+    /// The conversation a chat is opened to resume, for the snapshot until its AI shows under the shell (a copy,
+    /// `--fork-session`, is a new conversation: unknown yet).
+    private static func resuming(_ args: [String]?) -> (tool: String, id: String)? {
+        guard let args, !args.contains("--fork-session") else { return nil }
+        if args.count == 2, args[0] == "--resume" { return ("claude", args[1]) }
+        if args.count == 3, args[0] == "codex", args[1] == "resume" { return ("codex", args[2]) }
+        if args.count == 3, args[0] == "agy", args[1] == "--conversation" { return ("agy", args[2]) }
+        return nil
+    }
+
+    /// Opens a chat window and starts its shell (and Claude, with `claudeArgs`) in a pty the app opens itself, so the
+    /// window shows it at once.
     private func makeChat(cwd: String, claudeArgs: [String]?, sessionId: String?, title: String, origin: ITermOrigin? = nil,
                           frame: NSRect? = nil, told: Bool = false) {
-        guard Detached.available else {
-            let c = openWindow(cwd: cwd, claudeArgs: claudeArgs, sessionId: sessionId, title: title, detached: nil, frame: frame)
-            c.origin = origin
-            c.nudgeTold = told
-            return
-        }
-        // A fresh name every time: a session named after the conversation clashed with an older one of the same
-        // conversation, and screen refuses `-X quit` when two sessions match, so End did nothing.
-        let link = DetachedLink(name: Detached.prefix + UUID().uuidString.lowercased())
-        let c = openWindow(cwd: cwd, claudeArgs: claudeArgs, sessionId: sessionId, title: title, detached: link, attach: false, frame: frame)
+        // A fresh name every time: a name made from the conversation would clash with an older session of it.
+        let name = Detached.prefix + UUID().uuidString.lowercased()
+        _ = Sessions.start(name: name, cwd: cwd, claudeArgs: claudeArgs, fontSize: fontSize, ai: Self.resuming(claudeArgs))
+        let c = openWindow(cwd: cwd, claudeArgs: claudeArgs, sessionId: sessionId, title: title, detached: DetachedLink(name: name), frame: frame)
         c.origin = origin
         c.nudgeTold = told
-        Detached.start(name: link.name, cwd: cwd, claudeArgs: claudeArgs) { [weak self, weak c] ok in
-            guard let self, let c else { return }
-            guard ok else {
-                NSLog("Orbiterm: screen couldn't start a session; this chat runs in the app only")
-                return c.runLocally(claudeArgs: claudeArgs)
-            }
-            c.attachSession()
-            // The session's shell shows up a moment after screen starts; map it so the dashboard knows the window.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in self?.syncShells() }
-        }
     }
 
     @discardableResult
@@ -1585,6 +1661,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             for pid in c.shellPids where pid > 0 { map[pid] = c.id }
         }
         engine.setAppShells(map)
+        writeSnapshot()
     }
 
     /// Status (busy, idle, waiting) of the live session that process `pid` runs.
@@ -1599,8 +1676,24 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         engine.dismiss(sessionId: sessionId, pid: pid)
     }
 
-    /// Chats that stop when the app quits: only those whose detached session couldn't start.
-    var runningChatCount: Int { chats.values.filter { !$0.hud.exited && $0.detached == nil }.count }
+    /// What an update's restart would cut off, one label per terminal session of this app: an AI that is working or waiting
+    /// for the user, or a job running in a plain shell. (An idle AI resumes after the restart and loses nothing; screen
+    /// sessions an older build left survive it.)
+    func restartInterrupts() -> [String] {
+        var out: [String] = []
+        for s in Sessions.live.values.sorted(by: { $0.name < $1.name }) {
+            guard let shell = s.shellPid else { continue }
+            if ChatWindowController.runsAgent(shell) {
+                guard let b = briefs.values.first(where: { $0.live && $0.status != "ended" && ChatWindowController.isUnder($0.pid, shell: shell) }),
+                      b.status != "idle" else { continue }
+                let what = clip(b.title.isEmpty ? b.name : b.title, 40)
+                out.append(b.status == "waiting" ? "\(what) (waiting for you)" : "\(what) (working)")
+            } else if let job = Proc.children(of: shell).first {
+                out.append(Proc.arguments(job).map(Self.commandLabel) ?? "a command")
+            }
+        }
+        return out
+    }
 
     /// What Source Control's editor hasn't saved yet goes to disk (the app quits), then `done`, always later: at the
     /// latest in 2 s (a page that doesn't answer).
@@ -1622,12 +1715,76 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         RunLoop.main.add(Timer(timeInterval: 2, repeats: false) { _ in finish() }, forMode: .common)
     }
 
-    func terminateAll() {
+    /// The app quits (`relaunching`: an update's restart). Every terminal session of the app is written down for the next
+    /// launch with its scrollback (an update), or forgotten (a real quit); the windows' views stop. Returns the shells of
+    /// the app's own sessions, for `Detached.killTrees` (off the main thread). Screen sessions an older build left are the
+    /// legacy quit's (`Detached.quitAll`, kept by an update).
+    func terminateAll(relaunching: Bool) -> [Int32] {
+        let sessions = Array(Sessions.live.values)
+        let shells = sessions.compactMap(\.shellPid)
+        if relaunching {
+            let snapshot = currentSnapshot(reason: "update")
+            lastSnapshot = snapshot
+            snapshot.write()
+            for s in sessions {
+                // The whole scrollback (a pty has nothing repainting the rows on screen).
+                let text = String(decoding: s.terminal.getBufferAsData(kind: .normal), as: UTF8.self)
+                Detached.saveHistory(s.name, text: text, rows: 0)
+            }
+        } else {
+            lastSnapshot = nil
+            SessionSnapshot.delete()
+        }
+        // From here the sessions' own end-of-process news (their shells are about to be hung up) is ignored, and the
+        // snapshot isn't touched again.
+        Sessions.stopping = true
         for c in chats.values {
             c.saveHistory()
             c.detachPanes()
             c.terminal.terminate()
         }
+        // The sessions no window shows (parked panes).
+        for s in sessions { s.terminal.terminate() }
+        return shells
+    }
+
+    // MARK: what comes back after an update or a crash (SessionSnapshot)
+
+    /// Off until the launch has restored the last snapshot: a first engine state must not overwrite it.
+    private var snapshotReady = false
+    private var lastSnapshot: SessionSnapshot?
+
+    /// Every terminal session of the app with the AI conversation running in it (to resume it): a brief under its shell, else
+    /// what it was started to resume while that is under 20 s old (an AI that quit since isn't resumed).
+    private func currentSnapshot(reason: String) -> SessionSnapshot {
+        var entries: [SessionSnapshot.Entry] = []
+        for s in Sessions.live.values.sorted(by: { $0.name < $1.name }) {
+            guard let shell = s.shellPid else { continue }
+            let b = briefs.values.first { $0.live && $0.status != "ended" && ChatWindowController.isUnder($0.pid, shell: shell) }
+            var ai: SessionSnapshot.AI?
+            if let b {
+                if !b.id.hasPrefix("ai:") {
+                    ai = .init(tool: "claude", id: b.id)
+                } else if let conv = b.convId {
+                    if b.name == "Codex" { ai = .init(tool: "codex", id: conv) }
+                    if b.name == "Antigravity" { ai = .init(tool: "agy", id: conv) }
+                }
+            }
+            if ai == nil, let a = s.ai, Date().timeIntervalSince(s.started) < 20 { ai = .init(tool: a.tool, id: a.id) }
+            let folder = b.flatMap { $0.cwd.isEmpty ? nil : $0.cwd } ?? Proc.cwd(shell) ?? s.cwd
+            let title = b.flatMap { $0.title.isEmpty ? nil : $0.title } ?? (folder as NSString).lastPathComponent
+            entries.append(.init(name: s.name, cwd: folder, title: title, ai: ai))
+        }
+        return SessionSnapshot(reason: reason, sessions: entries)
+    }
+
+    /// Writes the snapshot when it changed (every engine state, and whenever a session starts or ends).
+    private func writeSnapshot() {
+        guard snapshotReady, !Sessions.stopping else { return }
+        let snapshot = currentSnapshot(reason: "running")
+        guard snapshot != lastSnapshot else { return }
+        lastSnapshot = snapshot
+        snapshot.write()
     }
 
     private func takeOver(pid: Int32, then: @escaping () -> Void, failed: @escaping () -> Void) {

@@ -3,7 +3,8 @@ import SwiftTerm
 
 // iTerm2's tabs and split panes inside a chat window (ChatWindowController): ⌘T opens a tab, ⌘D and ⇧⌘D split the pane
 // in front. The window's own chat or terminal is its first pane; every other one is an ExtraPane, a shell of its own in
-// a detached session named after the window's (so it outlives the app too, and comes back into the same window).
+// a session named after the window's (a pty of the app's own, PtySession; so it comes back into the same window after an
+// update's restart).
 
 /// How an extra pane was opened: in its own tab, or split off beside (vertical) or under (horizontal) another pane.
 enum PaneKind: Character {
@@ -21,11 +22,16 @@ extension Detached {
     }
 
     /// The same session, renamed for another kind (a tab dragged into a split): it comes back that way after a restart.
+    @MainActor
     static func renamed(_ name: String, kind: PaneKind) -> String? {
         guard extraInfo(name) != nil else { return nil }
         var chars = Array(name)
         chars[prefix.count + 1] = kind.rawValue
         let new = String(chars)
+        if let pty = Sessions.live[name] {
+            pty.rename(to: new)
+            return new
+        }
         let p = Process()
         p.executableURL = URL(fileURLWithPath: screen)
         p.arguments = ["-S", name, "-X", "sessionname", new]
@@ -44,7 +50,7 @@ extension Detached {
     }
 }
 
-/// A pane besides the window's own: a shell in its own detached session.
+/// A pane besides the window's own: a shell in a session of its own.
 @MainActor
 final class ExtraPane: NSObject, LocalProcessTerminalViewDelegate {
     private(set) var terminal: ChatTerminalView!
@@ -59,13 +65,32 @@ final class ExtraPane: NSObject, LocalProcessTerminalViewDelegate {
     /// The terminal's height in rows, as it last reported it.
     private var rows = 0
 
-    init(owner: ChatWindowController, cwd: String, kind: PaneKind, fontSize: CGFloat) {
+    /// `session` names a pty still running (a closed pane brought back, one restored after a restart): the pane takes its
+    /// view over. A screen session an older build left (`session`, not a pty): the pane shows it once `start` attaches it.
+    /// Without `session`, a new shell starts in a pty of its own, named after the window's session `parent`.
+    init(owner: ChatWindowController, cwd: String, kind: PaneKind, fontSize: CGFloat, session: String? = nil, parent: String? = nil) {
         self.owner = owner
         self.cwd = cwd
         self.kind = kind
         super.init()
-        terminal = TerminalFactory.makeIdle(chatId: owner.id, fontSize: fontSize, delegate: self)
-        try? terminal.setUseMetal(true)
+        if let session, let pty = Sessions.live[session] {
+            adopt(pty)
+        } else if session != nil {
+            terminal = TerminalFactory.makeIdle(chatId: owner.id, fontSize: fontSize, delegate: self)
+            try? terminal.setUseMetal(true)
+        } else {
+            let name = Detached.extraName(parent: parent ?? Detached.prefix + owner.id.lowercased(), kind: kind)
+            adopt(Sessions.start(name: name, cwd: cwd, claudeArgs: nil, fontSize: fontSize))
+        }
+    }
+
+    /// The pane shows `pty`'s view and hears what it reports from now on.
+    private func adopt(_ pty: PtySession) {
+        pty.owner = self
+        terminal = pty.terminal
+        terminal.chatId = owner?.id ?? ""
+        link = DetachedLink(name: pty.name)
+        attached = true
     }
 
     /// Now in a split rather than a tab of its own (or the other way): its session's name follows, for the next launch.
@@ -75,31 +100,18 @@ final class ExtraPane: NSObject, LocalProcessTerminalViewDelegate {
         if let old = link?.name, let name = Detached.renamed(old, kind: new) { link = DetachedLink(name: name) }
     }
 
-    /// A new shell in a new session next to the window's, or (`session`) one still running from before.
-    func start(session: String?, parent: String?, fit: Bool) {
-        guard let parent, Detached.available else { return runLocally() }
-        if let session {
-            link = DetachedLink(name: session)
-            // Its scrollback from before (the app quit, or the pane closed a moment ago), above the rows screen
-            // repaints: like the window's own terminal (ChatWindowController.attachSession).
-            let history = Detached.takeHistory(session)
-            if !history.isEmpty {
-                terminal.feed(text: history.joined(separator: "\r\n") + String(repeating: "\r\n", count: max(rows, 60) + 1))
-            }
-            return attach(fit: fit)
+    /// A screen session an older build left (the init made the pane for it): its scrollback from before, then the display.
+    /// A pty pane is running already.
+    func start(session: String, fit: Bool) {
+        guard !attached else { return }
+        link = DetachedLink(name: session)
+        // Its scrollback from before (the app quit, or the pane closed a moment ago), above the rows screen
+        // repaints: like the window's own terminal (ChatWindowController.attachSession).
+        let history = Detached.takeHistory(session)
+        if !history.isEmpty {
+            terminal.feed(text: history.joined(separator: "\r\n") + String(repeating: "\r\n", count: max(rows, 60) + 1))
         }
-        let name = Detached.extraName(parent: parent, kind: kind)
-        link = DetachedLink(name: name)
-        Detached.start(name: name, cwd: cwd, claudeArgs: nil) { [weak self] ok in
-            guard let self, !self.closing else { return }
-            ok ? self.attach(fit: fit) : self.runLocally()
-        }
-    }
-
-    private func runLocally() {
-        link = nil
-        attached = true
-        TerminalFactory.start(terminal, cwd: cwd, claudeArgs: nil)
+        attach(fit: fit)
     }
 
     private func attach(fit: Bool) {
@@ -109,9 +121,9 @@ final class ExtraPane: NSObject, LocalProcessTerminalViewDelegate {
         self.fit()
     }
 
-    /// The session takes this pane's size once it has settled.
+    /// The screen session takes this pane's size once it has settled (a pty takes its view's by itself).
     func fit() {
-        guard let link, attached else { return }
+        guard let link, attached, link.pty == nil else { return }
         fitWork?.cancel()
         let name = link.name
         let work = DispatchWorkItem { Detached.fit(name) }
@@ -130,6 +142,12 @@ final class ExtraPane: NSObject, LocalProcessTerminalViewDelegate {
     /// Lets go of the session without ending it (the app quits, or ⇧⌘T may bring it back), keeping its scrollback for
     /// the pane that attaches next.
     func detach() {
+        if let pty = link?.pty {
+            // A pty keeps running with no one showing it: a car on the orbit, or what the next launch brings back.
+            pty.owner = nil
+            closing = true
+            return
+        }
         if let link, attached, !closing {
             let text = String(decoding: terminal.getBufferAsData(kind: .normal), as: UTF8.self)
             Detached.saveHistory(link.name, text: text, rows: rows)

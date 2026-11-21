@@ -5,8 +5,8 @@ import Security
 /// Installs a newer build offered by the API in two steps. `prepare` downloads its zip, checks the SHA-256 and the
 /// Ed25519 signature made with the release key (its public half is AtalayUpdateKey in Info.plist) and unpacks it next to
 /// the running app: safe in the background, nothing changes yet. `apply` swaps the bundles once the app has quit, and
-/// starts the new build at once or waits for the user to quit. Chats keep running in their detached sessions meanwhile
-/// and come back with the new build.
+/// starts the new build at once or waits for the user to quit. The terminals end with the app and come back with the new
+/// build, their AI chats resumed (SessionSnapshot).
 @MainActor
 enum Updater {
     /// A newer build, checked and unpacked next to the running app (hidden), waiting to replace it.
@@ -118,7 +118,7 @@ enum Updater {
         return Staged(build: release.build, version: release.version, url: staged)
     }
 
-    /// True while an update's restart quits the app: the detached sessions stay for the new build (AppDelegate).
+    /// True while an update's restart quits the app: the terminal sessions are written down for the new build (AppDelegate).
     nonisolated(unsafe) static var relaunching = false
 
     /// Once this process has quit: swap the bundles (back to the old one if that fails), drop the download quarantine
@@ -147,11 +147,11 @@ enum Updater {
         swap.arguments = ["-c", script, "swap", staged.url.path, current.path, dest.path]
         try swap.run()
         guard relaunch else { return }
-        // An update's restart keeps the detached sessions running (the new build adopts them); only a real quit ends them.
+        // An update's restart writes the terminal sessions down for the new build to start again; a real quit forgets them.
         relaunching = true
         defer { relaunching = false }
         NSApp.terminate(nil)
-        // Still here: quitting was cancelled (chats running outside detached sessions). Keep the current build.
+        // Still here: quitting was cancelled (the user answered Cancel to what the restart would stop). Keep the current build.
         swap.terminate()
         throw Failure.cancelled
     }

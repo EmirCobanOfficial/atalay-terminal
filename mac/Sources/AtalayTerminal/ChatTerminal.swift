@@ -22,6 +22,10 @@ final class ChatTerminalView: LocalProcessTerminalView {
     var onOpenFile: ((URL, Int?, Int?) -> Bool)?
     /// The cursor's shape is the theme's (TerminalFactory.paint).
     var themedCursor = false
+    /// Shows a screen session an older build left (TerminalFactory.attach) rather than a pty of the app's own. Only then
+    /// does the terminal make up what screen drops of the program's requests (bracketed paste, SGR mouse reports); a pty
+    /// passes the program's own.
+    var legacyScreen = false
 
     /// A click or a drag goes to Claude when its full-screen view is in front and follows the mouse, as in iTerm2: Claude
     /// selects across its whole history, the selection staying on the text as it scrolls (when the drag reaches the
@@ -44,7 +48,7 @@ final class ChatTerminalView: LocalProcessTerminalView {
         mouseToProgram = event.modifierFlags.intersection([.command, .option]).isEmpty && claudeInFront && (engine.map { $0.mouseMode != .off } ?? false)
         if mouseToProgram {
             // screen doesn't pass Claude's request for SGR reports (1006) on: without it the clicks reach Claude garbled.
-            feed(text: "\u{1b}[?1006h")
+            if legacyScreen { feed(text: "\u{1b}[?1006h") }
             allowMouseReporting = true
         }
         super.mouseDown(with: event)
@@ -363,10 +367,10 @@ final class ChatTerminalView: LocalProcessTerminalView {
 
     private var claudeInFront: Bool { foregroundGroup().map(Self.isInteractiveAI) ?? false }
 
-    /// Sets the emulator's bracketed-paste mode to what the program in front takes (only for detached sessions; a
-    /// direct shell sends its own mode 2004).
+    /// Sets the emulator's bracketed-paste mode to what the program in front takes (only for screen sessions; a
+    /// pty passes the program's own mode 2004).
     private func matchPasteMode() {
-        guard let group = foregroundGroup(), let program = Proc.name(group) else { return }
+        guard legacyScreen, let group = foregroundGroup(), let program = Proc.name(group) else { return }
         feed(text: Self.bracketing.contains(program) || Self.isInteractiveAI(group) ? "\u{1b}[?2004h" : "\u{1b}[?2004l")
     }
 
@@ -393,7 +397,7 @@ final class ChatTerminalView: LocalProcessTerminalView {
     /// isn't following the mouse, the wheel scrolls the scrollback as usual.
     func wheelGoesToProgram() -> Bool {
         guard claudeInFront else { return false }
-        feed(text: "\u{1b}[?1006h")
+        if legacyScreen { feed(text: "\u{1b}[?1006h") }
         return true
     }
 
@@ -548,6 +552,7 @@ enum TerminalFactory {
         let relay = Bundle.main.executablePath ?? CommandLine.arguments[0]
         Detached.tune(screenName)
         tv.screenName = screenName
+        tv.legacyScreen = true
         tv.startProcess(executable: relay, args: ["--sync-relay", Detached.screen] + Detached.attachArgs(screenName, fit: fit),
                         environment: childEnvironment(), execName: nil, currentDirectory: cwd)
     }
@@ -569,7 +574,7 @@ enum TerminalFactory {
         for key in env.keys where key.hasPrefix("ITERM_") || key.hasPrefix("CLAUDECODE") || key.hasPrefix("CLAUDE_CODE_")
             || key.hasPrefix("CODEX_")
             || ["TERM_SESSION_ID", "LC_TERMINAL", "LC_TERMINAL_VERSION", "TERM_PROGRAM_VERSION", "OLDPWD",
-                "NO_COLOR", "LC_ALL", "LC_CTYPE", "GIT_PAGER", "GH_PAGER"].contains(key) {
+                "NO_COLOR", "LC_ALL", "LC_CTYPE", "GIT_PAGER", "GH_PAGER", "ORBITERM_SESSION"].contains(key) {
             env.removeValue(forKey: key)
         }
         // Claude's full-screen renderer keeps the whole conversation scrollable inside Claude (the wheel goes there,

@@ -886,10 +886,20 @@ extension McpTools {
         return (r.ok, r.ok ? "" : r.text)
     }
 
-    /// Text into a session's input, as screen's `stuff` takes it (checked: with -X it types the argument as it is, `\`, `^` and quotes
+    /// Text into a session's input. A screen session (one an older build left) takes it as screen's `stuff` does (checked: with -X it types the argument as it is, `\`, `^` and quotes
     /// included). `-p 0` names the session's window: without it a session no display is attached to takes nothing. In pieces of at most
     /// 900 bytes (screen drops a longer argument without a word), cut between characters. False when any piece failed.
     static func stuff(_ screen: String, _ text: String) -> Bool {
+        // A session of the app's own (a pty): one write of the whole text, on the main thread (the session is main-actor
+        // state; this may be called from a tool's thread).
+        if Sessions.shell(named: screen) != nil {
+            let write = { MainActor.assumeIsolated { () -> Bool in
+                guard let pty = Sessions.live[screen] else { return false }
+                pty.write(text)
+                return true
+            } }
+            return Thread.isMainThread ? write() : DispatchQueue.main.sync(execute: write)
+        }
         var piece = ""
         var bytes = 0
         var pieces: [String] = []
