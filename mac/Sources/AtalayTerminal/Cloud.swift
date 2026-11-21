@@ -633,7 +633,10 @@ final class Cloud {
     func maybeRestart() {
         guard !quitPending, let staged, staged.build == state.update?.build, !applying, !preparing else { return }
         if state.update?.force == true {
-            if canRestart() { return restart(into: staged) }
+            // At once only when that ends no terminal the user may be in: a restart ends every session the app runs itself
+            // (they come back resumed, but a half-typed prompt or a shell's state goes), so with any open it waits for the
+            // user to be away like any update, else the notice and the hour below.
+            if canRestart(), Sessions.live.isEmpty || rightAway || Social.idleSeconds() >= 600 { return restart(into: staged) }
             guard let since = forcedSince else { return }
             let now = Date()
             let waited = now.timeIntervalSince(since.at)
