@@ -15,6 +15,9 @@ The themes' colours (themes.json) come from these projects, each under the MIT l
 - MUR47: an original palette (gunmetal, emerald, a walnut stock) by Mur-47, under this repository's MIT licence;
   its fonts (themes/fonts) are Share Tech Mono and Black Ops One, under the SIL Open Font License 1.1 (fonts/OFL-*.txt)
 - Fazil416HK: an original tactical precision HUD palette (matte titanium, reticle crimson) by Fazil Məmmədzadə, under this repository's MIT licence
+- Emir: an original palette (graphite and bone, after a profiler's timeline) by Emir Çoban, under this repository's
+  licence; its font (themes/fonts) is Geist Mono, its regular and semibold cuts cut down to the characters the pages
+  use, under the SIL Open Font License 1.1 (fonts/OFL-GeistMono.txt)
 
 Terminal palettes as collected by iTerm2-Color-Schemes (mbadolato/iTerm2-Color-Schemes),
 Copyright (c) 2011 to Present Mark Badolato.
