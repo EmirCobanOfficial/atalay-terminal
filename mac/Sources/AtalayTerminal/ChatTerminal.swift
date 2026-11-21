@@ -296,7 +296,14 @@ final class ChatTerminalView: LocalProcessTerminalView {
     override init(frame: CGRect) {
         super.init(frame: frame)
         registerForDraggedTypes([.fileURL])
+        // Everything the terminal asks of its host goes through a proxy that denies one thing (ClipboardGuard).
+        let proxy = ClipboardGuard(self)
+        clipboardGuard = proxy
+        terminalDelegate = proxy
     }
+
+    /// Holds the proxy (the terminal's delegate is weak).
+    private var clipboardGuard: ClipboardGuard?
 
     /// Everything typed or pasted goes out through here: typing in a chat or terminal is work (Activity, for XP).
     /// When something was last typed or pasted here (not the terminal's own replies, nor a lone arrow key or Esc), in ms:
@@ -433,6 +440,42 @@ final class ChatTerminalView: LocalProcessTerminalView {
     }
 }
 
+/// The terminal's delegate: forwards every request to the view itself (so its overrides still run) except an OSC 52 read of
+/// the clipboard, which is always denied. screen used to drop OSC 52; without that, any text a program prints (a file
+/// cat'd, ssh, curl, an AI's output) could read what the user copied and have it typed back into the program. Writing the
+/// clipboard stays allowed. SwiftTerm's own view answers a read with the pasteboard and can't be overridden, hence the proxy.
+@MainActor
+private final class ClipboardGuard: TerminalViewDelegate {
+    private weak var view: ChatTerminalView?
+    init(_ view: ChatTerminalView) { self.view = view }
+
+    func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) { view?.sizeChanged(source: source, newCols: newCols, newRows: newRows) }
+    func setTerminalTitle(source: TerminalView, title: String) { view?.setTerminalTitle(source: source, title: title) }
+    func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) { view?.hostCurrentDirectoryUpdate(source: source, directory: directory) }
+    func send(source: TerminalView, data: ArraySlice<UInt8>) { view?.send(source: source, data: data) }
+    func scrolled(source: TerminalView, position: Double) { view?.scrolled(source: source, position: position) }
+    func requestOpenLink(source: TerminalView, link: String, params: [String: String]) { view?.requestOpenLink(source: source, link: link, params: params) }
+    func bell(source: TerminalView) { view?.bell(source: source) }
+    func clipboardCopy(source: TerminalView, content: Data) { view?.clipboardCopy(source: source, content: content) }
+    func clipboardRead(source: TerminalView) -> Data? { nil }
+    func kittyClipboardCapabilities(source: TerminalView) -> KittyClipboardCapabilities { view?.kittyClipboardCapabilities(source: source) ?? [] }
+    func kittyClipboardAvailableMimeTypes(source: TerminalView, location: KittyClipboardLocation) -> [String]? {
+        view?.kittyClipboardAvailableMimeTypes(source: source, location: location)
+    }
+    func kittyClipboardRead(source: TerminalView, location: KittyClipboardLocation, mimeType: String) -> KittyClipboardReadResult? {
+        view?.kittyClipboardRead(source: source, location: location, mimeType: mimeType)
+    }
+    func kittyClipboardWrite(source: TerminalView, location: KittyClipboardLocation, content: KittyClipboardWriteContent) -> KittyClipboardWriteResult {
+        view?.kittyClipboardWrite(source: source, location: location, content: content) ?? .unsupported
+    }
+    func kittyClipboardRequestPermission(source: TerminalView, request: KittyClipboardPermissionRequest) -> KittyClipboardPermissionResult {
+        view?.kittyClipboardRequestPermission(source: source, request: request) ?? .deny
+    }
+    func iTermContent(source: TerminalView, content: ArraySlice<UInt8>) { view?.iTermContent(source: source, content: content) }
+    func rangeChanged(source: TerminalView, startY: Int, endY: Int) { view?.rangeChanged(source: source, startY: startY, endY: endY) }
+    func programStatusChanged(source: TerminalView, records: [TerminalProgramStatus]) { view?.programStatusChanged(source: source, records: records) }
+}
+
 @MainActor
 enum TerminalFactory {
     static func make(chatId: String, cwd: String, claudeArgs: [String]?, fontSize: CGFloat,
@@ -444,6 +487,7 @@ enum TerminalFactory {
 
     static func start(_ tv: ChatTerminalView, cwd: String, claudeArgs: [String]?) {
         let shell = userShell()
+        Sessions.closeOnExec()
         tv.startProcess(executable: shell, args: shellArgs(shell, cwd: cwd, claudeArgs: claudeArgs), environment: childEnvironment(),
                         execName: nil, currentDirectory: cwd)
     }
@@ -553,6 +597,7 @@ enum TerminalFactory {
         Detached.tune(screenName)
         tv.screenName = screenName
         tv.legacyScreen = true
+        Sessions.closeOnExec()
         tv.startProcess(executable: relay, args: ["--sync-relay", Detached.screen] + Detached.attachArgs(screenName, fit: fit),
                         environment: childEnvironment(), execName: nil, currentDirectory: cwd)
     }

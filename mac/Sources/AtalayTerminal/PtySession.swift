@@ -16,6 +16,16 @@ final class PtySession: NSObject, LocalProcessTerminalViewDelegate {
     weak var owner: LocalProcessTerminalViewDelegate?
     /// Ended (its shell exited, or End Session): no longer in `Sessions.live`.
     private(set) var finished = false
+    /// An AI (the one in `ai`) was seen running under the shell: from then on the AI leaving ends its being resumed, instead
+    /// of waiting for it to show up (MainWindowController.inspect).
+    var aiSeen = false
+
+    /// The window or pane showing it is still open (not one that went away while the session lived on).
+    var ownerIsLive: Bool {
+        if let w = owner as? ChatWindowController { return w.manager?.isOpen(w) ?? false }
+        if let p = owner as? ExtraPane { return p.isInWindow }
+        return false
+    }
 
     fileprivate init(name: String, cwd: String, fontSize: CGFloat) {
         self.name = name
@@ -53,6 +63,9 @@ final class PtySession: NSObject, LocalProcessTerminalViewDelegate {
         finished = true
         let shell = terminal.process.shellPid
         Sessions.remove(self)
+        // Nothing else holds the session (its view's delegate and its owner are weak): kept until its shell is reaped, so
+        // the window or pane showing it hears that it ended (processTerminated).
+        Sessions.dying[name] = self
         Detached.forgetHistory(name)
         if shell > 0 { Detached.endTree(shell) }
         terminal.terminate()
@@ -77,6 +90,7 @@ final class PtySession: NSObject, LocalProcessTerminalViewDelegate {
     func processTerminated(source: TerminalView, exitCode: Int32?) {
         // The app is quitting or restarting: the windows are being torn down and what the shells showed was just kept for
         // the next launch (MainWindowController.terminateAll), so nothing here may touch it.
+        Sessions.dying[name] = nil
         guard !Sessions.stopping else { return }
         if !finished {
             finished = true
@@ -100,6 +114,8 @@ enum Sessions {
     @MainActor fileprivate(set) static var live: [String: PtySession] = [:]
     /// Names that were pty sessions in this run and ended: nothing is looked up for them in screen.
     @MainActor fileprivate(set) static var ended: Set<String> = []
+    /// Sessions that ended (End Session) and wait for their shell to be reaped.
+    @MainActor fileprivate(set) static var dying: [String: PtySession] = [:]
     /// The app is quitting or restarting: the sessions' own end-of-process news is ignored (see processTerminated).
     @MainActor static var stopping = false
 
@@ -120,20 +136,43 @@ enum Sessions {
     /// dimmed.
     @MainActor
     static func start(name: String, cwd: String, claudeArgs: [String]?, fontSize: CGFloat, ai: (tool: String, id: String)? = nil,
-                      history: [String] = [], notice: String? = nil) -> PtySession {
+                      history: [String] = [], notice: String? = nil, size: NSSize? = nil) -> PtySession {
         let session = PtySession(name: name, cwd: cwd, fontSize: fontSize)
         session.ai = ai
         let tv = session.terminal!
+        // The size the view will have, so the shell (and Claude) start at it instead of at the default and redraw.
+        if let size, size.width >= 100, size.height >= 60 { tv.frame = NSRect(origin: .zero, size: size) }
         if !history.isEmpty { tv.feed(text: history.joined(separator: "\r\n") + "\r\n") }
         if let notice { tv.feed(text: "\u{1b}[2m" + notice + "\u{1b}[0m\r\n\r\n") }
         let shell = TerminalFactory.userShell()
+        closeOnExec()
         tv.startProcess(executable: shell, args: TerminalFactory.shellArgs(shell, cwd: cwd, claudeArgs: claudeArgs),
                         environment: TerminalFactory.childEnvironment() + ["ORBITERM_SESSION=" + name], execName: nil, currentDirectory: cwd)
+        // The new pty's own master too, before the next process starts.
+        closeOnExec()
         live[name] = session
         ended.remove(name)
         let pid = tv.process.shellPid
         if pid > 0 { setShell(name, pid) }
         return session
+    }
+
+    /// Every descriptor the app has open (from 3 up) closes when a process is started. SwiftTerm's child does a bare fork and
+    /// exec, and the pty masters and the app's sockets (the MCP listener…) aren't close-on-exec: without this, each new shell
+    /// and everything it starts (Claude, a daemon) would hold the masters of every earlier session, which then never hang
+    /// up when the app dies, and the app's listening sockets. Call it right before a SwiftTerm `startProcess`.
+    nonisolated static func closeOnExec() {
+        let pid = getpid()
+        let bytes = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, nil, 0)
+        guard bytes > 0 else { return }
+        let stride = MemoryLayout<proc_fdinfo>.stride
+        var fds = [proc_fdinfo](repeating: proc_fdinfo(), count: Int(bytes) / stride + 16)
+        let got = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, &fds, Int32(fds.count * stride))
+        guard got > 0 else { return }
+        for fd in fds.prefix(Int(got) / stride) where fd.proc_fd >= 3 {
+            let flags = fcntl(fd.proc_fd, F_GETFD)
+            if flags >= 0, flags & FD_CLOEXEC == 0 { _ = fcntl(fd.proc_fd, F_SETFD, flags | FD_CLOEXEC) }
+        }
     }
 
     @MainActor

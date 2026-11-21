@@ -156,6 +156,8 @@ enum Detached {
     @MainActor
     static func quit(_ name: String) {
         if let pty = Sessions.live[name] { return pty.end() }
+        // A pty session that ended already (End Session runs twice for a window's panes): nothing in screen by that name.
+        if Sessions.ended.contains(name) { return }
         forgetHistory(name)
         let shell = shellPid(name)
         var tree: [(pid: Int32, started: UInt64)] = []

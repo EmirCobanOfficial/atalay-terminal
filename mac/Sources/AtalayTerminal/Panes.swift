@@ -68,27 +68,41 @@ final class ExtraPane: NSObject, LocalProcessTerminalViewDelegate {
     /// `session` names a pty still running (a closed pane brought back, one restored after a restart): the pane takes its
     /// view over. A screen session an older build left (`session`, not a pty): the pane shows it once `start` attaches it.
     /// Without `session`, a new shell starts in a pty of its own, named after the window's session `parent`.
-    init(owner: ChatWindowController, cwd: String, kind: PaneKind, fontSize: CGFloat, session: String? = nil, parent: String? = nil) {
+    init(owner: ChatWindowController, cwd: String, kind: PaneKind, fontSize: CGFloat, session: String? = nil, parent: String? = nil,
+         size: NSSize? = nil) {
         self.owner = owner
         self.cwd = cwd
         self.kind = kind
         super.init()
-        if let session, let pty = Sessions.live[session] {
-            adopt(pty)
+        if let session, let pty = Sessions.live[session], !pty.ownerIsLive || pty.owner === owner {
+            adopt(pty, fontSize: fontSize)
+        } else if let session, Sessions.ended.contains(session) || Sessions.live[session] != nil {
+            // Ended already, or shown by another window or pane: nothing to show here (ChatWindowController.adoptPane checks
+            // first, so this is only a guard). The pane is closed and shows nothing.
+            NSLog("Orbiterm: a pane was asked to show a session that is gone or shown elsewhere (%@)", session)
+            terminal = TerminalFactory.makeIdle(chatId: owner.id, fontSize: fontSize, delegate: self)
+            closing = true
+            attached = true
         } else if session != nil {
             terminal = TerminalFactory.makeIdle(chatId: owner.id, fontSize: fontSize, delegate: self)
             try? terminal.setUseMetal(true)
         } else {
             let name = Detached.extraName(parent: parent ?? Detached.prefix + owner.id.lowercased(), kind: kind)
-            adopt(Sessions.start(name: name, cwd: cwd, claudeArgs: nil, fontSize: fontSize))
+            adopt(Sessions.start(name: name, cwd: cwd, claudeArgs: nil, fontSize: fontSize, size: size), fontSize: fontSize)
         }
     }
 
-    /// The pane shows `pty`'s view and hears what it reports from now on.
-    private func adopt(_ pty: PtySession) {
+    /// The pane is one of its window's (not left behind by a closed one).
+    var isInWindow: Bool { owner?.extras.contains { $0 === self } ?? false }
+
+    /// The pane shows `pty`'s view and hears what it reports from now on. A parked view missed the theme and font changes
+    /// made meanwhile.
+    private func adopt(_ pty: PtySession, fontSize: CGFloat) {
         pty.owner = self
         terminal = pty.terminal
         terminal.chatId = owner?.id ?? ""
+        TerminalFactory.paint(terminal)
+        terminal.font = TerminalFont.font(fontSize)
         link = DetachedLink(name: pty.name)
         attached = true
     }
@@ -158,6 +172,7 @@ final class ExtraPane: NSObject, LocalProcessTerminalViewDelegate {
 
     /// Ends the pane's shell and session.
     func end() {
+        guard !closing else { return }
         closing = true
         if let link { Detached.quit(link.name) }
         terminal.terminate()

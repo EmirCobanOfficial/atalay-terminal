@@ -931,13 +931,24 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
         w.delegate = self
         w.onHeaderPress = { [weak self] in self?.letGoForDrag() }
         var adopted = false
-        if let d = detached, let pty = Sessions.live[d.name] {
+        var unavailable = false
+        if let d = detached, let pty = Sessions.live[d.name], !pty.ownerIsLive {
             // The session runs already (started by MainWindowController.makeChat, or restored): its view is the window's.
+            // A parked one missed the theme and font changes made meanwhile.
             terminal = pty.terminal
             pty.owner = self
             terminal.chatId = id
+            TerminalFactory.paint(terminal)
+            terminal.font = TerminalFont.font(fontSize)
             adopted = true
             onPty = true
+        } else if let d = detached, Sessions.ended.contains(d.name) || Sessions.live[d.name] != nil {
+            // Its session ended already, or another window or pane shows it (the callers check first, so this is only a
+            // guard): not attached to anything, and not taking the other window's view. An ended window, to be closed.
+            NSLog("Orbiterm: a window was asked to show a session that is gone or shown elsewhere (%@)", d.name)
+            terminal = TerminalFactory.makeIdle(chatId: id, fontSize: fontSize, delegate: self)
+            onPty = true
+            unavailable = true
         } else if detached != nil {
             terminal = TerminalFactory.makeIdle(chatId: id, fontSize: fontSize, delegate: self)
         } else {
@@ -956,6 +967,11 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
         hud.onShip = { [weak self] in self?.shipAction($0) }
         hud.onShipMenu = { [weak self] in self?.popShipMenu() }
         if let top = hud.wtTop { watchShip(top) }
+        if unavailable {
+            hud.exited = true
+            border.setStatus("ended")
+            terminal.feed(text: "\r\n\u{1b}[2m[this terminal ended or is shown in another window · close this window to remove it]\u{1b}[0m\r\n")
+        }
         themeWatch = NotificationCenter.default.addObserver(forName: ThemeStore.changed, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.themeChanged() }
         }
@@ -1566,8 +1582,9 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
         pin(v, to: paneArea)
     }
 
-    private func makeExtra(kind: PaneKind, cwd: String, session: String? = nil) -> ExtraPane {
-        let pane = ExtraPane(owner: self, cwd: cwd, kind: kind, fontSize: terminal.font.pointSize, session: session, parent: detached?.name)
+    private func makeExtra(kind: PaneKind, cwd: String, session: String? = nil, size: NSSize? = nil) -> ExtraPane {
+        let pane = ExtraPane(owner: self, cwd: cwd, kind: kind, fontSize: terminal.font.pointSize, session: session, parent: detached?.name,
+                             size: size)
         pane.terminal.sessionShell = { [weak pane] in pane?.link?.shellPid ?? 0 }
         pane.terminal.workingDirectory = { [weak pane] in pane?.cwd }
         pane.terminal.onSelection = { [weak self] in self?.showSelection($0) }
@@ -1584,7 +1601,8 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
     /// ⌘T: a new tab with a shell in the folder of the pane in front. In a mirror too (a chat the other app runs): the
     /// tab's shell is this app's own.
     func newTab() {
-        let pane = makeExtra(kind: .tab, cwd: currentFolder)
+        // The new shell starts at the size of the pane in front (a tab fills the same area).
+        let pane = makeExtra(kind: .tab, cwd: currentFolder, size: focusedTerminal.frame.size)
         tabs.append(pane.terminal)
         selectTab(tabs.count - 1)
         focus(pane.terminal)
@@ -1596,7 +1614,10 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
         hideEnv()
         if zoomed { _ = toggleZoom() }
         let old = focusedTerminal
-        let pane = makeExtra(kind: vertical ? .vertical : .horizontal, cwd: currentFolder)
+        // The new shell starts at half the pane in front (less the divider).
+        var half = old.frame.size
+        if vertical { half.width = (half.width - 5) / 2 } else { half.height = (half.height - 5) / 2 }
+        let pane = makeExtra(kind: vertical ? .vertical : .horizontal, cwd: currentFolder, size: half)
         insert(pane.terminal, beside: old, vertical: vertical)
         refreshPanes()
         focus(pane.terminal)
@@ -1605,6 +1626,9 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
     /// A pane's session still running (⇧⌘T right after closing it, or after the app restarted) comes back: in a tab of
     /// its own or split off the shown tab's last pane.
     func adoptPane(session: String, kind: PaneKind, cwd: String, focus: Bool) {
+        // Not a session that ended meanwhile, nor one another window or pane shows (it can't be in two places).
+        if Sessions.ended.contains(session) { return }
+        if let pty = Sessions.live[session], pty.ownerIsLive { return }
         let pane = makeExtra(kind: kind, cwd: cwd, session: session)
         if kind == .tab {
             tabs.append(pane.terminal)
@@ -2663,6 +2687,9 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
     func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
 
     func processTerminated(source: TerminalView, exitCode: Int32?) {
+        // The app is quitting or restarting: the views are being torn down, and what a screen relay's exit would do here
+        // (remove the chat, end its panes) is no news to act on.
+        guard !Sessions.stopping else { return }
         hud.exited = true
         border.setStatus("ended")
         terminal.feed(text: "\r\n\u{1b}[2m[chat ended · close this window to remove it]\u{1b}[0m\r\n")
