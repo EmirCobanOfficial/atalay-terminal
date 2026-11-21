@@ -5,6 +5,7 @@ Each version's lines are its release notes: the app lists them on its "what's ne
 
 ## Next
 
+- Mac: a terminal pinned above the dashboard drags with the cursor again, smoothly. Thanks to @EmirCobanOfficial on GitHub, EmirMac#7124 in the app (PR #44)
 - Settings · Privacy: "Share my token counts for the Tokens board". Off, the app sends no token counts at all, and the days it was off are never sent, even once it's back on. The README now lists exactly what the counts hold. Found by @EmirCobanOfficial on GitHub, EmirMac#7124 in the app
 - A required update says 5 minutes ahead when it will restart the app, if chats or terminals are running, with a button to restart now; the conversations stay saved. Found by @EmirCobanOfficial on GitHub, EmirMac#7124 in the app
 - Messages: once every older end-to-end encrypted message has been opened, the old keys file is deleted from your computer, and a bad page from the server can no longer keep the app asking for it. Found by @EmirCobanOfficial on GitHub, EmirMac#7124 in the app
