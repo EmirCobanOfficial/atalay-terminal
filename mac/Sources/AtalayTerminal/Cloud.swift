@@ -552,7 +552,10 @@ final class Cloud {
 
     private func noteForce(_ u: Release?) {
         if let u, u.force == true {
-            if forcedSince?.build != u.build { forcedSince = (u.build, Date()) }
+            if forcedSince?.build != u.build {
+                forcedSince = (u.build, Date())
+                unwarnForce()
+            }
             if forceTimer == nil {
                 let t = Timer(timeInterval: 60, repeats: true) { _ in
                     Task { @MainActor in Cloud.shared.maybeRestart() }
@@ -563,6 +566,7 @@ final class Cloud {
             }
         } else {
             forcedSince = nil
+            unwarnForce()
             forceTimer?.invalidate()
             forceTimer = nil
         }
@@ -586,18 +590,40 @@ final class Cloud {
         maybeRestart()
     }
 
+    /// When the user was told that a forced build restarts the app over running chats (the notices' UPDATE), and for which
+    /// build: the restart comes 5 min after that at the soonest, however long the build had waited by then (the Mac
+    /// asleep, a slow download).
+    private var forceWarned: (build: Int, at: Date)?
+
     /// A staged build goes in when it interrupts nothing: the user has been away 10 minutes (or wants updates right away)
     /// and no chat runs outside its detached session, which quitting would stop. Forced builds skip the idle wait and
-    /// install after at most 60 min even if `canRestart()` keeps refusing.
+    /// install after 60 min even if `canRestart()` keeps refusing: the notices say when 5 min before, and the restart
+    /// never comes sooner than 5 min after they did.
     func maybeRestart() {
         guard let staged, staged.build == state.update?.build, !applying, !preparing else { return }
         if state.update?.force == true {
-            let deadline = forcedSince.map { Date().timeIntervalSince($0.at) >= 3600 } ?? false
-            guard canRestart() || deadline else { return }
-            return restart(into: staged, overdueForce: deadline)
+            if canRestart() { return restart(into: staged) }
+            guard let since = forcedSince else { return }
+            let now = Date()
+            let waited = now.timeIntervalSince(since.at)
+            // 5 min before the hour is up, with chats running that the restart stops: when it comes, in the corner.
+            if forceWarned?.build != staged.build, waited >= 3600 - 300 {
+                forceWarned = (staged.build, now)
+                MessagePanel.notices.restart(version: staged.version, at: max(since.at.addingTimeInterval(3600), now.addingTimeInterval(300)))
+            }
+            guard let warned = forceWarned, warned.build == staged.build, waited >= 3600, now.timeIntervalSince(warned.at) >= 300 else { return }
+            return restart(into: staged, overdueForce: true)
         }
         guard canRestart(), rightAway || Social.idleSeconds() >= 600 else { return }
         restart(into: staged)
+    }
+
+    /// The forced restart the user was told about isn't coming (the build is no longer forced, or a newer one came): the
+    /// notice goes.
+    private func unwarnForce() {
+        guard forceWarned != nil else { return }
+        forceWarned = nil
+        MessagePanel.notices.restartOver()
     }
 
     private func restart(into staged: Updater.Staged, overdueForce: Bool = false) {

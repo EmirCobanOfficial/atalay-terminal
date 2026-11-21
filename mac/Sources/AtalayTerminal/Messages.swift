@@ -12,6 +12,8 @@ import WebKit
 /// The notices also say when a new version of the app is out; a click on that one shows the dashboard's "what's new".
 /// And when a chat needs the user (an approval) while the app is behind other windows (WaitNotifier): that notice
 /// stays until the chat moves on, and a click on it opens the chat.
+/// And 5 minutes before a forced update restarts the app over running chats (Cloud.maybeRestart): when, with a way to
+/// restart now.
 /// A level-up takes the notices panel over the whole screen, keys locked for its first moments and then any key ending
 /// it, only while the app is in front (the page waits for that).
 /// The page decides the size and asks for it, and asks to be moved while the header is dragged.
@@ -231,6 +233,20 @@ final class MessagePanel: NSObject, WKScriptMessageHandler, WKNavigationDelegate
 
     func clashOver(_ key: String) {
         run("window.__messages && __messages.clashOver && __messages.clashOver(\(Self.literal(key)))")
+    }
+
+    /// A forced update restarts the app at `at` even though chats run outside their detached sessions, which close then
+    /// (Cloud.maybeRestart): the notice says when, and stays until it's put away or the restart comes. Its "restart now"
+    /// installs at once, through the quit's own question about running chats.
+    func restart(version: String, at: Date) {
+        let notice: [String: Any] = ["version": version, "at": at.timeIntervalSince1970 * 1000]
+        guard let data = try? JSONSerialization.data(withJSONObject: notice), let json = String(data: data, encoding: .utf8) else { return }
+        run("window.__messages && __messages.restart && __messages.restart(\(json))")
+    }
+
+    /// That restart isn't coming any more (the build is no longer forced, or a newer one took its place): its notice goes.
+    func restartOver() {
+        run("window.__messages && __messages.restartOver && __messages.restartOver()")
     }
 
     /// Your XP as the last heartbeat or live event had it: a new level plays the fanfare (once, the page keeps count).
@@ -464,6 +480,10 @@ final class MessagePanel: NSObject, WKScriptMessageHandler, WKNavigationDelegate
             Self.onOpenWait?(sid)
         case "openClash":
             Self.onOpenClash?()
+        case "restartNow":
+            // The forced update's notice: "restart now" is "update now" (the quit still asks about running chats).
+            guard role == .notices else { return }
+            Cloud.shared.installUpdate()
         case "lock":
             // Never longer than 4 s, whatever the page asks.
             Self.keysLockedUntil = ProcessInfo.processInfo.systemUptime + min(max(number("ms"), 0), 4000) / 1000

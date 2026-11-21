@@ -2402,6 +2402,10 @@ function handleMessages(win, body) {
       showDashboard();
       toDash('openView("dash")');
       return true;
+    // The forced update's notice: "restart now" is "update now".
+    case 'restartNow':
+      if (role === 'notices') updates.now();
+      return true;
     case 'openChat':
       return openFriendChat(body.id);
     // A code block's Copy, or Copy text on a message (the page's own clipboard refuses a window without focus).
@@ -2436,7 +2440,8 @@ function handleMessages(win, body) {
 // ---------- updates: the releases repo's "windows" release (electron-updater; scripts/release.js) ----------
 // A new version downloads by itself and goes in, as on the Mac, when the user has stepped away for 10 minutes (or wants
 // updates right away) and the restart stops nothing: chats in the session host go on across it. One running in the app
-// itself (no host) would end, so then it waits for the user's quit (or "update now").
+// itself (no host) would end, so then it waits for the user's quit (or "update now"). A forced version waits an hour at
+// most, as on the Mac, and the notices say when it restarts 5 minutes before.
 const updates = (() => {
   let offer = null, ready = false, busy = null, checking = false, checkedAt = null, error = null;
   // How far the download has come (0…1, whole percents), as on the Mac: the page's bar and "updating 42%", so a long
@@ -2447,6 +2452,12 @@ const updates = (() => {
   // while the page says "downloading…" with no way out.
   let whenReady = false;
   let forcedVersion = null, forcedAt = 0, last426At = 0;
+  // A forced version restarts the app after an hour even over chats and terminals running in it (no host), as on the
+  // Mac: the notices say when 5 minutes before (warnedFor, warnedAt), and the restart never comes sooner than 5 minutes
+  // after they did, however long the version had waited by then (asleep, a slow download). `overdue`: this restart is
+  // that one, so the quit doesn't ask about running chats (the installer closes the app within seconds anyway).
+  const FORCE_MS = 3600_000, WARN_MS = 300_000;
+  let warnedFor = null, warnedAt = 0, overdue = false;
   let downloading = false, downloadingAt = 0, downloadFailures = 0, nextRetryAt = 0;
   const RETRY_BACKOFF = [60_000, 300_000, 900_000, 1_800_000];
   const isDownloading = () => downloading && Date.now() - downloadingAt < 300_000;
@@ -2465,15 +2476,32 @@ const updates = (() => {
     if (!ready || busy) return;
     const localRunning = terminals.list().some((t) => terminals.local(t.id));
     if (offer && forcedVersion === offer.version) {
-      if (!localRunning || (forcedAt && Date.now() - forcedAt >= 3600_000)) install();
+      if (!localRunning) return install();
+      if (!forcedAt) return;
+      const now = Date.now();
+      // 5 minutes before the hour is up: when the restart comes, in the corner (messages.js's restart notice).
+      if (warnedFor !== forcedVersion && now - forcedAt >= FORCE_MS - WARN_MS) {
+        warnedFor = forcedVersion;
+        warnedAt = now;
+        toNotices(`restart(${JSON.stringify({ version: forcedVersion, at: Math.max(forcedAt + FORCE_MS, now + WARN_MS) })})`);
+      }
+      if (warnedFor === forcedVersion && now - forcedAt >= FORCE_MS && now - warnedAt >= WARN_MS) install(true);
       return;
     }
     if (localRunning) return;
     if (rightAway() || powerMonitor.getSystemIdleTime() >= 600) install();
   };
-  const install = () => {
+  // The restart the notices told of isn't coming (the version is no longer forced, or another one is): its notice goes.
+  const unwarn = () => {
+    if (!warnedFor) return;
+    warnedFor = null;
+    warnedAt = 0;
+    toNotices('restartOver()');
+  };
+  const install = (overdueForce = false) => {
     whenReady = false;
     busy = 'restarting…';
+    overdue = overdueForce;
     pushCloud();
     setImmediate(() => autoUpdater.quitAndInstall(true, true));
   };
@@ -2524,6 +2552,7 @@ const updates = (() => {
       // pressed again.
       if (busy === 'restarting…') {
         busy = null;
+        overdue = false;
         error = 'failed';
         pushCloud();
       }
@@ -2586,11 +2615,13 @@ const updates = (() => {
       if (forcedVersion !== version) {
         forcedVersion = version;
         forcedAt = Date.now();
+        unwarn();
       }
       if (ready && offer && offer.version === version) maybeRestart();
     } else {
       forcedVersion = null;
       forcedAt = 0;
+      unwarn();
     }
     if (!validVersion || !shouldCheck(version, ignoreBackoff) || !FEED_RE.test(url)) return;
     if (url !== feed) {
@@ -2685,6 +2716,8 @@ const updates = (() => {
       apiRelease().catch(() => {});
       poll().catch(() => {});
     },
+    // The forced version's restart, told of 5 minutes before, is under way: the quit doesn't ask about running chats.
+    overdue: () => overdue,
   };
 })();
 
@@ -2986,9 +3019,10 @@ let savingFiles = false;
 app.on('before-quit', (e) => {
   if (quitting) return;
   if (savingFiles) return e.preventDefault();
-  // Only chats running in the app itself stop: the session host's go on, and come back at the next launch.
+  // Only chats running in the app itself stop: the session host's go on, and come back at the next launch. A forced
+  // update's restart, told of 5 minutes before in the corner, doesn't ask, as on the Mac.
   const running = [...chats.entries()].filter(([id, c]) => c.claude && terminals.local(id)).length;
-  if (running && !PROBE) {
+  if (running && !PROBE && !updates.overdue()) {
     const r = dialog.showMessageBoxSync(dash || undefined, {
       type: 'warning', buttons: ['Quit', 'Cancel'], defaultId: 1, cancelId: 1, noLink: true,
       message: running === 1 ? '1 chat is still running' : `${running} chats are still running`,
