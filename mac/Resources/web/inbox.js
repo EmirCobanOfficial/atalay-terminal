@@ -115,7 +115,7 @@ window.Inbox = (() => {
   const art = (id, tier, size) => (Art() ? Art().svg(id, tier, size) : '');
   const badgeName = (b) => (Art() ? Art().name(b.id) : '') || b.name || 'a badge';
   const tierName = (b) => (Art() ? Art().tierName(b.id, b.tier, b.tiers) : '');
-  const rare = (r) => r != null && r <= 10; // Xbox's and Steam's cut-off
+  const rare = (r) => r != null && r <= 5; // stricter than Xbox's and Steam's 10%: with rarity per tier, 9% made it common
   // A release's line: its topic (before the ":") and the rest.
   function parts(text) {
     const m = /^([^:]{1,40}):\s+([\s\S]*)$/.exec(String(text || ''));

@@ -86,7 +86,7 @@ window.Badges = (() => {
       `<div class="bh-top"><div class="bh-art">${Art.svg(b.id, b.tier, 96)}</div><div class="bh-name"><b>${esc(b.name || Art.name(b.id))}</b>` +
       `<span class="q">${esc(tierText || 'Earned')}${b.tiers > 1 && !b.id.startsWith('service-') ? ` · tier ${Number(b.tier) || 0} of ${Number(b.tiers) || 0}` : ''}</span>${steps}</div></div>` +
       (b.how ? `<p>${esc(b.how)}</p>` : '') +
-      (b.rare != null ? `<small class="tp-rare${b.rare <= 9 ? ' rare' : ''}">${b.rare <= 9 ? 'Rare · ' : ''}${pct(b.rare)}% of players have ${b.tiers > 1 ? 'this tier' : 'it'}</small>` : '') +
+      (b.rare != null ? `<small class="tp-rare${b.rare <= 5 ? ' rare' : ''}">${b.rare <= 5 ? 'Rare · ' : ''}${pct(b.rare)}% of players have ${b.tiers > 1 ? 'this tier' : 'it'}</small>` : '') +
       (b.earnedAt ? `<small>Earned ${esc(new Date(b.earnedAt).toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' }))}</small>` : '');
     const r = el.getBoundingClientRect();
     card.classList.add('on');
@@ -115,7 +115,7 @@ window.Badges = (() => {
       `<div class="bdg${b.tier ? '' : ' locked'}${own && mine && mine.featured === b.id ? ' shown' : ''}${own && lands(b.id) ? ' just' : ''}" data-badge="${esc(b.id)}" title="${esc(b.how)}">` +
       `${Art.svg(b.id, b.tier, own ? 64 : 48)}<b>${esc(b.name)}</b><small>${esc(b.tier ? tierLine(b) || 'earned' : 'locked')}</small>` +
       (own && p && b.tier < b.tiers && !(b.tiers === 1 && p.next === 1) ? `<i class="bdg-bar"><i style="width:${fill.toFixed(0)}%"></i></i><em>${esc(amount(p))}</em>` : '') +
-      (b.tier ? `<span class="bdg-rare${b.rare && b.rare <= 9 ? ' rare' : ''}">${b.rare <= 9 ? 'rare · ' : ''}${pct(b.rare)}% have ${b.tiers > 1 ? 'this tier' : 'it'}</span>` : '') +
+      (b.tier ? `<span class="bdg-rare${b.rare && b.rare <= 5 ? ' rare' : ''}">${b.rare <= 5 ? 'rare · ' : ''}${pct(b.rare)}% have ${b.tiers > 1 ? 'this tier' : 'it'}</span>` : '') +
       (own && mine && mine.featured === b.id ? '<span class="bdg-flag">displayed</span>' : '') +
       '</div>'
     );
@@ -320,7 +320,7 @@ window.Badges = (() => {
     return (
       `<div class="sc-item${shown ? ' shown' : ''}${own && lands(b.id) ? ' just' : ''}" data-badge="${esc(b.id)}" style="--q:${colour(b)}"${interactive}>` +
       `<div class="sc-art">${Art.svg(b.id, b.tier, 84)}</div><b>${esc(b.name)}</b><span>${esc(tierLine(b) || 'earned')}</span>` +
-      (shown ? '<em class="sc-flag">★</em>' : '') + (b.tier && b.rare != null && b.rare <= 9 ? '<em class="sc-rare">RARE</em>' : '') +
+      (shown ? '<em class="sc-flag">★</em>' : '') + (b.tier && b.rare != null && b.rare <= 5 ? '<em class="sc-rare">RARE</em>' : '') +
       '<i class="sc-q"></i></div>'
     );
   }
@@ -353,7 +353,7 @@ window.Badges = (() => {
       (p && b.tier < b.tiers && !(b.tiers === 1 && p.next === 1)
         ? `<div class="tp-prog"><label>${next ? `to ${esc(next)}` : 'progress'}</label><i><i style="width:${Math.max(0, Math.min(100, (100 * p.value) / p.next)).toFixed(0)}%"></i></i><small>${esc(amount(p))}</small></div>`
         : '') +
-      (b.rare != null ? `<small class="tp-rare${b.rare <= 9 ? ' rare' : ''}">${b.rare <= 9 ? 'Rare · ' : ''}${pct(b.rare)}% of players have ${b.tiers > 1 ? 'this tier' : 'it'}</small>` : '') +
+      (b.rare != null ? `<small class="tp-rare${b.rare <= 5 ? ' rare' : ''}">${b.rare <= 5 ? 'Rare · ' : ''}${pct(b.rare)}% of players have ${b.tiers > 1 ? 'this tier' : 'it'}</small>` : '') +
       (b.earnedAt ? `<small>Earned ${esc(new Date(b.earnedAt).toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' }))}</small>` : '') +
       (!viewOwner && mine?.signedIn ? `<em>${shownId() === b.id ? '★ displayed beside your name · click to stop' : 'click to display it beside your name'}</em>` : '');
     const r = t.getBoundingClientRect();
