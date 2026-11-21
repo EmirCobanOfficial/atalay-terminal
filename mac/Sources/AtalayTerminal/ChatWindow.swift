@@ -2051,7 +2051,13 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
         parent.removeChildWindow(w)
         repinTimer?.invalidate()
         // In .common modes: a drag tracks the mouse, and default-mode timers wait.
-        let t = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in MainActor.assumeIsolated { self?.repinAfterDrag() } }
+        // Stops itself if the controller is gone, or it would fire 20 times a second for good.
+        let t = Timer(timeInterval: 0.05, repeats: true) { [weak self] t in
+            MainActor.assumeIsolated {
+                guard let self else { return t.invalidate() }
+                self.repinAfterDrag()
+            }
+        }
         RunLoop.main.add(t, forMode: .common)
         repinTimer = t
     }
@@ -2071,6 +2077,10 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
     // A window pinned above the dashboard is the dashboard's child, and a child minimized on its own left the
     // dashboard black. So it lets go of the dashboard on its way to the Dock and pins again when it comes back.
     func windowWillMiniaturize(_ notification: Notification) {
+        // A press on the minimize button (in the header) or ⌘M mid-drag left the repin timer running: it could pin the
+        // window again during the Dock animation. windowDidDeminiaturize pins it again.
+        repinTimer?.invalidate()
+        repinTimer = nil
         guard let w = window else { return }
         w.parent?.removeChildWindow(w)
     }
