@@ -36,6 +36,8 @@ final class RadarEngine {
     /// Bash tool uses that spawn another AI CLI (Codex, Antigravity, Gemini): tool_use id → the SubAgent holding the
     /// drone on the orbit, so the pending clears and the drone retires on the tool's result.
     private var externalBashAgent: [String: SubAgent] = [:]
+    /// End signals that reached an agent's key before its own transcript did (the main file is read first).
+    private var earlyEnds: [String: Double] = [:]
     private var log: [LogEntry] = []
     private var logIndex: [String: LogEntry] = [:]
     private var outbox: [[String: Any]] = []
@@ -441,6 +443,7 @@ final class RadarEngine {
         let key = "\(sid):\(aid)"
         if let A = agents[key] { return A }
         let A = SubAgent(sid: sid, id: aid)
+        if let t = earlyEnds.removeValue(forKey: key) { A.end(t) }
         agents[key] = A
         return A
     }
@@ -552,6 +555,9 @@ final class RadarEngine {
             if let t = rec["aiTitle"] as? String { S.title = clip(redact(t), 90) }
         case "last-prompt":
             if A == nil, let p = rec["lastPrompt"] as? String { S.lastPrompt = clip(redact(p), 220) }
+        case "api-request":
+            // A model call went out: the agent is working even if nothing is written for minutes (a long think, a big Write).
+            if let A, ts > 0 { A.inFlight = true; A.workTs = max(A.workTs, ts) }
         case "assistant": onAssistant(rec, S, A, ts, today)
         case "user": onUser(rec, S, A, ts, today)
         case "system": onSystem(rec, S, A, ts, today)
@@ -567,6 +573,8 @@ final class RadarEngine {
         if (rec["isApiErrorMessage"] as? Bool) == true || model == "<synthetic>" {
             let txt = clip(redact(content.compactMap { $0["text"] as? String }.joined(separator: " ")), 100)
             emit(ev("sys", ts, S, A, ["l": txt.isEmpty ? "API error" : txt, "err": true]), today)
+            // A subagent that died on a quota or API error writes nothing more.
+            if let A { A.end(ts) }
             return
         }
         if let model {
@@ -608,7 +616,11 @@ final class RadarEngine {
                 emit(ev("usage", ts, S, A, ["out": o, "cr": r, "cw": w, "in": i, "c": c, "m": mk]), today)
             }
         }
-        if let stop = m["stop_reason"] as? String { actor.endTurn = stop == "end_turn" }
+        if let A, ts > 0 { A.inFlight = false; A.workTs = max(A.workTs, ts) }
+        if let stop = m["stop_reason"] as? String {
+            actor.endTurn = stop == "end_turn"
+            if let A, stop == "end_turn" { A.end(ts) }
+        }
         for b in content {
             switch b["type"] as? String {
             case "tool_use": onToolUse(b, S, A, ts, today)
@@ -630,6 +642,8 @@ final class RadarEngine {
         let sm = summarize(name, b["input"])
         let p = Pending(n: name, c: c, l: sm.label, t: ts)
         actor.pendingSet(id, p)
+        // Claude Code ends a subagent by calling SubagentHandback (its last record then has stop_reason "tool_use").
+        if let A, name == "SubagentHandback" { A.end(ts) }
         actor.last = p
         actor.sig.append("\(name)|\(sm.label)")
         if actor.sig.count > 4 { actor.sig.removeFirst() }
@@ -672,6 +686,8 @@ final class RadarEngine {
                 if X.model.isEmpty { X.model = tool }
                 X.bg = false
                 X.endTurn = false
+                X.endedAt = 0
+                X.workTs = ts
                 X.pendingSet(id, Pending(n: tool, c: "agent", l: clip(sm.label, 70), t: ts))
                 externalBashAgent[id] = X
             }
@@ -698,6 +714,7 @@ final class RadarEngine {
     private func onUser(_ rec: [String: Any], _ S: Session, _ A: SubAgent?, _ ts: Double, _ today: Bool) {
         let content = (rec["message"] as? [String: Any])?["content"]
         if let text = content as? String {
+            noteEnds(text, S, A, ts)
             if A == nil { onPrompt(text, rec, S, ts, today) }
             return
         }
@@ -712,7 +729,30 @@ final class RadarEngine {
                 texts.append(t)
             }
         }
+        if !hasResult, !texts.isEmpty { noteEnds(texts.joined(separator: " "), S, A, ts) }
         if !hasResult, !texts.isEmpty, A == nil { onPrompt(texts.joined(separator: " "), rec, S, ts, today) }
+    }
+
+    /// End signals in a user record's text: a subagent's own file says "[Request interrupted" when it was stopped, and
+    /// a `<task-notification>` (in the main file, or an outer subagent's for a nested one) names the agent by its task id.
+    private func noteEnds(_ text: String, _ S: Session, _ A: SubAgent?, _ ts: Double) {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let A, t.hasPrefix("[Request interrupted") { A.end(ts); return }
+        guard t.hasPrefix("<task-notification") else { return }
+        func tag(_ n: String) -> String? {
+            guard let r = t.range(of: "<\(n)>([^<]+)</\(n)>", options: .regularExpression) else { return nil }
+            return String(t[r]).replacingOccurrences(of: "<\(n)>", with: "").replacingOccurrences(of: "</\(n)>", with: "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        guard let id = tag("task-id"), let st = tag("status"),
+              ["completed", "failed", "killed", "stopped"].contains(st) else { return }
+        let key = "\(S.id):\(id)"
+        // A shell's background task notifies too: an id with no agent never gets a drone, it is only remembered in case
+        // the agent's own transcript is read after this record.
+        if let X = agents[key] { X.end(ts) } else {
+            if earlyEnds.count > 500 { earlyEnds.removeAll() }
+            earlyEnds[key] = max(earlyEnds[key] ?? 0, ts)
+        }
     }
 
     private func onPrompt(_ text: String, _ rec: [String: Any], _ S: Session, _ ts: Double, _ today: Bool) {
@@ -755,6 +795,7 @@ final class RadarEngine {
             X.pendingRemove(id)
             X.lastTs = max(X.lastTs, ts)
             X.endTurn = true
+            X.end(ts)
             if !ok { X.errors += 1 }
         }
         var meta = ""
@@ -779,6 +820,8 @@ final class RadarEngine {
                 if sub.desc.isEmpty { sub.desc = clip((tr["description"] as? String) ?? hint?.desc, 70) }
                 if sub.type.isEmpty, let ty = hint?.type { sub.type = ty }
                 if sub.model.isEmpty, let rm = tr["resolvedModel"] as? String { sub.model = rm }
+                // A foreground Agent/Task call's result: the agent is done (a background launch answers "async_launched").
+                if let st = tr["status"] as? String, st != "async_launched", st != "running" { sub.end(ts) }
             } else if (tr["interrupted"] as? Bool) == true {
                 meta = "interrupted"
             }
@@ -855,6 +898,8 @@ final class RadarEngine {
         if let t = meta["agentType"] as? String { A.type = t }
         if let m = meta["model"] as? String, m != "inherit" { A.model = m }
         A.bg = meta["requestShape"] as? String == "background"
+        // Claude Code (since 14 Nov) writes "finished": true into the meta when the agent is done.
+        if (meta["finished"] as? Bool) == true, let st = fileStat(metaPath) { A.end(st.mtime) }
     }
 
     private func fileStat(_ path: String) -> (size: UInt64, mtime: Double)? { Self.fileStat(path) }
@@ -2252,10 +2297,17 @@ final class RadarEngine {
     }
 
     private func agentView(_ A: SubAgent, _ S: Session, _ now: Double) -> [String: Any] {
-        let running = !A.pending.isEmpty || (!A.endTurn && now - A.lastTs < (S.reg == "busy" ? 15 : 3) * Self.MIN)
+        // A finished agent is "ended" and leaves the map at once. One still open is "running" while it has a tool call
+        // out, a model call open (it can be silent for 13 minutes inside one) or wrote within 3 minutes; else "parked"
+        // (dim, not orbiting) until 30 minutes of silence. The chat's own busy/idle no longer matters: Claude keeps a chat
+        // "busy" for as long as any background agent lives.
+        let quiet = now - A.lastTs
+        let alive = !A.ended && (quiet < 30 * Self.MIN || (!A.pending.isEmpty && quiet < 180 * Self.MIN))
+        let running = alive && (!A.pending.isEmpty || A.inFlight || quiet < 3 * Self.MIN)
         var v: [String: Any] = [
             "id": A.id, "sid": A.sid, "desc": A.desc.isEmpty ? (A.type.isEmpty ? String(A.id.prefix(8)) : A.type) : A.desc,
             "type": A.type, "model": shortModel(A.model), "bg": A.bg, "running": running,
+            "parked": alive && !running, "ended": A.ended,
             "firstTs": A.firstTs, "lastTs": A.lastTs, "tools": A.tools, "errors": A.errors, "web": A.web,
             "cost": A.cost, "tok": A.tokDict, "pending": pendingList(A, now), "loop": A.isLoop,
         ]
@@ -2303,7 +2355,7 @@ final class RadarEngine {
             // Claude ended its turn to wait for its background subagents: not the user's turn yet. Nor right after
             // one has finished; Claude picks its result up a moment later.
             if status == "idle", (agentsBySession[S.id] ?? []).contains(where: { A in
-                A.bg && (!A.pending.isEmpty || (!A.endTurn && now - A.lastTs < 3 * Self.MIN) || now - A.lastTs < 20_000)
+                A.bg && !A.ended && (!A.pending.isEmpty || A.inFlight || now - A.lastTs < 3 * Self.MIN || now - A.lastTs < 20_000)
             }) {
                 status = "busy"
             }
@@ -2311,7 +2363,7 @@ final class RadarEngine {
             guard S.live || now - S.lastTs < 30 * Self.MIN else { continue }
             let subs = (agentsBySession[S.id] ?? [])
                 .map { agentView($0, S, now) }
-                .filter { ($0["running"] as? Bool) == true || now - ($0["lastTs"] as? Double ?? 0) < 15 * Self.MIN }
+                .filter { ($0["running"] as? Bool) == true || ($0["parked"] as? Bool) == true || now - ($0["lastTs"] as? Double ?? 0) < 15 * Self.MIN }
                 .sorted {
                     let ra = ($0["running"] as? Bool) == true, rb = ($1["running"] as? Bool) == true
                     if ra != rb { return ra }

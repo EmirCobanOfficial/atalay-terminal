@@ -1398,6 +1398,19 @@ class SubAgent extends Track {
     this.id = id;
     this.sid = sid;
     this.desc = ''; this.type = ''; this.bg = false;
+    // A Claude subagent's end signals (handback, task-notification, interrupted, API error, foreground result) set endedAt;
+    // newer work from the agent itself (workTs: an api-request or a real reply) lifts it again, as when a finished agent is
+    // resumed with SendMessage. inFlight: a model call is open (an api-request with no reply yet).
+    this.endedAt = 0; this.workTs = 0; this.inFlight = false;
+  }
+
+  get ended() {
+    return this.endedAt > 0 && this.endedAt >= this.workTs;
+  }
+
+  end(ts) {
+    this.endedAt = Math.max(this.endedAt, ts > 0 ? ts : 1);
+    this.inFlight = false;
   }
 }
 
@@ -1500,6 +1513,8 @@ class RadarEngine {
     // Shell tool uses that run another AI CLI (Codex, Antigravity, Gemini): tool_use id -> the SubAgent holding the drone
     // on the orbit, so its pending clears and the drone retires on the tool's result.
     this.externalBashAgent = new Map();
+    // End signals that reached an agent's key before its own transcript did (the main file is read first).
+    this.earlyEnds = new Map();
     this.log = [];
     this.logIndex = new Map();
     this.outbox = [];
@@ -2335,7 +2350,14 @@ class RadarEngine {
   agent(sid, aid) {
     const key = `${sid}:${aid}`;
     let A = this.agents.get(key);
-    if (!A) this.agents.set(key, (A = new SubAgent(sid, aid)));
+    if (!A) {
+      this.agents.set(key, (A = new SubAgent(sid, aid)));
+      const t = this.earlyEnds.get(key);
+      if (t !== undefined) {
+        this.earlyEnds.delete(key);
+        A.end(t);
+      }
+    }
     return A;
   }
 
@@ -2453,6 +2475,13 @@ class RadarEngine {
       case 'last-prompt':
         if (!A && typeof rec.lastPrompt === 'string') S.lastPrompt = clip(redact(rec.lastPrompt), 220);
         break;
+      case 'api-request':
+        // A model call went out: the agent is working even if nothing is written for minutes (a long think, a big Write).
+        if (A && ts > 0) {
+          A.inFlight = true;
+          A.workTs = Math.max(A.workTs, ts);
+        }
+        break;
       case 'assistant':
         this.onAssistant(rec, S, A, ts, today);
         break;
@@ -2473,6 +2502,8 @@ class RadarEngine {
     if (rec.isApiErrorMessage === true || model === '<synthetic>') {
       const txt = clip(redact(content.map((b) => str(b.text)).filter((x) => x !== undefined).join(' ')), 100);
       this.emit(this.ev('sys', ts, S, A, { l: txt || 'API error', err: true }), today);
+      // A subagent that died on a quota or API error writes nothing more.
+      if (A) A.end(ts);
       return;
     }
     if (model !== undefined) {
@@ -2518,7 +2549,14 @@ class RadarEngine {
         this.emit(this.ev('usage', ts, S, A, { out: o, cr: r, cw: w, in: i, c, m: mk }), today);
       }
     }
-    if (typeof m.stop_reason === 'string') actor.endTurn = m.stop_reason === 'end_turn';
+    if (A && ts > 0) {
+      A.inFlight = false;
+      A.workTs = Math.max(A.workTs, ts);
+    }
+    if (typeof m.stop_reason === 'string') {
+      actor.endTurn = m.stop_reason === 'end_turn';
+      if (A && m.stop_reason === 'end_turn') A.end(ts);
+    }
     for (const b of content) {
       switch (b.type) {
         case 'tool_use':
@@ -2542,6 +2580,8 @@ class RadarEngine {
     const sm = summarize(name, b.input);
     const p = { n: name, c, l: sm.label, t: ts };
     actor.pendingSet(id, p);
+    // Claude Code ends a subagent by calling SubagentHandback (its last record then has stop_reason "tool_use").
+    if (A && name === 'SubagentHandback') A.end(ts);
     actor.last = p;
     actor.sig.push(`${name}|${sm.label}`);
     if (actor.sig.length > 4) actor.sig.shift();
@@ -2584,6 +2624,8 @@ class RadarEngine {
         if (!X.model) X.model = tool;
         X.bg = false;
         X.endTurn = false;
+        X.endedAt = 0;
+        X.workTs = ts;
         X.pendingSet(id, { n: tool, c: 'agent', l: clip(sm.label, 70), t: ts });
         this.externalBashAgent.set(id, X);
       }
@@ -2610,6 +2652,7 @@ class RadarEngine {
   onUser(rec, S, A, ts, today) {
     const content = isObj(rec.message) ? rec.message.content : undefined;
     if (typeof content === 'string') {
+      this.noteEnds(content, S, A, ts);
       if (!A) this.onPrompt(content, rec, S, ts, today);
       return;
     }
@@ -2625,7 +2668,31 @@ class RadarEngine {
         texts.push(b.text);
       }
     }
+    if (!hasResult && texts.length) this.noteEnds(texts.join(' '), S, A, ts);
     if (!hasResult && texts.length && !A) this.onPrompt(texts.join(' '), rec, S, ts, today);
+  }
+
+  // End signals in a user record's text: a subagent's own file says "[Request interrupted" when it was stopped, and a
+  // <task-notification> (in the main file, or an outer subagent's for a nested one) names the agent by its task id.
+  noteEnds(text, S, A, ts) {
+    const t = text.trim();
+    if (A && t.startsWith('[Request interrupted')) {
+      A.end(ts);
+      return;
+    }
+    if (!t.startsWith('<task-notification')) return;
+    const id = /<task-id>([^<]+)<\/task-id>/.exec(t);
+    const st = /<status>([^<]+)<\/status>/.exec(t);
+    if (!id || !st || !['completed', 'failed', 'killed', 'stopped'].includes(st[1].trim())) return;
+    const key = `${S.id}:${id[1].trim()}`;
+    const X = this.agents.get(key);
+    // A shell's background task notifies too: an id with no agent never gets a drone, it is only remembered in case the
+    // agent's own transcript is read after this record.
+    if (X) X.end(ts);
+    else {
+      if (this.earlyEnds.size > 500) this.earlyEnds.clear();
+      this.earlyEnds.set(key, Math.max(this.earlyEnds.get(key) ?? 0, ts));
+    }
   }
 
   onPrompt(text, rec, S, ts, today) {
@@ -2669,6 +2736,7 @@ class RadarEngine {
       X.pending.delete(id);
       X.lastTs = Math.max(X.lastTs, ts);
       X.endTurn = true;
+      X.end(ts);
       if (!ok) X.errors += 1;
     }
     const tr = rec.toolUseResult;
@@ -2679,6 +2747,8 @@ class RadarEngine {
       if (!sub.desc) sub.desc = clip(str(tr.description) ?? hint?.desc, 70);
       if (!sub.type && hint?.type !== undefined) sub.type = hint.type;
       if (!sub.model && typeof tr.resolvedModel === 'string') sub.model = tr.resolvedModel;
+      // A foreground Agent/Task call's result: the agent is done (a background launch answers "async_launched").
+      if (typeof tr.status === 'string' && tr.status !== 'async_launched' && tr.status !== 'running') sub.end(ts);
     }
     if (!today) return;
     const G = this.G;
@@ -2758,6 +2828,12 @@ class RadarEngine {
     if (typeof meta.agentType === 'string') A.type = meta.agentType;
     if (typeof meta.model === 'string' && meta.model !== 'inherit') A.model = meta.model;
     A.bg = meta.requestShape === 'background';
+    // Claude Code (since 14 Nov) writes "finished": true into the meta when the agent is done.
+    if (meta.finished === true) {
+      try {
+        A.end(fs.statSync(fp.replace(/\.jsonl$/, '.meta.json')).mtimeMs);
+      } catch {}
+    }
   }
 
   // During boot, transcripts the registry points at are read first and in order; afterwards each read runs on its own.
@@ -3927,7 +4003,7 @@ class RadarEngine {
   // finished; Claude picks its result up a moment later.
   shownStatus(S, agents, now) {
     const status = this.statusOf(S, now);
-    if (status === 'idle' && agents.some((A) => A.bg && (A.pending.size > 0 || (!A.endTurn && now - A.lastTs < 3 * MIN) || now - A.lastTs < 20_000))) return 'busy';
+    if (status === 'idle' && agents.some((A) => A.bg && !A.ended && (A.pending.size > 0 || A.inFlight || now - A.lastTs < 3 * MIN || now - A.lastTs < 20_000))) return 'busy';
     return status;
   }
 
@@ -3942,10 +4018,16 @@ class RadarEngine {
   }
 
   agentView(A, S, now) {
-    const running = A.pending.size > 0 || (!A.endTurn && now - A.lastTs < (S.reg === 'busy' ? 15 : 3) * MIN);
+    // A finished agent is "ended" and leaves the map at once. One still open is "running" while it has a tool call out,
+    // a model call open (it can be silent for 13 minutes inside one) or wrote within 3 minutes; else "parked" (dim, not
+    // orbiting) until 30 minutes of silence. The chat's own busy/idle no longer matters: Claude keeps a chat "busy" for as
+    // long as any background agent lives.
+    const quiet = now - A.lastTs;
+    const alive = !A.ended && (quiet < 30 * MIN || (A.pending.size > 0 && quiet < 180 * MIN));
+    const running = alive && (A.pending.size > 0 || A.inFlight || quiet < 3 * MIN);
     const v = {
       id: A.id, sid: A.sid, desc: A.desc || A.type || A.id.slice(0, 8), type: A.type, model: shortModel(A.model), bg: A.bg,
-      running, firstTs: A.firstTs, lastTs: A.lastTs, tools: A.tools, errors: A.errors, web: A.web,
+      running, parked: alive && !running, ended: A.ended, firstTs: A.firstTs, lastTs: A.lastTs, tools: A.tools, errors: A.errors, web: A.web,
       cost: A.cost, tok: A.tokDict(), pending: this.pendingList(A, now), loop: A.isLoop,
     };
     if (A.last) v.last = A.last;
@@ -3976,7 +4058,7 @@ class RadarEngine {
       if (!(S.live || now - S.lastTs < 30 * MIN)) continue;
       const subs = mine
         .map((A) => this.agentView(A, S, now))
-        .filter((a) => a.running || now - a.lastTs < 15 * MIN)
+        .filter((a) => a.running || a.parked || now - a.lastTs < 15 * MIN)
         .sort((a, b) => (a.running !== b.running ? (a.running ? -1 : 1) : b.lastTs - a.lastTs));
       const nRun = subs.filter((a) => a.running).length;
       runningAgents += nRun;

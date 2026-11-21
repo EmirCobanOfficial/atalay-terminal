@@ -143,6 +143,12 @@ struct AgyLog {
 final class SubAgent: Track {
     let key: String, id: String, sid: String
     var desc = "", type = "", bg = false
+    /// A Claude subagent's end signals (handback, task-notification, interrupted, API error, foreground result) set
+    /// `endedAt`; newer work from the agent itself (`workTs`: an api-request or a real reply) lifts it again, as when a
+    /// finished agent is resumed with SendMessage. `inFlight`: a model call is open (an api-request with no reply yet).
+    var endedAt = 0.0, workTs = 0.0, inFlight = false
+    var ended: Bool { endedAt > 0 && endedAt >= workTs }
+    func end(_ ts: Double) { endedAt = max(endedAt, ts > 0 ? ts : 1); inFlight = false }
 
     init(sid: String, id: String) {
         self.sid = sid

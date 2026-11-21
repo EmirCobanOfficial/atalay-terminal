@@ -50,6 +50,8 @@ const host = document.getElementById('space');
 const glowTex = glowTexture();
 const hexGlow = hexGlowTexture();
 const DRONE_TEX = droneTextures();
+// Subagents the viewer dismissed ("sid:agentId" -> its last write then): hidden until it writes again.
+const DISMISSED = new Map();
 
 // No MSAA: the scene renders into the composer's targets, so antialias only cost memory. The resolution follows
 // QUALITY (set by resize()).
@@ -444,8 +446,18 @@ class Session {
     poke(1600);
   }
 
-  syncDrones(agents, now) {
+  syncDrones(all, now) {
     const seen = new Set();
+    // A subagent that has finished (handback, task-notification, stopped, ...) leaves the map at once; one the viewer
+    // dismissed stays away until it writes again.
+    const agents = all.filter((a) => !a.ended && !(DISMISSED.get(`${this.sid}:${a.id}`) >= a.lastTs));
+    for (const a of all) {
+      const d = this.drones.get(a.id);
+      if (d && a.ended && !d.dying) {
+        d.dying = now;
+        sparks(d.pos, VIOLET, 10, 40);
+      }
+    }
     agents.forEach((a, j) => {
       let d = this.drones.get(a.id);
       if (!d) {
@@ -611,6 +623,9 @@ class Drone {
     this.idx = 0;
     this.count = 1;
     this.running = null;
+    this.parked = null;
+    this.phase = 0;
+    this.lastNow = 0;
     this.pos = owner.pos.clone();
     this.sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: DRONE_TEX.running, transparent: true, depthWrite: false }));
     this.sprite.scale.setScalar((128 / 40) * DRONE_HEX);
@@ -629,13 +644,19 @@ class Drone {
   update(dt, now) {
     const o = this.owner, s = o.scale;
     const ring = this.count > 7 ? (this.idx % 2) * 14 : 0;
-    const ang = (this.idx / Math.max(1, this.count)) * TAU + now / 9000;
+    const parked = !!this.ag.parked && !this.ag.running;
+    // The orbit angle is accumulated, so a parked drone stands where it was and goes on from there when it wakes.
+    if (this.lastNow === 0) this.phase = now;
+    else if (!parked) this.phase += now - this.lastNow;
+    this.lastNow = now;
+    const ang = (this.idx / Math.max(1, this.count)) * TAU + this.phase / 9000;
     const rx = (K.HEX + 46 + ring) * s, ry = (K.HEX + 24 + ring * 0.6) * s;
     this.pos
       .copy(o.pos)
       .addScaledVector(CAM.right, Math.cos(ang) * rx)
       .addScaledVector(CAM.up, Math.sin(ang) * ry)
       .addScaledVector(CAM.fwd, Math.sin(ang) * 16 * s);
+    if (parked) this.pos.addScaledVector(CAM.up, Math.sin(now / 760 + this.idx * 1.7) * 1.2 * s);
     let sc = easeOut(clamp((now - this.born) / 500, 0, 1));
     if (this.dying) {
       const u = clamp((now - this.dying) / 600, 0, 1);
@@ -646,24 +667,26 @@ class Drone {
       }
     }
     const running = !!this.ag.running;
-    if (running !== this.running) {
+    if (running !== this.running || parked !== this.parked) {
       this.running = running;
-      this.sprite.material.map = running ? DRONE_TEX.running : DRONE_TEX.done;
+      this.parked = parked;
+      this.sprite.material.map = running ? DRONE_TEX.running : parked ? DRONE_TEX.parked : DRONE_TEX.done;
     }
     this.root.visible = o.root.visible;
     this.root.position.copy(this.pos);
     this.root.scale.setScalar(Math.max(0.001, s * sc));
-    this.sprite.material.opacity = running ? 1 : 0.7;
+    this.sprite.material.opacity = running ? 1 : parked ? 0.55 : 0.7;
     this.spin.quaternion.copy(camera.quaternion);
     const u = this.spin.material.uniforms;
     u.color.value.copy(VIOLET).multiplyScalar(1.6);
     u.opacity.value = running ? 0.85 : 0;
     u.time.value = now / 1000;
     const hovered = hover && hover.kind === 'drone' && hover.drone === this;
-    const show = this.root.visible && !this.dying && hovered;
+    const show = this.root.visible && !this.dying && (hovered || parked);
     this.labelObj.visible = show;
     if (show) {
-      setText(this.labelEl, R.clipT(this.ag.desc || this.ag.type || 'subagent', 18));
+      const idle = `idle · ${Math.max(1, Math.floor((Date.now() - this.ag.lastTs) / 60000))}m`;
+      setText(this.labelEl, parked ? (hovered ? `${R.clipT(this.ag.desc || this.ag.type || 'subagent', 14)} · ${idle}` : idle) : R.clipT(this.ag.desc || this.ag.type || 'subagent', 18));
       this.labelObj.position.copy(this.pos).addScaledVector(CAM.up, -DRONE_HEX * 1.2 * s);
     }
     return true;
@@ -1668,6 +1691,38 @@ host.addEventListener('pointerleave', () => {
   mouse = null;
   if (!press) setHover(null);
 });
+// Right-click a subagent: "Dismiss" takes it off the map (only the picture; nothing is stopped).
+host.addEventListener(
+  'contextmenu',
+  (e) => {
+    document.querySelector('.pn-ctx')?.remove();
+    const m = localXY(e);
+    const h = pick(m.x, m.y, e.target);
+    if (!h || h.kind !== 'drone') return;
+    e.preventDefault();
+    e.stopPropagation();
+    const menu = el('div', 'pn-ctx');
+    const b = el('button');
+    b.type = 'button';
+    b.textContent = 'Dismiss';
+    menu.appendChild(b);
+    document.body.appendChild(menu);
+    menu.style.left = `${Math.max(4, Math.min(e.clientX, innerWidth - menu.offsetWidth - 4))}px`;
+    menu.style.top = `${Math.max(4, Math.min(e.clientY, innerHeight - menu.offsetHeight - 4))}px`;
+    b.onclick = () => {
+      menu.remove();
+      const d = h.drone;
+      DISMISSED.set(`${h.owner.sid}:${d.ag.id}`, d.ag.lastTs || Date.now());
+      if (!d.dying) {
+        d.dying = performance.now();
+        sparks(d.pos, VIOLET, 10, 40);
+      }
+      setHover(null);
+      poke();
+    };
+  },
+  true,
+);
 host.addEventListener('dblclick', (e) => {
   const m = localXY(e);
   if (!pick(m.x, m.y, e.target)) resetView();
