@@ -5,6 +5,10 @@ Each version's lines are its release notes: the app lists them on its "what's ne
 
 ## Next
 
+- Settings · Privacy: "Share my token counts for the Tokens board". Off, the app sends no token counts at all, and the days it was off are never sent, even once it's back on. The README now lists exactly what the counts hold. Found by @EmirCobanOfficial on GitHub, EmirMac#7124 in the app
+- A required update says 5 minutes ahead when it will restart the app, if chats or terminals are running, with a button to restart now; the conversations stay saved. Found by @EmirCobanOfficial on GitHub, EmirMac#7124 in the app
+- Messages: once every older end-to-end encrypted message has been opened, the old keys file is deleted from your computer, and a bad page from the server can no longer keep the app asking for it. Found by @EmirCobanOfficial on GitHub, EmirMac#7124 in the app
+- Mac updates: a download that grows past 200 MB is stopped, and the zip is checked without reading it all into memory. Found by @EmirCobanOfficial on GitHub, EmirMac#7124 in the app
 - Security fix: Source Control no longer runs the commands a folder's own git settings name (an fsmonitor, a filter, a textconv), so a downloaded folder that a terminal is in can't start them, on the Mac and Windows. Found by @EmirCobanOfficial on GitHub, EmirMac#7124 in the app
 - Themes: Fazil416HK, a tactical HUD in titanium and reticle crimson. Thanks to @fazilmemmedzade on GitHub, Fazil416HK#9019 in the app (PR #42)
 - Themes: Emir, a profiler's timeline in graphite and bone. Thanks to @EmirCobanOfficial on GitHub, EmirMac#7124 in the app (PR #47)
