@@ -50,6 +50,15 @@ window.Cloud = (() => {
   // The logo shows your status. Unread messages and friend requests count on the friends icon on the left edge.
   brand.insertAdjacentHTML('afterbegin', '<i class="pdot bme" hidden></i>');
 
+  // Orb balance as the top bar shows it: 748, 12.4K, 3.1M.
+  const ORB_DEMO = 748;
+  const orbNum = (n) => {
+    const v = Math.max(0, Math.floor(Number(n) || 0));
+    if (v < 1000) return String(v);
+    const [d, u] = v < 1e6 ? [1e3, 'K'] : [1e6, 'M'];
+    return `${(Math.floor((v / d) * 10) / 10).toFixed(1).replace(/\.0$/, '')}${u}`;
+  };
+
   function render(s) {
     if (!s) return;
     S = s;
@@ -60,7 +69,10 @@ window.Cloud = (() => {
     const x = s.xp, r = x && Xp.rank(x.level);
     const title = r ? `<small class="rk" style="--rc:${r.color}">${esc(r.name.toUpperCase())} · LV ${x.level}</small>` : '<small>HACKER</small>';
     const bar = r ? `<i class="xpb" style="--rc:${r.color}"><i style="width:${Xp.pct(x).toFixed(1)}%"></i></i>` : '';
-    setHTML(stack, s.hackerName ? `${title}<b${long}>${esc(s.hackerName)}<i class="htag">${tagText(s.tag)}</i></b>${bar}` : '<b>ORBITERM</b>');
+    // After the name: the badge you display (badges.js paints it in), then your Orb, the app's money (orb.png), and
+    // how many you have. ORB_DEMO stands in until the economy's API sends `s.orb`.
+    const orb = `<span class="orb-chip" title="Orb"><img src="orb.png" alt=""><span class="orb-n">${orbNum(s.orb ?? ORB_DEMO)}</span></span>`;
+    setHTML(stack, s.hackerName ? `${title}<b${long}>${esc(s.hackerName)}<i class="htag">${tagText(s.tag)}</i>${orb}</b>${bar}` : '<b>ORBITERM</b>');
     // The badge you display, beside your name (badges.js).
     window.Badges?.paintTop();
     brand.title = r
@@ -1273,7 +1285,7 @@ window.Cloud = (() => {
         `${fire.canvas}<span class="fr-av st-${esc(f.presence || 'offline')}" style="--rc:${r.color}">${pic}${Social.dot(f.presence)}</span>` +
         `<div class="mn-main" title="${esc(hover)}Click for their profile"><span class="lb-l1">${name}` +
         `${window.Badges && f.badge ? window.Badges.small(f.badge, 24, f.id) : ''}${fire.mark}</span><small${f.last && f.unread ? ' class="fr-new"' : ''}>${line}</small></div>` +
-        `${today}${f.unread ? `<i class="cnt hot">${f.unread}</i>` : ''}<span class="fr-btns"><button class="mn-btn mn-ic" type="button" data-act="profile" aria-label="Profile" title="Profile">${FR_IC.person}</button>` +
+        `${today}${f.unread ? `<i class="cnt hot">${f.unread}</i>` : ''}<span class="fr-btns">${window.Attack?.button ? window.Attack.button(f, 'row') : ''}<button class="mn-btn mn-ic" type="button" data-act="profile" aria-label="Profile" title="Profile">${FR_IC.person}</button>` +
         `<button class="mn-btn mn-ic" type="button" data-act="chat" aria-label="Message" title="Message (right-click for more)">${FR_IC.bubble}</button></span></div>`;
     };
     const on = s.friends.filter((f) => f.presence && f.presence !== 'offline');
@@ -1314,6 +1326,8 @@ window.Cloud = (() => {
     const el = e.target.closest('[data-act]');
     if (!el) return row.closest('.mn-friends') && openProfile({ id, from: 'friends', picEl: row.querySelector('.fr-av img, .fr-av') });
     switch (el.dataset.act) {
+      case 'attack': // attack.js's own click handler fires it; the row must not open the profile
+        return;
       case 'chat':
         return Social.openChat(id);
       case 'profile':
@@ -1347,6 +1361,9 @@ window.Cloud = (() => {
     menu.className = 'mn-ctx';
     menu.innerHTML =
       `<button type="button" data-ctx="chat">${FR_IC.bubble}message</button><button type="button" data-ctx="profile">${FR_IC.person}view profile</button>` +
+      // A spaceship at them, for fun (attack.js draws it, dimmed with its reason when they can't be fired at; its document
+      // click handler does the rest, the menu only closes).
+      (window.Attack?.button ? window.Attack.button(f, 'menu') : '') +
       `<button type="button" data-ctx="nick">✎ ${f.nick ? 'change nickname' : 'add nickname'}</button>` +
       (f.nick ? '<button type="button" data-ctx="unnick">⌫ remove nickname</button>' : '') +
       '<button type="button" data-ctx="copy">⧉ copy name#tag</button><hr><button type="button" class="danger" data-ctx="remove">✕ remove friend</button>';
@@ -1356,6 +1373,7 @@ window.Cloud = (() => {
       const b = ev.target.closest('[data-ctx]');
       if (!b) return;
       menu.remove();
+      if (b.dataset.ctx === 'attack') return;
       if (b.dataset.ctx === 'chat') return Social.openChat(f.id);
       if (b.dataset.ctx === 'profile') return openProfile({ id: f.id, from: 'friends', picEl: row.querySelector('.fr-av img, .fr-av') });
       if (b.dataset.ctx === 'nick') return nickBox(f);
@@ -1475,7 +1493,7 @@ window.Cloud = (() => {
       (A && A.signedIn && A.avatar ? `<img class="me-card-pic st-${esc(status)}" alt="" src="${esc(A.avatar)}">` : x ? Xp.headband(x.level, 'me-card-band') : '') +
       `<div class="me-card-who"><span class="mn-name"><b>${esc(S.hackerName)}</b><i class="htag">${tagText(S.tag)}</i>` +
       `${shownBadge ? window.Badges.small(shownBadge, 20) : ''}${x ? Xp.badge(x.level) : ''}<em class="lb-you">you</em></span>` +
-      `<small>${Social.dot(status)} ${esc(Social.PRESENCE[status]?.label || status)}${r ? ` · ${esc(r.name)}` : ''}</small>` +
+      `<small>${Social.dot(status)} ${esc(Social.PRESENCE[status]?.label || status)}${r ? ` · ${esc(r.name)}` : ''}${window.Attack?.shieldChip ? Attack.shieldChip() : ''}</small>` +
       (x ? `<i class="me-card-xp"><i style="width:${Xp.pct(x).toFixed(1)}%"></i></i>` : '') + '</div>' +
       (x ? `<div class="me-card-stat"><b>${Xp.dur(x.today)}</b><small>today</small></div><div class="me-card-stat"><b>${Xp.hours(x.total)}</b><small>total</small></div>` : '') +
       (B && B.prestige && B.prestige.can ? '<span class="me-card-medal" title="Level 60: this year\'s Service Medal is yours to take">★ SERVICE MEDAL</span>' : '') +

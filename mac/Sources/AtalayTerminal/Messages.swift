@@ -251,6 +251,20 @@ final class MessagePanel: NSObject, WKScriptMessageHandler, WKNavigationDelegate
         run("window.__messages && __messages.restartOver && __messages.restartOver()")
     }
 
+    /// A friend's spaceship attack (attack.js): the dashboard says which banner (`kind`: lock, lost or danger; a lock names nobody) and, for DANGER, who fired, when it shows (ms from now,
+    /// after the ship's flight on the map) and whether it sounds the alarm itself (the map wasn't in sight). It shows here,
+    /// over whatever is in front, every click passing through.
+    func attack(_ msg: [String: Any]) {
+        let banner: [String: Any] = ["name": String((msg["name"] as? String ?? "").prefix(40)),
+                                     "kind": ["lock", "lost"].contains(msg["kind"] as? String ?? "") ? (msg["kind"] as? String ?? "danger") : "danger",
+                                     "delay": min(max((msg["delay"] as? NSNumber)?.doubleValue ?? 0, 0), 5000),
+                                     "sound": msg["sound"] as? Bool == true,
+                                     // DANGER with the ship's taunt under it (its words are attack.js's own, never sent).
+                                     "taunt": msg["taunt"] as? Bool == true]
+        guard let data = try? JSONSerialization.data(withJSONObject: banner), let json = String(data: data, encoding: .utf8) else { return }
+        run("window.Attack && Attack.banner && Attack.banner(\(json))")
+    }
+
     /// Your XP as the last heartbeat or live event had it: a new level plays the fanfare (once, the page keeps count).
     func xp(_ x: Cloud.XP) {
         guard let data = try? JSONEncoder().encode(x), let json = String(data: data, encoding: .utf8) else { return }

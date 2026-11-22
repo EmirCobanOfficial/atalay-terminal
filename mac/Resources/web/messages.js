@@ -74,6 +74,8 @@ window.Messages = (() => {
     if (takeover) return post({ type: 'layout', w: 1, h: 1, place: 'screen' });
     // The flames have the screen's edges, every click passing through (the notice sits in its corner meanwhile).
     if (fire) return post({ type: 'layout', w: 1, h: 1, place: 'fire' });
+    // A friend's spaceship attack's DANGER banner (attack.js) the same way, for its few seconds.
+    if (window.Attack?.wide()) return post({ type: 'layout', w: 1, h: 1, place: 'fire' });
     // The danger alarm has the middle of the screen (the corner's notices wait under it).
     const alarm = alertOn && alertBox.firstElementChild;
     if (alarm) return post({ type: 'layout', w: alarm.offsetWidth + 16, h: alarm.offsetHeight + 16, place: 'center' });

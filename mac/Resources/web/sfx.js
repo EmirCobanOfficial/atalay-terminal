@@ -126,7 +126,7 @@ window.Sfx = (() => {
   }
 
   // How long the longer sounds ring, so the audio doesn't rest before they end.
-  const LENGTH = { levelup: 3000, rankup: 4200, glitch: 1200, fire: 3200, alarm: 2800, hit: 800, boom: 2000 };
+  const LENGTH = { levelup: 3000, rankup: 4200, glitch: 1200, fire: 3200, alarm: 2800, lockon: 1700, locktick: 300, hit: 800, boom: 2000 };
 
   const SOUNDS = {
     // A chat needs you (an approval): two short even beeps and a higher one, like a console asking for a key.
@@ -284,6 +284,47 @@ window.Sfx = (() => {
         thump(t + burst);
         for (let i = 0; i < 3; i++) beep(t + burst + i * 0.21, 0.15);
       }
+    },
+    // A friend's lock-on (attack.js), our own tone: five short beeps rising in pitch and coming quicker (740 to 1245 Hz,
+    // 70 ms each, 300, 240, 180 and 140 ms apart), then a 200 ms lock tone with its fifth, a fighter cockpit's "locked on".
+    // A thin square wave through a soft filter (3 kHz), quieter than the alarm so DANGER stays the loudest moment. About
+    // 1.2 s, so the ship arrives as it ends. The pitch drifts up to 2% each time, so the ear doesn't tire of it.
+    lockon() {
+      const t = ctx.currentTime;
+      const drift = 1 + (Math.random() - 0.5) * 0.04;
+      const tone = (freq, at, dur, vol) => {
+        const f = ctx.createBiquadFilter();
+        const g = ctx.createGain();
+        const o = ctx.createOscillator();
+        f.type = 'lowpass';
+        f.frequency.value = 3000;
+        o.type = 'square';
+        o.frequency.value = freq * drift;
+        g.gain.setValueAtTime(0.0001, t + at);
+        g.gain.exponentialRampToValueAtTime(vol, t + at + 0.008);
+        g.gain.setValueAtTime(vol, t + at + dur - 0.025);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + at + dur);
+        o.connect(f).connect(g).connect(out);
+        o.start(t + at);
+        o.stop(t + at + dur + 0.02);
+      };
+      [[740, 0], [880, 0.3], [988, 0.54], [1109, 0.72], [1245, 0.86]].forEach(([fr, at]) => tone(fr, at, 0.07, 0.085));
+      tone(1319, 1.0, 0.2, 0.085);
+      tone(1976, 1.0, 0.2, 0.04);
+    },
+    // Your own press on "fire at" (attack.js): one soft, short lock tick, the target's lock-on in miniature.
+    locktick() {
+      const t = ctx.currentTime;
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.type = 'sine';
+      o.frequency.value = 1319;
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(0.05, t + 0.008);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.09);
+      o.connect(g).connect(out);
+      o.start(t);
+      o.stop(t + 0.12);
     },
     // END IT pressed: a punch that lands. A low thump, a crack of noise and a short metallic ring, all at once.
     hit() {
@@ -451,7 +492,7 @@ window.Sfx = (() => {
       });
     },
     play(name) {
-      const yours = ['send', 'accept', 'decline', 'levelup', 'rankup', 'glitch', 'fire', 'hit', 'boom', 'theme-kept'].includes(name);
+      const yours = ['send', 'accept', 'decline', 'levelup', 'rankup', 'glitch', 'fire', 'hit', 'boom', 'theme-kept', 'locktick'].includes(name);
       const base = SOUNDS[name] ? name : SAME[name];
       if ((!base && !THEMED.includes(name)) || (window.Social && window.Social.dnd() && !yours)) return;
       // The theme's own sound, or its silence, instead of the app's (a theme-only one has nothing else).

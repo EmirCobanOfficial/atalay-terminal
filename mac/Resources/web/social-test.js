@@ -9,6 +9,7 @@
 //            turn, stack and dissolve
 //   goal     the weekly goal's moment, played now as if the goal were reached
 //   head to head  REAL (the API's) or DEMO (made up) on a friend's card in Friends
+//   attack   🚀 ATTACK ME: a friend's spaceship attack on yourself, the map in sight (attack.js)
 window.SocialTest = (() => {
   const st = { h2h: 'real' };
   try {
@@ -50,7 +51,9 @@ window.SocialTest = (() => {
     `<span>feed</span><div class="lb-seg">${btn('feed', 'badge', 'BADGE')}${btn('feed', 'top', '#1')}${btn('feed', 'goal', 'GOAL')}` +
     `${btn('feed', 'fire', 'FIRE')}${btn('feed', 'fire2', 'HOTTEST')}${btn('feed', 'fires', '7 ON FIRE')}${btn('feed', 'all', '×6')}</div>` +
     `<span>goal</span><div class="lb-seg">${btn('goal', 'play', '▶ PLAY')}</div>` +
-    `<span>head to head</span><div class="lb-seg">${btn('h2h', 'real', 'REAL', st.h2h === 'real')}${btn('h2h', 'demo', 'DEMO', st.h2h === 'demo')}</div>` + '</div>';
+    `<span>head to head</span><div class="lb-seg">${btn('h2h', 'real', 'REAL', st.h2h === 'real')}${btn('h2h', 'demo', 'DEMO', st.h2h === 'demo')}</div>` +
+    // A friend's spaceship attack on yourself (attack.js test(), the API's POST v1/friends/dev/attack in attack.ts).
+    (window.Attack?.test ? `<span>attack</span><div class="lb-seg">${btn('attack', 'me', '🚀 ATTACK ME')}</div>` : '') + '</div>';
   // A click on the strip: true when the leaderboard is to be drawn again.
   function click(target) {
     const b = target.closest('[data-st]');
@@ -68,6 +71,10 @@ window.SocialTest = (() => {
       const kinds = val === 'all' ? ['badge', 'top', 'fire', 'fire2', 'fires', 'goal'] : [val];
       kinds.reduce((p, kind) => p.then(() => api('v1/leaderboard/dev/feed', { kind })), Promise.resolve())
         .then((r) => said(r, kinds.length > 1 ? `${kinds.length} test lines sent · see the top left` : 'test line sent · see the top left'));
+      return false;
+    }
+    if (key === 'attack') {
+      window.Attack?.test();
       return false;
     }
     if (key === 'goal') {

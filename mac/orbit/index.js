@@ -15,6 +15,7 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { GlowPoints, LineBatch, RING_BAND, ringMaterial, setRing } from './batch.js';
 import { droneTextures, hexGlowTexture, ICON, SessionIcon } from './icons.js';
 import { buildCore } from './core.js';
+import { makeRaid } from './raid.js';
 import { buildBlueBox, buildRoadster, buildStation, CAR_LENGTH, carStudio } from './models.js';
 import { buildBackdrop } from './space.js';
 import { glowTexture } from './textures.js';
@@ -1276,7 +1277,8 @@ function startCinematic() {
 }
 function stepCinematic(dt, now) {
   if (!cine) {
-    if (now - lastInput > CINE.IDLE_MS && !ACT.saver) startCinematic();
+    // Not during a friend's raid: its stage is the default view.
+    if (now - lastInput > CINE.IDLE_MS && !ACT.saver && !raid.active()) startCinematic();
     return;
   }
   if (now > cine.until || (cine.alarm && !subjectPos(cine))) {
@@ -1891,6 +1893,54 @@ function refreshCore() {
   setText(coreEl, STATE.sessions.length ? '' : 'no Claude Code session in the last 30 min');
 }
 
+// ---------- a friend's spaceship attack (raid.js) ----------
+// Its stage: all of it has to be in the picture, so the idle camera's tour ends and, unless the core and the whole of
+// the ship's orbit (its radius) are in view already, the camera goes home. Not while you hold the view, and not out of
+// an alarm's shot. True when the camera goes home: the raid then lays its orbit out for that view.
+const _stage = { x: 0, y: 0, z: 0 };
+function raidStage(radius) {
+  if (press || cine?.alarm) return false;
+  const toured = !!cine;
+  if (cine) {
+    cine = null;
+    cineTag.classList.remove('on');
+  }
+  toScreen(tmp.p.set(0, 0, 0), _stage);
+  const r = radius * pxPerUnit(tmp.p), least = Math.min(SIZE.w, SIZE.h);
+  const seen = _stage.z < 1 && r > least * 0.14 && Math.abs(_stage.x - SIZE.w / 2) + r < SIZE.w / 2 && Math.abs(_stage.y - SIZE.h / 2) + r * 0.75 < SIZE.h / 2;
+  if (seen && !toured && !camAnim) return false;
+  resetView();
+  return true;
+}
+// Where the core is on the map, in px of the map's box, and its radius (attack.js draws the lock-on reticle onto it); null
+// when the map isn't drawn or the core is behind the eye.
+function corePoint() {
+  if (!SIZE.w || !ACT.visible) return null;
+  toScreen(tmp.p.set(0, 0, 0), _stage);
+  if (_stage.z >= 1) return null;
+  return { x: _stage.x, y: _stage.y, r: K.CORE_R * pxPerUnit(tmp.p) };
+}
+// Where a friend's raiding ship is on the map, in px of the map's box, and half its length there (attack.js keeps its
+// taunt over it); null when there's none drawn or it's behind the eye.
+function shipPoint() {
+  const s = raid.ship();
+  if (!s || !SIZE.w || !ACT.visible) return null;
+  toScreen(tmp.p.copy(s.at), _stage);
+  if (_stage.z >= 1) return null;
+  return { x: _stage.x, y: _stage.y, r: 0.5 * s.length * pxPerUnit(tmp.p) };
+}
+// The blast of the core blowing up reaches the rest of the map, harmlessly: the stations flash and the sessions hurry
+// on a moment.
+function raidJolt() {
+  const now = performance.now();
+  for (const k of CATS) STATIONS[k].hitAt = now;
+  for (const n of NODES.values()) n.kick = Math.min(1.5, n.kick + 1);
+}
+const raid = makeRaid({
+  scene, camera, CAM, VIEW0, SIZE, ACT, glow, lines, glowTex, poke, reflections, core, coreR: K.CORE_R,
+  sun: sunLight, shake: shakeCamera, stage: raidStage, jolt: raidJolt,
+});
+
 // ---------- loop ----------
 // Frames are drawn only as often as they're needed (QUALITY): the front rate while the dashboard is in front and
 // for a moment after you zoom or something happens on the map, less behind another app, and none at all when it can't
@@ -1975,6 +2025,7 @@ function frame(now) {
   updateStations(dt, now);
   updateShips(dt, now);
   updateBoxes(dt, now);
+  raid.update(dt, now);
   coreObj.position.set(0, 0, 0).addScaledVector(CAM.up, -K.CORE_R * 1.7);
 
   glow.begin();
@@ -1987,6 +2038,7 @@ function frame(now) {
   drawSparks(dt, now);
   drawShips();
   drawBoxes(now);
+  raid.draw(now);
   glow.end();
   lines.end();
 
@@ -2038,5 +2090,5 @@ function focusRunaway(pid) {
 }
 setCinematic(cineOn);
 // QUALITY too: the power save switch's tooltip (app.js) gives its numbers.
-window.Orbit = { quality: QUALITY, state: onState, event: onEvent, status: onStatus, seed, activity, power, terminals: syncShips, terminalGone: shipGone, cinematic: startCinematic, idle: systemIdle, runaways: syncBoxes, focusRunaway, blowUp, relabel };
+window.Orbit = { quality: QUALITY, state: onState, event: onEvent, status: onStatus, seed, activity, power, terminals: syncShips, terminalGone: shipGone, cinematic: startCinematic, idle: systemIdle, runaways: syncBoxes, focusRunaway, blowUp, relabel, attack: raid.start, corePoint, shipPoint };
 for (const [fn, args] of R.MAPQ.splice(0)) window.Orbit[fn](...args);

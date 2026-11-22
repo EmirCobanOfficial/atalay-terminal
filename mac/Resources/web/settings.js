@@ -169,7 +169,11 @@ window.Settings = (() => {
         // leave it at all. The two under it are about how the counts it sent show on the board.
         row('share my token counts for the Tokens board', `how many tokens each AI, model and effort used a day, never what was in them · off: none leave this ${MACHINE}, not even later · what was sent stays`, sw('tks', 'Share my token counts for the Tokens board', true)) +
         row('show my name on the Tokens board', 'off: Anonymous on the Tokens board only · your total still counts', sw('tkn', 'Show my name on the Tokens board', true)) +
-        row('let friends see which AI and model I use', 'opening your row on the Tokens board · off: only your total shows, to everyone', sw('tkd', 'Let friends see which AI and model I use', true))) +
+        row('let friends see which AI and model I use', 'opening your row on the Tokens board · off: only your total shows, to everyone', sw('tkd', 'Let friends see which AI and model I use', true)) +
+        // A friend's spaceship attack (attack.js): the switch's clicks and its state are attack.js's; its words too.
+        (window.Attack?.on
+          ? row(window.Attack.text.setting.title, window.Attack.text.setting.hint, sw(`atk-on${window.Attack.on() ? ' on' : ''}`, window.Attack.text.setting.aria, window.Attack.on()))
+          : '')) +
       (c.notesai
         ? group('notes and AI',
             row('what AI can do with my notes', { cls: 'na-note', text: '…' },

@@ -346,6 +346,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             MessagePanel.notices.clash(["key": key, "file": msg["file"] as? String ?? "", "path": msg["path"] as? String ?? "",
                                         "chats": msg["chats"] as? [String] ?? []])
         case "clashOver": if let key = msg["key"] as? String { MessagePanel.notices.clashOver(key) }
+        // A friend's spaceship attack (attack.js): its DANGER banner, over whatever is in front.
+        case "attack": MessagePanel.notices.attack(msg)
         // The community feed's lines (community.js decides; the panel at the screen's corner draws).
         case "feedLine":
             guard let id = msg["id"] as? String, let kind = msg["kind"] as? String, let html = msg["html"] as? String else { return }

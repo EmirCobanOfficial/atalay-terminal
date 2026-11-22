@@ -1492,6 +1492,21 @@ function handleRadar(msg) {
     case 'clashOver':
       if (typeof msg.key === 'string') toNotices(`clashOver && __messages.clashOver(${JSON.stringify(msg.key)})`);
       return true;
+    // A friend's spaceship attack (attack.js): the dashboard says who fired, when the DANGER banner shows (ms from now)
+    // and whether it sounds the alarm; the notices window shows it over whatever is in front, every click passing
+    // through, as the Mac's MessagePanel.attack (Messages.swift).
+    case 'attack': {
+      const delay = Number(msg.delay);
+      const banner = {
+        name: String(typeof msg.name === 'string' ? msg.name : '').slice(0, 40),
+        kind: msg.kind === 'lock' || msg.kind === 'lost' ? msg.kind : 'danger',
+        delay: Number.isFinite(delay) ? Math.min(Math.max(delay, 0), 5000) : 0,
+        sound: msg.sound === true,
+        taunt: msg.taunt === true,
+      };
+      runPanel(panels.notices, `window.Attack && Attack.banner && Attack.banner(${JSON.stringify(banner)})`);
+      return true;
+    }
     case 'log':
       console.log('dashboard page:', msg.msg);
       return true;
