@@ -4751,13 +4751,15 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
   const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
   const aiOff = (n) => !!n && (n.aiHidden === true || (!!n.shared && n.shared.ai !== true));
   const person = (p) => (p && typeof p === 'object' ? { id: String(p.id || ''), name: String(p.name || ''), tag: Number(p.tag) || 0 } : { id: '', name: '', tag: 0 });
+  // A member's picture: only a web address as the API gives it (signed on the gated staging API), else none.
+  const picOf = (u) => (typeof u === 'string' && u.length <= 1024 && /^https?:\/\//i.test(u) ? u : null);
   const sharedKeep = (s) =>
     s && typeof s === 'object' && UUID.test(String(s.id))
       ? {
           shared: {
             id: String(s.id),
             owner: person(s.owner),
-            members: (Array.isArray(s.members) ? s.members : []).slice(0, 8).map((m) => ({ ...person(m), owner: !!m.owner, invited: !!m.invited })),
+            members: (Array.isArray(s.members) ? s.members : []).slice(0, 8).map((m) => ({ ...person(m), avatar: picOf(m && m.avatar), owner: !!m.owner, invited: !!m.invited })),
             ai: s.ai === true,
             mine: s.mine === true,
             me: typeof s.me === 'string' ? s.me : '',
@@ -5093,6 +5095,20 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
 
   const initial = (p) => esc((p.name || '?').trim().charAt(0).toUpperCase() || '?');
   const hue = (id) => `hsl(${[...String(id)].reduce((h, c) => (h * 31 + c.charCodeAt(0)) % 360, 7)} 62% 58%)`;
+  // A person's picture in the share sheet: the signed address the API gives (friends list, note members), else the initial.
+  // One that doesn't load (offline, gone) gives way to the initial, and isn't asked for again while the sheet is open.
+  const avFailed = new Set();
+  const shAv = (p) => {
+    const pic = picOf(p.avatar);
+    return `<i class="sh-av" style="background:${hue(p.id)}" data-i="${initial(p)}">${pic && !avFailed.has(pic) ? `<img alt="" src="${esc(pic)}" draggable="false">` : initial(p)}</i>`;
+  };
+  document.addEventListener('error', (e) => {
+    const img = e.target;
+    const av = img instanceof HTMLImageElement ? img.parentElement : null;
+    if (!av || !av.classList.contains('sh-av') || !sheetEl || !sheetEl.contains(av)) return;
+    avFailed.add(img.getAttribute('src'));
+    av.textContent = av.dataset.i || '?';
+  }, true);
   // Who else is in the note right now (their cursor's account), by name.
   function hereNames() {
     if (!sync) return [];
@@ -5253,6 +5269,7 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
   function openSheet() {
     if (!cur || !canShare || sheetEl || (!WINDOW && out.has(cur.id))) return;
     sheetEl = document.createElement('div');
+    avFailed.clear();
     sheetEl.className = 'sh-sheet';
     sheetEl.setAttribute('role', 'dialog');
     sheetEl.setAttribute('aria-label', 'Share this note');
@@ -5305,7 +5322,7 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
     const q = m.query.trim().toLowerCase();
     const pool = m.friends.filter((f) => !inNote.has(f.id) && (!q || `${f.name}#${f.tag} ${f.nick || ''}`.toLowerCase().includes(q)));
     const friendRows = pool.length
-      ? pool.map((f) => `<label class="sh-row"><input type="checkbox" data-pick="${esc(f.id)}"${m.chosen.has(f.id) ? ' checked' : ''}><i class="sh-av" style="background:${hue(f.id)}">${initial(f)}</i><span>${esc(f.nick || f.name)}<small>#${String(f.tag).padStart(4, '0')}</small>${f.signedIn === false ? '<small class="sh-wait">needs to sign in to open</small>' : ''}</span></label>`).join('')
+      ? pool.map((f) => `<label class="sh-row"><input type="checkbox" data-pick="${esc(f.id)}"${m.chosen.has(f.id) ? ' checked' : ''}>${shAv(f)}<span>${esc(f.nick || f.name)}<small>#${String(f.tag).padStart(4, '0')}</small>${f.signedIn === false ? '<small class="sh-wait">needs to sign in to open</small>' : ''}</span></label>`).join('')
       : `<p class="sh-empty">${m.friends.length ? 'No friend matches.' : 'No friends to share with yet. Add some from the friends view.'}</p>`;
     const picker = `<div class="sh-find"><input type="search" placeholder="Find a friend" value="${esc(m.query)}" spellcheck="false" aria-label="Find a friend"></div><div class="sh-friends">${friendRows}</div>`;
     let html;
@@ -5328,7 +5345,7 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
           if (m.removing === p.id) {
             return `<div class="sh-ask sh-rm"><p><b>Remove ${esc(p.name)}?</b> ${p.invited ? 'Their invite is taken back.' : 'Their copy is deleted.'}</p><div class="sh-acts"><button type="button" class="sh-danger" data-doremove="${esc(p.id)}">Remove</button><button type="button" data-do="cancelremove">Cancel</button></div></div>`;
           }
-          return `<div class="sh-row"><i class="sh-av" style="background:${hue(p.id)}">${initial(p)}</i><span>${esc(p.name)}<small>#${String(p.tag).padStart(4, '0')}${you ? ' · you' : ''}</small></span>` +
+          return `<div class="sh-row">${shAv(p)}<span>${esc(p.name)}<small>#${String(p.tag).padStart(4, '0')}${you ? ' · you' : ''}</small></span>` +
             `<em>${p.owner ? 'owner' : p.invited ? 'invited' : ''}</em>${owner && !p.owner ? `<button type="button" class="sh-link" data-remove="${esc(p.id)}" aria-label="Remove ${esc(p.name)}">Remove</button>` : ''}</div>`;
         })
         .join('');
