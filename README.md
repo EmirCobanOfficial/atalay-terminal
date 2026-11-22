@@ -45,6 +45,8 @@ Works with Claude Code, Codex and Antigravity; not affiliated with Anthropic, Op
 
 ## Privacy
 
+The full Privacy Notice and the Terms of Use are at https://orbiterm.dev/privacy/ and https://orbiterm.dev/terms/ (Turkish: https://orbiterm.dev/tr/gizlilik/ and https://orbiterm.dev/tr/kosullar/). In short:
+
 - The dashboard reads Claude Code's own files on your Mac (`~/.claude`: the session list and transcripts), and Codex's
   and Antigravity's own logs (`~/.codex/sessions`, `~/.gemini/antigravity-cli`), read only.
   None of it leaves your Mac: no prompts, no code, no transcripts, no file names. The one exception is your token

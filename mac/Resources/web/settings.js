@@ -186,7 +186,11 @@ window.Settings = (() => {
             row("show what I'm doing on Discord", { cls: 'dc-note', text: '…' }, sw('dc-on', "Show what I'm doing on Discord", false)) +
             row("show the project's name", "the folder you're working in, like my-app · off: only how many chats are open", sw('dc-proj', "Show the project's name on Discord", false), 'st-sub') +
             row('show my active time today', 'like 4h 12m today', sw('dc-act', 'Show my active time on Discord', true), 'st-sub'))
-        : '');
+        : '') +
+      // What Orbiterm stores and the rules, in writing (orbiterm.dev; the Privacy Notice and the Terms), and where to ask.
+      '<p class="st-note"><a class="st-ln" href="https://orbiterm.dev/privacy/" target="_blank" rel="noopener noreferrer">Privacy Notice</a> \u00b7 ' +
+      '<a class="st-ln" href="https://orbiterm.dev/terms/" target="_blank" rel="noopener noreferrer">Terms of Use</a> \u00b7 ' +
+      'Data requests: <a class="st-ln" href="mailto:privacy@orbiterm.dev">privacy@orbiterm.dev</a></p>';
 
     const general =
       // The fun layer's announcements (community.js): one switch for what you hear of others, where people look to turn

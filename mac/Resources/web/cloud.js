@@ -96,7 +96,11 @@ window.Cloud = (() => {
     shownNameError = s.nameError;
     // The welcome until there's a name: a token taken to sign in with (the welcome's "begin") has none yet.
     if (s.reachable && (s.registered === false || (s.registered && !s.hackerName))) openFirst();
-    else if (modal === 'first' && s.registered && s.hackerName) close();
+    else if (modal === 'first' && s.registered && s.hackerName) {
+      // The welcome is over: whoever got through it agreed to the Terms by doing so (the line under its buttons).
+      window.Account?.agreeTerms();
+      close();
+    }
     if (modal === 'menu') {
       renderInfo();
       renderActivity();
@@ -385,7 +389,15 @@ window.Cloud = (() => {
   const welErr = (code) => (window.Account?.errText ? Account.errText(code) : errorText(code));
   const nameInput = () =>
     `<label class="hk-field"><span class="hk-prompt">$</span><input class="hk-input" maxlength="${MAX}" spellcheck="false" autocomplete="off" autocapitalize="off" placeholder="hacker name"><span class="hk-count"></span></label>`;
-  const nameHint = `<p class="hk-hint">2–${MAX} characters · letters, digits, spaces, _ . - · plus a #tag</p>`;
+  // Under it, who sees the name: the choice of a name is where it becomes public (GDPR art. 25), so it's said here.
+  const nameHint = `<p class="hk-hint">2–${MAX} characters · letters, digits, spaces, _ . - · plus a #tag</p>` +
+    '<p class="hk-hint">Friends, the leaderboard and orbiterm.dev see this name · hide it in Settings › Privacy</p>';
+  // Under the three ways in: pressing one of them is agreeing to the Terms. The Privacy Notice is only information, so
+  // there's no checkbox (the Terms are recorded by the API when the welcome ends: Account.agreeTerms).
+  const LEGAL = 'https://orbiterm.dev';
+  const termsLine =
+    `<p class="hk-hint wel-terms">By continuing, you agree to the <a href="${LEGAL}/terms/" target="_blank" rel="noopener noreferrer">Terms</a>. ` +
+    `The <a href="${LEGAL}/privacy/" target="_blank" rel="noopener noreferrer">Privacy Notice</a> explains what we store.</p>`;
 
   function openFirst() {
     if (modal === 'first') return;
@@ -432,7 +444,7 @@ window.Cloud = (() => {
         '<button type="button" class="wel-way" data-w="email"><i>@</i><span><b>Sign in with e-mail</b><small>we send you a 6-digit code · no password</small></span></button>' +
         `<button type="button" class="wel-way" data-w="name"><i>$</i><span><b>Pick a hacker name</b><small>no account · this ${MACHINE} only</small></span></button>` +
         '</div><p class="hk-status"></p>' +
-        '<p class="hk-hint">Have an account? Sign in: your name, XP and friends come back.</p>';
+        '<p class="hk-hint">Have an account? Sign in: your name, XP and friends come back.</p>' + termsLine;
       foot = '<span class="pk-sel note">just a name for now? sign in later from the account menu</span>';
     } else if (step === 'name') {
       body = `<div class="hk-h">PICK A HACKER NAME</div>${nameInput()}<p class="hk-status"></p>${nameHint}`;

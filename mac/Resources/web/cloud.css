@@ -644,7 +644,7 @@
 .acct-diff span { color: var(--txt2); }
 .acct-diff b { color: var(--hi); font-size: 1em; }
 /* over the main menu (#cloudui, 2700), as the archive is */
-.acct-merge, .acct-conflict { --glow: var(--accent-rgb); position: fixed; z-index: 2800; border-radius: 0; background: rgba(0, 0, 0, 0.62); }
+.acct-merge, .acct-conflict, .acct-terms-box { --glow: var(--accent-rgb); position: fixed; z-index: 2800; border-radius: 0; background: rgba(0, 0, 0, 0.62); }
 
 /* the account's icon on the activity bar, above feedback; a green dot while signed in */
 #activity .vs-ab.vs-ab-acct { margin-top: auto; }
@@ -866,6 +866,16 @@ img.pf-pic, img.me-pic { cursor: zoom-in; }
 .mn-btn.mn-ic svg { width: 15px; height: 15px; display: block; }
 .mn-ctx button svg { width: 13px; height: 13px; margin-right: 7px; vertical-align: -2px; }
 
+/* The Terms line under the welcome's three ways in, and the one-time Terms window (account.js termsAsk). */
+.wel-terms { margin-top: 10px; }
+.wel-terms a, .acct-terms-links a { color: var(--accent-soft); text-underline-offset: 2px; }
+.wel-terms a:hover, .acct-terms-links a:hover { color: var(--hi); }
+.acct-ask.acct-terms { width: 440px; max-width: calc(100vw - 32px); }
+.acct-ask.acct-terms p { margin: 8px 0 10px; }
+.acct-terms-links { margin: 0 0 14px !important; color: var(--txt3); font-size: 0.92em; }
+.acct-terms .mn-ask-btns { align-items: center; }
+.acct-terms .acct-terms-del { margin-right: auto; padding: 0; border: 0; background: none; color: var(--txt3); font: inherit; font-size: 0.9em; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+.acct-terms .acct-terms-del:hover { color: var(--red); }
 /* Damage on the cards (attack.js damage()): cracked glass drawn over them, a glitch, then it seals. Warm cream cracks with
    a dark edge, a faint amber glass tint; glitch edges in amber and a muted teal. A box that takes no clicks, under the
    banner. Only transform and opacity move. */

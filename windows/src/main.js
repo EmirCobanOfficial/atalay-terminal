@@ -827,7 +827,7 @@ app.on('web-contents-created', (_e, contents) => {
     if (mascot.has(contents)) return;
     if (ownPage(url)) return;
     e.preventDefault();
-    if (/^https?:/i.test(url)) shell.openExternal(url).catch(() => {});
+    if (/^(https?|mailto):/i.test(url)) shell.openExternal(url).catch(() => {});
     else if (/^vscode:/i.test(url)) askToOpen(url);
   });
 });
