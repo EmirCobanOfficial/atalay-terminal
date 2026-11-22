@@ -28,7 +28,7 @@
     chat: S('<path d="M2.5 4A1.5 1.5 0 0 1 4 2.5h8A1.5 1.5 0 0 1 13.5 4v5.5A1.5 1.5 0 0 1 12 11H7.2L4.4 13.4V11H4A1.5 1.5 0 0 1 2.5 9.5z"/>'),
     ext: S('<path d="M9 2.5h4.5V7M13.5 2.5 7.6 8.4M11.5 9.6v2.9a1 1 0 0 1-1 1h-7a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1h2.9"/>'),
   };
-  const mark = (k) => k === 'ok' ? `<span class="mark ok">${I.check}</span>` : k === 'bad' ? `<span class="mark bad">${I.x}</span>` : k === 'run' ? '<span class="mark run"></span>' : '<span class="mark none"></span>';
+  const mark = (k) => k === 'ok' ? `<span class="wt-mark ok">${I.check}</span>` : k === 'bad' ? `<span class="wt-mark bad">${I.x}</span>` : k === 'run' ? '<span class="wt-mark run"></span>' : '<span class="wt-mark none"></span>';
   const pl = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
   const code = (s) => `<code>${h(s)}</code>`;
   const base = (s) => `<span class="base">⎇ ${nm(s)}</span>`;
