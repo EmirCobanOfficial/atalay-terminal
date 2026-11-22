@@ -134,6 +134,7 @@ struct ChatHeaderView: View {
                     HUDRow(hud: hud, now: tl.date, hex: hex, onTogglePin: onTogglePin, onEnd: onEnd,
                            onCopyReply: onCopyReply, onToggleFavorite: onToggleFavorite, onToggleEnv: onToggleEnv)
                         .frame(height: 30)
+                        .zIndex(1)
                 }
             }
         }
@@ -238,7 +239,63 @@ private struct StatusPill: View {
             .overlay(RoundedRectangle(cornerRadius: 3).stroke(color, lineWidth: 1))
             .shadow(color: color.opacity(0.6), radius: 8)
             .opacity(waiting && Int(now.timeIntervalSinceReferenceDate) % 2 == 0 ? 0.45 : 1)
-            .help(waitingFor ?? "")
+            .hoverTag(waitingFor ?? "", hex: hex, side: .left)
+    }
+}
+
+/// Our own hover tag. The header redraws every second (TimelineView), which keeps macOS's native help tag
+/// from ever appearing, so the buttons here show this one after the pointer rests on them for half a second.
+private struct HoverTag: ViewModifier {
+    enum Side { case above, left }
+    let text: String
+    let hex: UInt32
+    let side: Side
+    @State private var hover = false
+    @State private var show = false
+
+    func body(content: Content) -> some View {
+        content
+            .onHover { inside in
+                hover = inside
+                if !inside { show = false }
+            }
+            .simultaneousGesture(TapGesture().onEnded { show = false })
+            .task(id: hover) {
+                guard hover else { return }
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                if hover && !Task.isCancelled { show = true }
+            }
+            .overlay(alignment: side == .above ? .topTrailing : .leading) {
+                if show && !text.isEmpty { tag }
+            }
+            .accessibilityHint(text)
+    }
+
+    private var tag: some View {
+        let above = side == .above
+        let box = Text(text)
+            .font(.system(size: 10.5))
+            .foregroundColor(Theme.cText)
+            .lineLimit(1)
+            .fixedSize()
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(Theme.cBg)
+            .overlay(Rectangle().stroke(Color(hex: hex), lineWidth: 1))
+            .allowsHitTesting(false)
+        return Group {
+            if above {
+                box.alignmentGuide(.top) { d in d.height + 4 }
+            } else {
+                box.alignmentGuide(.leading) { d in d.width + 6 }
+            }
+        }
+    }
+}
+
+private extension View {
+    func hoverTag(_ text: String, hex: UInt32, side: HoverTag.Side = .above) -> some View {
+        modifier(HoverTag(text: text, hex: hex, side: side))
     }
 }
 
@@ -280,7 +337,7 @@ private struct HUDRow: View {
             }
             if hud.status != "terminal" {
                 HUDButton(symbol: "doc.on.doc", active: false,
-                          help: "Copy Claude's last reply, all of it, even past what fits the window (⇧⌘C)", hex: hex, action: onCopyReply)
+                          help: "Copy the AI's last reply, all of it (⇧⌘C)", hex: hex, action: onCopyReply)
             }
             HUDButton(symbol: "", label: "env", active: hud.envOpen,
                       help: hud.envOpen ? "Back to the terminal (⇧⌘E)"
@@ -288,18 +345,18 @@ private struct HUDRow: View {
                               + (hud.envUnsaved ? " It has changes not saved." : ""),
                       hex: ThemeStore.shared.hex("--amber"), badge: hud.envUnsaved, action: onToggleEnv)
             HUDButton(symbol: hud.isFavorite ? "star.fill" : "star", active: hud.isFavorite,
-                      help: hud.isFavorite ? "Starred. Click to take it out of the sidebar's favourites."
-                          : "Star this chat in the sidebar's favourites list.",
+                      help: hud.isFavorite ? "Remove this chat from your favorites"
+                          : "Add this chat to your favorites in the sidebar",
                       hex: ThemeStore.shared.hex("--amber"), action: onToggleFavorite)
             HUDButton(symbol: hud.onTop ? "pin.fill" : "pin", active: hud.onTop,
-                      help: hud.onTop ? "Pinned on top of every app, on any desktop. Click to put it back above the dashboard."
-                          : "Pin on top of every app (Discord, Chrome…). It leaves the dashboard, even a full-screen one.",
+                      help: hud.onTop ? "Stop keeping this window above all other apps"
+                          : "Keep this window above all other apps",
                       hex: hex, action: onTogglePin)
             // With two or more tabs the HUD's End Session ended the window, not the tab in front: ambiguous. The × on
             // each tab chip ends that tab, so the HUD button hides in multi-tab mode.
             if hud.tabCount <= 1 {
                 HUDButton(symbol: "power", active: false,
-                          help: hud.mirror ? "End this chat (it runs in the other app, and ends there too)" : hud.status == "terminal" ? "Close this terminal" : "End this chat",
+                          help: hud.mirror ? "End this chat here and in the other app" : hud.status == "terminal" ? "Close this terminal" : "End this chat and stop the AI",
                           hex: ThemeStore.shared.hex("--red"), action: onEnd)
             }
         }
@@ -419,7 +476,9 @@ private struct HUDButton: View {
         }
         .buttonStyle(.plain)
         .onHover { hover = $0 }
-        .help(help)
+        .hoverTag(help, hex: hex)
+        // An icon alone: the tag's text is its name for VoiceOver too.
+        .accessibilityLabel(help)
     }
 }
 
