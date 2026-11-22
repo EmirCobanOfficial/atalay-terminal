@@ -1,9 +1,10 @@
 'use strict';
-// A chat deleted from the chats list (chatlist.js), as the Mac's ChatTrash.swift: Claude Code's, Codex's or
-// Antigravity's. It leaves the list at once and stays in Settings' deleted chats for 30 days, where it can be put back;
+// A chat deleted from the chats list (chatlist.js), as the Mac's ChatTrash.swift: Claude Code's, Codex's, Antigravity's
+// or Cursor's. It leaves the list at once and stays in Settings' deleted chats for 30 days, where it can be put back;
 // then it's deleted from the PC. Until then nothing of the conversation is touched, so putting it back is only taking it
 // off that list. This file knows which files a conversation has and deletes them; a deleted chat is
-// { id, title, cwd, tool ("claude", "codex" or "antigravity"), path (its transcript; Codex's: its log), at (ms) }.
+// { id, title, cwd, tool ("claude", "codex", "antigravity" or "cursor"), path (its transcript; Codex's: its log;
+// Cursor's: its meta.json), at (ms) }.
 const cp = require('child_process');
 const fs = require('fs');
 const path = require('path');
@@ -77,9 +78,11 @@ function remove(p) {
 
 /**
  * `claudeDir`: Claude Code's folder (~/.claude); `codexDir`: Codex's (CODEX_HOME or ~/.codex); `agyDir`: Antigravity's
- * (~/.gemini/antigravity-cli); `codexExe()`: where Codex's own program is, or null; `home`: the user's folder.
+ * (~/.gemini/antigravity-cli); `cursorDir`: Cursor's (CURSOR_CONFIG_DIR or ~/.cursor); `codexExe()`: where Codex's own
+ * program is, or null; `home`: the user's folder.
  */
-function createChatTrash({ claudeDir, codexDir, agyDir, codexExe, home }) {
+function createChatTrash({ claudeDir, codexDir, agyDir, cursorDir, codexExe, home }) {
+  const cursor = cursorDir || process.env.CURSOR_CONFIG_DIR || path.join(home || require('os').homedir(), '.cursor');
   // ----- Claude Code -----
 
   // Whether `p` is a transcript in Claude's projects folder: projects\<folder>\<name>.jsonl, nothing else. The folder
@@ -274,13 +277,37 @@ function createChatTrash({ claudeDir, codexDir, agyDir, codexExe, home }) {
     return !exists(path.join(agyDir, 'conversations', `${chat.id}.db`));
   }
 
+  // ----- Cursor -----
+
+  // Whether `p` is the meta.json of Cursor's chat `id`: chats\<key of its folder>\<id>\meta.json (the Mac's isCursorChat).
+  function isCursorChat(p, id) {
+    const s = String(p ?? '');
+    return isSessionId(id) && plain(s, path.join(cursor, 'chats'), 3) && path.basename(s) === 'meta.json' && path.basename(path.dirname(s)) === id;
+  }
+
+  // What Cursor keeps of one chat: its folder in chats (its store and meta) and its transcripts' folder under projects
+  // (agent-transcripts\<id>, in whichever project folder has it). Cursor has no delete command of its own (the Mac's
+  // cursorFiles).
+  function cursorFiles(chat) {
+    if (!isCursorChat(chat.path, chat.id)) return [];
+    const out = [path.dirname(chat.path)];
+    const projects = path.join(cursor, 'projects');
+    for (const name of names(projects)) {
+      const p = path.join(projects, name, 'agent-transcripts', chat.id);
+      if (!out.includes(p)) out.push(p);
+    }
+    return out.filter(exists);
+  }
+
   // ----- any tool -----
 
-  /** Whether a saved chat of the list is one this can delete: Claude's transcript, Codex's log, Antigravity's id. */
+  /** Whether a saved chat of the list is one this can delete: Claude's transcript, Codex's log, Antigravity's id,
+   *  Cursor's meta.json. */
   function deletable(item) {
     if (!item) return false;
     if (item.tool === 'codex') return isCodexLog(item.path, item.id);
     if (item.tool === 'antigravity') return isSessionId(item.id);
+    if (item.tool === 'cursor') return isCursorChat(item.path, item.id);
     return isTranscript(item.path);
   }
 
@@ -288,6 +315,10 @@ function createChatTrash({ claudeDir, codexDir, agyDir, codexExe, home }) {
   async function erase(chat) {
     if (chat.tool === 'codex') return eraseCodex(chat);
     if (chat.tool === 'antigravity') return eraseAgy(chat);
+    if (chat.tool === 'cursor') {
+      for (const p of cursorFiles(chat)) remove(p);
+      return !cursorFiles(chat).length;
+    }
     for (const p of claudeFiles(chat)) remove(p);
     return !claudeFiles(chat).some((p) => p.endsWith('.jsonl'));
   }
@@ -296,6 +327,7 @@ function createChatTrash({ claudeDir, codexDir, agyDir, codexExe, home }) {
   function lastWritten(chat) {
     let times;
     if (chat.tool === 'codex') times = isCodexLog(chat.path, chat.id) ? [modified(chat.path)] : [];
+    else if (chat.tool === 'cursor') times = isCursorChat(chat.path, chat.id) ? [modified(chat.path)] : [];
     else if (chat.tool === 'antigravity') {
       times = !isSessionId(chat.id) ? [] : [
         modified(path.join(agyDir, 'conversations', `${chat.id}.db`)),
@@ -320,7 +352,7 @@ function createChatTrash({ claudeDir, codexDir, agyDir, codexExe, home }) {
     return out;
   }
 
-  return { deletable, erase, due, claudeFiles, agyFiles, agyChildren, lastWritten, isTranscript, isCodexLog };
+  return { deletable, erase, due, claudeFiles, agyFiles, agyChildren, cursorFiles, lastWritten, isTranscript, isCodexLog, isCursorChat };
 }
 
 module.exports = { createChatTrash, KEEP, daysLeft, expired, isSessionId, isCodexLogIn };

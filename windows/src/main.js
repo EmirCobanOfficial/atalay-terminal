@@ -95,6 +95,7 @@ const { createAIColors } = require('./aicolors');
 const { createTerminals, which, childEnvironment } = require('./terminals');
 const { createOverlay } = require('./overlay');
 const { createRunaways } = require('./runaways');
+const { createCleanup } = require('./cleanup');
 const { createPowerSaver } = require('./power');
 const { createDiscord } = require('./discord');
 const { createFiles, linkTarget, fileFromURL } = require('./files');
@@ -102,6 +103,7 @@ const { createSavers } = require('./savers');
 const { createChatList } = require('./chatlist');
 const { createLimits } = require('./limits');
 const { createCodexHooks } = require('./codexhooks');
+const { createCursorHooks } = require('./cursorhooks');
 const { createMcp } = require('./mcp');
 const { createNotesStore } = require('./notesstore');
 const { createAttachments } = require('./attachments');
@@ -117,6 +119,10 @@ const { createMascot } = require('./mascot');
 const { createMascotAsset } = require('./mascotasset');
 const { createShareCard } = require('./sharecard');
 const { createShortcuts } = require('./shortcuts');
+const { createEnvBridge } = require('./envbridge');
+const { createEnvNative } = require('./envnative');
+const { createGitShip } = require('./gitship');
+const { createWorktreeShip, menuLabel } = require('./worktreeship');
 const vendor = require('./vendor');
 
 let autoUpdater = null;
@@ -201,7 +207,7 @@ let escMuteUntil = 0;
 // each page is as wide as its part of the window).
 let dash = null, dashView = null, chatsView = null;
 const boots = new Map(); // webContents id -> what its preload asks for before the page loads
-const chats = new Map(); // terminal window id -> { win, sessionId, cwd, claude, title, startedAt, steppedAside }
+const chats = new Map(); // terminal window id -> { win, sessionId, cwd, claude, title, startedAt, steppedAside, envDirty }
 let activeTerminalId = null;
 const panels = { notices: null, chats: new Map(), showing: new Set() }; // the messages panels: the corner's notices, friends' chats
 // The dashboard's streamer mode: made-up names in the chats list, the chat windows and the notices too (streamer.js).
@@ -250,6 +256,8 @@ const savers = createSavers({
   usable: process.platform === 'win32' && !PROBE,
 });
 
+// The windows a worktree's delete ended and kept (onExit below); each leaves the set when it closes (openChatWindow).
+const keptWins = new Set();
 const terminals = createTerminals({
   extraPath: savers.binDir,
   onData: (id, data) => send(chats.get(id)?.win, 'term:data', data),
@@ -257,8 +265,12 @@ const terminals = createTerminals({
     const c = chats.get(id);
     if (c) {
       send(c.win, 'term:exit');
-      // A plain terminal closes with its shell; a chat's window stays to show how it ended until it's closed.
-      if (!c.claude && c.win && !c.win.isDestroyed()) c.win.destroy();
+      // A plain terminal closes with its shell; a chat's window stays to show how it ended until it's closed. One a
+      // worktree's delete ended (keepWindow) stays too, saying ENDED, as on the Mac (spec 9.2: no window is closed).
+      if (c.keepWindow) {
+        send(c.win, 'term:info', { ...chatInfo(id, c), status: 'ended' });
+        keptWins.add(c.win);
+      } else if (!c.claude && c.win && !c.win.isDestroyed()) c.win.destroy();
       chats.delete(id);
       toDash(`terminalGone(${JSON.stringify(id)})`);
       pushWinOpen();
@@ -288,9 +300,13 @@ function profileSuffix() {
 
 // Closing the dashboard keeps the app and its chats going, as on the Mac, where the Dock brings it back (here, starting
 // the app again). With no chat or terminal left there's nothing to keep it for: it quits rather than stay on out of
-// sight (the hidden notices panel would keep it alive, and the uninstaller would find it running).
+// sight (the hidden notices panel would keep it alive, and the uninstaller would find it running). A window a worktree's
+// delete ended stays on screen, saying ENDED, until the user closes it (spec 9.2): the app stays for it too, and looks
+// again when it closes (openChatWindow).
 function quitIfIdle() {
-  if (!quitting && !dash && !terminals.list().length) app.quit();
+  if (quitting || dash || terminals.list().length) return;
+  for (const w of keptWins) if (!w.isDestroyed() && w.isVisible()) return;
+  app.quit();
 }
 
 // Claude's 5-hour and weekly limits: Claude Code's status line hands its JSON to a script of ours (src/limits.js).
@@ -306,14 +322,32 @@ const codexHooks = createCodexHooks({
   codexDir: process.env.CODEX_HOME || path.join(os.homedir(), '.codex'),
 });
 
+// Cursor's CLI (src/cursorhooks.js): its hooks hand every event to the app's hook program, which keeps them in the same
+// folder, the same for every build and profile. Only the app's usual profile puts them into Cursor's hooks.json (a profile
+// of its own, npm run staging, reads what they write and leaves the real hooks.json be).
+const cursorHooks = createCursorHooks({
+  ownDir: path.join(process.env.LOCALAPPDATA || app.getPath('appData'), 'atalay-terminal'),
+  cursorDir: process.env.CURSOR_CONFIG_DIR || path.join(os.homedir(), '.cursor'),
+});
+const installCursorHooks = () => {
+  if (process.platform === 'win32' && !PROBE && !profileSuffix()) cursorHooks.install();
+};
+
 // Discord presence (discord.js, the Mac's DiscordPresence): your Discord profile shows what you're doing, on unless
 // Settings · DISCORD turns it off. Made before the engine and Cloud, whose changes it hears.
 const discord = createDiscord({ settings, xp: () => cloud.json().xp, onChange: () => pushDiscord() });
 
+// Each AI's whole tree as Clean Up's round last measured it (cleanup.js, the Mac's MemoryWatch.trees): pid -> { bytes,
+// top: [[name, bytes]] }, the card's `mem` and its tooltip.
+let memTrees = new Map();
 const engine = createEngine({
   claudeDir: path.join(os.homedir(), '.claude'),
   limitsFile: limits.file,
   codexHooks,
+  // A Cursor seen for the first time puts its hooks in too (Cursor may have been installed after the app started).
+  cursorHooks,
+  installCursorHooks,
+  memTree: (pid) => memTrees.get(pid) || null,
   // A Claude process under one of the app's terminals belongs to that window (its id becomes the session's `tab`).
   isAppPid: (pid) => (terminals.list().find((t) => t.pid === pid) || {}).id || false,
   onInit(json) {
@@ -326,7 +360,15 @@ const engine = createEngine({
     toDash(`state(${json})`);
     matchChats();
     pushActiveSession();
-    for (const [id, c] of chats) send(c.win, 'term:info', chatInfo(id, c));
+    for (const [id, c] of chats) {
+      const info = chatInfo(id, c);
+      send(c.win, 'term:info', info);
+      // In a worktree: its chip and button; the AI's turn ending may have changed its files, so they're read again at once
+      // (the Mac's shipStatusChanged).
+      pushShipWindow(id, c);
+      if (c.wtTop && c.shipStatus === 'busy' && info.status !== 'busy') worktreeShip.refresh(c.wtTop, { force: true });
+      c.shipStatus = info.status;
+    }
     badge();
     updateWaits();
     pushWinOpen();
@@ -355,6 +397,7 @@ const chatlist = createChatList({
     claudeDir: path.join(os.homedir(), '.claude'),
     codexDir: process.env.CODEX_HOME || path.join(os.homedir(), '.codex'),
     agyDir: path.join(os.homedir(), '.gemini', 'antigravity-cli'),
+    cursorDir: process.env.CURSOR_CONFIG_DIR || path.join(os.homedir(), '.cursor'),
     // npm's Codex is codex.cmd here (where.exe names its extensionless shell script first).
     codexExe: () => which('codex.exe') || which('codex.cmd'),
     home: os.homedir(),
@@ -470,8 +513,8 @@ const cloud = createCloud({
 });
 
 // The AI tools seen at work (a session busy), for their badges (the API's badges.ts), as the Mac's Activity.toolAtWork:
-// Claude's chats, and the others by name (Codex, Gemini, Antigravity). The heartbeat sends those of the last minute and
-// a half, a minute's slack.
+// Claude's chats, and the others by name (Codex, Gemini, Antigravity, Cursor). The heartbeat sends those of the last
+// minute and a half, a minute's slack.
 const toolsAt = new Map();
 function noteToolsAtWork() {
   const now = Date.now();
@@ -479,7 +522,7 @@ function noteToolsAtWork() {
     if (s.status !== 'busy') continue;
     const key = s.ai ? String(s.name || '').toLowerCase() : 'claude';
     // Only when the process is the tool's own program (vendor.js): a program renamed after it earns its badge nothing.
-    if (['claude', 'codex', 'gemini', 'antigravity'].includes(key) && vendor.genuine(key, s.pid)) toolsAt.set(key, now);
+    if (['claude', 'codex', 'gemini', 'antigravity', 'cursor'].includes(key) && vendor.genuine(key, s.pid)) toolsAt.set(key, now);
   }
 }
 const toolsAtWork = () => [...toolsAt].filter(([, at]) => Date.now() - at < 90_000).map(([key]) => key).sort();
@@ -564,7 +607,39 @@ const runaways = createRunaways({
     toNotices(`runaways && __messages.runaways(${json})`);
     pushTerminals();
   },
+  // And after each reading, Clean Up's round on the same list (the Mac's MemoryWatch tick).
+  onDone: () => cleanup.round(),
 });
+
+// Clean Up (cleanup.js, the Mac's Cleanup.swift and MemoryWatch.swift): the view that lists idle chats and heavy
+// programs, the map's line when the PC runs low on memory, and each card's `mem`. Nothing ends but what the user ticked
+// and agreed to on its summary.
+const cleanup = createCleanup({
+  runaways, engine, terminals, streamer, settings, shell,
+  chatWindow: (id) => {
+    const c = chats.get(id);
+    return c && c.win && !c.win.isDestroyed() ? c.win : null;
+  },
+  // Env changes not saved in its window are asked about first: false when the user kept it.
+  endTerminal: (id) => endTerminalAsked(id),
+  isEnding: (pid) => ending.has(pid),
+  // The app's own processes (its main process, pages, GPU): never ended, and counted as "Orbiterm" among the other apps.
+  ownPids: () => [process.pid, ...app.getAppMetrics().map((m) => m.pid)],
+  titleOf: (s) => chatlist.title(s.sessionId) || (s.convId && chatlist.title(s.convId)) || s.title || '',
+  push: (name, json) => toDash(`${name}(${json})`),
+  publishTrees: (trees) => {
+    memTrees = trees;
+  },
+  logDir: path.join(process.env.LOCALAPPDATA || app.getPath('appData'), 'Orbiterm', 'Logs'),
+  // Open Task Manager (the Mac's Open Activity Monitor): through the shell, which may raise it as Windows asks.
+  taskManager: () => shell.openPath(path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'Taskmgr.exe')),
+});
+// The app menu's (here File's) Clean Up…, Settings' Open Clean Up…, the map's line, the DANGER card's link: the
+// dashboard in front, the view open (the Mac's MainWindowController.showCleanup).
+function showCleanup() {
+  showDashboard();
+  toDash('openCleanup()');
+}
 
 // ---------- Viktoria, the roaming mascot (mascot.js, the Mac's Mascot.swift) ----------
 // Her own switch is on at once in a staging build and in a run from the sources, off in a release until the user turns it
@@ -741,6 +816,220 @@ const mcp = createMcp({
   // Asked only once the app runs (start, refresh), after notesAI is made.
   notesAccess: () => notesAI.access(),
 });
+
+// ---------- a worktree's next step: Create PR, Merge, Delete (gitship.js, worktreeship.js; the Mac's WorktreeShip) ----------
+// A terminal window in a linked worktree shows a chip and a split button in its header (pages/terminal.js); the chats
+// list's worktree folders show its state and have the same items; the sheets open in the overlay (web/worktree-ship.js).
+const gitShip = createGitShip({ trash: (p) => shell.trashItem(p) });
+// Windows that showed a worktree's chip, ended ones included (no longer in `chats`): webContents id -> { win, id, top }.
+const shipWins = new Map();
+const worktreeShip = createWorktreeShip({
+  git: gitShip, settings, streamer,
+  openExternal: (url) => shell.openExternal(url).catch(() => {}),
+  openPath: (p) => shell.openPath(p),
+  hooks: {
+    shownTops: () => new Set([...chats.values()].filter((c) => c.wtTop && c.win && !c.win.isDestroyed() && c.win.isVisible() && !c.win.isMinimized()).map((c) => c.wtTop)),
+    listVisible: () => !!dash && !dash.isDestroyed() && dash.isVisible() && !dash.isMinimized() && chatsList.shown,
+    live: (top) => shipLive(top),
+    ai: (top, windowId) => shipAI(top, windowId),
+    title: (top, windowId) => shipTitle(top, windowId),
+    endSessions: (top) => shipEndSessions(top),
+    deleted: (top, branch, sha, kept) => shipDeleted(top, branch, sha, kept),
+    changed: (top) => shipChanged(top),
+    step: (name) => overReady && run(over, `window.Worktree && Worktree.shipStep(${JSON.stringify(String(name))})`),
+    showSheet: (kind, top, windowId) => showShip(kind, top, windowId),
+    showChanges: (top) => showSourceControl(top),
+    ask: (sid, text) => mcp.askFromApp(sid, text),
+    keyLabel: () => shortcuts.label(shortcuts.combo('createPR')),
+  },
+});
+
+// The linked worktree a terminal window is in: its AI's folder, else the one it opened in (null: none). The Mac's hud.wtTop.
+function shipTopOf(id, c) {
+  const s = engine.live().find((x) => x.tab === id);
+  const wi = gitShip.info((s && s.cwd) || c.cwd);
+  return wi && wi.linked ? wi.top : null;
+}
+
+// What a terminal window's header shows (term:ship), sent when its worktree's status changes or it comes to the front.
+function pushShipWindow(id, c) {
+  if (!c || !c.win || c.win.isDestroyed()) return;
+  const top = shipTopOf(id, c);
+  const was = c.wtTop || null;
+  c.wtTop = top;
+  const key = c.win.webContents.id;
+  if (!top) {
+    if (was) send(c.win, 'term:ship', null);
+    shipWins.delete(key);
+    return;
+  }
+  const w = shipWins.get(key);
+  const entry = w && w.top === top ? w : { win: c.win, id, top, sent: '' };
+  shipWins.set(key, entry);
+  if (top !== was) worktreeShip.refresh(top);
+  shipSend(entry, worktreeShip.headerView(top));
+}
+
+// A window's header view, only when it changed (the engine's states come every second or so).
+function shipSend(w, view) {
+  const json = JSON.stringify(view);
+  if (json === w.sent) return;
+  w.sent = json;
+  send(w.win, 'term:ship', view);
+}
+
+// A worktree's status changed: its windows (ended ones too), the chats list and the menu's items follow.
+function shipChanged(top) {
+  const view = worktreeShip.headerView(top);
+  for (const w of shipWins.values()) if (w.top === top) shipSend(w, view);
+  pushChats(true);
+  syncShipMenu();
+}
+
+// The AI chats and terminals open in the worktree `top` (or a worktree inside it, which goes to the Recycle Bin with it):
+// the AI sessions, the app's and any outside it, and the app's plain terminals. The Mac's shipLive.
+function shipLive(top) {
+  const out = [];
+  const inside = (cwd) => {
+    const wi = cwd ? gitShip.info(cwd) : null;
+    return wi ? gitShip.under(wi.top, top) : !!cwd && gitShip.under(cwd, top);
+  };
+  const live = engine.live().filter((s) => s.status !== 'ended' && inside(s.cwd));
+  for (const s of live) {
+    // One that runs under another's process (Claude's own `codex exec`) is part of that chat.
+    const parent = live.find((o) => o !== s && o.pid && s.pid && runaways.tree(o.pid).some((p) => p.pid === s.pid));
+    if (parent) continue;
+    const inApp = !!s.tab && chats.has(s.tab) && terminals.has(s.tab);
+    out.push({ id: s.sessionId, name: s.ai ? s.name : 'Claude', kind: 'chat', status: s.status, inApp });
+  }
+  for (const [id, c] of chats) {
+    if (!terminals.has(id) || engine.live().some((s) => s.tab === id) || chatInfo(id, c).status !== 'terminal') continue;
+    if (inside(c.cwd)) out.push({ id, name: 'terminal', kind: 'terminal', status: 'idle', inApp: true });
+  }
+  return out;
+}
+
+// Who "Ask … to fix" goes to: the AI of the window the sheet dropped from, else the newest live AI chat in the worktree.
+// Only those the safe prompt reaches (Claude, Codex, Antigravity, Cursor: the Mac's WorktreeNudge.aiOf). The Mac's shipAI.
+function shipAI(top, windowId) {
+  const kindOf = (s) => (!s.ai ? 'claude' : s.name === 'Codex' ? 'codex' : s.name === 'Antigravity' ? 'agy' : s.name === 'Cursor' ? 'cursor' : null);
+  const ok = (s) => s && s.status !== 'ended' && kindOf(s) && s.tab && chats.has(s.tab);
+  const asAI = (s) => ({ name: s.ai ? s.name : 'Claude', sid: s.sessionId, kind: kindOf(s) });
+  const live = engine.live();
+  const mine = windowId ? live.find((s) => s.tab === windowId && ok(s)) : null;
+  if (mine) return asAI(mine);
+  const all = live.filter((s) => ok(s) && s.cwd && (gitShip.info(s.cwd) || {}).top === top).sort((a, b) => (b.statusSince || 0) - (a.statusSince || 0));
+  return all.length ? asAI(all[0]) : null;
+}
+
+// A pull request's title: the window's chat's own, else the newest chat's in the worktree. The Mac's shipTitle.
+function shipTitle(top, windowId) {
+  const live = engine.live();
+  const mine = windowId ? live.find((s) => s.tab === windowId && !s.ai && s.title) : null;
+  if (mine) return mine.title.trim();
+  const all = live.filter((s) => !s.ai && s.title && s.cwd && (gitShip.info(s.cwd) || {}).top === top).sort((a, b) => (b.statusSince || 0) - (a.statusSince || 0));
+  return all.length ? all[0].title.trim() : '';
+}
+
+/**
+ * Delete worktree: a window's chat or terminal stops, as its End button stops it, but the window stays, ended, until the
+ * user closes it (spec 9.2). The Mac's ChatWindowController.endLeavingWindow.
+ */
+function endLeavingWindow(id) {
+  const c = chats.get(id);
+  if (!c) return;
+  // A window that was closed (hidden, its terminal running on) isn't kept: nobody would see it to close it.
+  c.keepWindow = !!c.win && !c.win.isDestroyed() && c.win.isVisible();
+  const t = terminals.list().find((x) => x.id === id);
+  const tree = t && t.pid ? runaways.tree(t.pid) : [];
+  for (const p of tree) ending.set(p.pid, Date.now() + 10_000);
+  if (!terminals.end(id) && tree.length) setTimeout(() => runaways.fresh().then(() => runaways.kill(tree)), 3000);
+  if (c.sessionId) {
+    const live = engine.live().find((s) => s.sessionId === c.sessionId);
+    engine.dismiss(c.sessionId, live && live.pid);
+  }
+  toDash(`terminalGone(${JSON.stringify(id)})`);
+}
+
+// Every chat and terminal open in the worktree ends, as their End buttons end them; the windows stay, ended. False when
+// something still runs after ten seconds (the Mac waits five; here the session host gives what a terminal ran three
+// seconds before it ends it, and the engine sees a process gone a moment later). The Mac's endSessions(in:).
+async function shipEndSessions(top) {
+  // A window is in it when its AI works there or it opened there (a worktree inside this one counts: it goes too).
+  const inside = (id, c) => {
+    const t = shipTopOf(id, c);
+    return !!t && gitShip.under(t, top);
+  };
+  for (const [id, c] of chats) if (terminals.has(id) && inside(id, c)) endLeavingWindow(id);
+  for (let i = 0; i < 100; i++) {
+    const windows = [...chats.entries()].some(([id, c]) => terminals.has(id) && inside(id, c));
+    const sessions = shipLive(top).some((x) => x.kind === 'chat' || x.inApp);
+    if (!windows && !sessions) return true;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  return false;
+}
+
+// The folder is deleted: the ended windows of the worktree say so in their terminals (their chips say "deleted").
+function shipDeleted(top, branch, sha, kept) {
+  const b = streamer.on ? streamer.fake('branch', branch) : branch;
+  const line = `[worktree deleted · the folder is in the Recycle Bin · ${kept ? `branch ${b} kept` : `branch ${b} was ${streamer.on ? '…' : sha}`}]`;
+  for (const w of shipWins.values()) if (w.top === top && !terminals.has(w.id)) send(w.win, 'term:data', `\x1b[2m${line}\x1b[0m\r\n`);
+}
+
+// Source Control on a folder (the chip, Show Changes): the dashboard in front, its view open on that repo.
+function showSourceControl(root) {
+  showDashboard();
+  run(dashView, `window.GitView && GitView.show(${JSON.stringify(String(root || ''))})`);
+}
+
+// The File menu's worktree items for the window in front (the Mac's validateMenuItem): menu id -> { label, enabled }.
+// Usable when that window is a worktree's and its status allows it; "Merge into develop…" names that worktree's base, and
+// a dimmed item says why in its label (menuLabel: Windows menus show no tooltip).
+function shipMenuState() {
+  const w = BrowserWindow.getFocusedWindow();
+  const c = w && [...chats.values()].find((x) => x.win === w);
+  const top = c && c.wtTop;
+  const st = top ? worktreeShip.status(top) : null;
+  const its = st && !worktreeShip.isDeleted(top) && !worktreeShip.isBusy(top) ? worktreeShip.items(st) : [];
+  const base = st && st.base ? (streamer.on ? streamer.fake('branch', st.base) : st.base) : '';
+  const out = {};
+  for (const [mid, id, title] of [['shipCreate', 'create', 'Create Pull Request…'], ['shipMerge', 'merge', `Merge into ${base || 'Base Branch'}…`], ['shipDelete', 'delete', 'Delete Worktree…']]) {
+    const it = its.find((x) => x.id === id);
+    out[mid] = { label: it ? menuLabel(it) : title, enabled: !!(it && it.enabled) };
+  }
+  return out;
+}
+
+// The menu's worktree items follow the window in front and its status. A label can't be changed on a menu that's set
+// (Electron reads it when the item is made): the menu is made again, only when a label would differ.
+let shipMenuBuilding = false;
+function syncShipMenu() {
+  const menu = Menu.getApplicationMenu();
+  if (!menu) return;
+  const want = shipMenuState();
+  if (!shipMenuBuilding && Object.entries(want).some(([mid, v]) => menu.getMenuItemById(mid) && menu.getMenuItemById(mid).label !== v.label)) {
+    shipMenuBuilding = true;
+    try {
+      buildMenu(); // which comes back here with the new menu
+    } finally {
+      shipMenuBuilding = false;
+    }
+    return;
+  }
+  for (const [mid, v] of Object.entries(want)) {
+    const item = menu.getMenuItemById(mid);
+    if (item) item.enabled = v.enabled;
+  }
+}
+
+// A menu item or its key: the sheet of the window in front.
+function shipMenu(id) {
+  const w = BrowserWindow.getFocusedWindow();
+  const found = w && [...chats.entries()].find(([, x]) => x.win === w);
+  if (!found || !found[1].wtTop) return;
+  worktreeShip.handle(id, found[1].wtTop, found[0]);
+}
 
 // The chat of the terminal window touched last is the one the chat list marks. Prefer a working/waiting nested AI (Codex,
 // etc.) over the parent Claude process if both happen to be under the same shell. The dashboard's top bar shows every AI
@@ -1067,6 +1356,8 @@ function createDashboard() {
   // Likewise Viktoria's: coming back to the dashboard greets her, leaving it lets go of the cursor.
   win.on('focus', () => setImmediate(() => mascot.focusChanged()));
   win.on('blur', () => setImmediate(() => mascot.focusChanged()));
+  // The File menu's worktree items are off while the dashboard is in front: Ctrl+Shift+P stays Source Control editor's.
+  win.on('focus', () => syncShipMenu());
   // Closing the dashboard leaves the chats and terminals open: let them go before it closes, or Windows closes its
   // child windows with it.
   win.on('close', () => {
@@ -1202,11 +1493,37 @@ function pushChats(force) {
   const open = chatlist.setOpen([...chats.values()].map((c) => c.sessionId).filter(Boolean));
   if (!force && !live && !open && chatlist.version() === chatsVersion) return;
   chatsVersion = chatlist.version();
-  const snap = chatlist.snapshot();
+  const snap = shipFolders(chatlist.snapshot());
   const json = JSON.stringify(streamer.on ? madeUpChats(snap) : snap);
   if (json === chatsJSON && !force) return;
   chatsJSON = json;
   run(chatsView, `window.__chats && __chats.update(${json})`);
+}
+
+/**
+ * The chats list's folders that are linked worktrees (spec 4.3, the Mac's WorktreeGroupHeader): their state ("+42 −7",
+ * "#48 ✓", "merged ✓", "deleted") and the worktree items of their right-click menu. Those worktrees are read while the
+ * list shows (worktreeShip.watchList).
+ */
+function shipFolders(snap) {
+  const tops = new Set();
+  const folders = {};
+  for (const [key, f] of Object.entries(snap.folders || {})) {
+    const wi = f && f.cwd ? gitShip.info(f.cwd) : null;
+    const top = wi && wi.linked ? wi.top : f && f.cwd && worktreeShip.isDeleted(f.cwd) ? f.cwd : null;
+    if (!top) {
+      folders[key] = f;
+      continue;
+    }
+    tops.add(top);
+    const deleted = worktreeShip.isDeleted(top);
+    const st = worktreeShip.status(top);
+    const items = worktreeShip.items(st, deleted || worktreeShip.isBusy(top)).filter((x) => ['create', 'merge', 'delete', 'prmerge', 'openpr'].includes(x.id));
+    // Its right-click menu is a native one too: a dimmed item's reason goes in its title (menuLabel).
+    folders[key] = { ...f, wt: { top, state: worktreeShip.listState(top), items: items.map((x) => ({ id: x.id, title: menuLabel(x), enabled: x.enabled })) } };
+  }
+  worktreeShip.watchList([...tops].filter((t) => !worktreeShip.isDeleted(t)));
+  return { ...snap, folders };
 }
 
 // The chats list in streamer mode: every chat, folder and terminal under the made-up name the dashboard gives it. Their
@@ -1285,7 +1602,7 @@ function handleChats(msg) {
     case 'showTerminal':
       return chats.has(msg.id) && terminals.has(msg.id) && showChat(msg.id);
     case 'endTerminal':
-      if (chats.has(msg.id)) endTerminal(msg.id);
+      if (chats.has(msg.id)) endTerminalAsked(msg.id);
       return true;
     case 'favorite':
       chatlist.toggleFavorite(String(msg.id || ''));
@@ -1312,6 +1629,11 @@ function handleChats(msg) {
       return deleteChats(chatlist.chatsInFolders((Array.isArray(msg.keys) ? msg.keys : []).map(String)));
     case 'menu':
       return popupMenu(msg.items, msg.at, chatsView);
+    // A worktree folder's Create Pull Request…, Merge…, Delete Worktree…, Open PR: the sheet stands alone in the middle (no
+    // window to drop from), as the Mac's list opens it. Only a linked worktree's own folder.
+    case 'ship':
+      if (!['create', 'merge', 'delete', 'prmerge', 'openpr'].includes(msg.id) || !worktreeShip.knows(String(msg.top || ''))) return false;
+      return worktreeShip.handle(msg.id, String(msg.top), null);
     case 'close':
       toggleChats();
       return true;
@@ -1497,6 +1819,11 @@ function newFile() {
 }
 
 // ---------- the dashboard's requests (the "radar" handler) ----------
+// Clean Up's requests (its run ends processes and terminals; its log, settings and Task Manager go with it): the
+// dashboard's page only, as on the Mac, where only RadarView's web view has the radar handler. The pages that send them
+// (cleanup.js, danger.js, cloud.js) are in index.html alone; a terminal's page, the chats list or the notices can't.
+const DASHBOARD_RADAR = new Set(['cleanupOpen', 'cleanupView', 'cleanupList', 'cleanupRun', 'cleanupRetry', 'cleanupHalt', 'cleanupDismiss',
+  'cleanupLog', 'cleanupPrefs', 'openActivityMonitor']);
 function handleRadar(msg) {
   switch (msg.type) {
     case 'ready':
@@ -1514,7 +1841,32 @@ function handleRadar(msg) {
       pushDiscord();
       mcp.push();
       mascot.pushToPages();
+      // A reloaded page has Clean Up's view closed; it hears the settings (Settings › General › memory) and the line.
+      cleanup.viewChanged(false);
+      cleanup.pushPrefs();
+      cleanup.pushMemory(true);
       return true;
+    // Clean Up (cleanup.js, web/cleanup.js): the view opened or closed, the list asked for, the run and what goes with
+    // it, the line's ×, the settings, the log and Task Manager.
+    case 'cleanupOpen':
+      return showCleanup(), true;
+    case 'cleanupView':
+      return cleanup.viewChanged(msg.open === true), true;
+    case 'cleanupList':
+      return cleanup.pushList(true), true;
+    case 'cleanupRun':
+    case 'cleanupRetry':
+      return cleanup.run(Array.isArray(msg.items) ? msg.items : []), true;
+    case 'cleanupHalt':
+      return cleanup.halt(), true;
+    case 'cleanupDismiss':
+      return cleanup.dismiss(), true;
+    case 'cleanupLog':
+      return cleanup.showLog(), true;
+    case 'cleanupPrefs':
+      return cleanup.setPrefs(msg), true;
+    case 'openActivityMonitor':
+      return cleanup.openTaskManager(), true;
     // Viktoria (app.js, cloud.js, settings.js): her switch and mischief, the dashboard's surfaces she walks on, and a real
     // click on the theme chooser (she may sulk at the cursor).
     case 'mascotEnabled':
@@ -1759,7 +2111,15 @@ function openChatWindow({ id = crypto.randomUUID(), cwd, claudeArgs, claude = !!
   bootFor(win.webContents, { termFont: termFontSize(), termFamily: termFont.chosen(), keys: shortcuts.forTerminal() });
   const c = { win, sessionId, cwd, claude, claudeArgs, title: title || path.basename(cwd || os.homedir()), startedAt: Date.now(), steppedAside: false };
   chats.set(id, c);
-  win.on('focus', () => touchTerminal(id));
+  win.on('focus', () => {
+    touchTerminal(id);
+    // A worktree's window to the front: its status (and its pull request, at most every 20 s) is read again, and the
+    // menu's worktree items follow it.
+    if (c.wtTop) worktreeShip.refresh(c.wtTop, { pr: true });
+    syncShipMenu();
+  });
+  const wcId = win.webContents.id;
+  win.on('closed', () => shipWins.delete(wcId));
   // Real keys only (a modifier alone isn't typing): Viktoria may notice, and may come to hide this terminal.
   const MODIFIER_KEYS = ['Control', 'Shift', 'Alt', 'AltGraph', 'Meta', 'CapsLock', 'NumLock', 'ScrollLock', 'OS'];
   win.webContents.on('before-input-event', (_e, input) => {
@@ -1831,6 +2191,8 @@ function openChatWindow({ id = crypto.randomUUID(), cwd, claudeArgs, claude = !!
       }
       pushWinOpen();
     }
+    // An ended window a worktree's delete kept was what the app stayed for (quitIfIdle).
+    if (keptWins.delete(win)) quitIfIdle();
   });
   return id;
 }
@@ -1920,6 +2282,12 @@ function openSession(sid, fork) {
     openChatWindow({ cwd, claudeArgs: ['codex', 'resume', sid], sessionId: sid, title: chatlist.title(sid) || sid.slice(0, 8) });
     return true;
   }
+  // A Cursor chat, the same way: its CLI resumes it by its id (the Mac's openSession).
+  if (engine.sessionTool(sid) === 'cursor') {
+    if (fork) return false;
+    openChatWindow({ cwd, claudeArgs: ['cursor-agent', '--resume', sid], sessionId: sid, title: chatlist.title(sid) || sid.slice(0, 8) });
+    return true;
+  }
   // A chat running in another terminal can't be resumed twice: it opens as a copy, as "Open a Copy" does on the Mac.
   const copy = fork || !!live;
   openChatWindow({ cwd, claudeArgs: ['--resume', sid, ...(copy ? ['--fork-session'] : [])], sessionId: copy ? null : sid, title: (copy ? '⑂ ' : '') + ((live && live.name) || sid.slice(0, 8)) });
@@ -1958,7 +2326,8 @@ function endSession(sid) {
   const live = engine.live().find((s) => s.sessionId === sid);
   for (const [id, c] of chats) {
     if (c.sessionId === sid || (live && live.tab === id)) {
-      endTerminal(id);
+      // Env changes not saved in its window are asked about first.
+      endTerminalAsked(id);
       return true;
     }
   }
@@ -2040,10 +2409,58 @@ function commandLabel(cmd) {
 // The terminal pages' lines to their shells.
 // Viktoria's window has no line to any of these (the preload gives it none either, but it is refused here too).
 const chatOf = (e) => !mascot.has(e.sender) && [...chats.entries()].find(([, c]) => c.win && !c.win.isDestroyed() && c.win.webContents === e.sender);
+// The env button's files (pages/env.js ↔ envbridge.js, envfiles.js): the env files under the terminal's folder (where its
+// shell is when the view opens, termCwd), read and written by the app, named by the page only by their path below it.
+// Copies stay out of Clipboard History and saves keep a file's permissions through the env helper (envnative.js), built
+// in the app's own folder as Cursor's hook program is.
+createEnvBridge({
+  ipcMain, chatOf, clipboard, streamer, tildify, home: os.homedir(),
+  rootOf: ([id, c]) => termCwd(id, c),
+  native: process.platform === 'win32' ? createEnvNative({ ownDir: path.join(process.env.LOCALAPPDATA || app.getPath('appData'), 'atalay-terminal') }) : null,
+});
+
+// ---------- env changes not saved ----------
+// A terminal whose env view holds changes not saved asks first (Save, Don't Save, Cancel, in its window) before anything
+// ends it: End This Terminal, the dashboard's End, End Session, Clean Up, quitting, an update's restart (the Mac's
+// confirmEnv and confirmEnvBeforeQuit). The page tells envbridge.js when it has such changes (c.envDirty).
+let envSettled = false; // the quit under way has asked already (Don't Save leaves the page's changes as they are)
+let envAsking = false;
+let envDeclinedAt = 0; // when Cancel last kept a forced update's restart from going ahead
+const envUnsaved = () => !PROBE && [...chats.values()].some((c) => c.envDirty && c.win && !c.win.isDestroyed());
+/** A page's answer, or `fallback` when it has none in time (a page that hangs never holds the app) or is gone. */
+const askPage = (wc, js, ms, fallback) =>
+  Promise.race([wc.executeJavaScript(js, true), new Promise((r) => setTimeout(() => r(fallback), ms))]).catch(() => fallback);
+/** True when terminal `id` may end: nothing unsaved, saved, or the user chose not to save. Its window comes to the front. */
+async function settleEnv(id) {
+  const c = chats.get(id);
+  if (!c || !c.envDirty || !c.win || c.win.isDestroyed()) return true;
+  const wc = c.win.webContents;
+  if (!(await askPage(wc, 'window.EnvView ? EnvView.dirty() : false', 2000, false))) {
+    c.envDirty = false;
+    return true;
+  }
+  showChat(id);
+  // The user's own time to answer, 10 minutes; unanswered, as Cancel.
+  return (await askPage(wc, 'window.EnvView ? EnvView.settle() : true', 600_000, false)) !== false;
+}
+/** Every terminal with env changes not saved, one after the other: false at the first Cancel. */
+async function settleAllEnv() {
+  for (const id of [...chats.keys()]) if (!(await settleEnv(id))) return false;
+  return true;
+}
+/** End This Terminal, the dashboard's End, End Session, Clean Up: the env view's question first. Resolves whether it ended. */
+async function endTerminalAsked(id) {
+  if (!(await settleEnv(id))) return false;
+  if (chats.has(id)) endTerminal(id);
+  return true;
+}
+
 ipcMain.on('term:ready', (e, { cols, rows }) => {
   const found = chatOf(e);
   if (!found) return;
   const [id, c] = found;
+  // A page loaded again holds no env changes.
+  c.envDirty = false;
   // A new window starts its shell; one for a session that's already running (it outlived the app, or the page
   // reloaded) attaches to it.
   if (terminals.has(id)) terminals.attach(id, cols, rows);
@@ -2053,13 +2470,21 @@ ipcMain.on('term:ready', (e, { cols, rows }) => {
       .catch((err) => send(c.win, 'term:data', `\r\n\x1b[31m${err.message}\x1b[0m\r\n`));
   }
   send(c.win, 'term:info', chatInfo(id, c));
+  // A worktree's chip and button, drawn again after a reload too.
+  c.wtTop = null;
+  shipWins.delete(c.win.webContents.id);
+  pushShipWindow(id, c);
 });
 ipcMain.on('term:input', (e, data) => {
   const found = chatOf(e);
   if (found) {
     // The shell's focus reports (ESC[I, ESC[O, which xterm.js sends as the window gains or loses focus) aren't the user
     // at it: a window losing focus, or closed, would take the chats list's "active window" back from the one in front.
-    if (data !== '\x1b[I' && data !== '\x1b[O') touchTerminal(found[0]);
+    if (data !== '\x1b[I' && data !== '\x1b[O') {
+      touchTerminal(found[0]);
+      // A key or paste: Clean Up counts a chat's idle time from it too.
+      cleanup.typed(found[0]);
+    }
     terminals.write(found[0], data);
   }
 });
@@ -2131,10 +2556,51 @@ ipcMain.on('term:open', (e, uri) => {
   const clean = uri.trim().replace(/^['"<]+|['">.,;:!?)]+$/g, '');
   if (/^https?:\/\//i.test(clean)) shell.openExternal(clean).catch(() => {});
 });
+// The header's worktree chip and split button (pages/terminal.js; the Mac's WorktreeChipView and WorktreeShipButton):
+// the window's own worktree only, whatever the page sends. An ended window keeps its chip (shipWins).
+const shipWinOf = (e) => (mascot.has(e.sender) ? null : shipWins.get(e.sender.id) || null);
+ipcMain.on('term:shipMain', (e) => {
+  const w = shipWinOf(e);
+  const view = w && worktreeShip.headerView(w.top);
+  if (view && view.face && view.face.enabled && !view.busy) worktreeShip.handle(view.face.kind, w.top, chats.has(w.id) ? w.id : null);
+});
+ipcMain.on('term:shipChip', (e) => {
+  const w = shipWinOf(e);
+  const view = w && worktreeShip.headerView(w.top);
+  if (view && view.clickable) worktreeShip.handle('changes', w.top);
+});
+// ▾: every action for the worktree, as a system menu under the button (`at`: its bottom left, in the page's pixels).
+ipcMain.on('term:shipMore', (e, at) => {
+  const w = shipWinOf(e);
+  if (!w || w.win.isDestroyed()) return;
+  const top = w.top;
+  const deleted = worktreeShip.isDeleted(top);
+  const its = worktreeShip.items(worktreeShip.status(top), deleted || worktreeShip.isBusy(top));
+  const template = [];
+  for (const it of its) {
+    if (it.after) template.push({ type: 'separator' });
+    // The Create PR key is only shown here (the File menu's item has it). A dimmed item says why in its label: Windows
+    // menus show no tooltip (menuLabel).
+    template.push({ label: menuLabel(it), enabled: it.enabled, accelerator: it.id === 'create' ? shortcuts.accel('createPR') : undefined, registerAccelerator: false,
+      click: () => worktreeShip.handle(it.id, top, chats.has(w.id) ? w.id : null) });
+  }
+  const z = w.win.webContents.getZoomFactor() || 1;
+  const pos = at && Number.isFinite(at.x) && Number.isFinite(at.y) ? { x: Math.round(at.x * z), y: Math.round(at.y * z) } : {};
+  send(w.win, 'term:shipMenu', true);
+  Menu.buildFromTemplate(template).popup({ window: w.win, ...pos, callback: () => send(w.win, 'term:shipMenu', false) });
+});
 
 // ---------- the overlay: the Ring and the new-terminal folder picker, over the whole screen ----------
 let over = null, overReady = false, overPending = null;
-function showOverlay(js) {
+// The terminal window a worktree sheet dropped from: it has the keys again when the sheet closes.
+let shipAnchor = null;
+// `bounds`: where the overlay goes (a worktree sheet sits on its window); else the whole display the pointer is on.
+function showOverlay(js, bounds) {
+  // A worktree sheet at work keeps the overlay where it is: the Ring or the picker would move it off its window.
+  if (worktreeShip.running() && over && !over.isDestroyed() && over.isVisible()) {
+    shell.beep();
+    return false;
+  }
   if (!over || over.isDestroyed()) {
     overReady = false;
     over = new BrowserWindow({
@@ -2148,10 +2614,13 @@ function showOverlay(js) {
     });
     checkPages();
     over.loadFile(path.join(WEB, 'overlay.html'));
-    over.on('blur', hideOverlay);
+    // Clicking elsewhere closes it, unless a worktree sheet is at work (a push, a merge, a delete): that one stays until
+    // it's done, as on the Mac (spec 12: no half-done job, nothing hidden while it runs; hideOverlay checks). The keys
+    // stay where they went (the browser "Open on GitHub" brought up, another window clicked): nothing takes them back.
+    over.on('blur', () => hideOverlay(false));
   }
-  const d = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
-  over.setBounds(d.bounds);
+  if (!bounds) shipAnchor = null;
+  over.setBounds(bounds || screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).bounds);
   over.setAlwaysOnTop(true, 'pop-up-menu');
   over.show();
   over.focus();
@@ -2159,10 +2628,116 @@ function showOverlay(js) {
   else overPending = js;
   return true;
 }
-function hideOverlay() {
+/**
+ * Hides the overlay. `refocus`: the user closed it (Cancel, Esc, Done, Ctrl+W), so the window a worktree sheet dropped
+ * from has the keys again, as a Mac sheet gives them back to its window; only while the overlay still has them, so a
+ * sheet whose job ended after the user went elsewhere (the browser a Create PR opened) takes nothing from where they
+ * are. A click elsewhere (blur) hides it without: the keys stay where the click went.
+ */
+function hideOverlay(refocus = false) {
   if (!over || over.isDestroyed() || !over.isVisible()) return;
+  // A worktree sheet at work (Ctrl+W, a click elsewhere) stays until its job is done: only its own sheet starts one.
+  if (worktreeShip.running()) return;
+  const hadKeys = over.isFocused();
   over.hide();
-  if (overReady) run(over, 'window.Shortcuts && Shortcuts.close(true); document.querySelector("#picker .l-close")?.click()');
+  // A worktree sheet that isn't at work closes with it (its own close says "done" again, which finds the overlay hidden).
+  if (overReady) run(over, 'window.Shortcuts && Shortcuts.close(true); document.querySelector("#picker .l-close")?.click(); window.Worktree && Worktree.isShipOpen && Worktree.isShipOpen() && !Worktree.isBusy() && Worktree.shipClose()');
+  worktreeShip.clearSession();
+  const a = shipAnchor;
+  shipAnchor = null;
+  // "Ask … to fix" sent: the AI's window comes forward now the overlay is gone (shipAsk), in place of the anchor.
+  const next = shipAfterHide;
+  shipAfterHide = null;
+  if (next) next();
+  else if (refocus && hadKeys && a && !a.isDestroyed() && a.isVisible()) a.focus();
+}
+// What comes forward once the overlay hides (shipAsk): the AI's chat the prompt went to.
+let shipAfterHide = null;
+
+/**
+ * The Create PR, Merge or Delete sheet of the worktree `top` (web/worktree-ship.js). From a terminal window
+ * (`windowId`) the overlay takes that window's place, so the sheet drops from under its header and the other windows stay
+ * usable; without one it stands alone in the middle of the screen. A sheet at work is never replaced. The Mac's
+ * Overlay.showShip.
+ */
+function showShip(kind, top, windowId) {
+  const c = windowId ? chats.get(windowId) : null;
+  const win = c && c.win && !c.win.isDestroyed() && c.win.isVisible() && !c.win.isMinimized() ? c.win : null;
+  const opts = JSON.stringify({ kind, top, anchored: !!win });
+  const open = () => {
+    // The sheet's header gap (62 px in the page) is the window's title bar and its own header.
+    showOverlay(`Overlay.ship(${opts})`, win ? win.getBounds() : null);
+    shipAnchor = win;
+  };
+  if (!over || over.isDestroyed() || !over.isVisible() || !overReady) return open();
+  over.webContents.executeJavaScript('!!(window.Worktree && Worktree.isBusy())').then((b) => (b ? shell.beep() : open()), open);
+}
+
+/**
+ * The worktree sheets' requests (web/api.js ship*; the Mac's Overlay.swift ship messages). Every one that names a folder
+ * must name a linked worktree's own folder: a sheet can't point git anywhere else.
+ */
+async function handleShip(body) {
+  const top = typeof body.top === 'string' ? body.top : '';
+  const str = (v) => (typeof v === 'string' ? v : '');
+  const refuse = { kind: 'nothing', title: "This isn't a worktree." };
+  switch (body.type) {
+    case 'shipInfo':
+      if (!worktreeShip.knows(top)) return { error: "This isn't a worktree." };
+      return worktreeShip.page(['create', 'merge', 'prmerge', 'delete'].includes(body.kind) ? body.kind : 'create', top);
+    case 'shipCreatePR':
+      return worktreeShip.knows(top) ? worktreeShip.createPR(top, str(body.title), str(body.body), str(body.into)) : refuse;
+    case 'shipMerge':
+      return worktreeShip.knows(top) ? worktreeShip.mergeLocal(top, str(body.message)) : refuse;
+    case 'shipMergePR':
+      return worktreeShip.knows(top) ? worktreeShip.mergePR(top, Number(body.number) || 0, str(body.sha), str(body.method) || 'merge') : refuse;
+    case 'shipPushBase':
+      return worktreeShip.knows(top) ? worktreeShip.pushBase(top) : refuse;
+    case 'shipDelete':
+      if (!worktreeShip.knows(top)) return refuse;
+      return worktreeShip.remove(top, { deleteBranch: body.deleteBranch === true, force: body.force === true, ids: Array.isArray(body.ids) ? body.ids : [], sha: str(body.sha) });
+    // Sent: that chat's window comes to the front, its strip saying WORKING soon after. Not the anchor: the sheet closes
+    // on this answer ("done"), and the window it dropped from would take the keys back from the AI's. The chat comes
+    // forward once the overlay is hidden (hideOverlay), or after a second if the page never closes it.
+    case 'shipAsk': {
+      const r = await worktreeShip.ask(str(body.prompt), str(body.sid));
+      const s = r.ok && engine.live().find((x) => x.sessionId === str(body.sid));
+      if (s && s.tab && chats.has(s.tab)) {
+        shipAnchor = null;
+        const show = () => showChat(s.tab);
+        if (!over || over.isDestroyed() || !over.isVisible()) show();
+        else {
+          shipAfterHide = show;
+          setTimeout(() => {
+            if (shipAfterHide !== show) return;
+            shipAfterHide = null;
+            show();
+          }, 1000);
+        }
+      }
+      return r;
+    }
+    case 'shipCopy':
+      clipboard.writeText(str(body.text));
+      return true;
+    case 'shipOpenURL': {
+      const s = worktreeShip.status(top);
+      return worktreeShip.open(str(body.url), (s && s.remote && s.remote.host) || '');
+    }
+    // Any folder of a repo the app shows (the base's folder too): Source Control only opens what it lists.
+    case 'shipShowChanges':
+      hideOverlay();
+      if (top) showSourceControl(top);
+      return true;
+    case 'shipShowChat': {
+      hideOverlay();
+      const s = engine.live().find((x) => x.sessionId === str(body.sid));
+      if (s && s.tab && chats.has(s.tab)) showChat(s.tab);
+      return true;
+    }
+    default:
+      throw new Error('unknown request');
+  }
 }
 /** The wheel, centred where the pointer is (Ctrl and the middle mouse button, or Ctrl+K: Windows has no four-finger
  *  click). */
@@ -2631,8 +3206,11 @@ const updates = (() => {
   const maybeRestart = () => {
     if (!ready || busy) return;
     const localRunning = terminals.list().some((t) => terminals.local(t.id));
+    // Env changes not saved hold an update back, as on the Mac (Cloud.canRestart): only a forced version's restart, once
+    // its hour is up, goes on, asking about them first (install).
+    const envHeld = envUnsaved();
     if (offer && forcedVersion === offer.version) {
-      if (!localRunning) return install();
+      if (!localRunning && !envHeld) return install();
       if (!forcedAt) return;
       const now = Date.now();
       // 5 minutes before the hour is up: when the restart comes, in the corner (messages.js's restart notice).
@@ -2644,7 +3222,7 @@ const updates = (() => {
       if (warnedFor === forcedVersion && now - forcedAt >= FORCE_MS && now - warnedAt >= WARN_MS) install(true);
       return;
     }
-    if (localRunning) return;
+    if (localRunning || envHeld) return;
     if (rightAway() || powerMonitor.getSystemIdleTime() >= 600) install();
   };
   // The restart the notices told of isn't coming (the version is no longer forced, or another one is): its notice goes.
@@ -2655,6 +3233,26 @@ const updates = (() => {
     toNotices('restartOver()');
   };
   const install = (overdueForce = false) => {
+    // Env changes not saved are asked about before the installer starts, since it closes the app seconds after it starts
+    // whatever a quit's own question says (the Mac asks in its quit). Cancel keeps this version for now; a forced restart
+    // asks again 10 minutes on at the soonest.
+    if (!envSettled && envUnsaved()) {
+      if (envAsking || (overdueForce && Date.now() - envDeclinedAt < 600_000)) return;
+      envAsking = true;
+      settleAllEnv().then((ok) => {
+        envAsking = false;
+        if (ok) {
+          envSettled = true;
+          return install(overdueForce);
+        }
+        envDeclinedAt = Date.now();
+        // "Update now" pressed while it downloaded: the button comes back.
+        whenReady = false;
+        if (busy === 'downloading…') busy = null;
+        pushCloud();
+      });
+      return;
+    }
     whenReady = false;
     busy = 'restarting…';
     overdue = overdueForce;
@@ -2709,6 +3307,8 @@ const updates = (() => {
       if (busy === 'restarting…') {
         busy = null;
         overdue = false;
+        // The app stays: a later quit asks about env changes again.
+        envSettled = false;
         error = 'failed';
         pushCloud();
       }
@@ -2911,6 +3511,8 @@ ipcMain.handle('atl:post', async (e, name, body) => {
   try {
     switch (name) {
       case 'radar':
+        // Clean Up's requests: the dashboard's page only (DASHBOARD_RADAR).
+        if (DASHBOARD_RADAR.has(body.type) && e.sender !== pageOf(dashView)) throw new Error('not this page');
         return handleRadar(body);
       // Her page's messages (checked above: only her window sends them); mascot.js checks every number.
       case 'mascot':
@@ -2965,7 +3567,8 @@ ipcMain.handle('atl:post', async (e, name, body) => {
           overPending = null;
           return true;
         }
-        if (body.type === 'done') return hideOverlay(), true;
+        // The page closed itself (Cancel, Esc, Done, a sheet's work done): the anchor has the keys again.
+        if (body.type === 'done') return hideOverlay(true), true;
         if (body.type === 'newTerminal') {
           const asked = overlay.expand(String(body.dir || ''));
           hideOverlay();
@@ -2977,6 +3580,10 @@ ipcMain.handle('atl:post', async (e, name, body) => {
           // No parent window: the dashboard may be minimized while the Ring opened over a chat.
           else dialog.showMessageBox({ type: 'warning', message: 'Folder not found', detail: `${tildify(asked)}\n\nIt was moved or deleted. Right-click its shortcut to change or remove it.`, noLink: true });
           return true;
+        }
+        if (typeof body.type === 'string' && body.type.startsWith('ship')) {
+          if (e.sender !== pageOf(over)) throw new Error('not this page');
+          return await handleShip(body);
         }
         return await overlay.handle(body);
       case 'cloud':
@@ -3030,10 +3637,11 @@ function buildMenu() {
   const closeFocused = () => {
     const w = BrowserWindow.getFocusedWindow();
     if (!w || w === dash || w === panels.notices) return;
-    if (w === over) return hideOverlay();
+    if (w === over) return hideOverlay(true);
     if ([...panels.chats.values()].includes(w)) return runPanel(w, 'window.__messages && __messages.close && __messages.close()');
     w.close();
   };
+  const ship = shipMenuState();
   Menu.setApplicationMenu(Menu.buildFromTemplate([
     {
       label: 'File',
@@ -3048,6 +3656,16 @@ function buildMenu() {
         { label: 'Dashboard', click: () => showDashboard() },
         // The dashboard's Settings, on the category used last (the Mac keeps it in the app menu; no key, as there).
         { label: 'Settings…', click: () => openSettings() },
+        // Clean Up, right below it as on the Mac's app menu: no key of its own; one can be set in Settings › Shortcuts.
+        { label: 'Clean Up…', accelerator: shortcuts.accel('cleanUp'), click: () => showCleanup() },
+        { type: 'separator' },
+        // The terminal window in front, when it is in a worktree: send its work as a pull request, merge it here, or
+        // delete the worktree (worktreeship.js), as the Mac's Chat menu has them. Usable only when the window's status
+        // allows it (syncShipMenu). Merge and Delete have no key: rare, and Delete can't be undone by a slip of the finger.
+        // Their labels are the window in front's (shipMenuState: "Merge into develop…", a dimmed one's reason).
+        { id: 'shipCreate', label: ship.shipCreate.label, accelerator: shortcuts.accel('createPR'), enabled: false, click: () => shipMenu('create') },
+        { id: 'shipMerge', label: ship.shipMerge.label, enabled: false, click: () => shipMenu('merge') },
+        { id: 'shipDelete', label: ship.shipDelete.label, enabled: false, click: () => shipMenu('delete') },
         { type: 'separator' },
         // Ctrl+W (the Mac's ⌘W, which hides again since the Mac's d7e69be): the window in front closes, and a terminal's
         // only hides: what runs in it (Claude, Codex, Antigravity, a shell) goes on as a planet or car on the orbit, and a
@@ -3112,7 +3730,9 @@ function buildMenu() {
             w.minimize();
           },
         },
-        { label: 'End This Terminal', click: () => { const f = focusedChat(); if (f) endTerminal(f[0]); } },
+        // The env files of the terminal in front (pages/env.js), the Mac's Env Files: the same keys close the view again.
+        { label: 'Env Files', accelerator: shortcuts.accel('envFiles'), click: () => { const f = focusedChat(); if (f) send(f[1].win, 'term:env'); } },
+        { label: 'End This Terminal', click: () => { const f = focusedChat(); if (f) endTerminalAsked(f[0]); } },
       ],
     },
     {
@@ -3133,6 +3753,7 @@ function buildMenu() {
   ]));
   // The dashboard is a BaseWindow, given the menu by hand when it was made (createDashboard): a rebuilt menu (new keys
   // set) reaches it too, as setApplicationMenu gives it to every window.
+  syncShipMenu();
 }
 
 // ---------- start, quit ----------
@@ -3146,12 +3767,13 @@ app.whenReady().then(() => {
   mascotAsset.init(); // the pak from an earlier run is hashed (off the main thread) before she may come up
   buildMenu();
   createDashboard();
-  // Only the app's usual profile hooks Claude Code's and Codex's settings: a profile of its own (npm run staging) leaves
-  // them be.
+  // Only the app's usual profile hooks Claude Code's, Codex's and Cursor's settings: a profile of its own (npm run
+  // staging) leaves them be.
   if (process.platform === 'win32' && !PROBE && !profileSuffix()) {
     limits.install();
     codexHooks.install();
   }
+  installCursorHooks();
   engine.start();
   // What was on stays on: the pipe opens again and the tray shows it (the Mac's McpHub.start).
   if (!PROBE) mcp.start();
@@ -3215,9 +3837,44 @@ app.whenReady().then(() => {
 });
 
 let savingFiles = false;
+let shipWaiting = false, shipWaited = false;
 app.on('before-quit', (e) => {
   if (quitting) return;
   if (savingFiles) return e.preventDefault();
+  // Env changes not saved are asked about first, before any job or quit question (the Mac's confirmEnvBeforeQuit), each
+  // terminal's in its window: Cancel keeps the app; once all are answered the quit starts again. An update's restart asked
+  // before its installer started (updates.install).
+  if (!envSettled && envUnsaved()) {
+    e.preventDefault();
+    if (envAsking) return;
+    envAsking = true;
+    settleAllEnv().then((ok) => {
+      envAsking = false;
+      if (!ok) return;
+      envSettled = true;
+      app.quit();
+    });
+    return;
+  }
+  // A worktree's push, merge or delete under way finishes first (3 minutes at most): no half-done job (spec 12). A second
+  // quit meanwhile does nothing more; the quit goes on by itself once it's done. The Mac's ShipJobs wait.
+  if (worktreeShip.running() && !shipWaited) {
+    e.preventDefault();
+    if (shipWaiting) return;
+    shipWaiting = true;
+    const until = Date.now() + 180_000;
+    const wait = setInterval(() => {
+      if (worktreeShip.running() && Date.now() < until) return;
+      clearInterval(wait);
+      shipWaiting = false;
+      shipWaited = true;
+      app.quit();
+    }, 250);
+    return;
+  }
+  // That wait was for this quit only: one cancelled below (the running chats' Cancel) leaves a later quit to wait for
+  // its own job again, rather than stop a push, a merge or a delete half done.
+  shipWaited = false;
   // Only chats running in the app itself stop: the session host's go on, and come back at the next launch. A forced
   // update's restart, told of 5 minutes before in the corner, doesn't ask, as on the Mac.
   const running = [...chats.entries()].filter(([id, c]) => c.claude && terminals.local(id)).length;
@@ -3227,7 +3884,11 @@ app.on('before-quit', (e) => {
       message: running === 1 ? '1 chat is still running' : `${running} chats are still running`,
       detail: 'Quitting stops Claude in those windows. The conversations stay saved and can be resumed.',
     });
-    if (r !== 0) return e.preventDefault();
+    if (r !== 0) {
+      // The app stays: a later quit asks about env changes again.
+      envSettled = false;
+      return e.preventDefault();
+    }
   }
   // A file edited in the last second is saved first (Source Control's editor saves a second after a change), and so is
   // a note just typed, as on the Mac: the quit goes on once the page says so, 2 s at most (a page that doesn't answer).
@@ -3252,6 +3913,8 @@ app.on('before-quit', (e) => {
 // Quitting for good: the chats running in the session host go on, the parts stop.
 function leave() {
   quitting = true;
+  // A clean up under way: what runs finishes, nothing more starts (its log says so).
+  cleanup.quitting();
   mascot.stop();
   mcp.stop();
   terminals.detachAll();

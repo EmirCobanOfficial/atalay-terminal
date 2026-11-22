@@ -23,6 +23,8 @@
     pin: svg('<path d="M9.8 1.8 14.2 6.2l-2 .4-2.6 2.6.3 3.1-1.3 1.3L5.9 10.9 2.6 14.2M5.9 10.9 2.8 7.8l1.3-1.3 3.1.3 2.6-2.6z"/>'),
     open: svg('<path d="M1.5 4.2c0-.6.5-1.2 1.1-1.2h3.3l1.5 1.6h6c.6 0 1.1.5 1.1 1.1v1.2"/><path d="M1.5 4.2v7.6c0 .6.5 1.2 1.1 1.2h9.2l2.7-6H4.4L1.6 13"/>'),
     tick: svg('<circle cx="8" cy="8" r="6.4"/><path d="M5.1 8.3l2 2 3.8-4.3"/>'),
+    // A linked worktree's folder (the Mac's arrow.triangle.branch).
+    branch: svg('<circle cx="4.5" cy="3" r="1.6"/><circle cx="4.5" cy="13" r="1.6"/><circle cx="11.5" cy="5" r="1.6"/><path d="M4.5 4.6v6.8M11.5 6.6c0 3.2-7 2.4-7 4.8"/>'),
   };
   $('openFolder').querySelector('.ic').innerHTML = ICON.open;
   $('lens').innerHTML = ICON.lens;
@@ -81,7 +83,7 @@
   function row(r) {
     const st = r.status || 'ended';
     const isActive = r.id === activeId;
-    const badge = r.tool === 'antigravity' ? '<span class="tool-badge">agy</span>' : r.tool === 'codex' ? '<span class="tool-badge">codex</span>' : '';
+    const badge = r.tool === 'antigravity' ? '<span class="tool-badge">agy</span>' : r.tool === 'codex' ? '<span class="tool-badge">codex</span>' : r.tool === 'cursor' ? '<span class="tool-badge">cursor</span>' : '';
     // Picked: a tick in its light's place, and a brighter row.
     const sel = pickedChats.has(r.id);
     return `<div class="row${r.open ? ' open' : ''}${isActive ? ' active' : ''}${sel ? ' sel' : ''}" data-id="${esc(r.id)}" title="${esc(r.lastPrompt || r.title)}">` +
@@ -110,13 +112,18 @@
     const shut = folded.has(g.key) && !query;
     const tip = sel ? 'Selected · Ctrl+click again to leave it out' : `${f.path} · click to fold ${shut ? 'open' : 'shut'} · Ctrl+click to select, for archiving or deleting several at once`;
     const n = g.items.length + g.terms.length;
-    return `<div class="head${sel ? ' sel' : ''}" data-key="${esc(g.key)}" data-cwd="${esc(g.cwd)}" data-pinned="${g.pinned ? 1 : ''}" title="${esc(tip)}">` +
-      `<span class="chev">${ICON.chev}</span>${g.pinned ? `<span class="pin" title="Opened from the list">${ICON.pin}</span>` : ICON.folder}` +
+    // A linked worktree's folder: its state after the label ("+42 −7", "#48 ✓", "merged ✓", "deleted"), as the Mac's
+    // worktree group header shows it; a deleted one's strip is dimmed and has no "+".
+    const wt = f.wt && f.wt.state;
+    const gone = !!(wt && wt.deleted);
+    return `<div class="head${sel ? ' sel' : ''}${f.wt ? ' wt' : ''}${gone ? ' wtgone' : ''}" data-key="${esc(g.key)}" data-cwd="${esc(g.cwd)}" data-pinned="${g.pinned ? 1 : ''}" title="${esc(tip)}">` +
+      `<span class="chev">${ICON.chev}</span>${g.pinned ? `<span class="pin" title="Opened from the list">${ICON.pin}</span>` : f.wt ? ICON.branch : ICON.folder}` +
       `<span class="lbl"><bdi>${esc(f.label)}</bdi></span><span class="n">${n}</span>` +
       (g.terms.length ? `<span class="tn" title="${g.terms.length} terminal${g.terms.length > 1 ? 's' : ''} in the app">${ICON.term}${g.terms.length}</span>` : '') +
       '<span class="fill"></span>' +
+      (wt ? `<span class="wts">${esc(wt.text)}</span>` : '') +
       `<button type="button" class="farc" data-act="archive" title="Archive the folder: all its chats out of the list">${ICON.archive}</button>` +
-      `<button type="button" class="plus" data-act="new" title="New terminal in this folder">${ICON.plus}</button></div>`;
+      (gone ? '' : `<button type="button" class="plus" data-act="new" title="New terminal in this folder">${ICON.plus}</button>`) + '</div>';
   }
 
   function render() {
@@ -332,8 +339,15 @@
       // Its chats, or those of every folder picked with it.
       const all = n > 1 && sel ? [...picked] : [key];
       items.push({ separator: true }, { id: 'delete', title: all.length > 1 ? `Delete the Chats in the ${all.length} Selected Folders…` : 'Delete the Chats in This Folder…' });
+      // A linked worktree's folder: its pull request, merge and delete, as the Mac's worktree group menu (spec 4.3); the
+      // unavailable ones dimmed, not hidden.
+      const wt = data.folders[key] && data.folders[key].wt;
+      if (wt && Array.isArray(wt.items) && wt.items.length) {
+        items.push({ separator: true }, ...wt.items.map((x) => ({ id: `wt:${x.id}`, title: x.title, enabled: x.enabled !== false })));
+      }
       const choice = await post({ type: 'menu', at, items });
-      if (choice === 'bulkOn' || choice === 'bulkOff') archiveFolders([...picked], choice === 'bulkOn');
+      if (typeof choice === 'string' && choice.startsWith('wt:') && wt) post({ type: 'ship', id: choice.slice(3), top: wt.top });
+      else if (choice === 'bulkOn' || choice === 'bulkOff') archiveFolders([...picked], choice === 'bulkOn');
       else if (choice === 'delete') remove({ type: 'deleteFolders', keys: all });
       else if (choice === 'archive') post({ type: 'folders', keys: [key], on: true });
       else if (choice === 'select') pick(key);

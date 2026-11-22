@@ -730,4 +730,5 @@ function createGit({ folders = () => [], written = null, confirm = async () => -
   return { handle, listed };
 }
 
-module.exports = { createGit };
+// The worktree's next step (gitship.js) runs git the same way: the same git, and the same guards on its reads.
+module.exports = { createGit, gitExecutable, readGuards };

@@ -9,6 +9,9 @@
   const h = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
   const note = (msg) => typeof toast === 'function' && toast(msg);
   const MOD = window.__platform === 'win32' ? 'Ctrl' : '⌘';
+  // The computer and its bin as Windows names them (the Windows app sets __platform), as cleanup.js does.
+  const HERE = window.__platform === 'win32' ? 'this PC' : 'this Mac';
+  const TRASH = window.__platform === 'win32' ? 'Recycle Bin' : 'Trash';
   const S = (path) => `<svg class="i-br" viewBox="0 0 16 16">${path}</svg>`;
   const I = {
     br: S('<circle cx="4.5" cy="3" r="1.6"/><circle cx="4.5" cy="13" r="1.6"/><circle cx="11.5" cy="5" r="1.6"/><path d="M4.5 4.6v6.8M11.5 6.6c0 3.2-7 2.4-7 4.8"/>'),
@@ -30,7 +33,11 @@
   const code = (s) => `<code>${h(s)}</code>`;
   const base = (s) => `<span class="base">⎇ ${nm(s)}</span>`;
   const list = (a, max = 6) => (a.length > max ? a.slice(0, max).join(', ') + ` and ${a.length - max} more` : a.join(', '));
-  const leaf = (p) => String(p || '').replace(/\/+$/, '').split('/').pop();
+  // A path's last part. The Windows app's paths have backslashes; a Mac name may hold one, so only there they split.
+  const leaf = (p) => {
+    const s = String(p || '');
+    return (window.__platform === 'win32' ? s.replace(/[\\/]+$/, '').split(/[\\/]/) : s.replace(/\/+$/, '').split('/')).pop();
+  };
   // Streamer mode: the page shows the made-up name the native side listed for each real one; the real ones stay in the data (they
   // are what the work is done with). `nm` for a name, `fl` for a file's short name, `T` for free text (git's sentences, a prompt).
   const mask = () => (sh && sh.d && sh.d.streamer ? sh.d.mask || {} : null);
@@ -130,7 +137,7 @@
       else if (browserHost()) tail = `then opens <b>${hostNm()}</b> in your browser. Paste the title there.`;
       else tail = null;
       if (tail) notes.push(`<p class="wt-note">${I.push}<span>${lead}${tail}</span></p>`);
-      else notes.push(`<p class="wt-note">${I.push}<span>${pushed ? `<b>${nm(d.branch)}</b> is already on <b>${nm(rn)}</b>` : `Pushes <b>${nm(d.branch)}</b> to <b>${nm(rn)}</b>`} (${r ? nm(r.host) : 'the remote'}). Open the pull request there yourself.</span></p>`);
+      else notes.push(`<p class="wt-note">${I.push}<span>${pushed ? `<b>${nm(d.branch)}</b> is already on <b>${nm(rn)}</b>` : `Pushes <b>${nm(d.branch)}</b> to <b>${nm(rn)}</b>`}${!r ? ' (the remote)' : r.host ? ` (${nm(r.host)})` : ''}. Open the pull request there yourself.</span></p>`);
       out += `<div class="wt-notes">${notes.join('')}</div>`;
     }
     const big = (c.leftovers || []).filter((x) => x.big);
@@ -159,7 +166,7 @@
     let out = head(I.merge, `Merge into ${nm(d.base)}`, `<b style="color:var(--txt2);font-weight:600">${nm(d.repo)}</b> · ${base(d.branch)} → ${base(d.base)}`);
     if (sh.phase === 'done' && sh.result) {
       const n = sh.result.commits;
-      return out + done(`${nm(d.branch)} is in ${nm(d.base)}`, [`${nm(d.base)} has ${pl(n, 'new commit')} here. ${d.remote ? (sh.pushed ? `${nm(d.base)} is pushed.` : `It isn’t pushed yet: <button class="wt-link" data-act="pushdev">Push ${nm(d.base)}</button>`) : 'It stays on this Mac.'}`])
+      return out + done(`${nm(d.branch)} is in ${nm(d.base)}`, [`${nm(d.base)} has ${pl(n, 'new commit')} here. ${d.remote ? (sh.pushed ? `${nm(d.base)} is pushed.` : `It isn’t pushed yet: <button class="wt-link" data-act="pushdev">Push ${nm(d.base)}</button>`) : `It stays on ${HERE}.`}`])
         + act('', '<button class="wt-btn glass" data-act="close">Done</button>', `<button class="wt-btn go" data-act="todelete">Delete worktree… <span class="k">↩</span></button>`);
     }
     const commits = (m.commits || []).slice(0, 5);
@@ -178,7 +185,7 @@
     let block = '';
     let off = false;
     if (m.problem && m.problem !== 'nobase') { block = `<div class="wt-call bad" role="alert">${I.info}<span><b>Git couldn’t check this merge.</b> Nothing was changed.<span class="git">${h(T(m.problem))}</span></span></div>`; off = true; }
-    else if (m.problem === 'nobase') { block = `<div class="wt-call bad" role="alert">${I.info}<span><b>${nm(d.base)} isn’t here.</b> There’s no branch to merge into on this Mac.</span></div>`; off = true; }
+    else if (m.problem === 'nobase') { block = `<div class="wt-call bad" role="alert">${I.info}<span><b>${nm(d.base)} isn’t here.</b> There’s no branch to merge into on ${HERE}.</span></div>`; off = true; }
     else if (m.inMiddle) { block = `<div class="wt-call bad" role="alert">${I.info}<span><b>${nm(there)} is in the middle of a merge.</b> Finish it there first.</span></div>`; off = true; }
     else if ((m.blocked || []).length) {
       block = `<div class="wt-call bad" role="alert">${I.info}<span><b>${nm(there)} has unsaved changes in ${h(list(m.blocked.map(fl), 3))} that the merge would change.</b> Commit them first (Source Control), then try again.</span></div>`;
@@ -189,7 +196,7 @@
     if (!off) {
       const warn = (d.baseLive || []).length ? `<p class="wt-note warn">${I.warn}<span><b>${h(list(d.baseLive, 3))} ${d.baseLive.length > 1 ? 'are' : 'is'} working in ${nm(there)}.</b> The merge changes ${pl(m.changed || 0, 'file')} there too.</span></p>` : '';
       out += `<div class="wt-notes"><p class="wt-note">${mark('ok')}<span><b>No conflicts.</b> ${nm(d.base)} gets ${nm(d.branch)}’s ${pl(m.newCommits || d.ahead, 'commit')}.</span></p>${warn}
-        <p class="wt-note">${I.info}<span>Nothing is pushed: ${nm(d.base)} stays on this Mac until you push it.</span></p></div>`;
+        <p class="wt-note">${I.info}<span>Nothing is pushed: ${nm(d.base)} stays on ${HERE} until you push it.</span></p></div>`;
     }
     const left = off && (m.blocked || []).length ? '<button class="wt-btn glass left" data-act="scm">Open Source Control</button>' : '';
     return out + act(left, cancelBtn(), goBtn(sh.fail ? 'Try again' : 'Merge', { off, spin: 'Merging…' }));
@@ -280,8 +287,8 @@
     const why = d.pr && d.pr.state === 'MERGED' ? `PR #${d.pr.number} merged` : st.del.safeReason === 'base' ? `merged into ${nm(d.base)}` : st.del.safe ? 'on origin' : 'not merged';
     let out = head(I.trash, `Delete the ${nm(d.branch)} worktree?`, `<b style="color:var(--txt2);font-weight:600">${nm(d.folder)}</b> · ${why}`);
     const notes = [];
-    notes.push(`<p class="wt-note">${I.trash}<span>${d.gone ? 'The folder is already gone.' : 'The folder goes to the <b>Trash</b>. You can put it back from there.'}</span></p>`);
-    if (!d.gone && d.dirty) notes.push(`<p class="wt-note warn">${I.warn}<span><b>${pl(d.dirty, 'file')} ${d.dirty === 1 ? 'isn’t' : 'aren’t'} committed.</b> ${d.dirty === 1 ? 'It goes' : 'They go'} to the Trash with the folder.</span></p>`);
+    notes.push(`<p class="wt-note">${I.trash}<span>${d.gone ? 'The folder is already gone.' : `The folder goes to the <b>${TRASH}</b>. You can put it back from there.`}</span></p>`);
+    if (!d.gone && d.dirty) notes.push(`<p class="wt-note warn">${I.warn}<span><b>${pl(d.dirty, 'file')} ${d.dirty === 1 ? 'isn’t' : 'aren’t'} committed.</b> ${d.dirty === 1 ? 'It goes' : 'They go'} to the ${TRASH} with the folder.</span></p>`);
     if (st.del.safe && !d.detached) {
       const r = st.del.safeReason === 'pr' ? `PR #${d.pr ? d.pr.number : ''} is merged, so nothing is lost.` : st.del.safeReason === 'base' ? `its work is in ${nm(d.base)}.` : 'it’s on origin, so nothing is lost.';
       notes.push(`<p class="wt-note">${I.br}<span>Branch <b>${nm(d.branch)}</b> is deleted too: ${r}</span></p>`);
@@ -302,7 +309,7 @@
     if (st.working) { out += `<div class="wt-call bad" role="alert">${I.info}<span><b>${h(st.working.name)} is working in ${nm(d.branch)} right now.</b> Wait until it’s done, or end it yourself first.</span></div>`; blocked = true; }
     else if (st.outside) { out += `<div class="wt-call bad" role="alert">${I.info}<span><b>A ${h(st.outside.name)} chat outside Orbiterm ${st.outside.working ? 'is working' : 'is open'} in ${nm(d.branch)}.</b> End it there first.</span></div>`; blocked = true; }
     if (st.del.orphans > 0) { out += `<div class="wt-call bad" role="alert">${I.warn}<span><b>${pl(st.del.orphans, 'commit')} ${st.del.orphans === 1 ? 'is' : 'are'} only on a detached HEAD.</b> Deleting the worktree loses ${st.del.orphans === 1 ? 'it' : 'them'} for good. Save ${st.del.orphans === 1 ? 'it' : 'them'} first: <code>git branch &lt;name&gt; ${h(st.del.orphanSha || 'HEAD')}</code></span></div>`; blocked = true; }
-    if ((st.del.nested || []).length) { out += `<div class="wt-call bad" role="alert">${I.info}<span><b>Another worktree is inside this one.</b> <code>${nm(st.del.nested[0])}</code> goes to the Trash with it. Delete or move it first.</span></div>`; blocked = true; }
+    if ((st.del.nested || []).length) { out += `<div class="wt-call bad" role="alert">${I.info}<span><b>Another worktree is inside this one.</b> <code>${nm(st.del.nested[0])}</code> goes to the ${TRASH} with it. Delete or move it first.</span></div>`; blocked = true; }
     if (st.locked) { out += `<div class="wt-call bad" role="alert">${I.info}<span><b>Git has ${nm(d.branch)} locked.</b> Unlock it first: <code>git worktree unlock ${nm(d.top)}</code></span></div>`; blocked = true; }
     if (sh.fail) out += steps() + fail();
     else if (b) out += steps();
@@ -319,7 +326,7 @@
       if (st.terms) parts.push(pl(st.terms, 'terminal'));
       s.push(`Ending ${parts.join(' and ')}`);
     }
-    if (!d.gone) s.push('Moving the folder to the Trash');
+    if (!d.gone) s.push(`Moving the folder to the ${TRASH}`);
     if (sh.delbr || (st.del.safe && !d.detached)) s.push(`Deleting branch ${d.branch}`);
     return s;
   }

@@ -18,8 +18,13 @@ const ACTIONS = [
   { id: 'shortcutsWheel', group: 'Chats', title: 'Ring', combo: 'ctrl+k' },
   // The window in front closes; a terminal's only hides (what runs in it goes on). Ctrl+Shift+W does the same, as ⇧⌘W
   // on the Mac.
+  // The strip's env button: the env files in the terminal's folder (pages/env.js), the Mac's ⇧⌘E.
+  { id: 'envFiles', group: 'Chats', title: 'Env files', combo: 'ctrl+shift+e' },
   { id: 'closePane', group: 'Chats', title: 'Close the window', combo: 'ctrl+w' },
   { id: 'closeWindow', group: 'Chats', title: 'Close the window (other keys)', combo: 'ctrl+shift+w' },
+  // File › Create Pull Request… for the terminal window in front when it's in a worktree (worktreeship.js), the Mac's
+  // ⇧⌘P (Conductor's key too). Merge and Delete have none: rare, and Delete shouldn't be a slip of the finger.
+  { id: 'createPR', group: 'Chats', title: 'Create pull request', combo: 'ctrl+shift+p' },
   { id: 'reloadDashboard', group: 'View', title: 'Reload the dashboard', combo: 'ctrl+r' },
   // The dashboard's only: in a terminal Ctrl+B stays the shell's.
   { id: 'chatsList', group: 'View', title: 'Chats list', combo: 'ctrl+b' },
@@ -29,6 +34,8 @@ const ACTIONS = [
   { id: 'fullScreen', group: 'View', title: 'Full screen', combo: 'f11' },
   // Every shortcut at a glance (Help › Keyboard Shortcuts, web/cheatsheet.js): no keys of its own, as on the Mac.
   { id: 'keyboardShortcuts', group: 'View', title: 'Keyboard shortcuts', combo: '' },
+  // Clean Up (File, below Settings…; the Mac's app menu): no keys of its own, as on the Mac; it is clicked.
+  { id: 'cleanUp', group: 'View', title: 'Clean Up', combo: '' },
 ];
 
 // The actions whose keys are the dashboard's only: in a terminal they stay the shell's (Ctrl+B, Ctrl+R).

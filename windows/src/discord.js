@@ -32,11 +32,12 @@ const pipe = (i) =>
 // The AI tool a session belongs to: Claude's chats are Claude Code, the others (`ai`) carry their tool's name.
 const toolOf = (s) => (s.ai ? String(s.name || '') : 'Claude Code');
 
-// The art asset of a tool's picture, as the Discord application has them.
+// The art asset of a tool's picture, as the Discord application has them (Cursor's, "cursor", has to be uploaded to the
+// application's art assets, as for the Mac's DiscordPresence; without it Discord shows none).
 function asset(tool) {
   const t = tool.toLowerCase();
   if (t === 'claude code' || t === 'claude') return 'claude';
-  return ['codex', 'gemini', 'antigravity'].includes(t) ? t : null;
+  return ['codex', 'gemini', 'antigravity', 'cursor'].includes(t) ? t : null;
 }
 
 // A folder's name, not the home folder or a disk's root.

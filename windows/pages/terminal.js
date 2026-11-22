@@ -362,6 +362,86 @@
       countsEl.innerHTML = `<b>${st.tools}</b><i> tools · </i><b>${st.web}</b><i> web · </i><b${st.errors > 0 ? ' class="err"' : ''}>${st.errors}</b><i> err</i>`;
     }
   });
+  // ---------- a linked worktree: the chip and the split button (the Mac's WorktreeChip.swift) ----------
+  // The app sends what to show (term:ship, from its worktreeship.js; null: not in a worktree) and does what a click asks:
+  // the chip shows the changes in Source Control, the main face opens the next step's sheet, ▾ a menu of everything.
+  const wtEl = document.getElementById('wt');
+  const shipEl = document.getElementById('ship');
+  const shipMain = document.getElementById('shipMain');
+  const shipMore = document.getElementById('shipMore');
+  const announce = document.getElementById('announce');
+  const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+  const sv = (body) => `<svg viewBox="0 0 16 16" aria-hidden="true">${body}</svg>`;
+  const WT_ICON = {
+    branch: sv('<circle cx="4.5" cy="3" r="1.6"/><circle cx="4.5" cy="13" r="1.6"/><circle cx="11.5" cy="5" r="1.6"/><path d="M4.5 4.6v6.8M11.5 6.6c0 3.2-7 2.4-7 4.8"/>'),
+    pull: sv('<circle cx="4" cy="3.4" r="1.6"/><circle cx="4" cy="12.6" r="1.6"/><circle cx="12" cy="12.6" r="1.6"/><path d="M4 5v6M12 11V6.4a2 2 0 0 0-2-2H7.2M8.8 2.8 7.2 4.4 8.8 6"/>'),
+    merge: sv('<circle cx="4" cy="3.4" r="1.6"/><circle cx="4" cy="12.6" r="1.6"/><circle cx="12" cy="9" r="1.6"/><path d="M4 5v6M4.6 4.9C5.6 8 7.8 9 10.4 9"/>'),
+    trash: sv('<path d="M2.8 4.4h10.4M6.3 4.4V2.9h3.4v1.5M4.4 4.4l.7 8.6a1 1 0 0 0 1 .9h3.8a1 1 0 0 0 1-.9l.7-8.6M6.9 7v4.4M9.1 7v4.4"/>'),
+    ext: sv('<path d="M9 2.5h4.5V7M13.5 2.5 7.6 8.4M11.5 9.6v2.9a1 1 0 0 1-1 1h-7a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1h2.9"/>'),
+    chev: sv('<path d="M3.5 6l4.5 4.5L12.5 6"/>'),
+    ok: '<svg class="ok" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 8.5l3 3 6-7"/></svg>',
+    bad: '<svg class="bad" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7"/></svg>',
+  };
+  shipMore.innerHTML = WT_ICON.chev;
+  // The checks' mark: ✓ passed, ✕ failed, a turning ring while they run, nothing when there are none.
+  const checksMark = (k) => (k === 'pass' ? WT_ICON.ok : k === 'fail' ? WT_ICON.bad : k === 'run' ? '<span class="ring"></span>' : '');
+  let ship = null;
+  function drawShip() {
+    const v = ship;
+    wtEl.hidden = !v;
+    shipEl.hidden = !v || !v.face;
+    if (!v) return;
+    const t = v.tail;
+    let tail = '';
+    if (t) {
+      const sep = '<span class="sep"></span>';
+      if (t.type === 'deleted' || t.type === 'gone') tail = `<span class="tail">${sep}<span class="gone">${t.type === 'deleted' ? 'deleted' : 'folder gone'}</span></span>`;
+      else if (t.type === 'nums') tail = `<span class="tail nums">${sep}<span>+${t.add}</span><span class="del">−${t.del}</span></span>`;
+      else if (t.type === 'closed') tail = `<span class="tail">${sep}<span class="pr">#${t.number} closed</span></span>`;
+      else if (t.type === 'pr') tail = `<span class="tail">${sep}<span class="pr">#${t.number}${t.draft ? ' draft' : ''}</span>${t.draft ? '' : checksMark(t.checks)}</span>`;
+      else if (t.type === 'merged') tail = `<span class="tail">${sep}<span class="pr">merged</span>${WT_ICON.ok}</span>`;
+    }
+    wtEl.innerHTML = `${WT_ICON.branch}<span class="word">worktree ·</span><span class="br">${esc(v.branch)}</span>${tail}`;
+    const dim = v.deleted || v.phase === 'gone';
+    wtEl.classList.toggle('dim', dim);
+    wtEl.classList.toggle('flat', !dim && !v.clickable);
+    wtEl.title = v.tip || '';
+    wtEl.setAttribute('aria-label', v.label || '');
+    if (!v.face) return;
+    // The next step, or what is under way here (from this window or another of the same worktree).
+    shipMain.innerHTML = v.busy ? `<span class="ring"></span><span>${esc(v.busy)}</span>` : `${WT_ICON[v.face.icon] || WT_ICON.pull}<span>${esc(v.face.label)}</span>`;
+    shipMain.classList.toggle('busy', !!v.busy);
+    shipMain.classList.toggle('off', !v.busy && !v.face.enabled);
+    shipMain.title = v.busy ? '' : v.face.tip || '';
+    shipMain.setAttribute('aria-label', v.busy || `${v.face.label}. ${v.face.tip || ''}`);
+    shipMain.setAttribute('aria-disabled', String(!!v.busy || !v.face.enabled));
+    shipMore.setAttribute('aria-label', v.more || 'More actions for this worktree');
+  }
+  atl.on('term:ship', (v) => {
+    const old = ship && ship.tail && ship.tail.type === 'pr' ? ship.tail : null;
+    const now = v && v.tail && v.tail.type === 'pr' ? v.tail : null;
+    ship = v || null;
+    drawShip();
+    // Checks finishing is said once (WCAG 4.1.3): the colour isn't the only sign.
+    if (old && now && old.number === now.number && old.checks !== now.checks && (now.checks === 'pass' || now.checks === 'fail')) {
+      announce.textContent = `PR #${now.number}: ${now.checks === 'pass' ? 'checks passed' : 'a check failed'}.`;
+    }
+  });
+  // While the ▾ menu is open its half looks pressed.
+  atl.on('term:shipMenu', (open) => shipMore.classList.toggle('open', !!open));
+  wtEl.onclick = () => {
+    term.focus();
+    if (ship && ship.clickable) atl.send('term:shipChip');
+  };
+  shipMain.onclick = () => {
+    term.focus();
+    if (ship && ship.face && ship.face.enabled && !ship.busy) atl.send('term:shipMain');
+  };
+  shipMore.onclick = () => {
+    const r = shipMore.getBoundingClientRect();
+    atl.send('term:shipMore', { x: Math.round(r.left), y: Math.round(r.bottom + 2) });
+  };
+
   document.getElementById('hud').addEventListener('mousedown', (e) => e.preventDefault());
   document.getElementById('star').onclick = () => {
     term.focus();

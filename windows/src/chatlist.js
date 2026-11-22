@@ -102,7 +102,7 @@ function createChatList({ settings, trashOps, onErased }) {
     for (const b of live) {
       if (!b.cwd || known.has(b.sessionId) || (b.convId && known.has(b.convId))) continue;
       known.add(b.sessionId);
-      const tool = b.name === 'Antigravity' ? 'antigravity' : b.name === 'Codex' ? 'codex' : 'claude';
+      const tool = b.name === 'Antigravity' ? 'antigravity' : b.name === 'Codex' ? 'codex' : b.name === 'Cursor' ? 'cursor' : 'claude';
       all.push({ id: b.sessionId, cwd: b.cwd, mtime: Infinity, size: 0, title: b.title || `new chat · ${b.name}`, lastPrompt: '', tool });
     }
     return all.sort((a, b) => (a.mtime === b.mtime ? 0 : a.mtime > b.mtime ? -1 : 1));

@@ -68,7 +68,7 @@ const isPrivate = (p) => {
 const allowed = (p) =>
   !/[#;]/.test(p) && !p.includes('..') && !isPrivate(p) && (SOCIAL_ROUTES.includes(p) || SOCIAL_TREES.some((t) => under(p, t)));
 // The AI tools the API counts hours with for their badges (its badges.ts).
-const TOOLS = new Set(['claude', 'codex', 'gemini', 'antigravity']);
+const TOOLS = new Set(['claude', 'codex', 'gemini', 'antigravity', 'cursor']);
 
 const sha256 = (data) => crypto.createHash('sha256').update(data).digest('hex');
 

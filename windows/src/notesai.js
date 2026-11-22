@@ -1,8 +1,9 @@
 'use strict';
-// Whether Claude Code, Codex and Antigravity may read and edit the user's notes (the tools: notestools.js), and getting the
-// tools to them, as the Mac's NotesAI.swift: when it is on, Orbiterm's MCP server (mcp.js, item 6) is added to each of the
-// three under a name of its own (`orbiterm-notes`, a suffix for the other builds), through each one's own `mcp add` command,
-// never by editing their files (Claude Code rewrites its .claude.json all the time). Off removes the three again. The server
+// Whether Claude Code, Codex, Antigravity and Cursor may read and edit the user's notes (the tools: notestools.js), and
+// getting the tools to them, as the Mac's NotesAI.swift: when it is on, Orbiterm's MCP server (mcp.js, item 6) is added to
+// each of them under a name of its own (`orbiterm-notes`, a suffix for the other builds), through each one's own `mcp add`
+// command, never by editing their files (Claude Code rewrites its .claude.json all the time); Cursor's CLI has no `mcp add`,
+// so its documented mcp.json gets the server written in beside the user's own. Off removes them again. The server
 // shows the tools only to AI sessions that run in Orbiterm's terminals (and to Claude Desktop while Settings > Claude is on),
 // so an AI in another terminal app sees nothing.
 // Off by default: a note read by an AI goes to its provider, and notes hold passwords and keys now and then.
@@ -16,7 +17,7 @@ const { createNotesTools } = require('./notestools');
 
 const KEY = 'notesAI';
 const MODES = ['off', 'read', 'write'];
-const TOOLS = ['claude', 'codex', 'agy'];
+const TOOLS = ['claude', 'codex', 'agy', 'cursor'];
 const SERVER_NAME = /^[A-Za-z0-9_-]{1,64}$/;
 
 /**
@@ -31,6 +32,7 @@ function createNotesAI({ settings, dialog, parent, notesStore, noteWindows, term
   const HOME = os.homedir();
   const CLAUDE_DIR = process.env.CLAUDE_CONFIG_DIR || path.join(HOME, '.claude');
   const codexHome = () => process.env.CODEX_HOME || path.join(HOME, '.codex');
+  const cursorHome = () => process.env.CURSOR_CONFIG_DIR || path.join(HOME, '.cursor');
 
   // Item 6's server: missing in a build without it (or not made yet), and then nothing is added to the AIs and Settings says
   // so; the mode is kept all the same.
@@ -95,7 +97,49 @@ function createNotesAI({ settings, dialog, parent, notesStore, noteWindows, term
   function present(tool) {
     if (tool === 'claude') return exists(CLAUDE_DIR) || exists(path.join(HOME, '.claude.json'));
     if (tool === 'codex') return exists(codexHome());
+    if (tool === 'cursor') return exists(cursorHome());
     return ['antigravity-cli', 'antigravity', 'antigravity-ide'].some((d) => exists(path.join(HOME, '.gemini', d))) || exists(path.join(HOME, '.gemini', 'config'));
+  }
+
+  // Puts the server into Cursor's mcp.json (`mcpServers.<name>` = `{ command: launcher }`), or takes it out (`launcher`
+  // null), the user's own servers and every other key left as they are (the Mac's cursorSet). A file that isn't JSON is
+  // left alone; a link (dotfiles) is written through, its target changes and the link stays.
+  function cursorSet(name, launcher) {
+    let file = path.join(cursorHome(), 'mcp.json');
+    try {
+      file = fs.realpathSync(file);
+    } catch {}
+    let root = {};
+    let text = null;
+    try {
+      text = fs.readFileSync(file, 'utf8');
+    } catch (e) {
+      // Only a file that isn't there is empty: one that can't be read now is left alone, never written over.
+      if (!e || e.code !== 'ENOENT') return;
+    }
+    if (text !== null && text.trim()) {
+      try {
+        root = JSON.parse(text.replace(/^﻿/, ''));
+      } catch {
+        return;
+      }
+      if (!root || typeof root !== 'object' || Array.isArray(root)) return;
+    } else if (launcher == null) return;
+    const servers = root.mcpServers && typeof root.mcpServers === 'object' && !Array.isArray(root.mcpServers) ? root.mcpServers : {};
+    if (launcher != null) servers[name] = { command: launcher };
+    else delete servers[name];
+    root.mcpServers = servers;
+    const tmp = `${file}.${process.pid}.tmp`;
+    try {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(tmp, JSON.stringify(root, null, 2) + '\n');
+      fs.renameSync(tmp, file);
+    } catch (e) {
+      try {
+        fs.unlinkSync(tmp);
+      } catch {}
+      console.error('notes AI: Cursor\'s mcp.json:', e.message);
+    }
   }
 
   // What the tool has under `name` now: the command it runs, null when none (read from its own settings file). Claude Code
@@ -115,6 +159,7 @@ function createNotesAI({ settings, dialog, parent, notesStore, noteWindows, term
       return null;
     }
     if (tool === 'agy') return fromJSON(path.join(HOME, '.gemini', 'config', 'mcp_config.json'));
+    if (tool === 'cursor') return fromJSON(path.join(cursorHome(), 'mcp.json'));
     return codexCommand(name);
   }
 
@@ -281,6 +326,10 @@ function createNotesAI({ settings, dialog, parent, notesStore, noteWindows, term
         if (!present(tool)) continue;
         const now = registeredCommand(tool, name);
         if (want ? samePath(now, want) : now === null) continue;
+        if (tool === 'cursor') {
+          cursorSet(name, want || null);
+          continue;
+        }
         const program = programOf(tool);
         if (!program) continue;
         if (now !== null) await runTool(program, removeArgs(tool, name));
@@ -345,8 +394,8 @@ function createNotesAI({ settings, dialog, parent, notesStore, noteWindows, term
         type: write ? 'warning' : 'info',
         message: write ? 'Let AI read and edit your notes?' : 'Let AI read your notes?',
         detail: write
-          ? "AI in Orbiterm's terminals (Claude Code, Codex, Antigravity) and Claude Desktop, if you connect it, will be able to read all your notes, add to them, change them, make new ones and pin or open them on your screen. Shared notes are read only when their owner allows it. What they read goes to their provider. Passwords and keys are hidden first, but everything else in a note is sent. Every change shows on the note with Undo. You can turn this off at any time."
-          : "AI in Orbiterm's terminals (Claude Code, Codex, Antigravity) and Claude Desktop, if you connect it, will be able to read all your notes, never change them. Shared notes are read only when their owner allows it. What they read goes to their provider. Passwords and keys are hidden first, but everything else in a note is sent. Hide a note from AI with its eye. You can turn this off at any time.",
+          ? "AI in Orbiterm's terminals (Claude Code, Codex, Antigravity, Cursor) and Claude Desktop, if you connect it, will be able to read all your notes, add to them, change them, make new ones and pin or open them on your screen. Shared notes are read only when their owner allows it. What they read goes to their provider. Passwords and keys are hidden first, but everything else in a note is sent. Every change shows on the note with Undo. You can turn this off at any time."
+          : "AI in Orbiterm's terminals (Claude Code, Codex, Antigravity, Cursor) and Claude Desktop, if you connect it, will be able to read all your notes, never change them. Shared notes are read only when their owner allows it. What they read goes to their provider. Passwords and keys are hidden first, but everything else in a note is sent. Hide a note from AI with its eye. You can turn this off at any time.",
         buttons: ['Cancel', write ? 'Allow reading and editing' : 'Allow reading'],
         // Cancel is the one Enter presses, and Esc's.
         defaultId: 0,

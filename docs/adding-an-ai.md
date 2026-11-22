@@ -361,7 +361,8 @@ its own commands (`<cli> mcp add`) or a hooks file it documents, next to the use
 
 ✓ works · partial · ✗ missing. The Cursor column is Mac, as built on 22 Nov 2026 (checked ones: "real" = with a real
 cursor-agent 2026.11.19 run on a pty and Orbiterm's engine reading it; "code" = written from the docs and the code, not
-run). Windows has none of Cursor yet: see its port list at the end.
+run). Windows has Cursor's items from 22 Nov 2026, built from the Mac's code and checked with fixtures, not yet with a
+real cursor-agent on Windows: see its port list at the end.
 
 | # | Item | Claude | Codex | agy | Cursor (Mac) |
 |---|---|---|---|---|---|
@@ -449,28 +450,37 @@ How it works in Orbiterm now (Mac), and what was found with a real cursor-agent 
 
 ## Windows port list for Kerem
 
-The web pages and the orbit map are done (tag, filter, colours, picker, badge). In `windows/src`:
+The web pages and the orbit map are done (tag, filter, colours, picker, badge). In `windows/src` (22 Nov 2026, from the
+Mac's code; checked with fixtures in node, not yet with a real cursor-agent on Windows, which wasn't on the PC):
 
-- [ ] `runaways.js` `AI_TOOLS` / `AI_PACKAGES`: match `node.exe …\cursor-agent\versions\<v>\index.js` (under `agent.cmd`
-  and PowerShell), skip `-p`, `status`, `ls`, `mcp`, `worker-server` (1)
-- [ ] `cursorhooks.js` like `codexhooks.js`: write a `.cmd` or PowerShell script (no `ps`, `awk` or `grep` there: find the
-  cursor-agent above the hook with the process table) and add the nine events to `%USERPROFILE%\.cursor\hooks.json`;
-  same event files and `pid\<pid>` pointers (5, 7, 3)
-- [ ] `engine.js`: `readCursorEvents` as in `RadarEngine.readCursorEvents` (turn from `beforeSubmitPrompt` / `stop`, calls
-  by `tool_use_id`, Task calls as subagents and their files by `agentId`, the "asking" rule: shell, write 4 s, web, MCP
-  20 s with no shell child), called from `setOthers` (`:3146`); `otherStatus` branch; title from
-  `%USERPROFILE%\.cursor\chats\<md5>\<id>\meta.json` (2, 3, 4, 5, 8, 9)
-- [ ] `engine.js` `otherTokens` from `stop`: new input = `input_tokens` − `cache_read_tokens` (its input holds the cache reads and writes; for the leaderboard
-  also − `cache_write_tokens`, writes counted apart), output, cache reads (10)
-- [ ] `tokenledger.js` `TOOLS`: a `cursor` reader of the `stop` events (13); `main.js` `noteToolsAtWork` and `vendor.js`
-  ("cursor": its folder under `cursor-agent`) (14)
-- [ ] `engine.js` `scanHistory`: Cursor's `meta.json` list; `main.js` `openSession` (`cursor-agent --resume <id>`);
-  `chattrash.js` (chat folder + transcript folder); `chatlist.js:105`, `pages/chats.js:84` tag `cursor` (15, 16, 17)
-- [ ] `mcp.js` `targets`, `lastReply` (`afterAgentResponse`), `BYPASS_FLAGS` (`-f`, `--force`, `--yolo`, `--auto-review`,
-  `--approve-mcps`) and `cli-config.json`'s `approvalMode` / `permissions.allow`; prompt mark `→` (21); `notesai.js`:
-  write `mcp.json` directly (22); `engine.js` `externalAISubAgentTool` (`cursor-agent`) (26); `discord.js` `asset` (27)
-- [ ] `limits`: Cursor's token is `%APPDATA%\Cursor\auth.json` `accessToken` (the CLI writes a file there on Windows); same two POSTs as the Mac's `CursorUsage.swift`, a `refreshCursorUsage` and its pool in `limitsByAI` (`:4204`); token in memory only, 401/403 = no column (12)
-- [ ] Not on Windows yet for any AI: AI picker (18), worktrees (25), header (11), toast (6).
+- [x] `runaways.js` `AI_TOOLS` / `aiTool`: Node (or Bun, Deno) running `…\cursor-agent\versions\<v>\index.js`, or a program
+  named `cursor-agent`; `-p`, `status`, `ls`, `mcp`, `worker-server` and the other one-shot commands skipped
+  (`cursorOneShot`); the app's own hook is no shell command of the session's (1)
+- [x] `cursorhooks.js` + `cursorhooks.cs`: not a `.cmd` or PowerShell script but a small program the app compiles with
+  .NET Framework's `csc.exe` at first use (as `host.cs`), since Cursor waits for `preToolUse` before every call and
+  PowerShell took 1-2 s to start and another 2 s to walk its parents on a busy PC (the program: about 50 ms). It finds the
+  cursor-agent above it by the process table (parent pid, program path, command line), writes the same event lines and
+  `pid\<pid>` pointers to `%LOCALAPPDATA%\atalay-terminal\cursor-events`, and goes into `%USERPROFILE%\.cursor\hooks.json`
+  as `cmd.exe /d /c "<program>" <event>` (runs from cmd and PowerShell alike), next to the user's own entries; `uninstall()`
+  takes only the app's out. Only the usual profile installs it (5, 7, 3)
+- [x] `engine.js`: `readCursorEvents` and its helpers as on the Mac, called from `setOthers` and the 1 s `pollOthers`, the
+  events folder and `~/.cursor/projects` watched; `otherStatus` branch with the asking rule; the title's `meta.json` is
+  looked for under every `chats\<key>` (how Cursor writes a Windows path before its md5 isn't known), the transcript under
+  the folder's dashed name, else under every project (2, 3, 4, 5, 8, 9)
+- [x] `engine.js` `otherTokens` from `stop` (new input = `input_tokens` − `cache_read_tokens`) (10)
+- [x] `tokenledger.js` `cursor` reader of the `stop` events (input less cache reads and writes); `main.js`
+  `noteToolsAtWork` and `vendor.js` ("cursor": its program under `cursor-agent`) (13, 14)
+- [x] `engine.js` `scanCursorHistory`; `main.js` `openSession` and `terminals.js` (`cursor-agent --resume <id>`);
+  `chattrash.js` (chat folder + transcript folder); `chatlist.js`, `pages/chats.js` tag `cursor` (15, 16, 17)
+- [x] `mcp.js` `targets`, `lastReply` (`afterAgentResponse`), Cursor's flags (`-f`, `--force`, `--auto-review`,
+  `--approve-mcps`; `--yolo` was there), `cli-config.json` / `.cursor\cli.json` `approvalMode` and `permissions.allow`, the
+  "Run Everything" footer, prompt mark `→` and its two placeholders (21); `notesai.js`: `mcp.json` written directly (22);
+  `engine.js` `externalAISubAgentTool` (`cursor-agent`) (26); `discord.js` `asset` (27; its picture still has to be
+  uploaded to the Discord application)
+- [x] `cursorusage.js`: the token from `%APPDATA%\Cursor\auth.json` `accessToken`, the same two POSTs, `refreshCursorUsage`
+  and its pool in `limitsByAI`; token in memory only, no redirect followed, 401/403 or no login = no column (12)
+- [ ] Not on Windows yet for any AI: AI picker (18), worktrees (25), header (11), toast (6). Theme colours (24): Cursor has
+  no theme setting (as on the Mac).
 
 ## Order of work
 

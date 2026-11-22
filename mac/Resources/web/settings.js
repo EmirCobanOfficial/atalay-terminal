@@ -204,12 +204,12 @@ window.Settings = (() => {
         ? group('battery', row('power save at low battery', `below ${esc(pw.threshold)}% battery or in ${esc(pw.saver || 'Low Power Mode')}, the map moves less to save battery · the switch on the map turns it off`, sw('pwr-auto', 'Power save on by itself at low battery', true)))
         : '') +
       // Clean Up (cleanup.js, Cleanup.swift): what the line on the map does when the Mac runs low on memory, and when a chat counts as idle.
-      // Only where the app answers (it sends its settings first): the Windows app doesn't yet.
+      // Only where the app answers (it sends its settings first). The Windows app lists no worktrees (yet).
       (!window.__cleanupPrefs ? '' : group('memory',
         row('suggest a clean up', `when your ${MACHINE} runs low on memory, a line on the map offers to close what you aren't using · nothing closes by itself`, sw('cu-sug', 'Suggest a clean up', true)) +
         row('when the disk holds more than', `memory your ${MACHINE} had to move onto the disk`, '<span class="lb-seg ui-seg cu-swap">' + [2, 4, 8].map((g) => `<button type="button" data-v="${g}">${g} GB</button>`).join('') + '</span>', 'st-sub cu-swaprow') +
         row('tick idle chats after', 'in Clean Up, chats left alone this long are ticked for you', '<span class="lb-seg ui-seg cu-idle">' + [[1, '1 hour'], [12, '12 hours'], [24, '1 day'], [72, '3 days']].map(([h, n]) => `<button type="button" data-v="${h}">${n}</button>`).join('') + '</span>') +
-        row('clean up now', 'end idle chats, stop leftover programs, remove finished worktrees', '<button type="button" class="st-btn cu-now">Open Clean Up…</button>')));
+        row('clean up now', WIN ? 'end idle chats, stop leftover programs' : 'end idle chats, stop leftover programs, remove finished worktrees', '<button type="button" class="st-btn cu-now">Open Clean Up…</button>')));
 
 
     return (

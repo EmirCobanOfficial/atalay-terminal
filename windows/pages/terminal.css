@@ -28,6 +28,48 @@ body { display: flex; flex-direction: column; overflow: hidden; background: var(
 #counts b.err { color: var(--red, #ff4d4d); }
 @media (max-width: 720px) { #counts { display: none !important; } }
 @media (max-width: 520px) { #ctx { display: none !important; } }
+/* A linked worktree (spec 4.1; the Mac's WorktreeChipView and WorktreeShipButton): the chip after the title and the
+   split button before the star, in the theme's own tokens over the header as it is. The header's height doesn't change. */
+#hud #wt { display: inline-flex; flex: none; align-items: center; gap: 5px; max-width: 40%; height: 20px; margin: 2px 0; padding: 0 6px;
+  border: 1px solid color-mix(in srgb, var(--accent-soft, #ffb057) 55%, transparent); border-radius: 3px;
+  background: rgba(var(--accent-rgb, 248, 128, 8), 0.06); color: var(--accent-soft, #ffb057); font: 10.5px "Cascadia Mono", Consolas, monospace; cursor: pointer; }
+#hud #wt[hidden], #ship[hidden] { display: none !important; }
+#hud #wt:hover:not(.dim):not(.flat) { border-color: var(--accent-soft, #ffb057); background: rgba(var(--accent-rgb, 248, 128, 8), 0.14); color: var(--accent-soft, #ffb057); }
+#hud #wt.flat, #hud #wt.flat:hover { border-color: color-mix(in srgb, var(--accent-soft, #ffb057) 55%, transparent); color: var(--accent-soft, #ffb057); cursor: default; }
+#hud #wt.dim, #hud #wt.dim:hover { border-color: color-mix(in srgb, var(--dim, #8f7a66) 50%, transparent); background: transparent; color: var(--dim, #8f7a66); cursor: default; }
+#wt svg, #ship svg { flex: none; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
+#wt > svg { width: 10px; height: 10px; }
+#wt .word { color: var(--txt3, var(--dim, #8f7a66)); font-weight: 400; }
+#wt .br { overflow: hidden; font-weight: 600; white-space: nowrap; text-overflow: ellipsis; }
+#wt .sep { flex: none; width: 1px; height: 10px; background: color-mix(in srgb, var(--accent-soft, #ffb057) 40%, transparent); }
+#wt.dim .sep { opacity: 0.6; }
+#wt .tail { display: inline-flex; flex: none; align-items: center; gap: 4px; white-space: nowrap; }
+#wt .del { color: var(--red-soft, #ff8a80); }
+#wt .pr { color: var(--txt2, #e0cdb8); font-weight: 600; }
+#wt .gone { color: var(--dim, #8f7a66); }
+#wt .ok { width: 9px; height: 9px; color: var(--accent-soft, #ffb057); stroke-width: 2.2; }
+#wt .bad { width: 9px; height: 9px; color: var(--red, #ff4d4d); stroke-width: 2.2; }
+/* Checks running, or a job at work: a ring that turns (with reduced motion it stands still as three quarters of one). */
+.ring { flex: none; display: inline-block; width: 9px; height: 9px; box-sizing: border-box; border: 1.5px solid color-mix(in srgb, var(--amber, #ffc040) 30%, transparent);
+  border-top-color: var(--amber, #ffc040); border-radius: 50%; animation: wt-spin 0.8s linear infinite; }
+#ship .ring { width: 10px; height: 10px; border-color: color-mix(in srgb, var(--accent-soft, #ffb057) 30%, transparent); border-top-color: var(--accent-soft, #ffb057); }
+@keyframes wt-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .ring { animation: none; border-left-color: transparent; border-top-color: currentColor; border-right-color: currentColor; border-bottom-color: currentColor; } }
+#ship { display: inline-flex; flex: none; align-items: stretch; height: 24px; border: 1px solid var(--accent, #f88008); border-radius: 6px; overflow: hidden; }
+#hud #ship button { display: inline-flex; align-items: center; height: 100%; border: 0; border-radius: 0; background: transparent; color: var(--accent-soft, #ffb057);
+  font: 600 11.5px "Segoe UI", system-ui, sans-serif; }
+#hud #shipMain { gap: 5px; padding: 0 9px 0 8px; }
+#hud #shipMain svg { width: 12px; height: 12px; }
+#hud #shipMore { justify-content: center; width: 18px; padding: 0; border-left: 1px solid rgba(var(--accent-rgb, 248, 128, 8), 0.5); }
+#hud #shipMore svg { width: 9px; height: 9px; stroke-width: 2; }
+#hud #ship button:hover:not(.off):not(.busy), #hud #shipMore.open { background: rgba(var(--accent-rgb, 248, 128, 8), 0.14); color: var(--hi, #fff8f0); }
+#hud #shipMain.off, #hud #shipMain.off:hover { opacity: 0.42; background: transparent; color: var(--accent-soft, #ffb057); cursor: default; }
+#hud #shipMain.busy, #hud #shipMain.busy:hover { background: transparent; color: var(--accent-soft, #ffb057); cursor: default; }
+#hud #ship button:focus-visible, #hud #wt:focus-visible { outline: 2px solid var(--accent-soft, #ffb057); outline-offset: -2px; }
+/* Under 960 px "worktree ·" goes; under 640 px the numbers go too (a PR's, merged's or deleted's tail stays). */
+@media (max-width: 959px) { #wt .word { display: none; } }
+@media (max-width: 639px) { #wt .nums { display: none !important; } }
+#announce { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 #term { flex: 1; min-height: 0; padding: 6px 4px 4px 8px; }
 /* Streamer mode: frosted glass over the terminal, under the strip (what a terminal prints can't be swapped for made-up
    text). The terminal runs on under it, and the mouse and the keys still reach it. */

@@ -527,6 +527,8 @@ function createNotesTools({ mode, mcpMode, notesStore, noteWindows, terminals, f
       // keeps for each of its running processes (sessions/<pid>.json), as the Mac's Proc.isClaude.
       if (name.startsWith('claude') || /[\\/]claude[\\/]versions[\\/]/i.test(exe)) return 'Claude Code';
       if (Number.isInteger(p && p.pid) && p.pid > 0 && fs.existsSync(path.join(claudeDir, 'sessions', `${p.pid}.json`))) return 'Claude Code';
+      // Cursor's CLI is its own bundled Node, known by its folder (cursor-agent\versions\<version>\node.exe).
+      if (/[\\/]cursor-agent[\\/]versions[\\/]/i.test(exe)) return 'Cursor';
       if (Object.prototype.hasOwnProperty.call(OTHER_AIS, name)) return OTHER_AIS[name];
     }
     return 'AI';

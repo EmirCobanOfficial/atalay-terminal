@@ -94,6 +94,10 @@ button { display: flex; align-items: center; padding: 0; border: 0; background: 
 .head .plus svg { stroke-width: 2.2; }
 .head:hover .farc { opacity: 1; pointer-events: auto; }
 .head:hover .plus { opacity: 1; }
+/* A linked worktree's folder: its state before the buttons (mono 9, --txt3), as the Mac's worktree group header; a
+   deleted one dimmed. */
+.head .wts { flex: none; color: var(--txt3, var(--dim)); font: 9px "Cascadia Mono", Consolas, monospace; white-space: nowrap; }
+.head.wtgone > svg, .head.wtgone .lbl, .head.wtgone .wts { color: var(--dim); }
 
 /* A chat */
 .row { display: flex; align-items: center; gap: 8px; margin: 1px 4px 0; padding: 4px 6px 4px 12px; border-radius: 3px; }

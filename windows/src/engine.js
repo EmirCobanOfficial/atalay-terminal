@@ -15,9 +15,11 @@ const fsp = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
 const { execFile, spawn } = require('node:child_process');
-const { randomUUID } = require('node:crypto');
+const { randomUUID, createHash } = require('node:crypto');
 const { createLedger, agg: ledgerAgg, addCall: ledgerAdd } = require('./ledger');
 const { createCodexHooks, codexSession } = require('./codexhooks');
+const { createCursorHooks } = require('./cursorhooks');
+const { readCursorUsage } = require('./cursorusage');
 const { isCodexLogIn } = require('./chattrash');
 
 const HOME = os.homedir();
@@ -148,14 +150,15 @@ function catOf(name) {
   return 'plan';
 }
 
-// A shell command that runs another AI CLI (Codex, Antigravity, Gemini) runs as Claude's subagent: a drone on the orbit
-// while it works, as a Task would (the Mac's externalAISubAgentTool). On Windows the program can come as a path, quoted,
-// behind PowerShell's call operator & or with .cmd/.exe/.ps1. null for anything else.
+// A shell command that runs another AI CLI (Codex, Antigravity, Gemini, Cursor's cursor-agent: not `agent`, too common a
+// name) runs as Claude's subagent: a drone on the orbit while it works, as a Task would (the Mac's
+// externalAISubAgentTool). On Windows the program can come as a path, quoted, behind PowerShell's call operator & or with
+// .cmd/.exe/.ps1. null for anything else.
 function externalAISubAgentTool(cmd) {
   for (const part of String(cmd).split(/\s+/)) {
     if (!part || part === '&' || part.includes('=')) continue;
     const bin = part.replace(/^['"]+|['"]+$/g, '').split(/[\\/]/).pop().toLowerCase().replace(/\.(cmd|exe|ps1|bat)$/, '');
-    if (bin === 'codex' || bin === 'agy' || bin === 'antigravity' || bin === 'gemini') return bin === 'antigravity' ? 'agy' : bin;
+    if (bin === 'codex' || bin === 'agy' || bin === 'antigravity' || bin === 'gemini' || bin === 'cursor-agent') return bin === 'antigravity' ? 'agy' : bin;
     return null;
   }
   return null;
@@ -386,6 +389,143 @@ function codexFiles(p) {
   const input = typeof p.input === 'string' ? p.input : '';
   return [...input.matchAll(/^\*\*\* (?:Add|Update|Delete) File: (.+?)\s*$/gm)].map((m) => m[1]);
 }
+
+// ---------- Cursor (cursor-agent) ----------
+// Cursor's folder: its saved chats (chats\<key>\<id>\meta.json), its transcripts (projects\<folder>\agent-transcripts),
+// its hooks.json and the CLI's config (the Mac's ChatTrash.cursorHome).
+const cursorHome = () => process.env.CURSOR_CONFIG_DIR || path.join(HOME, '.cursor');
+
+// Cursor files a project's transcripts under its folder's path with every other character a dash (the Mac's
+// ChatTrash.cursorProjectSlug): C:\Users\me\proj is C-Users-me-proj.
+function cursorProjectSlug(cwd) {
+  return String(cwd || '').replace(/[^a-zA-Z0-9]/g, '-').replace(/-+/g, '-').replace(/^-+|-+$/g, '');
+}
+
+// How long (s) a Cursor tool call of each kind may run with nothing to show for it (no shell, no CPU) before it's taken
+// for waiting on the user's approval (the Mac's cursorAskAfter). The ones that never ask (reads, searches) aren't here; a
+// web or MCP call waits on the network, so it gets longer.
+const CURSOR_ASK_AFTER = { bash: 4, edit: 4, web: 20, mcp: 20, browser: 20 };
+
+// The lines of a hooks event file (cursorhooks.js) past `offset`, each parsed, and where to read on from (a long file:
+// its last 2 MB), as the Mac's cursorLines.
+function cursorLines(file, offset = 0) {
+  let st;
+  try {
+    st = fs.statSync(file);
+  } catch {
+    return { lines: [], offset };
+  }
+  if (st.size <= offset) return { lines: [], offset };
+  const from = Math.max(offset, st.size > 2 << 20 ? st.size - (2 << 20) : 0);
+  const buf = Buffer.alloc(st.size - from);
+  const fd = fs.openSync(file, 'r');
+  try {
+    fs.readSync(fd, buf, 0, buf.length, from);
+  } finally {
+    fs.closeSync(fd);
+  }
+  const end = buf.lastIndexOf(0x0a);
+  if (end < 0) return { lines: [], offset };
+  const lines = [];
+  for (const line of buf.subarray(0, end).toString('utf8').split('\n')) {
+    try {
+      const j = JSON.parse(line);
+      if (isObj(j)) lines.push(j);
+    } catch {}
+  }
+  return { lines, offset: from + end + 1 };
+}
+
+// The first whole line of an event file, parsed: null when there is none yet, false when it isn't JSON.
+function cursorFirstLine(file) {
+  try {
+    const fd = fs.openSync(file, 'r');
+    const buf = Buffer.alloc(65_536);
+    let n = 0;
+    try {
+      n = fs.readSync(fd, buf, 0, buf.length, 0);
+    } finally {
+      fs.closeSync(fd);
+    }
+    const nl = buf.subarray(0, n).indexOf(0x0a);
+    if (nl < 0) return n >= buf.length ? false : null;
+    const j = JSON.parse(buf.subarray(0, nl).toString('utf8'));
+    return isObj(j) ? j : false;
+  } catch {
+    return false;
+  }
+}
+
+// A Cursor tool call as a pending tool, from its hook's tool name and input (the Mac's cursorCall): its kind and what it's
+// on, labelled as Claude's calls are (summarize), so the map's beams, the log and the panels read the same for either;
+// and the file it reads or edits. `server`: an MCP call's server, which its hook doesn't say.
+function cursorCall(name, input, at, cwd = '', server = null) {
+  const args = isObj(input) ? input : {};
+  const pick = (keys) => keys.map((k) => args[k]).find((v) => typeof v === 'string' && v);
+  let file = pick(['path', 'file_path', 'target_file', 'filePath', 'target_notebook']);
+  // Its calls name a file as they were asked to (`m.py`): one file, whichever way it's named.
+  if (file && !path.isAbsolute(file) && !file.startsWith('~') && cwd) file = path.resolve(cwd, file);
+  let what = pick(['command', 'query', 'search_term', 'url', 'pattern', 'glob_pattern', 'glob', 'description', 'prompt']) ?? file ?? name;
+  let tool = String(name || 'tool');
+  // Its Glob comes as a Grep with no pattern, only a `glob`.
+  if (tool === 'Grep' && !(typeof args.pattern === 'string' && args.pattern) && typeof args.glob === 'string' && args.glob) {
+    tool = 'Glob';
+    what = args.glob;
+  }
+  const low = tool.toLowerCase();
+  let n = tool, c = 'plan';
+  if (['shell', 'bash', 'writeshellstdin', 'runterminalcmd', 'run_terminal_cmd'].includes(low)) [n, c] = ['Bash', 'bash'];
+  else if (['websearch', 'web_search'].includes(low)) [n, c] = ['WebSearch', 'web'];
+  else if (['webfetch', 'fetch', 'web_fetch'].includes(low)) [n, c] = ['WebFetch', 'web'];
+  else if (['read', 'readfile', 'read_file', 'readlints'].includes(low)) [n, c] = ['Read', 'read'];
+  else if (['glob', 'ls', 'list_dir', 'listdir'].includes(low)) [n, c] = ['Glob', 'search'];
+  else if (['grep', 'semanticsearch', 'codebase_search', 'filesearch', 'file_search'].includes(low)) [n, c] = ['Grep', 'search'];
+  else if (['write', 'strreplace', 'str_replace', 'delete', 'applypatch', 'apply_patch', 'editnotebook', 'edit', 'multiedit', 'edit_file', 'delete_file'].includes(low)) [n, c] = ['Edit', 'edit'];
+  else if (['task', 'subagent'].includes(low)) [n, c] = ['Task', 'agent'];
+  else if (['computeruse', 'recordscreen'].includes(low)) [n, c] = ['Browser', 'browser'];
+  else if (low.startsWith('mcp') || ['callmcptool', 'fetchmcpresource', 'listmcpresources'].includes(low)) [n, c] = ['MCP', 'mcp'];
+  const claude = {};
+  if (n === 'WebSearch') claude.query = pick(['search_term', 'query']) ?? what;
+  else if (n === 'WebFetch') claude.url = pick(['url']) ?? what;
+  else if (n === 'Read' || n === 'Edit') claude.file_path = file ?? '';
+  else if (n === 'Grep') Object.assign(claude, { pattern: typeof args.pattern === 'string' ? args.pattern : what, path: file ?? '' });
+  else if (n === 'Glob') claude.pattern = pick(['glob_pattern', 'glob']) ?? what;
+  else if (n === 'Bash') Object.assign(claude, { command: pick(['command']) ?? what, ...(pick(['description']) ? { description: pick(['description']) } : {}) });
+  else if (n === 'Task') claude.description = pick(['description']) ?? what;
+  let label = summarize(n, claude).label;
+  if (n === 'MCP') {
+    const t = tool.startsWith('MCP:') ? tool.slice(4) : tool;
+    label = server ? `${server}.${t}` : t;
+  }
+  if (!label) label = clip(redact(String(what).replace(/\n/g, ' ')), 120);
+  return { call: { n, c, l: String(label).replace(/\n/g, ' '), t: at }, file: c === 'read' || c === 'edit' ? file || null : null };
+}
+
+// Cursor spills a big tool result (a web page, a long output) into a file of its own under its folder
+// (projects\<folder>\agent-tools\<id>.txt) with a Write call: its housekeeping, not the user's file.
+function cursorInternal(p) {
+  const input = isObj(p.tool_input) ? p.tool_input : {};
+  const f = String(str(input.file_path) ?? str(input.path) ?? str(p.file_path) ?? '').replace(/\\/g, '/').toLowerCase();
+  const home = cursorHome().replace(/\\/g, '/').toLowerCase();
+  return f.includes('/agent-tools/') && (f.startsWith(`${home}/projects/`) || f.includes('/.cursor/projects/'));
+}
+
+// A Cursor's own state, empty (a new process, or a new conversation in it): its subagents by id, the event files of the
+// same process that are no conversation of it (a subagent's, by path, and the ones found not to be), its transcripts as
+// far as read and the web calls they showed that no hook told, the file each Read call named, each MCP tool's server.
+function cursorFresh(O) {
+  Object.assign(O, {
+    cursorSubs: new Map(), cursorSubFiles: new Map(), cursorSkip: new Set(), cursorTrOffset: new Map(), cursorWebOpen: new Map(),
+    cursorFiles: new Map(), cursorMcpServer: new Map(), cursorTrBase: null, cursorTrLooked: 0, cursorMeta: null, cursorMetaLooked: 0, cursorMetaMark: 0,
+  });
+}
+
+// A Cursor subagent: one call of its Task tool (the Mac's CursorSub). Its own tool events are in an event file of its own,
+// `conv` (known for sure when the Task's result names its agentId).
+const cursorSub = (id) => ({
+  id, callId: '', conv: '', type: '', desc: '', model: '', start: 0, last: 0, ended: false, background: false,
+  tools: 0, errors: 0, web: 0, tokIn: 0, tokOut: 0, tokCache: 0, call: null, offset: 0,
+});
 
 // The lines a tool's log (O.log) got since the last look, parsed (from its last 2 MB when it's long).
 function readNewLines(O) {
@@ -1460,6 +1600,8 @@ class RadarEngine {
       costOf, shortModel, parseISO, withoutImages, seekTime,
     });
     this.isAppPid = typeof opts.isAppPid === 'function' ? opts.isAppPid : null;
+    // What an AI's whole tree holds, as Clean Up measured it (cleanup.js): { bytes, top: [[name, bytes]] } or null.
+    this.memTree = typeof opts.memTree === 'function' ? opts.memTree : null;
     this.handlers = { onInit: opts.onInit, onState: opts.onState, onEvents: opts.onEvents, onHistory: opts.onHistory };
 
     this.started = false;
@@ -1493,6 +1635,22 @@ class RadarEngine {
     this.codexWaits = new Map();
     this.codexOutputAt = new Map();
     this.codexWaitTimer = null;
+    // Cursor's: its folder, its hooks' events (cursorhooks.js: their program writes them in the app's own folder, the same
+    // for every build and profile) and the hooks' installer, run when a Cursor is first seen (main.js runs it only for the
+    // app's usual profile); its limit (cursorusage.js), the last one read, kept like the others, and when to ask again (ms).
+    this.cursorDir = opts.cursorDir || cursorHome();
+    this.cursorHooks = opts.cursorHooks || createCursorHooks({
+      ownDir: path.join(process.env.LOCALAPPDATA || path.join(HOME, 'AppData', 'Local'), 'atalay-terminal'),
+      cursorDir: this.cursorDir,
+    });
+    this.installCursorHooks = typeof opts.installCursorHooks === 'function' ? opts.installCursorHooks : () => {};
+    this.readCursorUsage = typeof opts.readCursorUsage === 'function' ? opts.readCursorUsage : readCursorUsage;
+    this.cursorUsage = loadLimits(this.limitsDir, 'cursor');
+    this.cursorUsagePending = false;
+    this.cursorUsageNext = 0;
+    this.cursorUsageRetry = false;
+    this.cursorWasRunning = false;
+    this.cursorTimer = null;
     // Each Antigravity CLI's own log, read on, by its session id: the confirmation or question it shows right now (the
     // step it asks about, the tool, since when), and its turn as the log tells it (working, or idle since when) with the
     // conversation it sent the user's message to.
@@ -1537,7 +1695,7 @@ class RadarEngine {
     this.firstCwd = new Map();
     this.bootPumps = [];
     this.timers = [];
-    this.watchers = { projects: null, registry: null, agy: null, codex: null, codexWaiting: null, codexHome: null };
+    this.watchers = { projects: null, registry: null, agy: null, codex: null, codexWaiting: null, codexHome: null, cursorEvents: null, cursorProjects: null, cursorChats: null };
     this.lastRun = {};
     this.lastScan = 0;
     this.scanning = false;
@@ -1574,6 +1732,7 @@ class RadarEngine {
     clearTimeout(this.codexWaitTimer);
     clearTimeout(this.agyTimer);
     clearTimeout(this.agyAgainTimer);
+    clearTimeout(this.cursorTimer);
     for (const k of Object.keys(this.watchers)) {
       try {
         this.watchers[k]?.close();
@@ -1625,6 +1784,13 @@ class RadarEngine {
       if (F.w > 0 && path.isAbsolute(F.p)) out[F.p] = [...new Set([...F.editors.values()].map((e) => e.s))];
     }
     return out;
+  }
+
+  // A card's memory (app.js memText, the Mac's RadarEngine memTree/memTop): the AI's whole tree and its heaviest parts,
+  // as Clean Up measured them; nothing (the card shows none) before it did.
+  memOf(pid) {
+    const t = this.memTree && pid != null ? this.memTree(pid) : null;
+    return t && t.bytes > 0 ? { memTree: t.bytes, memTop: t.top } : {};
   }
 
   // The chats Claude Code's registry has running now, with the status the dashboard shows for each.
@@ -1718,6 +1884,7 @@ class RadarEngine {
     this.lastScan = Date.now();
     this.refreshCodexUsage();
     this.refreshAgyUsage();
+    this.refreshCursorUsage();
     for (const k of ['registry', 'recent', 'scan']) this.lastRun[k] = Date.now();
     // The watches deliver transcript and registry changes as they happen; these timers are only safety nets, and the
     // way changes arrive where a watch couldn't start or broke (then at the old server's pace).
@@ -1738,6 +1905,7 @@ class RadarEngine {
     this.every(60, () => {
       this.refreshCodexUsage();
       this.refreshAgyUsage();
+      this.refreshCursorUsage();
     });
     this.scheduleLedger();
     this.every(3600, () => this.readLedger());
@@ -1901,6 +2069,70 @@ class RadarEngine {
     return false;
   }
 
+  // Cursor's usage limit, from its server (cursorusage.js, the Mac's refreshCursorUsage): every 5 minutes while a Cursor
+  // runs, every 30 otherwise; only with a login (its auth.json), and after a failure not before its wait is over. No login
+  // or a refusal clears it.
+  refreshCursorUsage() {
+    const now = Date.now();
+    if (this.cursorUsagePending || this.stopped || now < this.cursorUsageNext) return;
+    const running = this.cursorRunning();
+    this.cursorUsagePending = true;
+    Promise.resolve()
+      .then(() => this.readCursorUsage({ cursorDir: this.cursorDir }))
+      .catch(() => ({ kind: 'retry', after: 600 }))
+      .then((outcome) => {
+        this.cursorUsagePending = false;
+        if (this.stopped) return;
+        this.cursorUsageRetry = !(outcome && (outcome.kind === 'value' || outcome.kind === 'none'));
+        if (outcome && outcome.kind === 'value') {
+          this.cursorUsage = outcome.value;
+          saveLimits(this.limitsDir, 'cursor', outcome.value);
+          this.cursorUsageNext = Date.now() + (running ? 300_000 : 1_800_000);
+        } else if (outcome && outcome.kind === 'none') {
+          this.cursorUsage = null;
+          try {
+            fs.rmSync(path.join(this.limitsDir, 'limits-cursor.json'), { force: true });
+          } catch {}
+          this.cursorUsageNext = Date.now() + 1_800_000;
+        } else {
+          this.cursorUsageNext = Date.now() + (Number(outcome && outcome.after) || 600) * 1000;
+        }
+        this.stateDirty = true;
+        this.publishState();
+      });
+  }
+
+  cursorRunning() {
+    for (const O of this.others.values()) if (O.tool === 'Cursor' && O.endedAt === 0) return true;
+    return false;
+  }
+
+  // Cursor's hook program wrote an event, or Cursor its transcript: each running Cursor's turn, calls and subagents are
+  // read again at once, once per 50 ms at most (the Mac's cursorChanged).
+  cursorEventsChanged() {
+    if (this.cursorTimer || this.stopped || !this.cursorRunning()) return;
+    this.cursorTimer = setTimeout(() => {
+      this.cursorTimer = null;
+      if (this.stopped) return;
+      try {
+        const now = Date.now();
+        for (const O of this.others.values()) {
+          if (O.tool !== 'Cursor' || O.endedAt !== 0) continue;
+          this.readCursorEvents(O);
+          const shown = this.otherStatus(O, now).status;
+          if (shown !== O.shown) {
+            O.shown = shown;
+            O.statusSince = now;
+            this.stateDirty = true;
+          }
+        }
+        this.publishState();
+      } catch (e) {
+        report(e);
+      }
+    }, 50);
+  }
+
   // Codex's approval requests still waiting for the user: its hook's, less those its own log says were answered.
   refreshCodexWaits() {
     const waits = this.codexHooks.waiting();
@@ -2037,6 +2269,13 @@ class RadarEngine {
       const s = String(name || '');
       if (!s || s.includes('conversation_summaries.db') || s.endsWith('transcript.jsonl')) this.historySoon();
     });
+    // Cursor's hooks events (cursorhooks.js), the moment its hook program writes them; its own transcripts, where its web
+    // calls are (no hook fires for them); its saved chats (a new one, a title it gave), for the chats list.
+    watch('cursorEvents', this.cursorHooks.dir, {}, () => this.cursorEventsChanged());
+    watch('cursorProjects', path.join(this.cursorDir, 'projects'), { recursive: true }, (_event, name) => {
+      if (String(name || '').endsWith('.jsonl')) this.cursorEventsChanged();
+    });
+    watch('cursorChats', path.join(this.cursorDir, 'chats'), { recursive: true }, () => this.historySoon());
   }
 
   agyChanged() {
@@ -2139,8 +2378,9 @@ class RadarEngine {
           changed = true;
         }
         changed = this.scanAgyHistory(present) || changed;
-        // And Codex's.
+        // And Codex's, and Cursor's.
         changed = this.scanCodexHistory() || changed;
+        changed = this.scanCursorHistory() || changed;
         if (changed && !this.stopped) {
           // `path`: its transcript (Codex's: its log), which deleting a chat from the list goes by (chattrash.js).
           const items = [...this.history.values()]
@@ -2318,6 +2558,73 @@ class RadarEngine {
       agyClose(db);
     }
     return prune();
+  }
+
+  // Cursor's saved chats, from the meta.json it keeps of each (chats\<key of the folder>\<chat id>\, the Mac's
+  // scanCursorHistory): the folder, the title it gave (after the first turn), the last change; the first line of the
+  // chat's transcript is its prompt. Not its subagents' chats, nor one nothing was said in. `path` is its meta.json, which
+  // deleting it from the list goes by (chattrash.js). True when anything changed.
+  scanCursorHistory() {
+    const root = path.join(this.cursorDir, 'chats'), present = new Set();
+    let changed = false;
+    let keys = [];
+    try {
+      keys = fs.readdirSync(root);
+    } catch {}
+    for (const key of keys) {
+      let ids = [];
+      try {
+        ids = fs.readdirSync(path.join(root, key));
+      } catch {
+        continue;
+      }
+      for (const id of ids) {
+        if (!SID.test(id)) continue;
+        const file = path.join(root, key, id, 'meta.json');
+        let st, j;
+        try {
+          st = fs.statSync(file);
+          j = JSON.parse(fs.readFileSync(file, 'utf8'));
+        } catch {
+          continue;
+        }
+        if (!isObj(j) || j.hasConversation !== true || j.isSubagent === true || typeof j.cwd !== 'string' || !j.cwd) continue;
+        present.add(id);
+        const cwd = path.resolve(j.cwd);
+        const mtime = Math.max(int(j.updatedAtMs), st.mtimeMs);
+        const old = this.history.get(id);
+        if (old && old.mtime === mtime) continue;
+        let title = String(str(j.title) || '').trim(), prompt = '';
+        const transcript = path.join(this.cursorDir, 'projects', cursorProjectSlug(cwd), 'agent-transcripts', id, `${id}.jsonl`);
+        try {
+          const fd = fs.openSync(transcript, 'r');
+          const buf = Buffer.alloc(16_384);
+          let n = 0;
+          try {
+            n = fs.readSync(fd, buf, 0, buf.length, 0);
+          } finally {
+            fs.closeSync(fd);
+          }
+          const line = buf.subarray(0, n).toString('utf8').split('\n')[0];
+          const rec = JSON.parse(line);
+          const content = isObj(rec) && isObj(rec.message) && Array.isArray(rec.message.content) ? rec.message.content : [];
+          const text = content.map((c) => isObj(c) && str(c.text)).find(Boolean);
+          if (text) {
+            const q = /<user_query>([\s\S]*?)<\/user_query>/.exec(text);
+            prompt = (q ? q[1] : text).trim();
+          }
+        } catch {}
+        if (!title) title = prompt;
+        this.history.set(id, { id, path: file, cwd, mtime, size: st.size, title: clip(redact(title), 90), lastPrompt: clip(redact(prompt), 160), tool: 'cursor' });
+        changed = true;
+      }
+    }
+    for (const [sid, item] of this.history) {
+      if (item.tool !== 'cursor' || present.has(sid)) continue;
+      this.history.delete(sid);
+      changed = true;
+    }
+    return changed;
   }
 
   maybeNewDay() {
@@ -3154,6 +3461,7 @@ class RadarEngine {
       if (!O) {
         O = { id, tool: a.tool, pid: a.pid, cwd: '', cpu: 0, busy: false, busyUntil: 0, statusSince: now, firstTs: a.started, lastTs: now, endedAt: 0, hostTab: null, chain: [], ...(a.tool === 'Antigravity' ? { turnOpen: false } : {}) };
         resetOther(O);
+        if (a.tool === 'Cursor') this.newCursorSession(O, a);
         this.others.set(id, O);
         this.stateDirty = true;
       } else if (O.endedAt !== 0) {
@@ -3176,6 +3484,16 @@ class RadarEngine {
       if (a.childBusy) O.childCpuAt = now;
       if (O.tool === 'Codex' && a.cwd) this.readCodexLog(O, a.cwd, a.started, now);
       if (O.tool === 'Antigravity' && a.cwd) this.readAntigravity(O, a.cwd, now);
+      if (O.tool === 'Cursor') {
+        // Its screen alone draws 2-3 % all the time: more than that, with everything under it, is a call at work (an MCP
+        // server, a web fetch in-process), as the Mac's cursorWorkAt.
+        if (a.pct >= 8) O.cursorWorkAt = now;
+        if (a.cwd && a.cwd !== O.cwd) {
+          O.cwd = a.cwd;
+          this.stateDirty = true;
+        }
+        this.readCursorEvents(O);
+      }
       if (a.pct >= 1) O.busyUntil = now + 10_000;
       const busy = now < O.busyUntil;
       if (busy) O.lastTs = now;
@@ -3219,6 +3537,14 @@ class RadarEngine {
     const agy = this.agyRunning();
     if (agy && !this.agyWasRunning) this.refreshAgyUsage();
     this.agyWasRunning = agy;
+    // A Cursor just started has its limit at once when the last one read is older than its 5 minutes (not while the
+    // server's own wait after a failure runs).
+    const cursor = this.cursorRunning();
+    if (cursor && !this.cursorWasRunning && !this.cursorUsageRetry && !(this.cursorUsage && now - (Number(this.cursorUsage.at) || 0) < 300_000)) {
+      this.cursorUsageNext = 0;
+      this.refreshCursorUsage();
+    }
+    this.cursorWasRunning = cursor;
     this.matchTabs();
     this.publishState();
   }
@@ -3231,6 +3557,7 @@ class RadarEngine {
       if (O.endedAt > 0 || !O.cwd) continue;
       if (O.tool === 'Codex') this.readCodexLog(O, O.cwd, O.firstTs, now);
       if (O.tool === 'Antigravity') this.readAntigravity(O, O.cwd, now);
+      if (O.tool === 'Cursor') this.readCursorEvents(O);
       const shown = this.otherStatus(O, now).status;
       if (shown !== O.shown) {
         O.shown = shown;
@@ -3257,6 +3584,23 @@ class RadarEngine {
       const asked = O.turnOpen ? this.codexWait(O) : null;
       if (asked) return { status: 'waiting', waiting: `approval: ${asked}` };
       return { status: O.turnOpen ? 'busy' : 'idle', waiting: null };
+    }
+    // Cursor's hooks tell its turns exactly (beforeSubmitPrompt, stop). It asks before a shell command, an edit, a web
+    // fetch or an MCP tool, and no hook says so: a call of those it has out that runs nothing (no shell below it, no CPU)
+    // for a few seconds waits for the user (its screen draws all the time, 2-3 % CPU: no use as a sign). A web, MCP or
+    // browser call waits on the network or a server of its own: one that works the CPU isn't asking. Its subagents at
+    // work keep the session working after its turn. (The Mac's otherStatus.)
+    if (O.tool === 'Cursor' && O.turnOpen != null) {
+      if (O.turnOpen) {
+        const call = O.call && O.call.p;
+        const wait = call ? (CURSOR_ASK_AFTER[call.c] ?? Infinity) * 1000 : Infinity;
+        if (call && !String(O.call.id).startsWith('cursor:tr:') && !command && now - call.t > wait &&
+            (call.c === 'bash' || call.c === 'edit' || now - Math.max(O.childCpuAt || 0, O.cursorWorkAt || 0) > wait)) {
+          return { status: 'waiting', waiting: `approval: ${call.l}` };
+        }
+        return { status: 'busy', waiting: null };
+      }
+      return { status: (O.agents || []).some((a) => a.running) ? 'busy' : 'idle', waiting: null };
     }
     if (O.turnOpen === false) return { status: (O.tool !== 'Antigravity' && command) || (O.agents || []).some((a) => a.running) ? 'busy' : 'idle', waiting: null };
     if (O.turnOpen === true) {
@@ -3285,12 +3629,14 @@ class RadarEngine {
   otherCommand(O) {
     if (!O.command) return null;
     if (O.tool === 'Antigravity') return O.turnOpen === true && O.turnStart && O.commandStarted >= Math.max(O.turnStart, O.firstTs + 5000) ? O.command : null;
-    if (O.tool !== 'Codex') return O.command;
+    if (O.tool !== 'Codex' && O.tool !== 'Cursor') return O.command;
     return O.turnOpen === true && O.turnStart && O.commandStarted >= Math.max(O.turnStart, O.firstTs + 5000) ? O.command : null;
   }
 
-  // What it runs: a shell of its own right now, else the tool call its log has it on.
+  // What it runs: a shell of its own right now, else the tool call its log has it on. Cursor's hooks name its call
+  // exactly; the shell under it runs its command inside a wrapper of its own.
   otherRunning(O) {
+    if (O.tool === 'Cursor' && O.call) return O.call.p;
     const command = this.otherCommand(O);
     return command ? { n: 'Bash', c: 'bash', l: command, t: O.commandSince || Date.now() } : O.call ? O.call.p : null;
   }
@@ -3937,6 +4283,482 @@ class RadarEngine {
     this.stateDirty = true;
   }
 
+  // ----- Cursor (cursor-agent): its hooks' events -----
+
+  // A Cursor seen for the first time (the Mac's pollOthers): its hooks go in now too (it may have been installed after the
+  // app started; main.js does it only for the app's usual profile). With its hooks in, its turns are told exactly: idle
+  // until one begins (its CPU, 2-3 % always, says nothing); not for one that began before they went in, which never read
+  // them, and whose CPU is all there is. `--resume <id>` starts in that chat, and Cursor fires no sessionStart for it.
+  newCursorSession(O, a) {
+    cursorFresh(O);
+    // A Cursor seen with no limit shown (no login when it was last asked, maybe made just now): ask again at once.
+    if (!this.cursorUsage && !this.cursorUsagePending) this.cursorUsageNext = 0;
+    try {
+      this.installCursorHooks();
+    } catch (e) {
+      report(e);
+    }
+    const at = this.cursorHooks.installedAt();
+    if (at != null && at < a.started) O.turnOpen = false;
+    const w = [...String(a.cmd || '').matchAll(/"([^"]*)"|(\S+)/g)].map((m) => m[1] ?? m[2]);
+    const i = w.findIndex((x) => x === '--resume' || x.startsWith('--resume='));
+    const id = i < 0 ? '' : w[i].startsWith('--resume=') ? w[i].slice(9) : w[i + 1] || '';
+    if (/^[A-Za-z0-9._-]{8,128}$/.test(id)) {
+      O.convId = id;
+      O.log = this.cursorHooks.log(id);
+      // From this process's own start: a turn it is in the middle of still counts.
+      O.logOffset = this.cursorHooks.offset(O.log, a.started - 2000);
+    }
+  }
+
+  // Cursor's hooks events for the conversation this cursor-agent is in (the Mac's readCursorEvents): the turn open or over,
+  // the prompt, the tools it calls and their results, its subagents, its tokens. The conversation is the one its process
+  // last announced; a new one (`/new`, a resume) starts the reading again.
+  readCursorEvents(O) {
+    if (!O.cursorSubs) cursorFresh(O);
+    const conv = this.cursorHooks.conversation(O.pid, O.firstTs);
+    if (conv && conv !== O.convId) {
+      O.convId = conv;
+      O.log = this.cursorHooks.log(conv);
+      O.logOffset = 0;
+      O.turnOpen = false;
+      O.call = null;
+      cursorFresh(O);
+      O.agents = [];
+      O.title = '';
+      O.prompt = '';
+      this.stateDirty = true;
+    }
+    if (!O.log) return;
+    // Its transcript first, once it's known: it says which server an MCP call goes to, the hook's own event doesn't.
+    if (O.cursorTrOffset.size) this.readCursorTranscripts(O);
+    const read = cursorLines(O.log, O.logOffset || 0);
+    O.logOffset = read.offset;
+    for (const j of read.lines) this.applyCursorEvent(O, j, null);
+    this.readCursorSubFiles(O);
+    this.readCursorTranscripts(O);
+    this.readCursorTitle(O);
+    const now = Date.now(), views = [];
+    for (const s of [...O.cursorSubs.values()].sort((a, b) => a.start - b.start)) {
+      // Finished more than 15 minutes ago: off the list, as Claude's.
+      if (s.ended && now - s.last >= 15 * MIN) continue;
+      const v = {
+        id: s.id, sid: O.id, desc: s.desc || s.type || 'subagent', type: s.type, model: s.model || O.model || '', bg: s.background,
+        running: !s.ended, parked: false, ended: s.ended, firstTs: s.start, lastTs: s.last, tools: s.tools, errors: s.errors, web: s.web,
+        cost: 0, tok: { in: s.tokIn, out: s.tokOut, cr: s.tokCache, cw: 0 }, pending: s.call ? [s.call.p] : [], loop: false,
+      };
+      if (s.call) v.last = s.call.p;
+      views.push(v);
+    }
+    const key = (list) => (list || []).map((a) => `${a.id}${a.running}${a.ended}${a.last ? a.last.l : ''}${a.tools}`).join('|');
+    if (key(views) !== key(O.agents)) this.stateDirty = true;
+    O.agents = views;
+  }
+
+  // One hooks event (the Mac's applyCursorEvent); `sub` is the subagent whose own file it is from.
+  applyCursorEvent(O, j, sub) {
+    const e = str(j.e), p = j.p;
+    if (!e || !isObj(p)) return;
+    const ts = typeof j.t === 'number' && j.t > 0 ? j.t : Date.now();
+    const gen = str(p.generation_id) || '';
+    const A = sub ? { id: sub } : null;
+    const S = sub ? O.cursorSubs.get(sub) : null;
+    // Its hooks call the model it picks for itself "default": the TUI says Auto.
+    if (!sub && typeof p.model === 'string' && p.model && p.model !== 'unknown') O.model = p.model === 'default' ? 'auto' : p.model;
+    if (S) S.last = Math.max(S.last, ts);
+    const turnKey = `cursor:${gen || `${O.convId || ''}:${Math.trunc(ts)}`}`;
+    switch (e) {
+      case 'sessionStart':
+        if (O.turnOpen == null) O.turnOpen = false;
+        break;
+      case 'beforeSubmitPrompt': {
+        if (sub) break;
+        this.closeCursorWeb(O, ts);
+        O.turnOpen = true;
+        O.turnStart = ts;
+        O.call = null;
+        O.turns = (O.turns || 0) + 1;
+        const text = String(str(p.prompt) || '').trim();
+        if (text) {
+          O.prompt = clip(text, 200);
+          this.otherText(O, `${turnKey}:in`, 'prompt', text, ts);
+        }
+        break;
+      }
+      case 'afterAgentResponse':
+        if (!sub && typeof p.text === 'string') this.otherText(O, `${turnKey}:say:${createHash('sha1').update(p.text).digest('hex').slice(0, 16)}`, 'say', p.text, ts);
+        break;
+      case 'stop': {
+        if (sub) break;
+        O.turnOpen = false;
+        O.call = null;
+        this.closeCursorWeb(O, ts);
+        // Its chat's meta.json, with the title Cursor gives it after the first turn, is looked for again now.
+        if (!O.cursorMeta) O.cursorMetaLooked = 0;
+        // The turn is over: a subagent still out (its result lost, or interrupted) isn't running any more.
+        for (const s of O.cursorSubs.values()) if (!s.ended && !s.background) s.ended = true;
+        // Its input counts the cache reads and writes too: what's left is new input (the writes are in it already).
+        const cached = int(p.cache_read_tokens);
+        const i = Math.max(0, int(p.input_tokens) - cached), o = int(p.output_tokens);
+        if (i + o + cached > 0) this.otherTokens(O, `${turnKey}:tok`, ts, i, o, cached);
+        break;
+      }
+      case 'sessionEnd':
+        O.turnOpen = false;
+        O.call = null;
+        this.closeCursorWeb(O, ts);
+        for (const s of O.cursorSubs.values()) s.ended = true;
+        break;
+      case 'preCompact':
+        if (!sub) {
+          O.ctx = int(p.context_tokens);
+          O.ctxMax = int(p.context_window_size);
+        }
+        break;
+      case 'preToolUse': {
+        const id = str(p.tool_use_id);
+        if (!id || cursorInternal(p)) break;
+        const name = str(p.tool_name) || 'tool';
+        const server = name.startsWith('MCP:') ? O.cursorMcpServer.get(name.slice(4)) || null : null;
+        // A payload cut down by the hook program (a big file written) keeps its names at the top, not under tool_input.
+        const { call, file } = cursorCall(name, isObj(p.tool_input) ? p.tool_input : p, ts, O.cwd, server);
+        const key = `cursor:${id}`;
+        const isNew = !O.counted.has(key);
+        if (sub) {
+          if (S) {
+            S.call = { id, p: call };
+            if (isNew) {
+              S.tools += 1;
+              if (call.c === 'web') S.web += 1;
+            }
+          }
+        } else {
+          O.call = { id, p: call };
+          // A Task call is a subagent, running until its result.
+          if (call.n === 'Task') {
+            const input = isObj(p.tool_input) ? p.tool_input : {};
+            const sid = createHash('sha1').update(id).digest('hex').slice(0, 8);
+            const s = O.cursorSubs.get(sid) || cursorSub(sid);
+            s.callId = id;
+            if (typeof input.subagent_type === 'string') s.type = input.subagent_type;
+            s.desc = clip(str(input.description) || String(str(input.prompt) || '').split(/\r?\n/)[0] || '', 90);
+            if (typeof input.model === 'string' && input.model && input.model !== 'inherit') s.model = input.model;
+            s.background = input.run_in_background === true;
+            if (!s.start) s.start = ts;
+            s.last = Math.max(s.last, ts);
+            O.cursorSubs.set(sid, s);
+          }
+        }
+        // Its edit tool reads the file first and writes it after, both under ONE call id: one edit, not a read and an edit.
+        const old = this.otherCalls.get(key);
+        if (old && old.p.c === 'read' && call.c === 'edit') {
+          this.cursorReadBecameEdit(O, key, old, call, file, A);
+        } else {
+          if (file && call.c === 'read') O.cursorFiles.set(key, file);
+          this.otherTool(O, key, call, ts, file, A);
+        }
+        break;
+      }
+      case 'postToolUse':
+      case 'postToolUseFailure': {
+        const id = str(p.tool_use_id);
+        if (!id || cursorInternal(p)) break;
+        const key = `cursor:${id}`;
+        if (sub) {
+          if (S) {
+            if (S.call && S.call.id === id) S.call = null;
+            if (e === 'postToolUseFailure' && O.counted.has(key) && !O.resulted.has(key)) S.errors += 1;
+          }
+        } else {
+          if (O.call && O.call.id === id) O.call = null;
+          const s = [...O.cursorSubs.values()].find((x) => x.callId === id);
+          if (s) {
+            // The Task is over, and its result names the subagent's conversation.
+            let out = null;
+            try {
+              out = typeof p.tool_output === 'string' ? JSON.parse(p.tool_output) : p.tool_output;
+            } catch {}
+            if (isObj(out)) {
+              if (typeof out.agentId === 'string' && /^[A-Za-z0-9._-]{1,128}$/.test(out.agentId)) s.conv = out.agentId;
+              if (out.isBackground === true) s.background = true;
+            }
+            if (!s.background || e === 'postToolUseFailure') s.ended = true;
+            s.last = Math.max(s.last, ts);
+            s.call = null;
+          }
+        }
+        const call = this.otherCalls.get(key);
+        this.otherResult(O, key, e === 'postToolUse', ts, call ? Math.max(0, ts - call.t) : null, A);
+        break;
+      }
+      default:
+        break;
+    }
+    this.stateDirty = true;
+  }
+
+  // The Read and the Write Cursor fires for one edit call are the same call (one id): what was counted as a read of the
+  // file becomes the edit it was part of, in the day's counts, the ticker, the files and on the map (the Mac's
+  // cursorReadBecameEdit).
+  cursorReadBecameEdit(O, key, old, p, file, A) {
+    const ts = p.t, G = this.G;
+    O.resulted.delete(key);
+    O.byCat.read = Math.max(0, (O.byCat.read || 0) - 1);
+    O.byCat.edit = (O.byCat.edit || 0) + 1;
+    G.byCat.read = Math.max(0, (G.byCat.read || 0) - 1);
+    G.byCat.edit = (G.byCat.edit || 0) + 1;
+    const mb = this.minute(old.t);
+    mb.cats.read = Math.max(0, (mb.cats.read || 0) - 1);
+    mb.cats.edit = (mb.cats.edit || 0) + 1;
+    const tk = G.ticker.findLast((x) => x.id === key);
+    if (tk) Object.assign(tk, { c: 'edit', n: p.n, st: 'run' });
+    const f = O.cursorFiles.get(key);
+    if (f !== undefined) {
+      O.cursorFiles.delete(key);
+      const heat = G.files.get(f);
+      if (heat) heat.r = Math.max(0, heat.r - 1);
+    }
+    if (ts >= (G.lastByCat.edit?.t ?? 0)) G.lastByCat.edit = { l: p.l, t: ts, s: O.id };
+    // The read line on the map and in the log ends there, the edit starts under the same name.
+    this.emit(this.ev('result', ts, O, A, { id: key, ok: true, m: '', n: old.p.n, c: old.p.c }), true);
+    this.otherCalls.set(key, { p, t: ts, done: false });
+    if (file) this.touchFile(file, 'Edit', O, A, ts);
+    this.emit(this.ev('tool', ts, O, A, { id: key, n: p.n, c: p.c, l: p.l }), true);
+    this.stateDirty = true;
+  }
+
+  // The web calls still open (their end isn't in any hook) end with the turn.
+  closeCursorWeb(O, ts) {
+    for (const [key, open] of O.cursorWebOpen) {
+      this.otherResult(O, key, true, ts, Math.max(0, ts - open.start), open.aid ? { id: open.aid } : null);
+      const s = open.aid && O.cursorSubs.get(open.aid);
+      if (s) s.call = null;
+    }
+    O.cursorWebOpen.clear();
+    if (O.call && O.call.p.c === 'web') O.call = null;
+  }
+
+  // A subagent's own tool events (the Mac's readCursorSubFiles): Cursor runs it as a conversation of its own, in an event
+  // file of the same cursor-agent process (each event names it) that begins with a tool call, not a session. Its file goes
+  // to the Task call whose result names it (agentId), or while that is out, to the oldest Task call without one.
+  readCursorSubFiles(O) {
+    const subs = [...O.cursorSubs.values()];
+    if (!subs.some((s) => !s.ended || s.background) && !O.cursorSubFiles.size) return;
+    let names = [];
+    try {
+      names = fs.readdirSync(this.cursorHooks.dir).filter((n) => n.endsWith('.jsonl'));
+    } catch {}
+    for (const name of names) {
+      const file = path.join(this.cursorHooks.dir, name);
+      if (file === O.log || O.cursorSubFiles.has(file) || O.cursorSkip.has(file)) continue;
+      let st;
+      try {
+        st = fs.statSync(file);
+      } catch {
+        continue;
+      }
+      if (st.mtimeMs < O.firstTs) continue;
+      const first = cursorFirstLine(file);
+      // Its first line not written whole yet: looked at again next time.
+      if (first === null) continue;
+      if (!first || first.agent !== O.pid || first.e !== 'preToolUse') {
+        O.cursorSkip.add(file);
+        continue;
+      }
+      O.cursorSubFiles.set(file, typeof first.t === 'number' ? first.t : st.mtimeMs);
+    }
+    // Which subagent each file is: by the Task result's agentId, else in order.
+    const owned = new Set(subs.filter((s) => s.conv).map((s) => this.cursorHooks.log(s.conv)));
+    const free = [...O.cursorSubFiles.entries()].sort((a, b) => a[1] - b[1]).map(([f]) => f).filter((f) => !owned.has(f));
+    for (const s of subs.sort((a, b) => a.start - b.start)) if (!s.conv && free.length) s.conv = path.basename(free.shift(), '.jsonl');
+    for (const s of O.cursorSubs.values()) {
+      if (!s.conv) continue;
+      const read = cursorLines(this.cursorHooks.log(s.conv), s.offset);
+      s.offset = read.offset;
+      for (const j of read.lines) this.applyCursorEvent(O, j, s.id);
+      // A background one has no result at its end: quiet for two minutes, it's over.
+      if (s.background && !s.ended && Date.now() - s.last > 2 * MIN) s.ended = true;
+    }
+  }
+
+  // The folder of a Cursor chat's transcripts (projects\<folder>\agent-transcripts\<id>): under its folder's name with
+  // every other character a dash, else looked for under every project (every 10 s at most), and kept once found.
+  cursorTranscriptDir(O) {
+    if (!O.convId || !O.cwd) return null;
+    if (O.cursorTrBase) return O.cursorTrBase;
+    const projects = path.join(this.cursorDir, 'projects');
+    const guess = path.join(projects, cursorProjectSlug(O.cwd), 'agent-transcripts', O.convId);
+    if (fs.existsSync(guess)) return (O.cursorTrBase = guess);
+    const now = Date.now();
+    if (now - O.cursorTrLooked < 10_000) return null;
+    O.cursorTrLooked = now;
+    let names = [];
+    try {
+      names = fs.readdirSync(projects);
+    } catch {}
+    for (const n of names) {
+      const dir = path.join(projects, n, 'agent-transcripts', O.convId);
+      if (fs.existsSync(dir)) return (O.cursorTrBase = dir);
+    }
+    return null;
+  }
+
+  // Web calls (WebSearch, WebFetch) fire no hook at all in Cursor (the Mac's readCursorTranscripts). They are in its
+  // transcript of the chat, which it writes as it goes (agent-transcripts\<chat id>\<chat id>.jsonl, a subagent's under
+  // subagents\) as a CallDynamicTool of the `cursor` namespace: read from there, each named by where its line starts.
+  // The transcript has no times and no results: a call began when its line was first seen, and ended when the next line
+  // came or the turn did.
+  readCursorTranscripts(O) {
+    const base = this.cursorTranscriptDir(O);
+    if (!base) return;
+    const files = [[path.join(base, `${O.convId}.jsonl`), O.convId, null]];
+    for (const s of O.cursorSubs.values()) if (s.conv) files.push([path.join(base, 'subagents', `${s.conv}.jsonl`), s.conv, s.id]);
+    const now = Date.now();
+    for (const [file, owner, aid] of files) {
+      let st;
+      try {
+        st = fs.statSync(file);
+      } catch {
+        continue;
+      }
+      if (!st.size) continue;
+      // First time this process sees the file (the app was reopened, Cursor was found running, a chat was resumed): what's
+      // in it is history, not live. Only the turn in progress counts, from the last prompt line on, at that turn's start,
+      // and its calls are over at once: nothing replays beams or waits for a result.
+      const first = !O.cursorTrOffset.has(file);
+      const offset = O.cursorTrOffset.get(file) || 0;
+      if (st.size <= offset) {
+        O.cursorTrOffset.set(file, offset);
+        continue;
+      }
+      const from = Math.max(offset, st.size > 2 << 20 ? st.size - (2 << 20) : 0);
+      const buf = Buffer.alloc(st.size - from);
+      const fd = fs.openSync(file, 'r');
+      try {
+        fs.readSync(fd, buf, 0, buf.length, from);
+      } finally {
+        fs.closeSync(fd);
+      }
+      const end = buf.lastIndexOf(0x0a);
+      if (end < 0) continue;
+      O.cursorTrOffset.set(file, from + end + 1);
+      // Each line with the byte offset it starts at: the name of its calls (a resumed chat counts from where it is).
+      let lines = [];
+      for (let off = 0; off <= end; ) {
+        const nl = buf.indexOf(0x0a, off);
+        if (nl < 0 || nl > end) break;
+        try {
+          const j = JSON.parse(buf.subarray(off, nl).toString('utf8'));
+          if (isObj(j)) lines.push({ at: from + off, j });
+        } catch {}
+        off = nl + 1;
+      }
+      if (first) {
+        if (aid === null && !(O.turnOpen === true && O.turnStart > 0)) continue;
+        const u = lines.findLastIndex((x) => x.j.role === 'user');
+        if (u >= 0) lines = lines.slice(u);
+        else if (aid === null) continue;
+      }
+      if (!lines.length) continue;
+      const when = first ? (aid && O.cursorSubs.get(aid)?.start) || O.turnStart : now;
+      const A = aid ? { id: aid } : null;
+      // A line after the open web calls tells they're over.
+      for (const [key, open] of O.cursorWebOpen) {
+        if (open.aid !== aid) continue;
+        this.otherResult(O, key, true, now, Math.max(0, now - open.start), A);
+        O.cursorWebOpen.delete(key);
+      }
+      if (aid === null && O.call && O.call.p.c === 'web') O.call = null;
+      for (const { at, j } of lines) {
+        if (j.type === 'turn_ended') continue;
+        const content = isObj(j.message) && Array.isArray(j.message.content) ? j.message.content : null;
+        if (!content) continue;
+        content.forEach((item, k) => {
+          if (!isObj(item) || item.type !== 'tool_use' || item.name !== 'CallDynamicTool' || !isObj(item.input)) return;
+          const ns = str(item.input.namespace), tool = str(item.input.toolName);
+          if (!ns || !tool) return;
+          // An MCP tool's server is the namespace Cursor calls it in (its hook says only the tool).
+          if (ns !== 'cursor') {
+            O.cursorMcpServer.set(tool, ns);
+            return;
+          }
+          if (tool !== 'WebSearch' && tool !== 'WebFetch') return;
+          let args = item.input.arguments;
+          if (typeof args === 'string') {
+            try {
+              args = JSON.parse(args);
+            } catch {}
+          }
+          // Named as the hook calls are (Claude's labels: a URL as host and path, a query with its secrets masked).
+          const { call } = cursorCall(tool, isObj(args) ? args : {}, when, O.cwd);
+          const key = `cursor:tr:${owner}:${at}:${k}`;
+          this.otherTool(O, key, call, when, null, A);
+          const s = aid ? O.cursorSubs.get(aid) : null;
+          if (first) {
+            this.otherResult(O, key, true, when, 0, A);
+          } else {
+            O.cursorWebOpen.set(key, { start: now, aid });
+            if (!aid) O.call = { id: key, p: call };
+            else if (s) s.call = { id: key, p: call };
+          }
+          if (s) {
+            s.tools += 1;
+            s.web += 1;
+          }
+        });
+      }
+      this.stateDirty = true;
+    }
+  }
+
+  // Cursor's own record of the chat: its title, from the meta.json of its saved chat, read again when it changes (the Mac's
+  // readCursorTitle).
+  readCursorTitle(O) {
+    if (!O.convId) return;
+    if (!O.cursorMeta) O.cursorMeta = this.cursorChatMeta(O);
+    if (!O.cursorMeta) return;
+    let st;
+    try {
+      st = fs.statSync(O.cursorMeta);
+    } catch {
+      O.cursorMeta = null;
+      return;
+    }
+    if (st.mtimeMs === O.cursorMetaMark) return;
+    O.cursorMetaMark = st.mtimeMs;
+    let j;
+    try {
+      j = JSON.parse(fs.readFileSync(O.cursorMeta, 'utf8'));
+    } catch {
+      return;
+    }
+    if (!isObj(j) || typeof j.title !== 'string') return;
+    const t = clip(j.title.trim(), 90);
+    if (t !== O.title) {
+      O.title = t;
+      this.stateDirty = true;
+    }
+  }
+
+  // The meta.json of the chat a Cursor is in (chats\<key>\<id>\meta.json): Cursor's key is an md5 of its folder's path,
+  // and how it writes a Windows path for it isn't something to guess, so the chat is looked for under every key, every
+  // 10 s at most.
+  cursorChatMeta(O) {
+    const now = Date.now();
+    if (now - O.cursorMetaLooked < 10_000) return null;
+    O.cursorMetaLooked = now;
+    const root = path.join(this.cursorDir, 'chats');
+    let keys = [];
+    try {
+      keys = fs.readdirSync(root);
+    } catch {}
+    for (const k of keys) {
+      const file = path.join(root, k, O.convId, 'meta.json');
+      if (fs.existsSync(file)) return file;
+    }
+    return null;
+  }
+
   // A live session whose Claude process is one the app started, or under one, runs in the app's own window.
   matchTabs() {
     for (const S of this.sessions.values()) {
@@ -4084,6 +4906,7 @@ class RadarEngine {
         byCat: S.byCat, pending, spark, flags, agents: subs, agentsRunning: nRun,
         waitingFor: S.waitingFor ?? null, tty: S.tty ?? null, pid: S.pid ?? null, host,
         tab: typeof S.hostTab === 'string' ? S.hostTab : null,
+        ...(S.live ? this.memOf(S.pid) : {}),
       };
       if (S.last) item.last = S.last;
       list.push(item);
@@ -4115,6 +4938,7 @@ class RadarEngine {
         waitingFor: waiting, tty: null, pid: O.pid, host: O.hostTab != null ? 'app' : live ? 'term' : null,
         tab: typeof O.hostTab === 'string' ? O.hostTab : null, convId: otherConv(O),
         ...(running && { last: running }),
+        ...this.memOf(O.pid),
       });
     }
     list.sort((a, b) => STATUS_ORDER[a.status] - STATUS_ORDER[b.status] || b.lastTs - a.lastTs);
@@ -4197,10 +5021,11 @@ class RadarEngine {
     const limits = this.readLimits();
     if (limits) out.limits = limits;
     // Every AI's usage limits for the top bar, in its order, whichever chat is in front: Claude's from its status line,
-    // Codex's and Antigravity's as last read, Antigravity's a column per group in use (agyPools). One not heard from in a
-    // week is left out.
+    // Codex's, Antigravity's and Cursor's as last read, Antigravity's a column per group in use (agyPools), Cursor's a
+    // monthly one (its plan's included usage). One not heard from in a week is left out.
     const pools = [['Claude Code', limits && { ...limits, id: 'claude', name: 'claude' }], ['Codex', this.codexUsage && { ...this.codexUsage, id: 'codex', name: 'codex' }],
-      ...(this.agyUsage ? agyPools(this.agyUsage, this.agyModel) : []).map((p) => ['Antigravity', p])];
+      ...(this.agyUsage ? agyPools(this.agyUsage, this.agyModel) : []).map((p) => ['Antigravity', p]),
+      ['Cursor', this.cursorUsage && { ...this.cursorUsage, id: 'cursor', name: 'cursor' }]];
     out.limitsByAI = pools.filter(([, v]) => v && now - (Number(v.at) || 0) < 7 * 24 * 3_600_000).map(([tool, v]) => ({ ...v, tool }));
     return out;
   }

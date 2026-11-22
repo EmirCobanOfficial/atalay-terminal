@@ -203,7 +203,7 @@ window.Cleanup = (() => {
     const some = chats().some(chatFree) || progs().length || wts().length;
     const title = fine ? `Your ${MACHINE} has enough memory` : out ? `Your ${MACHINE} is almost out of memory` : `Your ${MACHINE} is running low on memory`;
     const lead = fine
-      ? (some ? 'Nothing is slowing it down. You can still end old chats and remove finished worktrees.' : 'Nothing is slowing it down.')
+      ? (some ? `Nothing is slowing it down. You can still end old chats${WIN ? '' : ' and remove finished worktrees'}.` : 'Nothing is slowing it down.')
       : `When memory runs out, your ${MACHINE} uses the disk instead, and everything gets slower. ${fmt(mm.swap)} is there now. Close what you aren’t using.`;
     const badge = fine ? 'Memory is fine' : out ? 'Almost out' : 'Low on memory';
     const others = (mm.others || []).length
@@ -339,7 +339,8 @@ window.Cleanup = (() => {
       ? '<section class="cu-empty"><svg viewBox="0 0 192 120" aria-hidden="true"><defs><radialGradient id="pl" cx="35%" cy="30%"><stop offset="0" stop-color="#ffd9a8"/><stop offset=".45" stop-color="#ffb057"/><stop offset="1" stop-color="#f88008"/></radialGradient></defs>' +
         '<ellipse cx="96" cy="60" rx="78" ry="26" fill="none" stroke="rgba(248,128,8,.35)" stroke-width="1.5"/><ellipse cx="96" cy="60" rx="92" ry="34" fill="none" stroke="rgba(248,128,8,.15)" stroke-dasharray="3 5"/>' +
         '<circle cx="96" cy="60" r="22" fill="url(#pl)"/><path d="M93 50l1.8 5.2 5.2 1.8-5.2 1.8L93 64l-1.8-5.2L86 57l5.2-1.8z" fill="#1a0d00"/><circle class="cu-ember" r="3.2" fill="#ffd23f"/></svg>' +
-        '<h3>Nothing to clean up</h3><p>No idle chats, leftover programs or finished worktrees right now.</p></section>'
+        // The Windows app lists no worktrees (yet): it doesn't promise them.
+        `<h3>Nothing to clean up</h3><p>${WIN ? 'No idle chats or leftover programs right now.' : 'No idle chats, leftover programs or finished worktrees right now.'}</p></section>`
       : groups);
     const n = chats().length + progs().length + wtList.length;
     const meta = empty ? 'all tidy' : `${n} listed · ${DATA.mem.pressure === 'fine' ? 'memory is fine' : `${fmt(DATA.mem.swap)} on the disk`}`;
@@ -386,7 +387,8 @@ window.Cleanup = (() => {
     const notDone = ws.filter((w) => w.state === 'work' || (wtUsers(w).length && w.warn));
     const notes = [];
     if (cs.length) notes.push(`<p class="wt-note">${SVG.resume}<span>${cs.length === 1 ? 'The chat stays' : 'The chats stay'} in your chats list. Open one to pick up where you left off.</span></p>`);
-    if (ps.length) notes.push(`<p class="wt-note">${SVG.gear}<span>Programs get a few seconds to stop on their own first.</span></p>`);
+    // Windows asks only a program with a window to close (a console one has nothing to hear it): the rest stop at once.
+    if (ps.length) notes.push(`<p class="wt-note">${SVG.gear}<span>${WIN ? 'Programs with a window are asked to close first. The rest stop at once.' : 'Programs get a few seconds to stop on their own first.'}</span></p>`);
     if (ws.length) notes.push(`<p class="wt-note">${SVG.trash}<span>Worktree folders go to the ${TRASH}. You can put them back from there. <b>Branches stay.</b></span></p>`);
     for (const w of notDone) {
       const files = w.files || (w.warn && w.warn.files) || 0, commits = w.commits || (w.warn && w.warn.commits) || 0;
