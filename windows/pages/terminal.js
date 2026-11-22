@@ -185,23 +185,64 @@
   // Ctrl+C copies when something is selected (else it interrupts), Ctrl+V pastes: Windows Terminal's keys. The copy
   // goes through the app, as the page's clipboard API refuses a window without focus. Ctrl+V only keeps xterm.js from
   // sending ^V: the browser's own paste follows and xterm.js takes it (pasting here as well put everything in twice).
+  // The keys the app takes in a terminal (Settings › Shortcuts, the app's shortcuts.js): every action's but the
+  // dashboard's own (Ctrl+B, Ctrl+R stay the shell's). As it came: Ctrl+N (a new file in Source Control's editor),
+  // Ctrl+Shift+N (a new terminal), Ctrl+K (the Ring), Ctrl+W and Ctrl+Shift+W (close the window: what runs in it goes
+  // on), as ⌘N, ⇧⌘N, ⌘K, ⌘W and ⇧⌘W are on the Mac. Changes come on term:keys, and
+  // whether Esc and the close keys are swapped (below).
+  let keys = window.__keys || { app: ['ctrl+shift+n', 'ctrl+n', 'ctrl+k', 'ctrl+w', 'ctrl+shift+w'] };
+  atl.on('term:keys', (k) => {
+    if (k && Array.isArray(k.app)) keys = k;
+  });
+  // A key press as a combo, the app's way (shortcuts.js comboOf): the key where it is on the keyboard, whatever the
+  // layout makes of it; null without Ctrl or Alt (but the F keys), or with the Windows key.
+  const NAMED = {
+    ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right', PageUp: 'pageup', PageDown: 'pagedown',
+    Home: 'home', End: 'end', Enter: 'return', NumpadEnter: 'return', Tab: 'tab', Space: 'space', Insert: 'insert', Delete: 'delete',
+    Minus: '-', Equal: '=', BracketLeft: '[', BracketRight: ']', Backslash: '\\', Semicolon: ';', Quote: "'", Comma: ',',
+    Period: '.', Slash: '/', Backquote: '`', NumpadAdd: 'plus', NumpadSubtract: 'numsub', Escape: 'esc',
+  };
+  const comboOf = (e) => {
+    if (e.metaKey) return null;
+    const c = e.code || '';
+    let m;
+    const key = (m = /^Key([A-Z])$/.exec(c)) ? m[1].toLowerCase()
+      : (m = /^(?:Digit|Numpad)([0-9])$/.exec(c)) ? m[1]
+        : (m = /^F([1-9]|1[0-9]|2[0-4])$/.exec(c)) ? `f${m[1]}` : NAMED[c];
+    if (!key || (!e.ctrlKey && !e.altKey && !/^f\d+$/.test(key))) return null;
+    return [e.ctrlKey && 'ctrl', e.altKey && 'alt', e.shiftKey && 'shift', key].filter(Boolean).join('+');
+  };
   term.attachCustomKeyEventHandler((e) => {
-    if (e.type !== 'keydown' || !e.ctrlKey || e.altKey) return true;
+    if (e.type !== 'keydown') return true;
     const k = e.key.toLowerCase();
-    if (k === 'c' && term.hasSelection()) {
+    if (e.ctrlKey && !e.altKey && k === 'c' && term.hasSelection()) {
       e.preventDefault();
       copySelection();
       // Cleared, as in Windows Terminal: the next Ctrl+C interrupts again.
       term.clearSelection();
       return false;
     }
-    // Ctrl+N (a new file in Source Control's editor), Ctrl+Shift+N (a new terminal), Ctrl+K (the Ring), Ctrl+W
-    // and Ctrl+Shift+W (close the window: what runs in it goes on) are the app's, as ⌘N, ⇧⌘N, ⌘K, ⌘W and ⇧⌘W are on
-    // the Mac: left unhandled, they reach its menu instead of the shell. Antigravity approves its
-    // subagents' steps with Ctrl+K, so while it runs here the key is its own (the Ring is still Ctrl and the middle
-    // mouse button away).
-    if (k === 'k' && tool === 'Antigravity') return true;
-    if (k === 'n' || k === 'w' || (!e.shiftKey && k === 'k')) return false;
+    const combo = comboOf(e);
+    // Esc and the close keys swapped (Settings › Shortcuts, the Mac's EscClose.swift): this handler runs only while the
+    // terminal itself has the keys, which is when the swap acts. A plain Esc hides the window as the close keys do,
+    // whatever runs here (held, it only hides once); the close keys type a real Esc instead, as the Esc key would. An
+    // IME's Esc comes as "Process", never as Escape.
+    if (keys.escClose) {
+      if (e.key === 'Escape' && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey) {
+        e.preventDefault();
+        if (!e.repeat) atl.send('term:escClose');
+        return false;
+      }
+      if (combo && combo === keys.closePane) {
+        e.preventDefault();
+        term.input('\x1b', true);
+        return false;
+      }
+    }
+    // Left unhandled, the app's keys reach its menu instead of the shell. Antigravity approves its subagents' steps with
+    // Ctrl+K, so while it runs here that key is its own (the Ring is still the middle mouse button away).
+    if (combo && keys.app.includes(combo)) return combo === 'ctrl+k' && tool === 'Antigravity';
+    if (!e.ctrlKey || e.altKey) return true;
     return k !== 'v';
   });
   atl.on('term:data', (data) => term.write(data));

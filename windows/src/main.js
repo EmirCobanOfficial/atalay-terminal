@@ -4,7 +4,7 @@
 // (engine.js, cloud.js, git.js, themes.js, terminals.js), the keys and the updates.
 const {
   app, BaseWindow, BrowserWindow, WebContentsView, webContents, ipcMain, dialog, Menu, shell, screen, powerMonitor, nativeTheme, net,
-  clipboard, nativeImage, safeStorage, protocol, session,
+  clipboard, ClipboardItem, nativeImage, safeStorage, protocol, session,
 } = require('electron');
 const path = require('path');
 const fs = require('fs');
@@ -112,6 +112,8 @@ const { createChatTrash } = require('./chattrash');
 const { createTermFont } = require('./termfont');
 const { createMascot } = require('./mascot');
 const { createMascotAsset } = require('./mascotasset');
+const { createShareCard } = require('./sharecard');
+const { createShortcuts } = require('./shortcuts');
 const vendor = require('./vendor');
 
 let autoUpdater = null;
@@ -171,6 +173,20 @@ const settings = (() => {
     },
   };
 })();
+
+// The shortcuts the user can change (Settings › Shortcuts, shortcuts.js): a change rebuilds the menu's keys, tells the
+// terminals which keys are the app's and whether Esc and the close keys are swapped, and every page how the mouse
+// opens the Ring (preload.js).
+const shortcuts = createShortcuts({ settings, onChange: () => shortcutsChanged() });
+function shortcutsChanged() {
+  if (app.isReady()) buildMenu();
+  const keys = shortcuts.forTerminal();
+  for (const c of chats.values()) send(c.win, 'term:keys', keys);
+  for (const wc of webContents.getAllWebContents()) if (!wc.isDestroyed()) wc.send('atl:ringMouse', shortcuts.ringMouse());
+}
+// Esc and the close keys swapped (Settings › Shortcuts › Chats): an Esc that hid a terminal, held or pressed again,
+// doesn't go on to the window Windows puts in front next: Escape is dropped everywhere for half a second.
+let escMuteUntil = 0;
 
 // ---------- the parts ----------
 // The dashboard window: the chats list beside the dashboard's page, as the Mac's split view has them (two views, so
@@ -732,6 +748,10 @@ function openSignIn(url) {
   return true;
 }
 
+// The share card (web/share-card.js): its picture to the clipboard or to Downloads, shown in Explorer, and its badges and
+// avatars fetched here (sharecard.js, the Mac's CloudBridge share part). The dashboard's page only.
+const shareCard = createShareCard({ net, clipboard, ClipboardItem, nativeImage, shell, downloads: () => app.getPath('downloads'), apiBase: API_BASE });
+
 // The terminals' text size, the same in all of them and kept, as the Mac's: View's bigger and smaller text change it
 // with a terminal in front (zoom), and Settings sync (account.js) reads it or sets one from the user's other computers.
 // Never picked: xterm.js's 14 px, and it doesn't count as chosen (the account's comes in instead).
@@ -814,6 +834,7 @@ app.on('web-contents-created', (_e, contents) => {
   // The keys Viktoria's hide of a terminal might still have in flight go nowhere (parkKeys).
   contents.on('before-input-event', (e, input) => {
     if (input.type === 'keyDown' && Date.now() < keysShutUntil) e.preventDefault();
+    if (input.key === 'Escape' && Date.now() < escMuteUntil) e.preventDefault();
   });
   // A mouse button down in any of the app's pages (not Viktoria's own window): no cursor hold starts, and a running one
   // ends (mascot.appMouse), as the Mac's "never move a cursor that is dragging something".
@@ -875,7 +896,7 @@ function editMenu(wc, win) {
 
 function bootFor(webContents, extra = {}) {
   const look = { font: termFont.current(), size: 13 };
-  boots.set(webContents.id, { css: themes.css(), look, ...extra });
+  boots.set(webContents.id, { css: themes.css(), look, ringMouse: shortcuts.ringMouse(), ...extra });
   webContents.once('destroyed', () => boots.delete(webContents.id));
 }
 
@@ -904,9 +925,12 @@ function createDashboard() {
       return { action: 'deny' };
     });
     v.webContents.on('render-process-gone', () => setTimeout(() => !v.webContents.isDestroyed() && v.webContents.reload(), 500));
-    // Ctrl+B, the Mac's ⌘B: the chats list slides open or shut (in the terminals it stays the shell's).
+    // Ctrl+B, the Mac's ⌘B (or the keys set for it): the chats list slides open or shut (in the terminals it stays the
+    // shell's). While Settings › Shortcuts records new keys, every key goes to it, not the page or the menu.
     v.webContents.on('before-input-event', (e, input) => {
-      if (input.type === 'keyDown' && input.control && !input.alt && !input.shift && !input.meta && input.key.toLowerCase() === 'b') {
+      if (v === dashView && shortcuts.recordInput(input)) return e.preventDefault();
+      const chatsKeys = shortcuts.combo('chatsList');
+      if (input.type === 'keyDown' && chatsKeys && shortcuts.comboOf(input) === chatsKeys) {
         e.preventDefault();
         toggleChats();
       }
@@ -955,6 +979,13 @@ function createDashboard() {
   for (const ev of ['move', 'resize', 'minimize', 'restore', 'maximize', 'unmaximize', 'show', 'hide', 'enter-full-screen', 'leave-full-screen']) {
     win.on(ev, () => mascot.dashboardChanged());
   }
+  // The dashboard brought to the front by Windows (a terminal in front of it hid, with Ctrl+W or the swapped Esc, or
+  // Alt+Tab) is a window with neither page holding the keys: they went nowhere, the menu's (Ctrl+Shift+N, Ctrl+K…)
+  // too. Its page gets them then, as showDashboard gives them, unless the chats list kept them.
+  win.on('focus', () => setImmediate(() => {
+    if (win.isDestroyed() || !win.isFocused()) return;
+    if (!chatsView.webContents.isFocused() && !dashView.webContents.isFocused()) dashView.webContents.focus();
+  }));
   // The level-up waits for the app to be in front (the notices' "focus"): the app's focus events are BrowserWindows'.
   win.on('focus', tellFocus);
   win.on('blur', () => setImmediate(tellFocus));
@@ -1649,7 +1680,7 @@ function openChatWindow({ id = crypto.randomUUID(), cwd, claudeArgs, claude = !!
     ...(PROBE ? { x: -32000, y: -32000, frame: false } : {}),
     webPreferences: webPrefs(),
   });
-  bootFor(win.webContents, { termFont: termFontSize(), termFamily: termFont.chosen() });
+  bootFor(win.webContents, { termFont: termFontSize(), termFamily: termFont.chosen(), keys: shortcuts.forTerminal() });
   const c = { win, sessionId, cwd, claude, claudeArgs, title: title || path.basename(cwd || os.homedir()), startedAt: Date.now(), steppedAside: false };
   chats.set(id, c);
   win.on('focus', () => touchTerminal(id));
@@ -1697,8 +1728,16 @@ function openChatWindow({ id = crypto.randomUUID(), cwd, claudeArgs, claude = !!
     if (quitting || !terminals.has(id)) return;
     e.preventDefault();
     c.steppedAside = false;
+    const hadKeys = win.isFocused();
     win.setParentWindow(null);
     win.hide();
+    // Windows leaves the keys with the hidden window (unpinned first, nothing under it takes them): Ctrl+Shift+N, the
+    // Ring's keys, anything typed next went nowhere. The dashboard takes them, as the window under a closed one does
+    // on the Mac, when the one hidden had them and the dashboard shows.
+    if (hadKeys && dash && !dash.isDestroyed() && dash.isVisible() && !dash.isMinimized()) {
+      dash.focus();
+      if (!chatsView.webContents.isFocused()) dashView.webContents.focus();
+    }
     if (activeTerminalId === id) {
       activeTerminalId = null;
       pushActiveSession();
@@ -1947,6 +1986,15 @@ ipcMain.on('term:input', (e, data) => {
     if (data !== '\x1b[I' && data !== '\x1b[O') touchTerminal(found[0]);
     terminals.write(found[0], data);
   }
+});
+// Esc and the close keys swapped (Settings › Shortcuts, the Mac's EscClose.swift): the terminal itself had the keys and
+// Esc was pressed (pages/terminal.js), so its window hides as Ctrl+W does, whatever runs in it. An Esc held or pressed
+// again in the next half second doesn't reach the window Windows puts in front next.
+ipcMain.on('term:escClose', (e) => {
+  const found = chatOf(e);
+  if (!found || !shortcuts.escCloses()) return;
+  escMuteUntil = Date.now() + 500;
+  found[1].win.close();
 });
 ipcMain.on('term:resize', (e, { cols, rows }) => {
   const found = chatOf(e);
@@ -2798,6 +2846,10 @@ ipcMain.handle('atl:post', async (e, name, body) => {
       case 'notes':
         if (e.sender !== pageOf(dashView)) throw new Error('not this page');
         return await notesStore.handle(body);
+      // Settings › Shortcuts and the list of them all (shortcuts.js, the Mac's KeysBridge): the dashboard's page only.
+      case 'keys':
+        if (e.sender !== pageOf(dashView)) throw new Error('not this page');
+        return await shortcuts.handle(body);
       // Settings > Claude, the local MCP server: the dashboard's page only, and it only asks (mcp.js asks the user natively).
       case 'mcp':
         if (e.sender !== pageOf(dashView)) throw new Error('not this page');
@@ -2846,6 +2898,10 @@ ipcMain.handle('atl:post', async (e, name, body) => {
         if (body.type === 'openChat') return openFriendChat(body.id);
         if (body.type === 'state') return cloudState();
         if (body.type === 'openSignIn') return openSignIn(body.url);
+        if (shareCard.handles(body.type)) {
+          if (e.sender !== pageOf(dashView)) throw new Error('not this page');
+          return await shareCard.handle(body);
+        }
         if (body.type === 'terminalFont') return await terminalFont(body.size, body.family);
         if (body.type === 'terminalFonts') return { families: await termFont.families() };
         if (body.type === 'refresh') return await cloud.handle(body), cloudState();
@@ -2896,9 +2952,9 @@ function buildMenu() {
       submenu: [
         // VS Code's: Ctrl+N a new file in Source Control's editor, Ctrl+Shift+N a new window (here a terminal), as the
         // Mac's ⌘N and ⇧⌘N.
-        { label: 'New File', accelerator: 'CmdOrCtrl+N', click: () => newFile() },
-        { label: 'New Terminal…', accelerator: 'CmdOrCtrl+Shift+N', click: () => showOverlay('Overlay.newTerminal()') },
-        { label: 'Ring', accelerator: 'CmdOrCtrl+K', click: () => showShortcuts() },
+        { label: 'New File', accelerator: shortcuts.accel('newFile'), click: () => newFile() },
+        { label: 'New Terminal…', accelerator: shortcuts.accel('newTerminal'), click: () => showOverlay('Overlay.newTerminal()') },
+        { label: 'Ring', accelerator: shortcuts.accel('shortcutsWheel'), click: () => showShortcuts() },
         // No key of its own: Ctrl+0 is Actual Size's (the text size, ⌘0 on the Mac), and two items on one key leave only
         // one of them working.
         { label: 'Dashboard', click: () => showDashboard() },
@@ -2908,10 +2964,10 @@ function buildMenu() {
         // Ctrl+W (the Mac's ⌘W, which hides again since the Mac's d7e69be): the window in front closes, and a terminal's
         // only hides: what runs in it (Claude, Codex, Antigravity, a shell) goes on as a planet or car on the orbit, and a
         // click brings it back. A terminal ends with its End button or Window > End This Terminal.
-        { label: 'Close Window', accelerator: 'CmdOrCtrl+W', click: () => closeFocused() },
+        { label: 'Close Window', accelerator: shortcuts.accel('closePane'), click: () => closeFocused() },
         // Ctrl+Shift+W (the Mac's ⇧⌘W) does the same. Hidden, as one item on the menu is enough: on Windows a hidden
         // item's key still works (acceleratorWorksWhenHidden is the Mac's).
-        { label: 'Close Window', accelerator: 'CmdOrCtrl+Shift+W', visible: false, click: () => closeFocused() },
+        { label: 'Close Window', accelerator: shortcuts.accel('closeWindow'), visible: false, click: () => closeFocused() },
         { role: 'quit', label: 'Quit', accelerator: 'CmdOrCtrl+Q' },
       ],
     },
@@ -2921,7 +2977,7 @@ function buildMenu() {
       submenu: [
         // Its key is caught by the dashboard window itself (createDashboard): in a terminal Ctrl+B stays the shell's.
         {
-          label: 'Chats List', accelerator: 'CmdOrCtrl+B', registerAccelerator: false,
+          label: 'Chats List', accelerator: shortcuts.accel('chatsList'), registerAccelerator: false,
           click: () => {
             showDashboard();
             toggleChats();
@@ -2937,15 +2993,23 @@ function buildMenu() {
             syncViktoriaMenu(); // a click flips a checkbox by itself
           },
         },
-        { label: 'Reload Dashboard', accelerator: 'CmdOrCtrl+R', click: () => dashView && dashView.webContents.reload() },
+        { label: 'Reload Dashboard', accelerator: shortcuts.accel('reloadDashboard'), click: () => dashView && dashView.webContents.reload() },
         // The page that has the keys: the dashboard window's two are views, which the role doesn't reach. Development
         // only: a released app has no DevTools.
         ...(RELEASE ? [] : [{ label: 'Toggle Developer Tools', accelerator: 'CmdOrCtrl+Shift+I', click: (_i, _w, wc) => wc && wc.toggleDevTools() }]),
         { type: 'separator' },
-        { label: 'Zoom In', accelerator: 'CmdOrCtrl+Plus', click: () => zoom(1) },
-        { label: 'Zoom Out', accelerator: 'CmdOrCtrl+-', click: () => zoom(-1) },
-        { label: 'Actual Size', accelerator: 'CmdOrCtrl+0', click: () => zoom(0) },
-        { type: 'separator' }, { role: 'togglefullscreen' },
+        { label: 'Zoom In', accelerator: shortcuts.accel('biggerText'), click: () => zoom(1) },
+        { label: 'Zoom Out', accelerator: shortcuts.accel('smallerText'), click: () => zoom(-1) },
+        { label: 'Actual Size', accelerator: shortcuts.accel('defaultText'), click: () => zoom(0) },
+        { type: 'separator' },
+        // The role's own F11 would come back with its keys taken off (a role's empty accelerator is its default one).
+        {
+          label: 'Toggle Full Screen', accelerator: shortcuts.accel('fullScreen'),
+          click: () => {
+            const w = BaseWindow.getFocusedWindow();
+            if (w && w !== over && w !== panels.notices) w.setFullScreen(!w.isFullScreen());
+          },
+        },
       ],
     },
     {
@@ -2963,7 +3027,24 @@ function buildMenu() {
         { label: 'End This Terminal', click: () => { const f = focusedChat(); if (f) endTerminal(f[0]); } },
       ],
     },
+    {
+      label: 'Help',
+      submenu: [
+        // Every shortcut at a glance (web/cheatsheet.js), the Mac's Help › Keyboard Shortcuts: keys of its own only if set
+        // in Settings › Shortcuts. The same keys close it again while the dashboard is in front.
+        {
+          label: 'Keyboard Shortcuts', accelerator: shortcuts.accel('keyboardShortcuts'),
+          click: () => {
+            const toggle = !!dash && !dash.isDestroyed() && dash.isFocused();
+            showDashboard();
+            run(dashView, `window.__radar && __radar.openShortcuts && __radar.openShortcuts(${toggle})`);
+          },
+        },
+      ],
+    },
   ]));
+  // The dashboard is a BaseWindow, given the menu by hand when it was made (createDashboard): a rebuilt menu (new keys
+  // set) reaches it too, as setApplicationMenu gives it to every window.
 }
 
 // ---------- start, quit ----------

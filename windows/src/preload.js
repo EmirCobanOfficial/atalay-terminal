@@ -12,9 +12,9 @@ const boot = ipcRenderer.sendSync('atl:boot') || {};
 const full = !boot.mascot;
 const handlers = {};
 // `mcp`: Settings > Claude, the local MCP server (mcp.js); `notesai`: Settings > Privacy > AI tools and my notes
-// (notesai.js). main.js answers both for the dashboard's page only.
+// (notesai.js); `keys`: Settings › Shortcuts (shortcuts.js). main.js answers them for the dashboard's page only.
 for (const name of full
-  ? ['radar', 'cloud', 'git', 'theme', 'overlay', 'messages', 'savers', 'chats', 'archive', 'trash', 'spend', 'files', 'notes', 'noteWindow', 'feed', 'mcp', 'notesai']
+  ? ['radar', 'cloud', 'git', 'theme', 'overlay', 'messages', 'savers', 'chats', 'archive', 'trash', 'spend', 'files', 'notes', 'noteWindow', 'feed', 'mcp', 'notesai', 'keys']
   : ['mascot']) {
   handlers[name] = { postMessage: (body) => ipcRenderer.invoke('atl:post', name, body) };
 }
@@ -42,6 +42,8 @@ if (boot.demo) contextBridge.exposeInMainWorld('__DEMO__', true);
 if (boot.noteWindow) contextBridge.exposeInMainWorld('__NOTE_WINDOW__', boot.noteWindow);
 // The chat window's size as it was left, without the ring for its glow (main.js's chatWindowSize), or null the first time.
 if (boot.role === 'chat') contextBridge.exposeInMainWorld('__CHAT_SIZE__', boot.chatSize || null);
+// A terminal window: the keys the app takes there and the Esc swap (shortcuts.js); changes come on term:keys.
+if (boot.keys) contextBridge.exposeInMainWorld('__keys', boot.keys);
 
 // A terminal window's line to its shell (pages/terminal.js): only its own channels.
 const TERM = /^term:/;
@@ -54,17 +56,22 @@ if (full) {
   });
 }
 
-// The Ring: Ctrl and the middle mouse button, anywhere in the app's windows (the Mac opens it with the middle
-// button; Ctrl+K still does here too). Neither the page nor the terminal under the pointer gets that press: no orbit
+// The Ring: the middle mouse button, anywhere in the app's windows, with Ctrl as it came, or alone (a touchpad's
+// three-finger tap can be one: Windows' touchpad settings), or not at all (Settings › Shortcuts, shortcuts.js; its keys,
+// Ctrl+K as it came, are the menu's). Neither the page nor the terminal under the pointer gets that press: no orbit
 // zoom, no autoscroll, no click sent to the program. Cancelling the pointer press keeps its mouse events from coming.
 let wheelPress = false;
+let ringMouse = ['ctrl', 'plain', 'off'].includes(boot.ringMouse) ? boot.ringMouse : 'ctrl';
+ipcRenderer.on('atl:ringMouse', (_e, mode) => {
+  if (['ctrl', 'plain', 'off'].includes(mode)) ringMouse = mode;
+});
 const swallow = (e) => {
   e.preventDefault();
   e.stopImmediatePropagation();
 };
 if (full) {
   window.addEventListener('pointerdown', (e) => {
-    wheelPress = e.button === 1 && e.ctrlKey;
+    wheelPress = e.button === 1 && (ringMouse === 'plain' || (ringMouse === 'ctrl' && e.ctrlKey));
     if (!wheelPress) return;
     swallow(e);
     ipcRenderer.send('atl:wheel');

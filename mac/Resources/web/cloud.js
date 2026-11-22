@@ -1039,7 +1039,32 @@ window.Cloud = (() => {
     3: 'Click with three fingers. If Look up or three-finger drag is on in System Settings › Trackpad, they can clash: use 4 fingers then.',
     0: "The trackpad won't open the Ring.",
   };
-  function wheelCard(k, fingers = 4) {
+  // Windows (its shortcuts.js sends ringMouse): no trackpad click to read, so the middle mouse button is the first way,
+  // with Ctrl as it came, alone (a touchpad's three-finger tap can be one, in Windows' touchpad settings) or not at all;
+  // the second way is keys only.
+  const RING_MOUSE_HELP = {
+    ctrl: 'Hold Ctrl and click the middle mouse button anywhere in the app.',
+    plain: 'Click the middle mouse button anywhere in the app. For a three-finger tap, set Taps to Middle mouse button in Windows touchpad settings.',
+    off: "The mouse won't open the Ring.",
+  };
+  function wheelCardWin(k, mouse) {
+    const label = k?.label || '';
+    const seg = [['ctrl', 'Ctrl + middle'], ['plain', 'Middle'], ['off', 'Off']].map(([m, t]) =>
+      `<button type="button" class="ksw-opt${m === mouse ? ' on' : ''}" data-ring-mouse="${m}" aria-pressed="${m === mouse}">${t}</button>`).join('');
+    return (
+      `<div class="ks-wheel">${WHEEL_ICON}<div class="ksw-txt"><b>Ring</b><span>Your folders around the pointer: pick one and a chat opens there.</span><span class="ksw-help">${esc(mouse === 'off' && !label ? 'Open it from File › Ring, or set keys below.' : RING_MOUSE_HELP[mouse] || RING_MOUSE_HELP.ctrl)}</span></div>` +
+      '<div class="ksw-how">' +
+      '<div><small>middle click</small>' +
+      (mouse !== 'ctrl' ? '<button type="button" class="ks-undo" data-ring-mouse="ctrl" title="Back to how it came" aria-label="Middle click: back to Ctrl + middle">↺</button>' : '') +
+      `<span class="ksw-seg" role="group" aria-label="Middle click">${seg}</span></div>` +
+      '<div><small>keys</small>' +
+      (k?.changed ? '<button type="button" class="ks-undo" data-id="shortcutsWheel" title="Back to how it came">↺</button>' : '') +
+      `<button type="button" class="ks-key${label ? '' : ' none'}" data-id="shortcutsWheel" title="Click, then press the new keys · Delete: none">${label ? esc(label) : '—'}</button></div>` +
+      '</div></div>'
+    );
+  }
+  function wheelCard(k, fingers = 4, mouse) {
+    if (typeof mouse === 'string') return wheelCardWin(k, mouse);
     const label = k?.label || '';
     const seg = [[4, '4 fingers'], [3, '3 fingers'], [0, 'Off']].map(([n, t]) =>
       `<button type="button" class="ksw-opt${n === fingers ? ' on' : ''}" data-fingers="${n}" aria-pressed="${n === fingers}">${t}</button>`).join('');
@@ -1065,7 +1090,8 @@ window.Cloud = (() => {
     keys: (labels) =>
       labels.filter(Boolean).flatMap((l) => {
         const t = l.toLowerCase();
-        return [t, t.replace(/[⌘⇧⌥⌃]/g, '').trim(), ...[...t].flatMap((c) => MODS[c] || [])];
+        // Windows writes keys out (Ctrl+Shift+N): each part counts on its own too.
+        return [t, t.replace(/[⌘⇧⌥⌃]/g, '').trim(), ...[...t].flatMap((c) => MODS[c] || []), ...(window.__platform === 'win32' ? t.split('+') : [])];
       }).join(' '),
     words: (typed) => typed.trim().toLowerCase().split(/\s+/).filter(Boolean),
     match(words, find, keys) {
@@ -1104,7 +1130,7 @@ window.Cloud = (() => {
     // The list of them all (cheatsheet.js), with the keys that open it now; Help's menu when they were taken off.
     const sheet = all.find((k) => k.id === 'keyboardShortcuts')?.label;
     page.innerHTML =
-      wheelCard(wheel, st.ringFingers ?? 4) + msg('shortcutsWheel') +
+      wheelCard(wheel, st.ringFingers ?? 4, st.ringMouse) + msg('shortcutsWheel') +
       groups.map((g) => `<section class="st-group ks-group"><h3 class="st-h">${esc(g.name)}</h3><div class="st-box">` + g.items.map((k) =>
         `<div class="ks-row" data-find="${esc(`${k.title} ${g.name} ${k.label || ''}${k.id === 'closePane' && hasEsc ? ' esc escape' : ''}`.toLowerCase())}" data-keys="${esc(keyFind.keys([k.label]))}"><span>${esc(k.title)}</span>` +
         (k.changed ? `<button type="button" class="ks-undo" data-id="${esc(k.id)}" title="Back to how it came" aria-label="${esc(k.title)}: back to how it came">↺</button>` : '') +
@@ -1113,11 +1139,11 @@ window.Cloud = (() => {
       '<p class="ks-none" hidden></p>' +
       '<div class="ks-foot">' +
       `<p class="st-note">${sheet ? `see them all any time with <kbd>${esc(sheet)}</kbd>` : 'see them all any time in Help › Keyboard Shortcuts'}</p>` +
-      (all.some((k) => k.changed) || (st.ringFingers ?? 4) !== 4 || st.escClose === true ? '<button type="button" class="st-btn ks-all" title="Every shortcut back to how it came">reset all</button>' : '') +
+      (all.some((k) => k.changed) || (st.ringFingers ?? 4) !== 4 || (st.ringMouse && st.ringMouse !== 'ctrl') || st.escClose === true ? '<button type="button" class="st-btn ks-all" title="Every shortcut back to how it came">reset all</button>' : '') +
       '</div>';
     const card = page.querySelector('.ks-wheel');
     if (card) {
-      card.dataset.find = `ring shortcut wheel chats 3-finger 4-finger click trackpad ${wheel?.label || ''}`.toLowerCase();
+      card.dataset.find = `ring shortcut wheel chats ${st.ringMouse ? 'middle mouse click touchpad' : '3-finger 4-finger click trackpad'} ${wheel?.label || ''}`.toLowerCase();
       card.dataset.keys = keyFind.keys([wheel?.label]);
     }
     page.onclick = onKeysClick;
@@ -1146,6 +1172,15 @@ window.Cloud = (() => {
   async function onKeysClick(e) {
     const escSw = e.target.closest('.ks-esc');
     if (escSw) return toggleEsc(escSw);
+    // Windows: how the middle mouse button opens the Ring.
+    const rm = e.target.closest('[data-ring-mouse]');
+    if (rm) {
+      keysMsg = null;
+      const m = rm.dataset.ringMouse;
+      await renderKeys(await keysCall({ type: 'ringMouse', mode: m }));
+      q(`.ksw-opt[data-ring-mouse="${m}"]`)?.focus();
+      return;
+    }
     const opt = e.target.closest('.ksw-opt, .ks-undo[data-fingers]');
     if (opt) {
       keysMsg = null;

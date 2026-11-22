@@ -91,6 +91,8 @@ in `src/main.js` and pushes to them with `window.__radar.*`, `window.__messages.
 | `src/chatlist.js`, `pages/chats.*` | the chats list beside the dashboard (a view of its own in the dashboard window): every saved chat by project, each folder a card with the app's terminals in it, folders opened from the list, favourites, the archive (Settings lists it) | Sidebar.swift |
 | `src/notewindow.js` | a note out of the dashboard in a window of its own (web/note.html): above the dashboard, or pinned above every app; its place and pin kept, the notes left out at the last quit reopened; the dashboard's page stays the notes' one writer | NoteWindow.swift |
 | `src/feedpanel.js` | the community feed's lines (web/feed.html) in a see-through, click-through window at the top left of the screen | FeedPanel.swift |
+| `src/shortcuts.js` | Settings › Shortcuts: the menu's keys as the user set them (`settings.json` `shortcuts`), recording new ones, the Ring's middle click (with Ctrl, alone or off) and its keys, Esc and the close keys swapped | Shortcuts.swift, EscClose.swift |
+| `src/sharecard.js` | the share card's picture to the clipboard or Downloads, shown in Explorer, and its badges and avatars fetched for it (an allow-list, every redirect checked) | Cloud.swift (CloudBridge share part) |
 | `pages/terminal.*` | a chat or terminal window: xterm.js and its header | ChatWindow |
 
 ### The session host
