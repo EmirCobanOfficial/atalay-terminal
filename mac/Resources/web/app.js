@@ -715,10 +715,12 @@ function applyModes() {
   hideTip();
 }
 // What the user can see decides the work: the app reports whether the dashboard is visible and in front;
-// a hidden page pauses CSS animations and the 3D view.
+// a hidden page pauses CSS animations and the 3D view. `covered` (the Mac only): one of the app's chat windows lies over
+// nearly all of the dashboard, so the map can't be seen though the window is (attack.js holds the ship back then).
 function setVisibility(visible, focused, covered) {
   document.documentElement.classList.toggle('paused', !visible);
   document.documentElement.classList.toggle('behind', visible && !focused);
+  document.documentElement.classList.toggle('covered', visible && !!covered);
   map('activity', visible, focused, covered);
 }
 // Power save (the app decides and keeps it: PowerSaver.swift, the Windows app's power.js): the switch at the map's top

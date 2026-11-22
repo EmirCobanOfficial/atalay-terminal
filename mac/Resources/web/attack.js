@@ -15,7 +15,7 @@
 //    seconds later the centre puts itself back together, exactly as it was, and the flames die down with it. About 14 s,
 //    each sound (sounds/attack-*.m4a) at its moment; nothing is harmed, every click goes through it and it never takes
 //    the focus. The banner shows in the notices panel (messages.html), over whatever is in front, so a terminal or
-//    another app in front doesn't hide it; with the map out of sight (another view, the dashboard behind, another app)
+//    another app in front doesn't hide it; with the map out of sight (another view, the dashboard hidden or covered)
 //    only the banner and its alarm come. If the attacker cancels during the lock, the strip says LOCK LOST and no ship comes.
 //  · Whoever was attacked is shielded for 30 minutes (nobody can fire at them): a small "Shielded · m:ss" chip on your
 //    own card and profile (shieldChip()).
@@ -212,11 +212,18 @@ window.Attack = (() => {
     if (wait > 0) return void (timer = setTimeout(next, wait + 300));
     play(queue.shift());
   }
-  // The map is on screen when the dashboard is in front (not behind another app, not hidden: app.js setVisibility) and
-  // no view covers it (they hide #mapwrap).
+  // The map is on screen when the dashboard can be seen (app.js setVisibility: not hidden, minimized or under other
+  // windows, `paused`; not under one of the app's own chat windows, `covered`) and no view covers it (they hide #mapwrap).
+  // On the Mac, not being the app in front doesn't count against it: `behind` is only another app having the keyboard
+  // (a browser, Discord, the released Orbiterm beside the staging one) while the dashboard still shows, and the map is
+  // drawn there (raid.js pokes the loop to full speed), so the ship has to come. Counting it is what kept the ship away
+  // while the warning showed. Windows can't tell a dashboard beside another app from one under it (it reports only shown
+  // and not minimized, main.js), so there `behind` still counts, or the ship would fly unseen.
+  const BEHIND_HIDES = window.__platform === 'win32';
   function mapInSight() {
     const space = document.getElementById('space');
-    return !html.classList.contains('paused') && !html.classList.contains('behind') && !!space && space.clientWidth > 0 && space.clientHeight > 0;
+    return !html.classList.contains('paused') && !html.classList.contains('covered') && !(BEHIND_HIDES && html.classList.contains('behind')) &&
+      document.visibilityState === 'visible' && !!space && space.clientWidth > 0 && space.clientHeight > 0;
   }
   // The ship's sounds, each played at its moment on the map (raid.js gives the moments); the alarm is the banner's.
   const SOUNDS = ['attack-flyby', 'attack-lasers', 'attack-boom', 'attack-rebuild'];
@@ -762,6 +769,18 @@ window.Attack = (() => {
     if (Social.dnd()) say('test: on do not disturb, so it is let go');
   }
 
+  // ---------- staging: "↺ RESET ATTACK" (social-test.js) ----------
+  // Clears your shield and every cooldown you are in (the API's POST v1/friends/attack/reset, on staging and local only),
+  // then loads the friends list again so each 🚀 has the state the API now has.
+  async function reset() {
+    const r = await api('POST', 'v1/friends/attack/reset', {});
+    if (!r || r.error || !r.reset) return say(`test: ${(r && r.error) || 'reset failed'}`);
+    await Social.load();
+    paintAll();
+    paintShield();
+    say('attack reset · shield and cooldowns cleared');
+  }
+
   // ---------- live ----------
   Social.on((ev, S) => {
     // The friends list came (social.js): the API's clock with it.
@@ -780,5 +799,5 @@ window.Attack = (() => {
     }
   });
 
-  return { on, button, blocked, status, shieldChip, test, text: TEXT, wide: () => false };
+  return { on, button, blocked, status, shieldChip, test, reset, text: TEXT, wide: () => false };
 })();

@@ -9,7 +9,8 @@
 //            turn, stack and dissolve
 //   goal     the weekly goal's moment, played now as if the goal were reached
 //   head to head  REAL (the API's) or DEMO (made up) on a friend's card in Friends
-//   attack   🚀 ATTACK ME: a friend's spaceship attack on yourself, the map in sight (attack.js)
+//   attack   🚀 ATTACK ME: a friend's spaceship attack on yourself, the map in sight (attack.js); ↺ RESET ATTACK: your
+//            shield and cooldowns cleared, on staging too, to fire again at once (the API's POST v1/friends/attack/reset)
 window.SocialTest = (() => {
   const st = { h2h: 'real' };
   try {
@@ -53,7 +54,7 @@ window.SocialTest = (() => {
     `<span>goal</span><div class="lb-seg">${btn('goal', 'play', '▶ PLAY')}</div>` +
     `<span>head to head</span><div class="lb-seg">${btn('h2h', 'real', 'REAL', st.h2h === 'real')}${btn('h2h', 'demo', 'DEMO', st.h2h === 'demo')}</div>` +
     // A friend's spaceship attack on yourself (attack.js test(), the API's POST v1/friends/dev/attack in attack.ts).
-    (window.Attack?.test ? `<span>attack</span><div class="lb-seg">${btn('attack', 'me', '🚀 ATTACK ME')}</div>` : '') + '</div>';
+    (window.Attack?.test ? `<span>attack</span><div class="lb-seg">${btn('attack', 'me', '🚀 ATTACK ME')}${btn('attack', 'reset', '↺ RESET ATTACK')}</div>` : '') + '</div>';
   // A click on the strip: true when the leaderboard is to be drawn again.
   function click(target) {
     const b = target.closest('[data-st]');
@@ -74,7 +75,10 @@ window.SocialTest = (() => {
       return false;
     }
     if (key === 'attack') {
-      window.Attack?.test();
+      // RESET works on the shared staging API too (it clears your shield and cooldowns there); ATTACK ME needs a local API
+      // with DEV_TOOLS=1 and answers an error on staging, which the toast says.
+      if (val === 'reset') window.Attack?.reset();
+      else window.Attack?.test();
       return false;
     }
     if (key === 'goal') {

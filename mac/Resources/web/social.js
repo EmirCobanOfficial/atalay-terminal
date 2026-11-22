@@ -156,6 +156,8 @@ window.Social = (() => {
         f.attack = { ...(f.attack || {}) };
         if ('off' in ev) f.attack.off = !!ev.off;
         if ('shieldUntil' in ev) f.attack.shieldUntil = ev.shieldUntil;
+        // Your cooldown on them, cleared (staging's reset, attack.ts).
+        if ('cooldownUntil' in ev) f.attack.cooldownUntil = ev.cooldownUntil;
         break;
       }
       case 'message': {
