@@ -42,6 +42,32 @@ window.Social = (() => {
       }
     });
 
+  // Your ORB (the economy, CONTRACT v3): the API's `orb` object, all money in units of 1/10000 ORB. Kept from /v1/orb/me,
+  // the friends snapshot (`me.orb`), every `orb` push and the answers of a fire or a cancel; `orb_settings` pushes change
+  // the shared numbers (price, limits, rate) in place for every label. The heartbeat's copy (cloud.js render) is taken
+  // only when no live copy came in the last few seconds: it is a little older than a push, and matters when the socket is down.
+  let O = null;
+  let orbAt = 0; // when a live copy last came (ms)
+  const orbText = (units, signed) => {
+    const u = Math.trunc(Number(units) || 0);
+    const v = Math.floor(Math.abs(u) / 100) / 100; // floor to 2 decimals, never round up
+    const t = v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    return signed ? `${u < 0 ? '\u2212' : '+'}${t}` : t;
+  };
+  const setOrb = (o, beat) => {
+    if (!o || typeof o !== 'object') return;
+    if (beat && Date.now() - orbAt < 5000) return;
+    if (!beat) orbAt = Date.now();
+    O = { ...(O || {}), ...o };
+    emit({ type: 'orb_state' });
+  };
+  function loadOrb() {
+    return api('GET', 'v1/orb/me').then((r) => {
+      if (r && !r.error && r.orb) setOrb(r.orb);
+      return r;
+    });
+  }
+
   let loading = null;
   function load() {
     loading =
@@ -50,6 +76,7 @@ window.Social = (() => {
         loading = null;
         if (r && !r.error) {
           S = r;
+          if (r.me && r.me.orb && typeof r.me.orb === 'object') (O = { ...(O || {}), ...r.me.orb }), (orbAt = Date.now());
           emit({ type: 'snapshot' });
         }
         return r;
@@ -96,7 +123,15 @@ window.Social = (() => {
   function event(ev) {
     if (!ev || !ev.type) return;
     // (Re)connected: anything that happened while the line was down is in a fresh snapshot.
-    if (ev.type === 'hello') loadNotes(), loadNoteInvites();
+    if (ev.type === 'hello') loadNotes(), loadNoteInvites(), loadOrb();
+    // Your ORB changed (an earn, a grant, an attack's cost or refund) or the economy's numbers did: kept before anything else.
+    if (ev.type === 'orb' && ev.orb) (O = { ...(O || {}), ...ev.orb }), (orbAt = Date.now());
+    // The price or the rules changed (CONTRACT v3): /v1/orb/me and the friends list again.
+    if (ev.type === 'orb_settings' && ev.settings) {
+      O = { ...(O || {}), ...ev.settings };
+      loadOrb();
+      if (S) load();
+    }
     if (ev.type === 'hello' || !S) {
       load().then(() => emit(ev));
       return;
@@ -157,7 +192,7 @@ window.Social = (() => {
         f.attack = { ...(f.attack || {}) };
         if ('off' in ev) f.attack.off = !!ev.off;
         if ('shieldUntil' in ev) f.attack.shieldUntil = ev.shieldUntil;
-        // Your cooldown on them, cleared (staging's reset, attack.ts).
+        // Your cooldown on them: cleared (staging's reset) or the longer one after you cancelled (attack.ts).
         if ('cooldownUntil' in ev) f.attack.cooldownUntil = ev.cooldownUntil;
         break;
       }
@@ -221,6 +256,10 @@ window.Social = (() => {
     PRESENCE,
     dot,
     handle,
+    orb: () => O,
+    orbText,
+    setOrb,
+    loadOrb,
     load,
     event,
     on: (f) => (subs.add(f), () => subs.delete(f)),

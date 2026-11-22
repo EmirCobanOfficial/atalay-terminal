@@ -3,7 +3,8 @@
 // A spaceship attack between friends, for fun (the API's attack.ts sends it; the orbit map's raid.js flies the ship):
 //  · Firing: a 🚀 button on a friend's row (left of ◎ ✉, on hover or keyboard focus), "🚀 Fire" beside Message on their
 //    profile, and "🚀 fire at" in the right-click menu. No confirm box: pressing shows "Locking on… · Cancel" for LOCK_MS
-//    and Cancel within it aborts (their warning turns to LOCK LOST; the 2-minute cooldown still applies). Else it fires.
+//    and Cancel within it aborts (their warning turns to LOCK LOST, the price comes back, and that friend waits out a
+//    30-minute cooldown, cancel_cooldown_min). Else it fires. Each fire costs ORB (attack_price, the ORB economy).
 //  · A friend who can't be fired at keeps the button, dimmed, with the reason (status()): away, do not disturb, offline
 //    (invisible looks offline), turned off, shielded · m:ss, ready in m:ss. The API sends each friend's state in the
 //    friends list and keeps it live (attack_state events, social.js); it enforces the same on fire.
@@ -67,6 +68,14 @@ window.Attack = (() => {
   const sync = (r) => {
     if (r && typeof r.now === 'number' && Number.isFinite(r.now)) skew = r.now - Date.now();
   };
+  // The ORB economy's numbers as the attack shows them (all from Social.orb(), the API's own, live).
+  const ORB = () => (window.Social && Social.orb && Social.orb()) || null;
+  const orbT = (u) => Social.orbText(u);
+  // Long waits (a friend's day cap ends at their midnight): "3 h 12 min", or m:ss under an hour.
+  const wait = (ms) => {
+    const m = Math.max(0, Math.ceil(ms / 60000));
+    return m >= 60 ? `${Math.floor(m / 60)} h${m % 60 ? ` ${m % 60} min` : ''}` : clock(ms);
+  };
   // Every word the attack shows, in one place.
   const TEXT = {
     lockBig: 'LOCKED ON',
@@ -83,7 +92,8 @@ window.Attack = (() => {
     // The firing buttons.
     fire: 'Fire',
     fireAria: (n) => `Fire at ${n}`,
-    fireTip: (n) => `Fire a little spaceship at ${n} · once every 2 minutes`,
+    fireTip: (n, p, cd) => `Fire a little spaceship at ${n}${p ? ` · ${p} ORB` : ''}${cd > 0 ? ` · once every ${cd === 1 ? 'minute' : `${cd} minutes`}` : ''}`,
+    firePrice: (p) => (p ? ` · ${p} ORB` : ''),
     menuFire: (n) => `🚀 fire at ${n}`,
     locking: 'Locking on…',
     cancel: 'Cancel',
@@ -92,7 +102,7 @@ window.Attack = (() => {
     inFlight: 'In flight',
     hitToast: (n) => `\u{1F4A5} Your ship hit ${n}`,
     hitPlate: 'HIT',
-    cancelled: (n) => `Lock cancelled · no ship fired at ${n}`,
+    cancelled: (n, back) => `Lock cancelled · no ship fired at ${n}${back ? ` · ${back} ORB back` : ''}`,
     // Their state changed as you pressed.
     changed: {
       away: (n) => `${n} just went away · no ship fired`,
@@ -107,12 +117,15 @@ window.Attack = (() => {
       offline: { label: () => 'offline', tip: (n) => `${n} is offline. You can fire when they're online.` },
       off: { label: () => 'turned off', tip: (n) => `${n} turned off spaceship attacks.` },
       mine_off: { label: () => 'turn attacks on in Settings', tip: () => 'Spaceship attacks are off for you, so you can\'t fire either. Turn them on in Settings > Privacy.' },
-      shield: { label: (t) => `shielded · ${t}`, tip: (n, t) => `${n} was just attacked: no one can fire at them for 30 minutes after an attack. ${t} left.` },
+      shield: { label: (t) => `shielded · ${t}`, tip: (n, t) => `${n} was just attacked: no one can fire at them for ${(ORB() || {}).shieldMin || 30} minutes after an attack. ${t} left.` },
       cooldown: { label: (t) => `ready in ${t}`, tip: (n, t) => `You can fire at ${n} again in ${t}.` },
+      // Your ORB (CONTRACT v3): not enough for the price (`funds`), or the friend was hit as often as allowed today (`target_daily_max`).
+      funds: { label: () => 'not enough ORB', tip: (n, t, o) => `Firing costs ${orbT(o.attackPrice)} ORB. You have ${orbT(o.balance)}.` },
+      target_daily_max: { label: (t) => `max hits today · ${t}`, tip: (n, t, o) => `${n} was hit ${o.hitsPerDayMax || 3} times today, the most a day allows. You can fire again in ${t}.` },
     },
     // Your own shield.
     shielded: (t) => `Shielded · ${t}`,
-    shieldTip: 'No one can attack you for 30 minutes after an attack',
+    shieldTip: () => `No one can attack you for ${(ORB() || {}).shieldMin || 30} minutes after an attack`,
     // Settings › Privacy.
     setting: {
       title: 'let friends fire spaceships at me',
@@ -927,6 +940,9 @@ window.Attack = (() => {
   // which is also how invisible looks) and the state the API sent (`f.attack`, kept live by social.js: their switch, their
   // shield's end, your cooldown's end), plus your own switch. { why, label, tip }: the label sits on the item, the tip is
   // the tooltip and the note a click gives.
+  // A friend hit as often as a day allows (`target_daily_max`), until their next local midnight: id -> ms (API clock). Kept
+  // here, not in f.attack: the friends list doesn't carry it (CONTRACT v3), so a reload of the list would forget it.
+  const dailyMax = new Map();
   function status(f) {
     if (!f) return null;
     const n = f.nick || f.name;
@@ -942,9 +958,13 @@ window.Attack = (() => {
     else if (a.off) why = 'off';
     else if (a.shieldUntil > now) (why = 'shield'), (until = a.shieldUntil);
     else if (a.cooldownUntil > now) (why = 'cooldown'), (until = a.cooldownUntil);
+    else if ((dailyMax.get(f.id) || 0) > now) (why = 'target_daily_max'), (until = dailyMax.get(f.id));
+    // Your ORB (known once the API has sent it): not enough for the price.
+    const o = ORB();
+    if (!why && o && Number.isFinite(o.attackPrice) && Number.isFinite(o.balance) && o.balance < o.attackPrice) why = 'funds';
     if (!why) return null;
-    const t = until ? clock(until - now) : '';
-    return { why, until, label: TEXT.blocked[why].label(t), tip: TEXT.blocked[why].tip(n, t) };
+    const t = until ? (why === 'cooldown' ? clock(until - now) : wait(until - now)) : '';
+    return { why, until, label: TEXT.blocked[why].label(t), tip: TEXT.blocked[why].tip(n, t, o || {}) };
   }
   // The same words for the old callers (cloud.js's menu asked these two).
   const blocked = (f) => (status(f) ? status(f).why : '');
@@ -963,13 +983,14 @@ window.Attack = (() => {
     const attrs = `type="button" data-act="attack" data-atk="${esc(f.id)}" data-kind="${kind}"${s && !lk ? ' aria-disabled="true"' : ''}`;
     const flt = fl ? `${TEXT.inFlight} \u00b7 ${clock(flights.get(f.id).t0 + HIT.boom - Date.now())}` : '';
     const aria = fl ? `${TEXT.inFlight}, ${n}` : lk ? TEXT.lockingAria(n) : s ? `${TEXT.fireAria(n)}: ${s.label}` : TEXT.fireAria(n);
-    const tip = fl ? flt : lk ? TEXT.cancel : s ? s.tip : TEXT.fireTip(n);
+    const price = ORB() && Number.isFinite(ORB().attackPrice) ? orbT(ORB().attackPrice) : '';
+    const tip = fl ? flt : lk ? TEXT.cancel : s ? s.tip : TEXT.fireTip(n, price, (ORB() || {}).cooldownMin ?? 2);
     const body = fl && !(locking && locking.id === f.id) ? `🚀 ${flt}` : lk ? `🚀 ${TEXT.locking} · ${TEXT.cancel}` : null;
     if (kind === 'menu') {
-      return `<button ${attrs} data-ctx="attack" class="${dim.trim()}${lk ? ' locking' : ''}" title="${esc(tip)}">${lk ? body : `${esc(TEXT.menuFire(n))}${s ? ` · ${esc(s.label)}` : ''}`}</button>`;
+      return `<button ${attrs} data-ctx="attack" class="${dim.trim()}${lk ? ' locking' : ''}" title="${esc(tip)}">${lk ? body : `${esc(TEXT.menuFire(n))}${s ? ` · ${esc(s.label)}` : esc(TEXT.firePrice(price))}`}</button>`;
     }
     if (kind === 'pv') {
-      return `<button ${attrs} class="bd-glassbtn atk-pv${dim}${lk ? ' locking' : ''}" title="${esc(tip)}" aria-label="${esc(aria)}">${lk ? body : `🚀 ${TEXT.fire}${s ? ` · ${esc(s.label)}` : ''}`}</button>`;
+      return `<button ${attrs} class="bd-glassbtn atk-pv${dim}${lk ? ' locking' : ''}" title="${esc(tip)}" aria-label="${esc(aria)}">${lk ? body : `🚀 ${TEXT.fire}${s ? ` · ${esc(s.label)}` : esc(TEXT.firePrice(price))}`}</button>`;
     }
     return `<button ${attrs} class="mn-btn atk-fire${dim}${lk ? ' locking' : ''}" title="${esc(tip)}" aria-label="${esc(aria)}">${lk ? body : '🚀'}</button>`;
   }
@@ -1000,7 +1021,7 @@ window.Attack = (() => {
   // Always drawn (hidden without a shield) so it shows the moment a shield starts; the clock below fills it in.
   const shieldChip = () => {
     const left = shieldLeft();
-    return `<span class="atk-shield" title="${esc(TEXT.shieldTip)}"${left ? '' : ' hidden'}>${SHIELD_ICON}<b>${left ? esc(TEXT.shielded(clock(left))) : ''}</b></span>`;
+    return `<span class="atk-shield" title="${esc(TEXT.shieldTip())}"${left ? '' : ' hidden'}>${SHIELD_ICON}<b>${left ? esc(TEXT.shielded(clock(left))) : ''}</b></span>`;
   };
   function paintShield() {
     const left = shieldLeft();
@@ -1021,10 +1042,15 @@ window.Attack = (() => {
   let locking = null; // { id, name, cancel, req, timer }: the lock-on your own press began, still cancellable
   function remember(f, r) {
     sync(r);
+    // Your ORB as a refusal says it: what you have and the price, or the day's limit. (A fire's own `orb` is taken as its
+    // answer comes, press(): by the lock's end a newer push may be in.)
+    if (r.why === 'funds') Social.setOrb({ attackPrice: r.price, balance: r.balance });
+    if (r.why === 'target_daily_max' && r.max) Social.setOrb({ hitsPerDayMax: r.max });
     if (!f) return;
     f.attack = f.attack || {};
     if (r.readyAt && (r.why === 'cooldown' || r.fired)) f.attack.cooldownUntil = r.readyAt;
     if (r.why === 'shield' && r.readyAt) f.attack.shieldUntil = r.readyAt;
+    if (r.why === 'target_daily_max' && r.readyAt) dailyMax.set(f.id, r.readyAt);
     if (r.fired && r.shieldUntil) f.attack.shieldUntil = r.shieldUntil;
     if (r.why === 'off') f.attack.off = true;
   }
@@ -1038,6 +1064,7 @@ window.Attack = (() => {
     remember(f, r);
     const why = r.why === 'unavailable' ? r.reason : r.why;
     const s = status(f);
+    if (why === 'funds' || why === 'target_daily_max') return say(s && s.why === why ? s.tip : TEXT.blocked[why].tip(n, why === 'target_daily_max' ? wait((r.readyAt || 0) - serverNow()) : '', ORB() || {}));
     say(TEXT.changed[why] ? TEXT.changed[why](n) : s ? s.tip : (TEXT.blocked[why] || TEXT.blocked.offline).tip(n, ''));
   }
   function press(id) {
@@ -1056,6 +1083,7 @@ window.Attack = (() => {
     Sfx.play('locktick');
     // Refused at once (their state changed): no waiting for the lock to run out.
     lk.req.then((r) => {
+      if (r && r.orb) Social.setOrb(r.orb);
       // The ship is on its way: the hit timeline runs from this answer (cancel() stops it).
       if (r && r.fired && !lk.cancel) {
         lk.t0 = Date.now();
@@ -1078,7 +1106,8 @@ window.Attack = (() => {
       paintAll();
     }
   }
-  // Cancel within the lock-on: their warning turns to LOCK LOST; the cooldown stays.
+  // Cancel within the lock-on: their warning turns to LOCK LOST, the price comes back (the chip follows the answer's `orb`
+  // and the `orb` push) and that friend's cooldown becomes the longer cancel one (the answer's readyAt).
   function cancel(lk) {
     clearTimeout(lk.timer);
     lk.cancel = true;
@@ -1094,9 +1123,15 @@ window.Attack = (() => {
       remember(f, r);
       // Said once the API answers: a cancel that came too late (the lock was over) means the ship flew.
       const c = await api('POST', `v1/friends/${encodeURIComponent(lk.id)}/attack/cancel`, {});
+      if (c && c.orb) Social.setOrb(c.orb);
       if (c && c.cancelled) {
-        if (f) f.attack.shieldUntil = null;
-        say(TEXT.cancelled(lk.name));
+        if (f) {
+          f.attack.shieldUntil = null;
+          // The 30-minute cooldown on this friend (CONTRACT v3): the button counts it down.
+          if (c.readyAt) f.attack.cooldownUntil = c.readyAt;
+        }
+        sync(c);
+        say(TEXT.cancelled(lk.name, c.refunded > 0 ? orbT(c.refunded) : ''));
       } else startHit(lk.id, lk.name, lk.t0 || Date.now()); // too late to cancel: the ship flew, the timeline goes on
       paintAll();
     });
@@ -1141,6 +1176,8 @@ window.Attack = (() => {
     // The friends list came (social.js): the API's clock with it.
     if (ev.type === 'snapshot') sync(S);
     if (ev.type === 'attack') arrive(ev);
+    // Your ORB, the price or the limits changed: every fire button says it at once.
+    if (ev.type === 'orb' || ev.type === 'orb_settings' || ev.type === 'orb_state') paintAll();
     if (ev.type === 'attack_cancel') cancelled(ev);
     if (ev.type === 'hello') {
       loadPref();

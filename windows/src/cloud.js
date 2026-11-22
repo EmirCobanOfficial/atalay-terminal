@@ -28,8 +28,8 @@ const THEME = /^[a-z0-9-]{1,40}$/;
 
 // Only the friends, messages, notifications, feedback, Roadmap, account, sign-in, settings-sync, badges and releases endpoints,
 // as the Mac's CloudBridge allows them; the pages never reach anything else with the token.
-// v1/me/profile and v1/me/avatar: Settings → PROFILE's links and picture (profile.js).
-const SOCIAL_ROUTES = ['v1/me/status', 'v1/me/activity', 'v1/me/leaderboard', 'v1/me/profile', 'v1/me/avatar', 'v1/feedback'];
+// v1/me/profile and v1/me/avatar: Settings → PROFILE's links and picture (profile.js). v1/orb/me: your ORB (social.js loadOrb).
+const SOCIAL_ROUTES = ['v1/me/status', 'v1/me/activity', 'v1/me/leaderboard', 'v1/me/profile', 'v1/me/avatar', 'v1/feedback', 'v1/orb/me'];
 const SOCIAL_TREES = [
   'v1/social', 'v1/friends', 'v1/messages', 'v1/leaderboard', 'v1/notifications',
   'v1/roadmap', 'v1/account', 'v1/auth', 'v1/settings', 'v1/badges', 'v1/releases',
@@ -296,6 +296,7 @@ function createCloud(opts = {}) {
     checking: false,
     checkedAt: null,
     xpPaused: false,
+    orb: null,
     // Why the API refused a name picked offline ("name_full", ...), for the page to show once.
     nameError: null,
     // Your level and active time as the API counts them (api/src/xp.ts); the pages show them as they are.
@@ -313,7 +314,7 @@ function createCloud(opts = {}) {
       online: S.online, working: S.working, version, build: 0,
       update: null, updating: null, updateError: null, nameError: S.nameError,
       updateReady: false, updateRightAway: S.updateRightAway, checking: S.checking, checkedAt: S.checkedAt,
-      xpPaused: S.xpPaused, xp: S.xp,
+      xpPaused: S.xpPaused, xp: S.xp, orb: S.orb,
       shareTokens: S.shareTokens,
     };
   }
@@ -405,6 +406,7 @@ function createCloud(opts = {}) {
     set({
       reachable: true, registered: true, hackerName: name, tag, online: a.online, working: Number.isInteger(a.working) ? a.working : null,
       xp: a.xp && typeof a.xp === 'object' ? a.xp : S.xp, xpPaused: a.xpPaused === true,
+      orb: a.orb && typeof a.orb === 'object' ? a.orb : S.orb,
     });
     // Without a name the API takes none yet: they wait for the account it signs in to. Not awaited: the first read of
     // every transcript and the POSTs can take minutes, and the beat must stay free meanwhile.
@@ -646,7 +648,7 @@ function createCloud(opts = {}) {
     saveToken(null);
     setPending(null);
     save({ xp: null });
-    set({ registered: false, hackerName: null, tag: null, xp: null });
+    set({ registered: false, hackerName: null, tag: null, xp: null, orb: null });
     await identify();
     return null;
   }

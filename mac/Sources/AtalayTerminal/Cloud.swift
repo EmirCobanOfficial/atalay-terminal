@@ -38,6 +38,11 @@ enum DeviceID {
 final class Cloud {
     static let shared = Cloud()
 
+    /// Your ORB as the heartbeat answers it (api/src/orb.ts orbState, CONTRACT v3): money in units of 1/10000 ORB.
+    struct Orb: Codable, Equatable {
+        let balance: Int?, ratePerHour: Int?, dailyCapMin: Int?, earnedTodaySeconds: Int?, earnedToday: Int?
+        let attackPrice: Int?, shieldMin: Int?, cooldownMin: Int?, cancelCooldownMin: Int?, hitsPerDayMax: Int?
+    }
     /// Your level and active time as the API counts them (api/src/xp.ts); the pages show them as they are.
     struct XP: Codable, Equatable {
         let level: Int
@@ -98,6 +103,8 @@ final class Cloud {
         /// Why the API refused a name picked offline ("name_full", …), for the page to show once.
         var nameError: String?
         var xp: XP?
+        /// Your ORB (CONTRACT v3), as the heartbeat answers it: units of 1/10000 ORB.
+        var orb: Orb?
         /// Settings → Privacy, "share my token counts": off, this Mac sends the API no token counts at all (sendUsage).
         var shareTokens = UserDefaults.standard.object(forKey: "shareTokens") as? Bool ?? true
     }
@@ -231,7 +238,7 @@ final class Cloud {
     /// Keeps this Mac online, says whether its user is working (XP), picks up updates and sends a name picked offline.
     private func heartbeat(_ token: String) async {
         // No name (nor tag) yet: a token from `begin`, before signing in or picking one.
-        struct Answer: Decodable { let hackerName: String?; let tag: Int?; let online: Int; let working: Int?; let update: Release?; let xp: XP?; let xpPaused: Bool? }
+        struct Answer: Decodable { let hackerName: String?; let tag: Int?; let online: Int; let working: Int?; let update: Release?; let xp: XP?; let xpPaused: Bool?; let orb: Orb? }
         // The theme too: the leaderboard shows someone's card in their theme, and anyone can take it.
         let work: [String: Any] = ["active": Activity.active, "tz": TimeZone.current.secondsFromGMT() / 60, "theme": ThemeStore.shared.chosenId,
                                    // Viktoria: -1 when she is off, else her Mischief level (0..3); a profile shows it.
@@ -269,6 +276,7 @@ final class Cloud {
             }
             s.xp = a.xp ?? s.xp
             s.xpPaused = a.xpPaused ?? false
+            s.orb = a.orb ?? s.orb
             state = s
             noteForce(s.update)
             if let u = state.update { prepareUpdate(u) }
@@ -412,6 +420,7 @@ final class Cloud {
         s.hackerName = nil
         s.tag = nil
         s.xp = nil
+        s.orb = nil
         state = s
         await identify()
         return nil
@@ -859,6 +868,7 @@ extension Cloud {
             "checkedAt": s.checkedAt.map { $0.timeIntervalSince1970 * 1000 } ?? NSNull(), "xpPaused": s.xpPaused,
             "xp": s.xp.flatMap { try? JSONSerialization.jsonObject(with: JSONEncoder().encode($0)) } ?? NSNull(),
             "shareTokens": s.shareTokens,
+            "orb": s.orb.flatMap { try? JSONSerialization.jsonObject(with: JSONEncoder().encode($0)) } ?? NSNull(),
         ]
     }
 }
@@ -874,7 +884,8 @@ final class CloudBridge: NSObject, WKScriptMessageHandlerWithReply {
         // A fragment or a ';' parameter isn't sent as part of the path, so what's checked below wouldn't be what goes
         // out ("v1/account/signout#" reached sign-out).
         guard !path.contains("#"), !path.contains(";") else { return false }
-        let routes = ["v1/me/status", "v1/me/activity", "v1/me/leaderboard", "v1/me/profile", "v1/me/avatar", "v1/feedback"]
+        // v1/orb/me: your ORB and its last moves (the API's orb.ts; social.js loadOrb).
+        let routes = ["v1/me/status", "v1/me/activity", "v1/me/leaderboard", "v1/me/profile", "v1/me/avatar", "v1/feedback", "v1/orb/me"]
         let trees = ["v1/social", "v1/friends", "v1/messages", "v1/leaderboard", "v1/notifications", "v1/roadmap", "v1/account", "v1/auth",
                      "v1/settings", "v1/badges", "v1/releases", "v1/notes",
                      // A whole screen in one answer (the API's screens.ts: a person's profile page).

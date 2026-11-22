@@ -50,14 +50,24 @@ window.Cloud = (() => {
   // The logo shows your status. Unread messages and friend requests count on the friends icon on the left edge.
   brand.insertAdjacentHTML('afterbegin', '<i class="pdot bme" hidden></i>');
 
-  // Orb balance as the top bar shows it: 748, 12.4K, 3.1M.
-  const ORB_DEMO = 748;
-  const orbNum = (n) => {
-    const v = Math.max(0, Math.floor(Number(n) || 0));
-    if (v < 1000) return String(v);
-    const [d, u] = v < 1e6 ? [1e3, 'K'] : [1e6, 'M'];
-    return `${(Math.floor((v / d) * 10) / 10).toFixed(1).replace(/\.0$/, '')}${u}`;
+  // Your ORB in the top bar (CONTRACT v3: units of 1/10000 ORB, shown floored to 2 decimals, tabular). Social keeps it:
+  // /v1/orb/me, every `orb` push, `orb_settings` for the shared numbers, and the heartbeat's copy (render()). Nothing
+  // shows until the API has sent it.
+  const orbNow = () => {
+    const o = window.Social && Social.orb && Social.orb();
+    return o && Number.isFinite(o.balance) ? o : (S && S.orb && typeof S.orb === 'object' && Number.isFinite(S.orb.balance) ? S.orb : null);
   };
+  // 12.40 up to 99,999.99, then 123.45K and 1.23M so the top bar still fits.
+  const orbNum = (units) => {
+    const v = Math.floor(Math.max(0, Number(units) || 0) / 100) / 100;
+    if (v < 1e5) return v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const [d, u] = v < 1e6 ? [1e3, 'K'] : [1e6, 'M'];
+    return `${(Math.floor((v / d) * 100) / 100).toFixed(2)}${u}`;
+  };
+  let orbShown = null; // the balance (units) the chip last showed
+  let orbAnim = 0;
+  let orbPopEl = null; // the chip's popover while it's open
+  let orbBeat = ''; // the heartbeat's last `orb` (Cloud.swift / the Windows app's cloud.js), as text
 
   function render(s) {
     if (!s) return;
@@ -70,9 +80,19 @@ window.Cloud = (() => {
     const title = r ? `<small class="rk" style="--rc:${r.color}">${esc(r.name.toUpperCase())} · LV ${x.level}</small>` : '<small>HACKER</small>';
     const bar = r ? `<i class="xpb" style="--rc:${r.color}"><i style="width:${Xp.pct(x).toFixed(1)}%"></i></i>` : '';
     // After the name: the badge you display (badges.js paints it in), then your Orb, the app's money (orb.png), and
-    // how many you have. ORB_DEMO stands in until the economy's API sends `s.orb`.
-    const orb = `<span class="orb-chip" title="Orb"><img src="orb.png" alt=""><span class="orb-n">${orbNum(s.orb ?? ORB_DEMO)}</span></span>`;
+    // how many you have, once the API has said (the chip is a button: its popover has the rest).
+    const ob = orbNow();
+    if (ob) orbShown = ob.balance;
+    const orb = ob
+      ? `<span class="orb-chip" role="button" tabindex="0" aria-haspopup="dialog" aria-expanded="${orbPopEl ? 'true' : 'false'}" aria-label="${esc(`Your ORB: ${Social.orbText(ob.balance)}. Details`)}" title="Your ORB"><img src="orb.png" alt=""><span class="orb-n">${orbNum(ob.balance)}</span><i class="orb-tick" aria-hidden="true"></i></span>`
+      : '';
     setHTML(stack, s.hackerName ? `${title}<b${long}>${esc(s.hackerName)}<i class="htag">${tagText(s.tag)}</i>${orb}</b>${bar}` : '<b>ORBITERM</b>');
+    // A heartbeat brought a new `orb`: the chip and the fire buttons take it (Social skips it when a push was newer).
+    const beat = s.orb && typeof s.orb === 'object' && Number.isFinite(s.orb.balance) ? JSON.stringify(s.orb) : '';
+    if (beat && beat !== orbBeat) {
+      orbBeat = beat;
+      Social.setOrb(s.orb, true);
+    }
     // The badge you display, beside your name (badges.js).
     window.Badges?.paintTop();
     brand.title = r
@@ -2644,6 +2664,100 @@ window.Cloud = (() => {
     toast(show ? 'friends see your active time again' : 'your active time is hidden from friends · your level still shows');
   }
 
+  // ---------- your ORB: the chip's number and its popover ----------
+  const orbReduced = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
+  // The chip follows the balance: a quiet count-up (0.5 s) when it grows, a "+0.21" that fades beside it, nothing louder.
+  // `delta`: the push's signed change (units), for the tick; none for a plain refresh.
+  function paintOrb(delta) {
+    const o = orbNow();
+    const chip = brand.querySelector('.orb-chip');
+    if (!o || !chip) {
+      if (o) render(S);
+      return;
+    }
+    const n = chip.querySelector('.orb-n');
+    const from = orbShown == null ? o.balance : orbShown;
+    orbShown = o.balance;
+    chip.setAttribute('aria-label', `Your ORB: ${Social.orbText(o.balance)}. Details`);
+    cancelAnimationFrame(orbAnim);
+    if (from === o.balance || orbReduced()) n.textContent = orbNum(o.balance);
+    else {
+      const t0 = performance.now();
+      const step = (t) => {
+        const k = Math.min(1, (t - t0) / 500);
+        n.textContent = orbNum(from + (o.balance - from) * (1 - (1 - k) ** 3));
+        if (k < 1 && n.isConnected) orbAnim = requestAnimationFrame(step);
+      };
+      orbAnim = requestAnimationFrame(step);
+    }
+    const tick = chip.querySelector('.orb-tick');
+    // (a change under 0.01 ORB, a second or two of pay, would read +0.00: no tick)
+    if (tick && delta && Math.abs(delta) >= 100) {
+      tick.textContent = Social.orbText(delta, true);
+      tick.classList.toggle('neg', delta < 0);
+      tick.classList.remove('go');
+      void tick.offsetWidth;
+      tick.classList.add('go');
+    }
+    if (orbPopEl) orbPopFill();
+  }
+
+  function orbPopFill() {
+    const o = orbNow();
+    if (!orbPopEl) return;
+    if (!o) return orbPopClose();
+    const T = (u) => Social.orbText(u);
+    const capSec = (o.dailyCapMin || 0) * 60;
+    const done = o.dailyCapMin && o.earnedTodaySeconds >= capSec;
+    const row = (k, v, sub) => `<div class="orb-r"><span>${k}</span><b>${v}</b>${sub ? `<small>${sub}</small>` : ''}</div>`;
+    orbPopEl.innerHTML =
+      `<div class="orb-bal"><img src="orb.png" alt=""><b>${T(o.balance)}</b><span>ORB</span></div>` +
+      row('Earning', `${T(o.ratePerHour)} ORB/h`, done ? 'Today’s limit is reached' : 'Only while you work') +
+      (Number.isFinite(o.earnedToday) ? row('Earned today', `+${T(o.earnedToday)}`, o.dailyCapMin ? `${Xp.dur(Math.min(o.earnedTodaySeconds || 0, capSec))} of ${Xp.dur(capSec)}` : '') : '') +
+      row('Attack price', `${T(o.attackPrice)} ORB`, 'Refunded if you cancel the lock') +
+      (o.shieldMin ? row('Shield', `${o.shieldMin} min`, `After a hit${o.hitsPerDayMax ? ` · up to ${o.hitsPerDayMax} hits a day` : ''}`) : '');
+  }
+  function orbPopClose() {
+    if (!orbPopEl) return;
+    orbPopEl.remove();
+    orbPopEl = null;
+    brand.querySelector('.orb-chip')?.setAttribute('aria-expanded', 'false');
+    document.removeEventListener('pointerdown', orbPopOutside, true);
+    document.removeEventListener('keydown', orbPopKey, true);
+  }
+  const orbPopOutside = (e) => {
+    if (orbPopEl && !orbPopEl.contains(e.target) && !e.target.closest('.orb-chip')) orbPopClose();
+  };
+  const orbPopKey = (e) => {
+    if (e.key === 'Escape' && orbPopEl) {
+      e.stopPropagation();
+      orbPopClose();
+      brand.querySelector('.orb-chip')?.focus();
+    }
+  };
+  function orbPop() {
+    if (orbPopEl) return orbPopClose();
+    const chip = brand.querySelector('.orb-chip');
+    if (!chip || !orbNow()) return;
+    orbPopEl = document.createElement('div');
+    orbPopEl.className = 'orb-pop';
+    orbPopEl.setAttribute('role', 'dialog');
+    orbPopEl.setAttribute('aria-label', 'Your ORB');
+    document.body.appendChild(orbPopEl);
+    orbPopFill();
+    const r = chip.getBoundingClientRect();
+    orbPopEl.style.top = `${Math.round(r.bottom + 8)}px`;
+    orbPopEl.style.left = `${Math.max(8, Math.min(innerWidth - orbPopEl.offsetWidth - 8, Math.round(r.left - 12)))}px`;
+    chip.setAttribute('aria-expanded', 'true');
+    Social.loadOrb();
+    document.addEventListener('pointerdown', orbPopOutside, true);
+    document.addEventListener('keydown', orbPopKey, true);
+  }
+  Social.on((ev) => {
+    if (ev.type === 'orb') paintOrb(ev.delta);
+    else if (ev.type === 'orb_settings' || ev.type === 'orb_state' || ev.type === 'snapshot') paintOrb();
+  });
+
   // Your XP changed (the daily bonus, a new level): show it now rather than at the next heartbeat.
   Social.on((ev) => {
     if (ev.type === 'xp' && ev.xp && S) {
@@ -3210,7 +3324,17 @@ window.Cloud = (() => {
 
   $('update').addEventListener('click', openUpdate);
   $('settings').addEventListener('click', () => openMenu('settings'));
-  brand.addEventListener('click', () => openProfile());
+  // The ORB chip is a button of its own (its popover); the rest of the logo opens your profile.
+  brand.addEventListener('click', (e) => {
+    if (e.target.closest('.orb-chip')) return orbPop();
+    openProfile();
+  });
+  brand.addEventListener('keydown', (e) => {
+    if ((e.key === 'Enter' || e.key === ' ') && e.target.closest && e.target.closest('.orb-chip')) {
+      e.preventDefault();
+      orbPop();
+    }
+  });
   addEventListener('keydown', (e) => {
     if (!modal && shown === 'themes' && e.key !== 'Escape' && !e.target.closest('input, textarea')) return views.themes.__keys?.(e);
     if (e.key !== 'Escape') return;
