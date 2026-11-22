@@ -201,6 +201,12 @@ async function freshKey(keyFile, token) {
   const config = notes ? { releaseInfo: { releaseNotes: notes } } : undefined;
   await builder.build({ targets: builder.Platform.WINDOWS.createTarget('dir'), publish: 'never', config });
   const unpacked = path.join(dist, 'win-unpacked');
+  // The finished app.asar is checked too, not only src/ before the build: a staging package built in this same folder
+  // meanwhile (scripts/staging.js --packaged) puts its access key back into src/ for a few minutes.
+  const packed = require('@electron/asar').listPackage(path.join(unpacked, 'resources', 'app.asar')).map((f) => f.split('\\').join('/'));
+  for (const f of ['/src/accesskey.js', '/src/clientkey.js']) {
+    if (packed.includes(f)) fail(`app.asar has ${f} (a staging build ran in this folder at the same time?): build again`);
+  }
   // Where an installed copy looks for its updates (electron-updater reads it): electron-builder writes it only when it
   // packs an installer, never for the folder alone, so it's written here as it would be. Without it a release never
   // hears of the next one (0.22.0 and 0.22.1 went out so).

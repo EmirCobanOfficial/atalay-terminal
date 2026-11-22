@@ -104,7 +104,15 @@ const accessModule = path.join(root, 'src', 'accesskey.js');
   fs.rmSync(path.join(root, 'src', 'clientkey.js'), { force: true });
   // The access key goes into the staging package's sources, and out of them again as soon as it is built.
   fs.rmSync(accessModule, { force: true });
-  if (access) fs.writeFileSync(accessModule, `module.exports = ${JSON.stringify(access)};\n`, { mode: 0o600 });
+  if (access) {
+    // Out again however the build ends: Ctrl+C, Ctrl+Break or the console window closed, not only an error (the
+    // `finally` below). A hard kill runs nothing: the next staging or release run takes a leftover out first.
+    const drop = () => fs.rmSync(accessModule, { force: true });
+    process.on('exit', drop);
+    for (const sig of ['SIGINT', 'SIGBREAK', 'SIGHUP', 'SIGTERM']) process.on(sig, () => process.exit(130));
+    // Readable by this user only while it is there (mode 0o600 means nothing on Windows: icacls).
+    writePrivate(accessModule, `module.exports = ${JSON.stringify(access)};\n`);
+  }
   const builder = require('electron-builder');
   try {
     await build(builder);
