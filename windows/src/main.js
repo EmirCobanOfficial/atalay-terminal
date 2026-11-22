@@ -2008,9 +2008,10 @@ function handleRadar(msg) {
       const delay = Number(msg.delay);
       const banner = {
         name: String(typeof msg.name === 'string' ? msg.name : '').slice(0, 40),
-        kind: msg.kind === 'lock' || msg.kind === 'lost' ? msg.kind : 'danger',
+        kind: msg.kind === 'lock' || msg.kind === 'lost' || msg.kind === 'hit' ? msg.kind : 'danger',
         delay: Number.isFinite(delay) ? Math.min(Math.max(delay, 0), 5000) : 0,
         sound: msg.sound === true,
+        avatar: String(typeof msg.avatar === 'string' ? msg.avatar : '').slice(0, 2048),
         taunt: msg.taunt === true,
       };
       runPanel(panels.notices, `window.Attack && Attack.banner && Attack.banner(${JSON.stringify(banner)})`);

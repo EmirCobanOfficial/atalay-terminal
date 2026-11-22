@@ -897,3 +897,18 @@ img.pf-pic, img.me-pic { cursor: zoom-in; }
 .atk-hit.still { animation: atk-hit-in var(--still) linear var(--wait) forwards, atk-hit-out var(--still) linear calc(var(--wait) + var(--end)) forwards; }
 .atk-hit.still .dk, .atk-hit.still .lt { animation: none; stroke-dashoffset: 0; }
 @media (prefers-reduced-motion: reduce) { .atk-hit .dk, .atk-hit .lt { animation: none; stroke-dashoffset: 0; } }
+
+/* The hit feel of the one who fired (attack.js strike()): overlays that follow their row / profile top and take no clicks.
+   Warm amber and cream like the damage's cracks and the flames, no neon. */
+#atk-strike { position: fixed; inset: 0; z-index: 48; pointer-events: none; overflow: hidden; }
+.atk-sk { position: fixed; display: none; pointer-events: none; }
+.atk-sk .atk-hit { position: absolute; inset: 0; }
+.atk-sk .sk-flash { position: absolute; inset: 0; opacity: 0; background: rgba(255, 236, 204, 0.85); }
+.atk-sk .sk-prog { position: absolute; left: 0; bottom: 0; height: 2px; width: 0; background: #ffb020; box-shadow: 0 0 6px rgba(255, 140, 20, 0.6); }
+.atk-sk .sk-mk { position: absolute; }
+.atk-sk .sk-mk i { position: absolute; transform: translate(-50%, -50%); color: #fff1de; font: 800 14px/1 var(--font-sans); font-style: normal; text-shadow: 0 0 3px rgba(0, 0, 0, 0.9), 0 1px 0 rgba(0, 0, 0, 0.8); }
+.atk-sk .sk-mk.amber i { color: #ffb020; }
+.atk-sk .sk-fire { position: absolute; left: 6%; bottom: 0; width: 70%; height: 66px; }
+.atk-sk .sk-fire canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+.atk-sk .sk-glow { position: absolute; inset: 0; opacity: 0; background: radial-gradient(ellipse 50% 72% at 50% 100%, rgba(255, 112, 20, 0.3), rgba(255, 84, 10, 0.11) 55%, transparent 76%); }
+@keyframes atk-prog { from { width: 0; } to { width: 100%; } }

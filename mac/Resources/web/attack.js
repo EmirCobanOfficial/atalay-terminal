@@ -21,6 +21,11 @@
 //    own card and profile (shieldChip()).
 //  · Settings › Privacy "let friends fire spaceships at me" (`social.attacks`, kept with the account): off, nobody can
 //    fire at you, and you can't fire either (the button stays, dimmed: "turn attacks on in Settings").
+//  · Hit feel, for the one who fired (strike section, dashboard page): once the API answers the fire, a fixed local
+//    timeline runs from that moment (the target's own show is fixed: lock + ship + blast, raid.js): 1.2 s launch sound and
+//    the button counts `In flight · 0:07`; 7.64 and 7.78 s two hit ticks on their picture; 7.92 s the blast: their row
+//    flashes, cracks, burns 2.5 s, shakes, confirm sound; 8.3 s toast `Your ship hit <name>`; the crack stays to 15.4 s.
+//    A cancel stops it all quietly. Row not on screen: the notices panel shows a small HIT plate (kind 'hit', banner()).
 // Two pages load this file: the dashboard hears the attack, decides and flies the ship; the notices panel shows the
 // banner it's told to (Swift relays it: the radar handler's "attack" → MessagePanel.attack → Attack.banner; Windows:
 // main.js).
@@ -44,6 +49,7 @@ window.Attack = (() => {
   };
   const BANNER_MS = 2500; // the DANGER banner up, its fade-out at the end included
   const LOST_MS = 700; // LOCK LOST
+  const HIT_MS = 1500; // the small HIT plate
   const LOCK_MS = 1200; // the lock-on warning before the ship arrives (the API's attackstate.ts LOCK_MS)
   // Locked, the ship held back a moment more for a cancel sent at the lock's last instant (the API lets one in up to
   // 300 ms late, attack.ts CANCEL_MS): it says LOCK LOST then, never after the ship came.
@@ -83,6 +89,9 @@ window.Attack = (() => {
     cancel: 'Cancel',
     lockingAria: (n) => `Locking on to ${n}. Cancel`,
     fired: (n) => `🚀 Fired at ${n}`,
+    inFlight: 'In flight',
+    hitToast: (n) => `\u{1F4A5} Your ship hit ${n}`,
+    hitPlate: 'HIT',
     cancelled: (n) => `Lock cancelled · no ship fired at ${n}`,
     // Their state changed as you pressed.
     changed: {
@@ -122,10 +131,14 @@ window.Attack = (() => {
     let sr = null;
     let up = false;
     let timers = [];
+    let cur = null; // the kind up or on its way, until it's gone
     function banner(b) {
       if (!b) return;
-      const kind = b.kind === 'lock' || b.kind === 'lost' ? b.kind : 'danger';
-      if (kind === 'danger' && !b.name) return;
+      const kind = b.kind === 'lock' || b.kind === 'lost' || b.kind === 'hit' ? b.kind : 'danger';
+      if ((kind === 'danger' || kind === 'hit') && !b.name) return;
+      // Your own HIT plate never cuts a warning about you (LOCKED ON, DANGER, LOCK LOST): it's let go, its sounds played.
+      if (kind === 'hit' && cur && cur !== 'hit') return;
+      cur = kind;
       timers.forEach(clearTimeout);
       timers = [setTimeout(() => show(b, kind), Math.max(0, Math.min(5000, Number(b.delay) || 0)))];
     }
@@ -145,25 +158,30 @@ window.Attack = (() => {
       const name = esc(String(b.name || '').slice(0, 40));
       const still = reduced() ? ' still' : '';
       // Said by its words and its mark, not by its colour alone.
-      stage.innerHTML = kind === 'danger'
+      // The hit plate (the attacker's side, strike()): a small amber mark, HIT, who was hit; 1.5 s.
+      const pic = /^https?:\/\//i.test(String(b.avatar || '')) ? `<img alt="" src="${esc(String(b.avatar).slice(0, 500))}">` : '';
+      stage.innerHTML = kind === 'hit'
+        ? `<div class="atk-hitplate${still}" aria-hidden="true">${pic}<i>\u2715</i><b>${TEXT.hitPlate}</b><span>${name}</span></div>`
+        : kind === 'danger'
         ? `<div class="atk-banner${still}" aria-hidden="true"><i class="atk-haz"></i><div class="atk-in"><b class="atk-big"><i>⚠</i>${TEXT.dangerBig}</b>` +
           `<span class="atk-who">${TEXT.dangerWho(name)}</span>${b.taunt ? `<span class="atk-taunt">${esc(TEXT.taunt)}</span>` : ''}</div><i class="atk-haz"></i></div>`
         : `<div class="atk-banner lock${kind === 'lost' ? ' lost' : ''}${still}" aria-hidden="true"><i class="atk-ret">${RET}</i><div class="atk-in">` +
           `<b class="atk-big">${kind === 'lost' ? TEXT.lostBig : TEXT.lockBig}</b>${kind === 'lost' ? '' : `<span class="atk-who">${TEXT.lockSub}</span>`}</div></div>`;
-      sr.textContent = kind === 'danger' ? `${TEXT.dangerAria(String(b.name || '').slice(0, 40))}${b.taunt ? ` ${TEXT.taunt}` : ''}` : kind === 'lost' ? TEXT.lostAria : TEXT.lockAria;
+      sr.textContent = kind === 'hit' ? `${TEXT.hitToast(String(b.name || '').slice(0, 40))}` : kind === 'danger' ? `${TEXT.dangerAria(String(b.name || '').slice(0, 40))}${b.taunt ? ` ${TEXT.taunt}` : ''}` : kind === 'lost' ? TEXT.lostAria : TEXT.lockAria;
       up = true;
       // The panel takes the screen as it does for the flames, letting every click through (messages.js sizeNotes).
       window.Messages?.layout?.();
-      if (b.sound && kind !== 'lost') {
+      if (b.sound && kind !== 'lost' && kind !== 'hit') {
         if (kind === 'lock') Sfx.play('lockon');
         else Sfx.sample('attack-alarm', 0.85);
       }
       // The lock warning stays a moment past the ship's arrival; the DANGER banner replaces it.
-      const ms = kind === 'lock' ? LOCK_MS + HOLD_MS + 300 : kind === 'lost' ? LOST_MS : BANNER_MS;
+      const ms = kind === 'hit' ? HIT_MS : kind === 'lock' ? LOCK_MS + HOLD_MS + 300 : kind === 'lost' ? LOST_MS : BANNER_MS;
       timers.push(setTimeout(() => stage.firstElementChild?.classList.add('out'), ms - 380));
       timers.push(setTimeout(() => {
         stage.innerHTML = '';
         up = false;
+        cur = null;
         window.Messages?.layout?.();
       }, ms));
     }
@@ -550,43 +568,12 @@ window.Attack = (() => {
   // no clicks, like the flames; the cards themselves are only shaken with the Web Animations API (transform), their
   // content, clicks and scrolling are never touched. Cards nearest the map's centre are likelier; only with the map in
   // sight, and it goes early if the map leaves it. Reduced motion: the cracks fade in and out, nothing moves.
-  let hurt = null;
-  function damage(ms) {
-    if (hurt || ms < 1500) return;
-    const seen = (r) => r.width >= 90 && r.height >= 40 && r.top >= 0 && r.bottom <= innerHeight + 1 && r.left >= 0 && r.right <= innerWidth + 1;
-    const pick = (sel) => [...document.querySelectorAll(sel)].map((el) => ({ el, r: el.getBoundingClientRect() })).filter((x) => seen(x.r));
-    let pool = pick(DMG.cards);
-    const [lo, hi] = DMG.hits;
-    const n = lo + Math.floor(Math.random() * (hi - lo + 1));
-    if (pool.length < 2) pool = pool.concat(pick('#app .panel').filter((x) => !pool.some((p) => p.el.contains(x.el) || x.el.contains(p.el))));
-    if (!pool.length) return;
-    const space = document.getElementById('space');
-    const core = window.Orbit?.corePoint?.();
-    const sb = space && space.getBoundingClientRect();
-    // Nearer the core, likelier: a random pull on the distance.
-    const rank = (x) => {
-      const d = core && sb ? Math.hypot(x.r.left + x.r.width / 2 - (sb.left + core.x), x.r.top + x.r.height / 2 - (sb.top + core.y)) : 500;
-      return d * (0.5 + Math.random());
-    };
-    const hits = pool.sort((a, b) => rank(a) - rank(b)).slice(0, n);
-    const calm = reduced();
-    const box = (hurt = document.createElement('div'));
-    box.id = 'atk-dmg';
-    box.setAttribute('aria-hidden', 'true');
-    document.body.appendChild(box);
-    const NS = 'http://www.w3.org/2000/svg';
-    const cleanups = [];
-    const rnd = (a, b) => a + Math.random() * (b - a);
-    hits.forEach(({ el, r }, i) => {
-      const w = Math.round(r.width), hh = Math.round(r.height);
-      const wait = i * DMG.stagger;
-      const life = ms - wait - 100;
-      const ix = rnd(0.25, 0.75) * w, iy = rnd(0.25, 0.75) * hh;
-      const hit = document.createElement('div');
-      hit.className = 'atk-hit' + (calm ? ' still' : '');
-      hit.style.cssText = `left:${Math.round(r.left)}px;top:${Math.round(r.top)}px;width:${w}px;height:${hh}px;--ix:${ix.toFixed(0)}px;--iy:${iy.toFixed(0)}px;--crack:${DMG.crack}ms;--fade:${DMG.fade}ms;--still:${DMG.still}ms;--wait:${wait}ms;--end:${Math.max(0, life - DMG.fade)}ms`;
-      // The cracks: 7 to 10 rays from the impact, each a few jagged segments, some with a branch.
-      const svg = document.createElementNS(NS, 'svg');
+  // The cracked glass: 7 to 10 rays from the impact (ix, iy) in a w x hh box, each a few jagged segments, some with a
+  // branch, and a ring of shattered glass round it. An SVG for a `.atk-hit` box (damage(), strike()).
+  const NS = 'http://www.w3.org/2000/svg';
+  const rnd = (a, b) => a + Math.random() * (b - a);
+  function cracks(w, hh, ix, iy) {
+    const svg = document.createElementNS(NS, 'svg');
       svg.setAttribute('viewBox', `0 0 ${w} ${hh}`);
       const rays = 7 + Math.floor(Math.random() * 4);
       let d = '';
@@ -623,6 +610,43 @@ window.Attack = (() => {
       dark.setAttribute('pathLength', '1');
       light.setAttribute('pathLength', '1');
       svg.append(dark, light);
+    return svg;
+  }
+
+  let hurt = null;
+  function damage(ms) {
+    if (hurt || ms < 1500) return;
+    const seen = (r) => r.width >= 90 && r.height >= 40 && r.top >= 0 && r.bottom <= innerHeight + 1 && r.left >= 0 && r.right <= innerWidth + 1;
+    const pick = (sel) => [...document.querySelectorAll(sel)].map((el) => ({ el, r: el.getBoundingClientRect() })).filter((x) => seen(x.r));
+    let pool = pick(DMG.cards);
+    const [lo, hi] = DMG.hits;
+    const n = lo + Math.floor(Math.random() * (hi - lo + 1));
+    if (pool.length < 2) pool = pool.concat(pick('#app .panel').filter((x) => !pool.some((p) => p.el.contains(x.el) || x.el.contains(p.el))));
+    if (!pool.length) return;
+    const space = document.getElementById('space');
+    const core = window.Orbit?.corePoint?.();
+    const sb = space && space.getBoundingClientRect();
+    // Nearer the core, likelier: a random pull on the distance.
+    const rank = (x) => {
+      const d = core && sb ? Math.hypot(x.r.left + x.r.width / 2 - (sb.left + core.x), x.r.top + x.r.height / 2 - (sb.top + core.y)) : 500;
+      return d * (0.5 + Math.random());
+    };
+    const hits = pool.sort((a, b) => rank(a) - rank(b)).slice(0, n);
+    const calm = reduced();
+    const box = (hurt = document.createElement('div'));
+    box.id = 'atk-dmg';
+    box.setAttribute('aria-hidden', 'true');
+    document.body.appendChild(box);
+    const cleanups = [];
+    hits.forEach(({ el, r }, i) => {
+      const w = Math.round(r.width), hh = Math.round(r.height);
+      const wait = i * DMG.stagger;
+      const life = ms - wait - 100;
+      const ix = rnd(0.25, 0.75) * w, iy = rnd(0.25, 0.75) * hh;
+      const hit = document.createElement('div');
+      hit.className = 'atk-hit' + (calm ? ' still' : '');
+      hit.style.cssText = `left:${Math.round(r.left)}px;top:${Math.round(r.top)}px;width:${w}px;height:${hh}px;--ix:${ix.toFixed(0)}px;--iy:${iy.toFixed(0)}px;--crack:${DMG.crack}ms;--fade:${DMG.fade}ms;--still:${DMG.still}ms;--wait:${wait}ms;--end:${Math.max(0, life - DMG.fade)}ms`;
+      const svg = cracks(w, hh, ix, iy);
       hit.appendChild(svg);
       // Glitch: two colour-split edges and three slices, only moved while a burst runs.
       if (!calm) {
@@ -664,6 +688,208 @@ window.Attack = (() => {
     const done = setTimeout(end, ms + 200);
   }
 
+
+  // ---------- the hit feel (for the one who fired) ----------
+  // From the moment the API answers a fire (t0), a fixed local timeline (ms from t0; the target's show is fixed too, raid.js):
+  // launch sound + `In flight` countdown on the button, a thin amber line along their row filling to the blast, two hit
+  // ticks on their picture, then the blast: row flashes 80 ms, cracks (the same glass as damage()), burns 2.5 s (fire.js),
+  // shakes (only that row: no window shake, no focus), confirm sound; then the toast and, with the row out of sight, the
+  // notices panel's HIT plate. The crack stays to `crack`. Late by more than `stale` (computer slept): skipped.
+  // Reduced motion: no flash, flame, shake or line; the ticks, text and a fading crack remain. Cancel: stopHit(id).
+  const HIT = { launch: 1200, marks: [7640, 7780], boom: 7920, toast: 8300, crack: 15400, flash: 80, burn: 2500, shake: 280, stale: 1000 };
+  const HIT_SOUNDS = ['attack-launch', 'attack-hitmark', 'attack-confirm'];
+  // One per friend (two ships at two friends fly side by side): id → { id, name, t0, timers, recs, marks, boomed, until, frame }
+  const flights = new Map();
+  const CKEY = (id) => (window.CSS && CSS.escape ? CSS.escape(id) : String(id).replace(/"/g, ''));
+  const shown = (el) => {
+    if (!el || !dashboardSeen()) return false;
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0 && r.bottom > 0 && r.top < innerHeight && r.right > 0 && r.left < innerWidth;
+  };
+  // Where their picture is on screen now: their row (friends list) and/or their profile's top.
+  function spots(id) {
+    const out = {};
+    const row = [...document.querySelectorAll(`.fr-row[data-id="${CKEY(id)}"]`)].find(shown);
+    if (row) out.row = { el: row, av: row.querySelector('.fr-av') };
+    if (window.Cloud?.current?.() === 'profile' && window.Profile?.currentId?.() === id) {
+      const hero = document.querySelector('#profile-view .pv-hero');
+      if (shown(hero)) out.profile = { el: hero, av: hero.querySelector('.pp-pic') };
+    }
+    return out;
+  }
+  let skLayer = null;
+  function layer() {
+    if (!skLayer || !skLayer.isConnected) {
+      skLayer = document.createElement('div');
+      skLayer.id = 'atk-strike';
+      skLayer.setAttribute('aria-hidden', 'true');
+      document.body.appendChild(skLayer);
+    }
+    return skLayer;
+  }
+  // One overlay per place, drawn over the row/profile top and following it (it moves, scrolls, is drawn again).
+  function mkRec(fl, kind, rect) {
+    const w = Math.max(1, Math.round(rect.width)), hh = Math.max(1, Math.round(rect.height));
+    const box = document.createElement('div');
+    box.className = 'atk-sk';
+    box.innerHTML = '<i class="sk-flash"></i><span class="sk-mk"></span><i class="sk-prog"></i>';
+    layer().appendChild(box);
+    const rec = { kind, box, mk: box.querySelector('.sk-mk'), w, hh, hit: null, nmarks: 0, amber: false };
+    if (fl.boomed) crackOn(fl, rec);
+    return rec;
+  }
+  function crackOn(fl, rec) {
+    if (rec.hit) return;
+    const calm = reduced();
+    const wait = Math.max(0, HIT.flash);
+    const left = Math.max(1200, fl.t0 + HIT.crack - Date.now());
+    const ix = Math.round(rnd(0.3, 0.7) * rec.w), iy = Math.round(rnd(0.3, 0.7) * rec.hh);
+    const hit = document.createElement('div');
+    hit.className = 'atk-hit' + (calm ? ' still' : '');
+    hit.style.cssText = `--ix:${ix}px;--iy:${iy}px;--crack:${DMG.crack}ms;--fade:${DMG.fade}ms;--still:${DMG.still}ms;--wait:${wait}ms;--end:${Math.max(0, left - wait - DMG.fade)}ms`;
+    const svg = cracks(rec.w, rec.hh, ix, iy);
+    svg.setAttribute('preserveAspectRatio', 'none');
+    hit.appendChild(svg);
+    rec.box.appendChild(hit);
+    rec.hit = hit;
+  }
+  function track(fl) {
+    if (flights.get(fl.id) !== fl) return;
+    const now = Date.now() - fl.t0;
+    const sp = spots(fl.id);
+    for (const kind of ['row', 'profile']) {
+      const t = sp[kind];
+      let rec = fl.recs[kind];
+      if (!t) {
+        if (rec) rec.box.style.display = 'none';
+        continue;
+      }
+      if (!rec) {
+        // Nothing to show on a row before the launch (the line starts there) or after the crack's end.
+        if (now < HIT.launch - 300) continue;
+        rec = fl.recs[kind] = mkRec(fl, kind, t.el.getBoundingClientRect());
+        if (!reduced() && !fl.boomed) {
+          const pr = rec.box.querySelector('.sk-prog');
+          pr.style.animation = `atk-prog ${HIT.boom - HIT.launch}ms linear ${HIT.launch - now}ms both`;
+        } else rec.box.querySelector('.sk-prog').style.display = 'none';
+      }
+      const r = t.el.getBoundingClientRect();
+      rec.box.style.cssText = `display:block;left:${r.left.toFixed(1)}px;top:${r.top.toFixed(1)}px;width:${r.width.toFixed(1)}px;height:${r.height.toFixed(1)}px`;
+      if (t.av) {
+        const a = t.av.getBoundingClientRect();
+        rec.mk.style.cssText = `left:${(a.left - r.left).toFixed(1)}px;top:${(a.top - r.top).toFixed(1)}px;width:${a.width.toFixed(1)}px;height:${a.height.toFixed(1)}px`;
+      }
+      // The ticks and the amber of the blast stand on their picture and stay (written once each, kept on redraw).
+      while (rec.nmarks < fl.marks) {
+        const x = document.createElement('i');
+        x.textContent = '✕';
+        x.style.cssText = rec.nmarks ? 'left:62%;top:58%' : 'left:36%;top:30%';
+        rec.mk.appendChild(x);
+        rec.nmarks++;
+      }
+      if (fl.boomed && !rec.amber) {
+        rec.amber = true;
+        rec.mk.classList.add('amber');
+        rec.box.querySelector('.sk-prog')?.remove();
+        crackOn(fl, rec);
+      }
+    }
+    fl.frame = requestAnimationFrame(() => track(fl));
+  }
+  // The blast on every place their picture shows: flash, shake, a short fire (not on a row already burning).
+  function blast(fl) {
+    fl.boomed = true;
+    const sp = spots(fl.id);
+    const calm = reduced();
+    for (const kind of ['row', 'profile']) {
+      const t = sp[kind];
+      if (!t) continue;
+      const rec = fl.recs[kind];
+      if (rec && !calm) {
+        rec.box.querySelector('.sk-flash')?.animate([{ opacity: 0.75 }, { opacity: 0.75, offset: HIT.flash / (HIT.flash + 180) }, { opacity: 0 }], { duration: HIT.flash + 180 });
+        t.el.animate([
+          { transform: 'translate(0,0)' }, { transform: 'translate(-4px,1px)' }, { transform: 'translate(4px,-1px)' },
+          { transform: 'translate(-3px,0)' }, { transform: 'translate(2px,1px)' }, { transform: 'translate(0,0)' }
+        ], { duration: HIT.shake, easing: 'linear' });
+      }
+      if (kind === 'row' && rec && !calm && window.Fire && !t.el.classList.contains('fire')) burn(rec, fl);
+    }
+  }
+  function burn(rec, fl) {
+    const spot = document.createElement('div');
+    spot.className = 'sk-fire';
+    const light = document.createElement('div');
+    light.className = 'sk-glow';
+    const canvas = document.createElement('canvas');
+    spot.append(light, canvas);
+    rec.box.appendChild(spot);
+    const t0 = performance.now();
+    const tall = 66;
+    const reach = () => {
+      const x = Math.min(1, (performance.now() - t0) / HIT.burn), low = x < 0.5 ? 0 : (x - 0.5) / 0.5;
+      light.style.opacity = (Math.min(1, x / 0.1) * (1 - low)).toFixed(3);
+      return [tall * 0.66 * (1 - 0.55 * low ** 1.3), 0, 0];
+    };
+    let stop = null;
+    try {
+      stop = Fire.burn(canvas, { reach, scale: 12, life: HIT.burn, mound: true });
+    } catch {}
+    fl.timers.push(setTimeout(() => {
+      try { stop?.(); } catch {}
+      spot.remove();
+    }, HIT.burn + 300));
+  }
+  function startHit(id, name, t0 = Date.now()) {
+    stopHit(id);
+    const fl = { id, name, t0, timers: [], recs: {}, marks: 0, boomed: false, until: t0 + HIT.boom, frame: 0 };
+    flights.set(id, fl);
+    HIT_SOUNDS.forEach((n) => Sfx.preload(n));
+    // Each moment once, on time; one come too late (the computer slept, the page was held) is skipped, not played stale.
+    const at = (ms, fn) => {
+      const wait = ms - (Date.now() - t0);
+      if (wait < -HIT.stale) return;
+      fl.timers.push(setTimeout(() => flights.get(id) === fl && Date.now() - t0 - ms <= HIT.stale && fn(), Math.max(0, wait)));
+    };
+    at(HIT.launch, () => Sfx.slot('attack-launch', 0.5));
+    HIT.marks.forEach((ms, i) => at(ms, () => {
+      fl.marks = i + 1;
+      Sfx.slot('attack-hitmark', 0.4);
+    }));
+    at(HIT.boom, () => {
+      Sfx.slot('attack-confirm', 0.5);
+      blast(fl);
+      paintAll();
+    });
+    at(HIT.toast, () => {
+      // Their row or profile in sight: the toast. Out of sight: the notices panel's plate says it instead (the same path
+      // as DANGER/LOCKED ON). Shape sent: { type: 'attack', kind: 'hit', name, avatar, delay: 0, sound: false } (hit-contract.md).
+      if (Object.keys(spots(id)).length) return void say(TEXT.hitToast(name));
+      try {
+        const f = Social.friend(id);
+        const av = f && typeof f.avatar === 'string' && /^https?:\/\//i.test(f.avatar) ? f.avatar : '';
+        h.radar.postMessage({ type: 'attack', kind: 'hit', name: String(name).slice(0, 40), avatar: av, delay: 0, sound: false });
+      } catch {}
+    });
+    fl.timers.push(setTimeout(() => stopHit(id, fl), Math.max(0, HIT.crack + 300 - (Date.now() - t0))));
+    fl.frame = requestAnimationFrame(() => track(fl));
+    paintAll();
+  }
+  // Everything of the ship at that friend off at once, quietly (a cancel, the end); `only`: just if it's still that one.
+  function stopHit(id, only) {
+    const fl = flights.get(id);
+    if (!fl || (only && fl !== only)) return;
+    flights.delete(id);
+    fl.timers.forEach(clearTimeout);
+    cancelAnimationFrame(fl.frame);
+    Object.values(fl.recs).forEach((r) => r.box.remove());
+    paintAll();
+  }
+  // The button's label while its ship is on its way: the time to the blast, m:ss.
+  const inFlight = (id) => {
+    const fl = flights.get(id);
+    // (a blast skipped as stale ends it too)
+    return !!fl && !fl.boomed && Date.now() < fl.until + HIT.stale;
+  };
 
   // ---------- your switch (Settings › Privacy) ----------
   const me = () => (window.Social && Social.state() && Social.state().me) || null;
@@ -731,12 +957,14 @@ window.Attack = (() => {
     if (!f) return '';
     const n = f.nick || f.name;
     const s = status(f);
-    const lk = locking && locking.id === f.id;
+    const fl = inFlight(f.id);
+    const lk = (locking && locking.id === f.id) || fl;
     const dim = !lk && s ? ' atk-off' : '';
     const attrs = `type="button" data-act="attack" data-atk="${esc(f.id)}" data-kind="${kind}"${s && !lk ? ' aria-disabled="true"' : ''}`;
-    const aria = lk ? TEXT.lockingAria(n) : s ? `${TEXT.fireAria(n)}: ${s.label}` : TEXT.fireAria(n);
-    const tip = lk ? TEXT.cancel : s ? s.tip : TEXT.fireTip(n);
-    const body = lk ? `🚀 ${TEXT.locking} · ${TEXT.cancel}` : null;
+    const flt = fl ? `${TEXT.inFlight} \u00b7 ${clock(flights.get(f.id).t0 + HIT.boom - Date.now())}` : '';
+    const aria = fl ? `${TEXT.inFlight}, ${n}` : lk ? TEXT.lockingAria(n) : s ? `${TEXT.fireAria(n)}: ${s.label}` : TEXT.fireAria(n);
+    const tip = fl ? flt : lk ? TEXT.cancel : s ? s.tip : TEXT.fireTip(n);
+    const body = fl && !(locking && locking.id === f.id) ? `🚀 ${flt}` : lk ? `🚀 ${TEXT.locking} · ${TEXT.cancel}` : null;
     if (kind === 'menu') {
       return `<button ${attrs} data-ctx="attack" class="${dim.trim()}${lk ? ' locking' : ''}" title="${esc(tip)}">${lk ? body : `${esc(TEXT.menuFire(n))}${s ? ` · ${esc(s.label)}` : ''}`}</button>`;
     }
@@ -817,6 +1045,8 @@ window.Attack = (() => {
     if (!f) return;
     const n = f.nick || f.name;
     if (locking) return locking.id === id ? cancel(locking) : say(TEXT.oneAtATime);
+    // Its ship still on the way: the button only counts (a second ship at another friend is fine).
+    if (inFlight(id)) return;
     const s = status(f);
     if (s) return say(s.tip);
     const lk = (locking = { id, name: n, cancel: false });
@@ -826,6 +1056,11 @@ window.Attack = (() => {
     Sfx.play('locktick');
     // Refused at once (their state changed): no waiting for the lock to run out.
     lk.req.then((r) => {
+      // The ship is on its way: the hit timeline runs from this answer (cancel() stops it).
+      if (r && r.fired && !lk.cancel) {
+        lk.t0 = Date.now();
+        startHit(id, n, lk.t0);
+      }
       if (locking !== lk || r.fired) return;
       clearTimeout(lk.timer);
       locking = null;
@@ -841,7 +1076,6 @@ window.Attack = (() => {
     if (r.fired) {
       remember(f, r);
       paintAll();
-      say(TEXT.fired(lk.name));
     }
   }
   // Cancel within the lock-on: their warning turns to LOCK LOST; the cooldown stays.
@@ -849,6 +1083,7 @@ window.Attack = (() => {
     clearTimeout(lk.timer);
     lk.cancel = true;
     locking = null;
+    stopHit(lk.id);
     paintAll();
     const f = Social.friend(lk.id);
     lk.req.then(async (r) => {
@@ -862,7 +1097,7 @@ window.Attack = (() => {
       if (c && c.cancelled) {
         if (f) f.attack.shieldUntil = null;
         say(TEXT.cancelled(lk.name));
-      } else say(TEXT.fired(lk.name));
+      } else startHit(lk.id, lk.name, lk.t0 || Date.now()); // too late to cancel: the ship flew, the timeline goes on
       paintAll();
     });
   }

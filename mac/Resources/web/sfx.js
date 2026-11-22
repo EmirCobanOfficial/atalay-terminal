@@ -126,7 +126,8 @@ window.Sfx = (() => {
   }
 
   // How long the longer sounds ring, so the audio doesn't rest before they end.
-  const LENGTH = { levelup: 3000, rankup: 4200, glitch: 1200, fire: 3200, alarm: 2800, lockon: 1700, locktick: 300, hit: 800, boom: 2000 };
+  let slotGain = 1; // the relative level of the attack feedback synths (slot())
+  const LENGTH = { 'attack-launch': 1100, 'attack-hitmark': 200, 'attack-confirm': 1400, levelup: 3000, rankup: 4200, glitch: 1200, fire: 3200, alarm: 2800, lockon: 1700, locktick: 300, hit: 800, boom: 2000 };
 
   const SOUNDS = {
     // A chat needs you (an approval): two short even beeps and a higher one, like a console asking for a key.
@@ -366,6 +367,102 @@ window.Sfx = (() => {
         r.stop(t + 0.36);
       }
     },
+    // The attacker's three feedback sounds (attack.js "hit feel"). Fallbacks for sounds/attack-launch|hitmark|confirm.m4a:
+    // when a recording of that name exists (sounds.js) it plays instead (slot()). `slotGain` is the relative level.
+    // S1: engines catching and flying away, a short whoosh falling in pitch (about 0.9 s), no impact at the end.
+    'attack-launch'() {
+      const c = ctx, t = c.currentTime, G = slotGain, dur = 0.9;
+      const n = Math.floor(c.sampleRate * dur);
+      const buf = c.createBuffer(1, n, c.sampleRate);
+      const d = buf.getChannelData(0);
+      for (let i = 0; i < n; i++) d[i] = Math.random() * 2 - 1;
+      const src = c.createBufferSource(), bp = c.createBiquadFilter(), g = c.createGain();
+      src.buffer = buf;
+      bp.type = 'bandpass';
+      bp.Q.value = 1.1;
+      bp.frequency.setValueAtTime(2600, t);
+      bp.frequency.exponentialRampToValueAtTime(300, t + dur);
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(0.5 * G, t + 0.07);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+      src.connect(bp).connect(g).connect(c.destination);
+      src.start(t);
+      const o = c.createOscillator(), og = c.createGain();
+      o.type = 'sawtooth';
+      o.frequency.setValueAtTime(190, t);
+      o.frequency.exponentialRampToValueAtTime(46, t + dur * 0.8);
+      og.gain.setValueAtTime(0.0001, t);
+      og.gain.exponentialRampToValueAtTime(0.1 * G, t + 0.05);
+      og.gain.exponentialRampToValueAtTime(0.0001, t + dur * 0.85);
+      o.connect(og).connect(c.destination);
+      o.start(t);
+      o.stop(t + dur);
+    },
+    // S2: a dry hit-marker tick, 90 ms, a click on a short body; the pitch moves a little each time.
+    'attack-hitmark'() {
+      const c = ctx, t = c.currentTime, G = slotGain, k = 1 + (Math.random() - 0.5) * 0.06;
+      const n = Math.floor(c.sampleRate * 0.03);
+      const buf = c.createBuffer(1, n, c.sampleRate);
+      const d = buf.getChannelData(0);
+      for (let i = 0; i < n; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / n) ** 3;
+      const src = c.createBufferSource(), bp = c.createBiquadFilter(), g = c.createGain();
+      src.buffer = buf;
+      bp.type = 'bandpass';
+      bp.frequency.value = 3000 * k;
+      bp.Q.value = 1.4;
+      g.gain.value = 0.9 * G;
+      src.connect(bp).connect(g).connect(c.destination);
+      src.start(t);
+      const o = c.createOscillator(), og = c.createGain();
+      o.type = 'sine';
+      o.frequency.setValueAtTime(420 * k, t);
+      o.frequency.exponentialRampToValueAtTime(150 * k, t + 0.08);
+      og.gain.setValueAtTime(0.0001, t);
+      og.gain.exponentialRampToValueAtTime(0.7 * G, t + 0.003);
+      og.gain.exponentialRampToValueAtTime(0.0001, t + 0.09);
+      o.connect(og).connect(c.destination);
+      o.start(t);
+      o.stop(t + 0.1);
+    },
+    // S3: the hit confirmed (about 1.2 s): a low thump, a distant muffled boom, a small bright metallic note on top.
+    'attack-confirm'() {
+      const c = ctx, t = c.currentTime, G = slotGain;
+      const o = c.createOscillator(), og = c.createGain();
+      o.type = 'sine';
+      o.frequency.setValueAtTime(120, t);
+      o.frequency.exponentialRampToValueAtTime(38, t + 0.35);
+      og.gain.setValueAtTime(0.0001, t);
+      og.gain.exponentialRampToValueAtTime(0.9 * G, t + 0.006);
+      og.gain.exponentialRampToValueAtTime(0.0001, t + 0.6);
+      o.connect(og).connect(c.destination);
+      o.start(t);
+      o.stop(t + 0.65);
+      const n = Math.floor(c.sampleRate * 1.0);
+      const buf = c.createBuffer(1, n, c.sampleRate);
+      const d = buf.getChannelData(0);
+      for (let i = 0; i < n; i++) d[i] = (Math.random() * 2 - 1) * Math.exp(-i / (c.sampleRate * 0.22));
+      const src = c.createBufferSource(), lp = c.createBiquadFilter(), g = c.createGain();
+      src.buffer = buf;
+      lp.type = 'lowpass';
+      lp.frequency.setValueAtTime(900, t + 0.04);
+      lp.frequency.exponentialRampToValueAtTime(120, t + 1);
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(0.55 * G, t + 0.05);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 1);
+      src.connect(lp).connect(g).connect(c.destination);
+      src.start(t + 0.04);
+      for (const [fr, v] of [[1480, 0.12], [2217, 0.07]]) {
+        const r = c.createOscillator(), rg = c.createGain();
+        r.type = 'triangle';
+        r.frequency.value = fr;
+        rg.gain.setValueAtTime(0.0001, t + 0.05);
+        rg.gain.exponentialRampToValueAtTime(v * G, t + 0.058);
+        rg.gain.exponentialRampToValueAtTime(0.0001, t + 0.5);
+        r.connect(rg).connect(c.destination);
+        r.start(t + 0.05);
+        r.stop(t + 0.52);
+      }
+    },
     // The runaway's box blowing up on the orbit: a deep rumbling blast with a sub drop under it, crackling as it fades.
     boom() {
       const t = ctx.currentTime;
@@ -473,6 +570,14 @@ window.Sfx = (() => {
     preload: (name) => buffer(name),
     /** Where in the recorded sound its moment is, in ms. */
     hit: (name) => Math.round(1000 * (SAMPLES[name] || 0)),
+    /** The attack feedback slots: sounds/<name>.m4a if there is one, else the synthesized fallback, at level `vol`. */
+    slot(name, vol = 1) {
+      buffer(name).then((buf) => {
+        if (buf) return this.sample(name, vol);
+        slotGain = vol;
+        this.play(name);
+      });
+    },
     /** Plays a recorded sound from the start, or from `from` s in (yours: do not disturb doesn't silence it). */
     sample(name, vol = 1, from = 0) {
       const own = Hooks.soundOf(name);
@@ -492,7 +597,7 @@ window.Sfx = (() => {
       });
     },
     play(name) {
-      const yours = ['send', 'accept', 'decline', 'levelup', 'rankup', 'glitch', 'fire', 'hit', 'boom', 'theme-kept', 'locktick'].includes(name);
+      const yours = ['send', 'accept', 'decline', 'levelup', 'rankup', 'glitch', 'fire', 'hit', 'boom', 'theme-kept', 'locktick', 'attack-launch', 'attack-hitmark', 'attack-confirm'].includes(name);
       const base = SOUNDS[name] ? name : SAME[name];
       if ((!base && !THEMED.includes(name)) || (window.Social && window.Social.dnd() && !yours)) return;
       // The theme's own sound, or its silence, instead of the app's (a theme-only one has nothing else).
