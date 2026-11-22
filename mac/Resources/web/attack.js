@@ -53,6 +53,14 @@ window.Attack = (() => {
     const s = Math.max(0, Math.ceil(ms / 1000));
     return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
   };
+  // The API's clock: the shield's and the cooldown's ends are on it (attackstate.ts), and the answers that carry times
+  // say it as `now` (the friends list, a fire). Counted down against it, a computer clock a few seconds off still starts
+  // at 30:00 and 2:00. `skew`: how far the API's clock is ahead of this computer's (ms; behind when negative).
+  let skew = 0;
+  const serverNow = () => Date.now() + skew;
+  const sync = (r) => {
+    if (r && typeof r.now === 'number' && Number.isFinite(r.now)) skew = r.now - Date.now();
+  };
   // Every word the attack shows, in one place.
   const TEXT = {
     lockBig: 'LOCKED ON',
@@ -570,7 +578,7 @@ window.Attack = (() => {
     if (!f) return null;
     const n = f.nick || f.name;
     const a = f.attack || {};
-    const now = Date.now();
+    const now = serverNow();
     const p = f.presence || 'offline';
     let why = null;
     let until = 0;
@@ -630,7 +638,8 @@ window.Attack = (() => {
   // ---------- your shield ----------
   const shieldLeft = () => {
     const u = me() && me().shieldUntil;
-    return u && u > Date.now() ? u - Date.now() : 0;
+    const now = serverNow();
+    return u && u > now ? u - now : 0;
   };
   const SHIELD_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.5 13.5 3.5v4c0 3.2-2.3 5.6-5.5 7-3.2-1.4-5.5-3.8-5.5-7v-4z"/></svg>';
   // Always drawn (hidden without a shield) so it shows the moment a shield starts; the clock below fills it in.
@@ -656,6 +665,7 @@ window.Attack = (() => {
   // ---------- firing at a friend ----------
   let locking = null; // { id, name, cancel, req, timer }: the lock-on your own press began, still cancellable
   function remember(f, r) {
+    sync(r);
     if (!f) return;
     f.attack = f.attack || {};
     if (r.readyAt && (r.why === 'cooldown' || r.fired)) f.attack.cooldownUntil = r.readyAt;
@@ -753,7 +763,9 @@ window.Attack = (() => {
   }
 
   // ---------- live ----------
-  Social.on((ev) => {
+  Social.on((ev, S) => {
+    // The friends list came (social.js): the API's clock with it.
+    if (ev.type === 'snapshot') sync(S);
     if (ev.type === 'attack') arrive(ev);
     if (ev.type === 'attack_cancel') cancelled(ev);
     if (ev.type === 'hello') {
