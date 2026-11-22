@@ -315,18 +315,22 @@ svg.ln .dot { fill: currentColor; stroke: none; }
 .pv-fire { display: inline-flex; align-items: center; align-self: flex-start; gap: 0.375rem; margin-top: 0.75rem; padding: 0.1875rem 0.625rem 0.1875rem 0.5rem; border-radius: 999px; background: rgba(255, 120, 10, 0.14); box-shadow: inset 0 0 0 1px rgba(255, 140, 30, 0.45); color: #ffb057; font-size: 0.75rem; font-weight: 650; }
 .pv-fire svg { width: 0.75rem; height: 0.875rem; fill: currentColor; }
 .pv-fire.f2 { background: rgba(90, 160, 255, 0.14); box-shadow: inset 0 0 0 1px rgba(120, 180, 255, 0.5); color: #b9dcff; }
-.pv-theme { display: flex; flex-wrap: wrap; grid-area: theme; align-items: center; justify-content: space-between; gap: 0.75rem 1.5rem; min-width: 0; margin-top: 1.25rem; padding-top: 1.25rem; border-top: 1px solid var(--line-soft); }
-.pv-theme label { display: block; color: var(--txt3); font: 700 0.625rem var(--font); letter-spacing: 0.16em; }
-.pv-theme b { color: var(--hi); font-size: 0.9375rem; font-weight: 600; }
-.pv-theme em { color: var(--txt3); font-size: 0.8125rem; font-style: normal; }
-.pv-cell { display: flex; align-items: center; gap: 0.75rem; min-width: 0; }
-/* Alone (no Viktoria cell), the THEME cell keeps its old look: "you use it too" at the far right */
-.pv-theme > .pv-cell:only-child { flex: 1; justify-content: space-between; }
+/* THEME and VIKTORIA: two equal cells side by side, like the two tiles above them: a small capital label, the value,
+   and under it a quiet line when it is the same as yours. They never wrap, so VIKTORIA stays put. */
+.pv-theme { display: grid; grid-area: theme; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 0.75rem 1.25rem; min-width: 0; margin-top: 1.25rem; padding-top: 1.25rem; border-top: 1px solid var(--line-soft); }
+.pv-theme > .pv-cell:only-child { grid-column: 1 / -1; }
+.pv-theme > .pv-cell.pv-r { grid-column: 2; }
+.pv-cell { display: flex; flex-direction: column; gap: 0.1875rem; min-width: 0; }
+.pv-cell label { color: var(--txt3); font: 700 0.625rem/0.875rem var(--font); letter-spacing: 0.16em; }
+.pv-val { display: flex; align-items: center; gap: 0.5rem; min-width: 0; }
+.pv-val b { overflow: hidden; color: var(--hi); font: 600 0.9375rem/1.25rem var(--font-sans); overflow-wrap: anywhere; }
+.pv-val b.off { color: var(--txt2); font-weight: 500; }
+.pv-cell em { color: var(--txt3); font: 0.75rem/1rem var(--font-sans); font-style: normal; }
 .pv-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
-/* Viktoria's Mischief meter: four dots, filled up to her level (the level's name beside it carries the meaning) */
-.pv-dots { display: inline-flex; gap: 0.25rem; }
-.pv-dots i { width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--txt3); }
-.pv-dots i.on { background: var(--hi); }
+/* Viktoria's Mischief as a meter: four dots lit up to her level in the theme's accent (the word beside it carries the meaning) */
+.pv-dots { display: inline-flex; flex: none; gap: 0.25rem; }
+.pv-dots i { width: 0.5rem; height: 0.5rem; border-radius: 50%; background: rgba(var(--accent-rgb), 0.14); box-shadow: inset 0 0 0 1px rgba(var(--accent-rgb), 0.42); }
+.pv-dots i.on { background: var(--accent-soft); box-shadow: 0 0 0.375rem rgba(var(--accent-rgb), 0.6); }
 
 /* head to head with a friend: only the two of you see it */
 .pv-h2h { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 0.75rem 1.5rem; padding: 0.875rem 1.25rem; border: 1px solid rgba(var(--rc), 0.2); border-radius: 4px; background: rgba(0, 0, 0, 0.28); }
@@ -373,6 +377,7 @@ svg.ln .dot { fill: currentColor; stroke: none; }
 
 @container pp (max-width: 880px) {
   .pp-hero.pv-hero { grid-template-areas: "pic who edit" "pic status status" "stand stand stand" "show show ai" "links links links" "theme theme theme"; }
+  .pv-theme { grid-template-columns: repeat(2, minmax(0, 15rem)); gap: 0.75rem 2.5rem; }
 }
 @container pp (max-width: 640px) {
   .pp-hero.pv-hero { grid-template-areas: "pic who" "pic status" "edit edit" "stand stand" "show show" "ai ai" "links links" "theme theme"; }
@@ -385,3 +390,81 @@ svg.ln .dot { fill: currentColor; stroke: none; }
 @supports (view-transition-name: pv-pic) {
   ::view-transition-old(pv-pic), ::view-transition-new(pv-pic) { animation-duration: 0.3s; animation-timing-function: var(--bd-spring); }
 }
+
+/* ---------- GitHub's contribution calendar (github-calendar.js; araştırma/github-takvim/SPEC.md) ----------
+   GitHub's own contribution calendar (Sunday-first rows, up to 54 week columns, its own levels) drawn in the profile's
+   look: a box like TOKENS', the theme's accent in five steps instead of GitHub's green, squares with near-hard corners.
+   The squares grow with the box between 8 and 14 px (at 100% text) and the calendar scrolls sideways, kept at today,
+   when even 8 px squares don't fit. rem everywhere, so the app's text size scales it. */
+.pv-gh { position: relative; container: gh / inline-size; padding: 0.875rem 1.25rem 1rem; border: 1px solid rgba(var(--rc), 0.2); border-radius: 4px; background: rgba(0, 0, 0, 0.28); }
+.gh-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.5rem 1rem; min-height: 1.75rem; margin: 0 0 0.75rem; }
+.gh-head h2 { display: flex; align-items: baseline; gap: 0.5rem; min-width: 0; margin: 0; color: var(--accent); font: 700 0.6875rem/0.875rem var(--font); letter-spacing: 0.16em; }
+.gh-login { display: inline-flex; align-items: center; gap: 0.25rem; min-width: 0; overflow: hidden; color: var(--txt3); font: 400 0.8125rem/1.125rem var(--font-sans); letter-spacing: 0; text-decoration: none; white-space: nowrap; text-overflow: ellipsis; border-radius: 2px; }
+.gh-login svg { flex: none; width: 0.6875rem; height: 0.6875rem; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; opacity: 0.8; }
+.gh-login:hover { color: var(--hi); text-decoration: underline; text-underline-offset: 2px; }
+.gh-login:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* your own page only: who sees it, and the switch that changes it (Settings' look) */
+.gh-vis { display: flex; align-items: center; gap: 0.75rem; margin-left: auto; color: var(--txt2); font: 500 0.8125rem/1.125rem var(--font-sans); }
+.gh-only { display: inline-flex; align-items: center; gap: 0.375rem; color: var(--txt3); }
+.gh-only svg { width: 0.8125rem; height: 0.8125rem; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.gh-sw { display: inline-flex; align-items: center; gap: 0.5rem; cursor: pointer; }
+.pv-gh .hk-sw { position: relative; flex: none; width: 2.4rem; height: 1.4rem; padding: 0; border: 1px solid rgba(var(--accent-rgb), 0.45); border-radius: 0.7rem; background: rgba(0, 0, 0, 0.45); cursor: pointer; }
+.pv-gh .hk-sw:hover { border-color: var(--accent); }
+.pv-gh .hk-sw i { position: absolute; top: 50%; left: 2px; width: calc(1.4rem - 6px); height: calc(1.4rem - 6px); margin-top: calc((1.4rem - 6px) / -2); border-radius: 50%; background: var(--dim); transition: transform 0.18s, background 0.18s; }
+.pv-gh .hk-sw[aria-checked="true"] { border-color: var(--green); background: rgba(var(--green-rgb), 0.18); }
+.pv-gh .hk-sw[aria-checked="true"] i { background: var(--green); box-shadow: 0 0 8px rgba(var(--green-rgb), 0.7); transform: translateX(1rem); }
+.pv-gh .hk-sw:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.pv-gh .hk-sw:disabled { opacity: 0.45; cursor: default; }
+
+/* the calendar: the day names stay put on the left; the weeks (month names above them) scroll when they must.
+   --c: one square, the box's width shared by 53 weeks, 8 to 14 px at 100% text (4px: the room the outlines need). */
+.gh-cal { --g: 0.1875rem; --c: clamp(0.5rem, (100cqi - 1.75rem - var(--weeks, 53) * var(--g) - 4px) / var(--weeks, 53), 0.875rem); display: grid; grid-template-columns: 1.75rem minmax(0, 1fr); column-gap: var(--g); }
+.gh-wds, .gh-weeks { display: grid; grid-template-rows: 0.875rem repeat(7, var(--c)); row-gap: var(--g); padding-block: 2px; }
+.gh-weeks { grid-template-columns: repeat(var(--weeks, 53), var(--c)); column-gap: var(--g); width: max-content; padding-inline: 2px; }
+.gh-scroll { min-width: 0; overflow-x: auto; overflow-y: hidden; overscroll-behavior-x: contain; scrollbar-width: thin; scrollbar-color: rgba(var(--accent-rgb), 0.3) transparent; }
+.gh-scroll.cut { -webkit-mask-image: linear-gradient(90deg, transparent, #000 1.5rem); mask-image: linear-gradient(90deg, transparent, #000 1.5rem); }
+.gh-weeks.in { animation: gh-in 0.2s var(--bd-ease) both; }
+@keyframes gh-in { from { opacity: 0; } }
+.gh-m, .gh-wd { color: var(--txt3); font: 0.625rem/0.875rem var(--font-sans); white-space: nowrap; }
+.gh-m { grid-row: 1; align-self: end; }
+.gh-wd { align-self: center; line-height: 1; }
+.gh-d { border-radius: 2px; background: rgba(var(--accent-rgb), 0.07); box-shadow: inset 0 0 0 1px rgba(var(--accent-rgb), 0.07); }
+.gh-d.l1 { background: rgba(var(--accent-rgb), 0.3); box-shadow: none; }
+.gh-d.l2 { background: rgba(var(--accent-rgb), 0.55); box-shadow: none; }
+.gh-d.l3 { background: rgba(var(--accent-rgb), 0.82); box-shadow: none; }
+.gh-d.l4 { background: var(--accent-soft); box-shadow: 0 0 0.375rem rgba(var(--accent-rgb), 0.45); }
+.gh-d.today { outline: 1px solid rgba(255, 248, 240, 0.7); outline-offset: 1px; }
+.gh-d:hover, .gh-d.hot { outline: 1px solid var(--hi); outline-offset: 1px; }
+/* loading: the empty squares, one light sweeping over them */
+.gh-weeks.sk .gh-d { background: rgba(var(--accent-rgb), 0.06); outline: 0; }
+.gh-weeks.sk { -webkit-mask-image: linear-gradient(90deg, rgba(0,0,0,.55) 30%, #000 50%, rgba(0,0,0,.55) 70%); mask-image: linear-gradient(90deg, rgba(0,0,0,.55) 30%, #000 50%, rgba(0,0,0,.55) 70%); -webkit-mask-size: 300% 100%; mask-size: 300% 100%; animation: gh-sk 1.4s ease-in-out infinite; }
+@keyframes gh-sk { 0% { -webkit-mask-position: 100% 0; mask-position: 100% 0; } 100% { -webkit-mask-position: 0 0; mask-position: 0 0; } }
+
+/* under it: the year's total on the left, the five steps on the right */
+.gh-foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.375rem 1rem; margin-top: 0.625rem; color: var(--txt3); font: 0.8125rem/1.125rem var(--font-sans); }
+.gh-foot b { color: var(--hi); font-weight: 600; font-variant-numeric: tabular-nums; }
+.gh-key { display: inline-flex; align-items: center; gap: 0.1875rem; font-size: 0.75rem; }
+.gh-key .gh-d { display: inline-block; width: 0.625rem; height: 0.625rem; }
+.gh-key span:first-child { margin-right: 0.25rem; }
+.gh-key span:last-child { margin-left: 0.25rem; }
+.gh-note { margin: 0.5rem 0 0; color: var(--txt3); font: 0.75rem/1rem var(--font-sans); }
+.gh-note a { color: var(--accent-soft); text-decoration: none; }
+.gh-note a:hover { color: var(--hi); text-decoration: underline; text-underline-offset: 2px; }
+/* your own page, when there's nothing to draw: one quiet line where the calendar goes */
+.gh-wait { display: grid; place-items: center; min-height: 7.5rem; color: var(--txt3); font: 0.8125rem/1.125rem var(--font-sans); text-align: center; }
+/* the day under the pointer: date and count, at once (no delay), over the square */
+.gh-tip { position: absolute; z-index: 5; padding: 0.3125rem 0.5rem; border: 1px solid var(--line); border-radius: 6px; background: rgb(var(--panel-rgb)); box-shadow: 0 0.5rem 1.25rem rgba(0, 0, 0, 0.55); color: var(--txt2); font: 0.75rem/1rem var(--font-sans); white-space: nowrap; pointer-events: none; transform: translate(-50%, calc(-100% - 0.5rem)); opacity: 0; transition: opacity 0.08s; }
+.gh-tip.on { opacity: 1; }
+.gh-tip b { color: var(--hi); font-weight: 600; font-variant-numeric: tabular-nums; }
+@container gh (max-width: 34rem) {
+  .gh-cal { --g: 0.125rem; }
+  .gh-vis { width: 100%; justify-content: space-between; margin-left: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .gh-weeks.in, .gh-weeks.sk { animation: none; }
+  .gh-tip, .hk-sw i { transition: none; }
+}
+@media (forced-colors: active) {
+  .gh-cal, .gh-key { forced-color-adjust: none; }
+}
+.pv-gh-host:empty { display: none; }

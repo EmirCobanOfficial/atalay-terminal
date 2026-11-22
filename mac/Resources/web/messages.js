@@ -6,7 +6,8 @@
 //    shows there for a moment too, like on Steam, and so does a new version of the app (a click shows what's new).
 //    Your own progress shows there as well: the daily bonus as a strip, a new level or rank as a takeover of the whole
 //    screen for a few seconds, and five hours of work in a day as flames along the screen's edges. A chat that needs
-//    you (an approval) while the app is behind other windows shows there too, and stays until the chat moves on.
+//    you (an approval) while the app is behind other windows shows there too, and stays until the chat moves on. So
+//    does a required update about to restart the app over running chats and terminals: 5 minutes ahead, it says when.
 //  · chat: the conversation in its own window, opened mid-screen the first time and dragged anywhere by its header.
 // Each part is its own panel (Swift injects __MESSAGES_ROLE__ "notices" or "chat", places and moves the panels), and
 // every friend's chat has a panel of its own (__MESSAGES_FRIEND__), so several stay on screen side by side.
@@ -63,6 +64,7 @@ window.Messages = (() => {
   const waits = new Map(); // chats that need you (below), session id -> { sid, title, folder, what }, the newest last
   const clashes = new Map(); // files two chats are writing (below), path -> { key, file, path, chats }, the newest last
   const clashShut = new Set(); // collisions put away with ×: they don't pop up again until they're over
+  let restartDue = null; // a required update's restart over running chats (below), { version, at }, until it's put away
 
   function sizeNotes() {
     if (ROLE !== 'notices') return;
@@ -72,6 +74,8 @@ window.Messages = (() => {
     if (takeover) return post({ type: 'layout', w: 1, h: 1, place: 'screen' });
     // The flames have the screen's edges, every click passing through (the notice sits in its corner meanwhile).
     if (fire) return post({ type: 'layout', w: 1, h: 1, place: 'fire' });
+    // A friend's spaceship attack's DANGER banner (attack.js) the same way, for its few seconds.
+    if (window.Attack?.wide()) return post({ type: 'layout', w: 1, h: 1, place: 'fire' });
     // The danger alarm has the middle of the screen (the corner's notices wait under it).
     const alarm = alertOn && alertBox.firstElementChild;
     if (alarm) return post({ type: 'layout', w: alarm.offsetWidth + 16, h: alarm.offsetHeight + 16, place: 'center' });
@@ -87,8 +91,10 @@ window.Messages = (() => {
   const autoHide = () => (replying() ? (peekTimer = setTimeout(autoHide, 3000)) : hidePeek());
 
   function showPeek(p) {
-    // A chat that needs you stays on top: the other notices wait behind it.
-    if ((peek && p !== peek && replying()) || alertOn || (peek && peek.kind === 'wait' && p.kind !== 'wait')) return void queue.push(p);
+    // A chat that needs you stays on top: the other notices wait behind it. Only a required update's restart goes over
+    // it, and nothing goes over that one.
+    const held = peek && ((peek.kind === 'wait' && p.kind !== 'wait' && p.kind !== 'restart') || (peek.kind === 'restart' && p.kind !== 'restart'));
+    if ((peek && p !== peek && replying()) || alertOn || held) return void queue.push(p);
     clearTimeout(peekTimer);
     const again = !!peek;
     // The "updated" note stays until it's closed: whatever comes over it, it comes back after.
@@ -102,12 +108,14 @@ window.Messages = (() => {
       Sfx.play('xp');
     }
     // A chat that needs you, or two writing the same file, has no time: it goes when that's over or it's put away; nor
-    // has the "updated" note.
-    if (!['wait', 'clash', 'updated'].includes(p.kind)) peekTimer = setTimeout(autoHide, ['xp', 'online', 'rare'].includes(p.kind) ? STRIP_MS : p.kind === 'fire' ? FIRE_MS + 3000 : p.kind === 'note' ? NOTE_MS : PEEK_MS);
+    // has the "updated" note, nor the restart of a required update.
+    if (!['wait', 'clash', 'updated', 'restart'].includes(p.kind)) peekTimer = setTimeout(autoHide, ['xp', 'online', 'rare'].includes(p.kind) ? STRIP_MS : p.kind === 'fire' ? FIRE_MS + 3000 : p.kind === 'note' ? NOTE_MS : PEEK_MS);
   }
 
-  // What comes after a notice: a chat that needs you first, then two chats writing the same file, then the queue.
-  const nextPeek = () => (waits.size ? showWait() : clashes.size ? showClash() : queue.length && showPeek(queue.shift()));
+  // What comes after a notice: a required update's restart first, then a chat that needs you, then two chats writing
+  // the same file, then the queue.
+  const nextPeek = () =>
+    restartDue ? showRestart() : waits.size ? showWait() : clashes.size ? showClash() : queue.length && showPeek(queue.shift());
 
   function hidePeek() {
     clearTimeout(peekTimer);
@@ -129,7 +137,7 @@ window.Messages = (() => {
     const head = (tag, person, at, expand) =>
       `<div class="mb-head"><span class="mb-tag">${tag}</span><span class="mb-who">${who(person)}</span>` +
       `<span class="mb-time">${at ? time(at) : ''}</span>` +
-      `${expand ? '<button class="mb-x mb-expand" data-act="open" title="Open the chat">⤢</button>' : ''}` +
+      `${expand ? '<button class="mb-x mb-expand" data-act="open" aria-label="Open the chat" title="Open the chat"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9.5 2.75h3.75v3.75M13.25 2.75 9 7M6.5 13.25H2.75V9.5M2.75 13.25 7 9"/></svg></button>' : ''}` +
       `<button class="mb-x" data-act="close" title="Close">×</button></div>`;
     let body;
     if (p.kind === 'message') {
@@ -139,6 +147,13 @@ window.Messages = (() => {
         head('FRIEND REQUEST', p.request.from, p.request.at) +
         `<div class="mb-text"><em>${esc(Social.handle(p.request.from))}</em> wants to be your friend</div>` +
         `<div class="mb-actions"><button class="go" data-act="accept">accept</button><button data-act="decline">decline</button></div>`;
+    } else if (p.kind === 'noteInvite') {
+      // A friend shared a note with you: open it (this accepts) or decline.
+      const n = p.note;
+      body =
+        head('SHARED NOTE', n.owner, p.at) +
+        `<div class="mb-text"><em>${esc(Social.handle(n.owner))}</em> wants to write “${esc(n.title || 'a note')}” with you</div>` +
+        `<div class="mb-actions"><button class="go" data-act="noteOpen">accept</button><button data-act="noteDecline">decline</button></div>`;
     } else if (p.kind === 'update') {
       return (
         `<div class="mb peek update in" data-act="update" title="See what's new"><div class="mb-border"></div>` +
@@ -220,6 +235,16 @@ window.Messages = (() => {
         `<button class="mb-x" data-act="close" title="Close">×</button></div>` +
         `<div class="mb-text">${esc(c.path)}</div></div>`
       );
+    } else if (p.kind === 'restart') {
+      // A required update restarts the app over running chats and terminals (below): when, and that they close then.
+      // "restart now" goes in at once; × and "ok" only put the notice away, the restart still comes.
+      return (
+        `<div class="mb peek restart in"><div class="mb-border"></div>` +
+        `<div class="mb-head"><span class="mb-tag">UPDATE</span><span class="mb-who"><span>Restarting at ${esc(time(p.at))} to update</span></span>` +
+        `<button class="mb-x" data-act="close" title="Close">×</button></div>` +
+        `<div class="mb-text">Version ${esc(p.version)} is required. Running chats and terminals will be closed then; the conversations stay saved and can be resumed.</div>` +
+        `<div class="mb-actions"><button class="go" data-act="restart">restart now</button><button data-act="close">ok</button></div></div>`
+      );
     } else {
       body =
         head('NEW FRIEND', p.friend, null) +
@@ -248,7 +273,15 @@ window.Messages = (() => {
         if (peek.kind === 'wait') waits.clear();
         // The same for the collisions now: one pops up again only once it was over and began again.
         if (peek.kind === 'clash') shutClashes();
+        // A required update's restart: the notice goes, the restart still comes when it said.
+        if (peek.kind === 'restart') restartDue = null;
         return hidePeek();
+      }
+      if (act === 'restart') {
+        restartDue = null;
+        hidePeek();
+        // Swift installs the update now (asking first about running chats, as quitting does); main.js on Windows.
+        return post({ type: 'restartNow' });
       }
       if (act === 'clash') {
         shutClashes();
@@ -287,6 +320,18 @@ window.Messages = (() => {
         return id && Social.openChat(id);
       }
       if (act === 'send') return replyFromPeek(notes.querySelector('textarea'));
+      if (act === 'noteOpen' || act === 'noteDecline') {
+        const note = peek.note;
+        el.disabled = true;
+        const me = Social.state()?.me?.id;
+        const r = act === 'noteOpen' ? await Social.acceptNote(note.id) : await Social.declineNote(note.id, me);
+        if (r.error) return void (el.disabled = false);
+        Sfx.play(act === 'noteOpen' ? 'accept' : 'decline');
+        hidePeek();
+        // The dashboard opens it in a window of its own (it has the note once its live event arrives).
+        if (act === 'noteOpen') post({ type: 'openShared', id: note.id });
+        return;
+      }
       if (act === 'accept' || act === 'decline') {
         const id = peek.request.id;
         el.disabled = true;
@@ -358,6 +403,8 @@ window.Messages = (() => {
   // on, the newest on top with how many more wait. Not held back on do-not-disturb: it's your own work, stuck.
   function showWait() {
     if (!waits.size || takeover || alertOn) return;
+    // A required update's restart stays on top; this comes after it (nextPeek).
+    if (peek && peek.kind === 'restart') return;
     if (peek && peek.kind !== 'wait') {
       // A reply being written stays; this comes right after it (hidePeek).
       if (replying()) return;
@@ -387,8 +434,8 @@ window.Messages = (() => {
   // does, after those, and stays until the collision is over or it's put away. Not held back on do-not-disturb either.
   function showClash() {
     if (!clashes.size || takeover || alertOn) return;
-    // A chat that needs you goes first; this comes after it (nextPeek).
-    if (peek && peek.kind === 'wait') return;
+    // A chat that needs you goes first, and a required update's restart; this comes after them (nextPeek).
+    if (peek && (peek.kind === 'wait' || peek.kind === 'restart')) return;
     if (peek && peek.kind !== 'clash') {
       if (replying()) return;
       queue.unshift(peek);
@@ -420,6 +467,36 @@ window.Messages = (() => {
     for (const k of clashes.keys()) clashShut.add(k);
     clashes.clear();
     Hooks.set('sameFile', 0);
+  }
+
+  // ======================= a required update about to restart the app =======================
+  // A forced update restarts the app even over chats and terminals running in it, which close then (Swift's
+  // Cloud.maybeRestart, main.js's updates on Windows). They say so 5 minutes ahead, with the time; this goes over
+  // whatever is in the corner (that comes back after it) and stays until it's put away or the app restarts. Not held
+  // back on do-not-disturb: it stops your own work.
+  function showRestart() {
+    if (!restartDue || takeover || alertOn) return;
+    if (peek && peek.kind !== 'restart') {
+      // A reply being written stays; this comes right after it (hidePeek).
+      if (replying()) return;
+      // A chat that needs you, or a collision, comes back from its own list (nextPeek).
+      if (peek.kind !== 'wait' && peek.kind !== 'clash') queue.unshift(peek);
+    }
+    showPeek({ kind: 'restart', version: restartDue.version, at: restartDue.at });
+  }
+
+  function addRestart(r) {
+    if (!NOTICES || !r || !Number.isFinite(r.at)) return;
+    restartDue = { version: String(r.version || ''), at: r.at };
+    Sfx.play('wait');
+    showRestart();
+  }
+
+  // The restart isn't coming any more (the update is no longer required, or a newer one took its place): its notice goes.
+  function restartOver() {
+    if (!NOTICES || !restartDue) return;
+    restartDue = null;
+    if (peek && peek.kind === 'restart') hidePeek();
   }
 
   // ======================= your progress =======================
@@ -995,6 +1072,14 @@ window.Messages = (() => {
         return;
       case 'request_gone':
         if (peek && peek.kind === 'request' && peek.request.id === ev.id) hidePeek();
+        return;
+      case 'note.invite':
+        if (!Social.sharing || !ev.note || !ev.note.pending) return;
+        Sfx.play('request');
+        if (!Social.dnd()) showPeek({ kind: 'noteInvite', note: ev.note, at: Date.now() });
+        return;
+      case 'note.invite_gone':
+        if (peek && peek.kind === 'noteInvite' && peek.note.id === ev.id) hidePeek();
         return;
       case 'xp':
         return progress(ev);
@@ -2757,6 +2842,8 @@ window.Messages = (() => {
     waitOver: (sid) => waitOver(sid),
     clash: (c) => addClash(c),
     clashOver: (key) => clashOver(key),
+    restart: (r) => addRestart(r),
+    restartOver: () => restartOver(),
   };
   Social.load();
   post({ type: 'ready' });

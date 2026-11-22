@@ -25,6 +25,11 @@ fi
 
 APP="build/release/Orbiterm.app"
 [ -d "$APP" ] || { echo "nothing to publish: build it first (scripts/release.sh does)" >&2; exit 1; }
+# DEVELOPER_ID=1: only a notarized build, its ticket stapled (scripts/make-dmg.sh does both), goes out.
+if [ "${DEVELOPER_ID:-}" = 1 ]; then
+  xcrun stapler validate "$APP" >/dev/null && spctl -a -t exec "$APP" 2>/dev/null \
+    || { echo "publish: $APP isn't notarized and stapled (DEVELOPER_ID=1 scripts/make-dmg.sh makes it so)" >&2; exit 1; }
+fi
 VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")
 BUILD=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Contents/Info.plist")
 ZIP="build/atalay-terminal-$VERSION-$BUILD.zip"
@@ -40,12 +45,14 @@ if [ $LOCAL = 1 ]; then
   WHERE=(file "$(basename "$ZIP")")
 else
   # The zip for updates and the .dmg for new users, on a release page anyone can download from. The .dmg has the
-  # same name in every release, so .../releases/latest/download/Atalays-Terminal.dmg (the README's link) is the newest.
+  # same name in every release, so .../releases/latest/download/Orbiterm.dmg (orbiterm.dev's link) is the newest.
+  # It also goes up as Atalays-Terminal.dmg, the old name, so links shared before the rename keep working.
   FILES=("$ZIP")
   DMG="build/Orbiterm $VERSION.dmg"
   if [ -f "$DMG" ]; then
+    cp "$DMG" build/Orbiterm.dmg
     cp "$DMG" build/Atalays-Terminal.dmg
-    FILES+=(build/Atalays-Terminal.dmg)
+    FILES+=(build/Orbiterm.dmg build/Atalays-Terminal.dmg)
   fi
   TITLE="Orbiterm $VERSION"
   gh release create "v$VERSION" "${FILES[@]}" --repo "$REPO" --title "$TITLE" --notes "${NOTES:-$TITLE}"

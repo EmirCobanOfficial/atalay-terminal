@@ -4,10 +4,21 @@
 # (scripts/publish.sh: a GitHub release, recorded in the API).
 #   scripts/release.sh 0.5.1 $'first change\nsecond change'   (one line per change: the app lists them)
 #   ATALAY_API_URL=http://127.0.0.1:4800 scripts/release.sh …   to try it against the local API
+#   DEVELOPER_ID=1 scripts/release.sh …   signed with Apple's Developer ID and notarized (build-app.sh, make-dmg.sh).
+#     Only once a release whose updater takes a Developer ID build (Updater.signedAs) is out.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 VERSION="${1:?usage: scripts/release.sh <version> [notes]}"
+# Before anything changes (a new key, the build number): the Developer ID and Apple's notary service are reachable.
+if [ "${DEVELOPER_ID:-}" = 1 ]; then
+  export DEVELOPER_ID
+  DEVID=${ATALAY_DEVELOPER_ID:-"Developer ID Application: ATALAY KARAHAN (8MPHM92P3S)"}
+  security find-identity -v -p codesigning | grep -qF "\"$DEVID\"" \
+    || { echo "release: no \"$DEVID\" in the keychain" >&2; exit 1; }
+  xcrun notarytool history --keychain-profile "${ATALAY_NOTARY_PROFILE:-orbiterm-notary}" >/dev/null \
+    || { echo "release: notarytool can't sign in with its keychain profile" >&2; exit 1; }
+fi
 # The key the build signs its API calls with, registered with that API before anyone has the build
 # (scripts/client-key.sh; a local API pairs with the staging key). For production every release gets a fresh one
 # (scripts/rotate-key.sh). Once the release is out the key goes live (below), which ends the Mac keys before it: no XP

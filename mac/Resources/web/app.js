@@ -55,6 +55,16 @@ function hexA(hex, a) {
   const n = parseInt(hex.slice(1), 16);
   return `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${a})`;
 }
+// A session's memory: its whole tree when the app measured it (memTree, bytes), else the AI process alone (mem, MB).
+function memText(s) {
+  const bytes = s.memTree != null ? s.memTree : (s.mem || 0) * 1048576;
+  if (!bytes) return { text: '', heavy: false, title: '' };
+  const g = bytes / 1073741824;
+  const text = g >= 1 ? `${g >= 10 ? Math.round(g) : g.toFixed(1)} GB` : `${Math.max(1, Math.round(bytes / 1048576))} MB`;
+  const f = (b) => (b >= 1073741824 ? `${(b / 1073741824).toFixed(1)} GB` : `${Math.max(1, Math.round(b / 1048576))} MB`);
+  const top = Array.isArray(s.memTop) ? s.memTop : [];
+  return { text, heavy: g >= 2, title: top.length ? `This chat and what it started: ${top.map(([n, b]) => `${n} ${f(b)}`).join(' · ')}` : 'This chat and what it started' };
+}
 function fmtTok(n) {
   n = n || 0;
   if (n >= 1e9) return (n / 1e9).toFixed(2) + 'B';
@@ -214,6 +224,7 @@ const Streamer = (() => {
     lastPrompt: s.lastPrompt ? fake('title', s.lastPrompt) : s.lastPrompt,
     cwd: folder(s.cwd),
     branch: branch(s.branch),
+    wt: s.wt ? { ...s.wt, main: folder(s.wt.main), top: folder(s.wt.top), branch: branch(s.wt.branch), sub: name(s.wt.sub) } : s.wt,
     waitingFor: wait(s.waitingFor),
     pending: (s.pending || []).map(call),
     last: call(s.last),
@@ -704,11 +715,13 @@ function applyModes() {
   hideTip();
 }
 // What the user can see decides the work: the app reports whether the dashboard is visible and in front;
-// a hidden page pauses CSS animations and the 3D view.
-function setVisibility(visible, focused) {
+// a hidden page pauses CSS animations and the 3D view. `covered` (the Mac only): one of the app's chat windows lies over
+// nearly all of the dashboard, so the map can't be seen though the window is (attack.js holds the ship back then).
+function setVisibility(visible, focused, covered) {
   document.documentElement.classList.toggle('paused', !visible);
   document.documentElement.classList.toggle('behind', visible && !focused);
-  map('activity', visible, focused);
+  document.documentElement.classList.toggle('covered', visible && !!covered);
+  map('activity', visible, focused, covered);
 }
 // Power save (the app decides and keeps it: PowerSaver.swift, the Windows app's power.js): the switch at the map's top
 // right, on when the map draws fewer and smaller frames, with why when it came on by itself (a low battery, the
@@ -760,7 +773,7 @@ function setDiscord(s) {
 // The top bar is every AI's, whichever chat is in front: the Windows app still reports that chat, and nothing here
 // follows it.
 function connect() {
-  window.__radar = { init: handleInit, state: handleState, events: (list) => list.forEach(onEvent), visibility: setVisibility, power: (on) => map('power', on), powerSave: setPowerSave, discord: setDiscord, activeSession: () => {}, cloud: (c) => window.Cloud?.render(c), social: (ev) => window.Social?.event(ev), terminals: (list) => { TERMS = list; map('terminals', Streamer.terminals(list)); }, terminalGone: (id) => map('terminalGone', id), idle: (s) => { map('idle', s); setIdle(Number(s)); }, openUpdate: () => window.Cloud?.openUpdate(), openProfile: () => window.Cloud?.openProfile(), openFriend: (id) => window.Cloud?.openFriend(id), openView: (v) => window.GitView?.view(v), runaways: (list) => { RUNS = list; const runs = Streamer.runaways(list); window.Danger?.update(runs); map('runaways', runs); }, openDanger: () => window.Danger?.open() };
+  window.__radar = { init: handleInit, state: handleState, events: (list) => list.forEach(onEvent), visibility: setVisibility, power: (on) => map('power', on), powerSave: setPowerSave, discord: setDiscord, mcp: (s) => { window.__mcp = s; window.dispatchEvent(new Event('mcpchange')); }, activeSession: () => {}, cloud: (c) => window.Cloud?.render(c), social: (ev) => window.Social?.event(ev), terminals: (list) => { TERMS = list; map('terminals', Streamer.terminals(list)); }, terminalGone: (id) => map('terminalGone', id), idle: (s) => { map('idle', s); setIdle(Number(s)); }, openUpdate: () => window.Cloud?.openUpdate(), openProfile: () => window.Cloud?.openProfile(), openFriend: (id) => window.Cloud?.openFriend(id), openView: (v) => window.GitView?.view(v), runaways: (list) => { RUNS = list; const runs = Streamer.runaways(list); window.Danger?.update(runs); map('runaways', runs); }, openDanger: () => window.Danger?.open(), memory: (m) => window.Cleanup?.memory(m), cleanup: (j) => window.Cleanup?.update(j), cleanupStep: (s) => window.Cleanup?.step(s), cleanupPrefs: (p) => window.Cleanup?.prefs(p), openCleanup: () => window.GitView?.view('cleanup') };
   native({ type: 'ready' });
   // A reloaded page in streamer mode: the app's chats list and windows stay in it too.
   native({ type: 'streamer', on: Streamer.on });
@@ -899,9 +912,12 @@ function ping(kind) {
     else play(0.01);
   } catch {}
 }
+// The switch is a speaker (index.html): its tooltip and its name to a screen reader say which way it is set.
 function paintSound() {
-  $('sound').textContent = soundOn ? 'sound on' : 'sound off';
-  $('sound').classList.toggle('on', soundOn);
+  const b = $('sound'), label = soundOn ? 'Sound on' : 'Sound off';
+  b.title = label;
+  b.setAttribute('aria-label', label);
+  b.classList.toggle('on', soundOn);
 }
 $('sound').addEventListener('click', () => {
   soundOn = !soundOn;
@@ -1232,21 +1248,23 @@ function renderLimits() {
   if (!list.length) return;
   let html = '<span class="lim-h"></span>' + LIMIT_ROWS.map(([, short]) => `<span class="lim-h">${short}</span>`).join('');
   for (const a of list) {
-    const wins = LIMIT_ROWS.map(([key, , long]) => ({ w: a[key], left: limitLeft(a[key]), long, none: !!a.windows && !a.windows.includes(key) }));
+    const wins = LIMIT_ROWS.map(([key, , long]) => ({ w: a[key], left: limitLeft(a[key]), long: (a.labels && a.labels[key]) || long, none: !!a.windows && !a.windows.includes(key) }));
+    // A monthly one (Cursor's billing cycle) says its reset as a date, not a weekday.
+    const reset = (w, full) => (a.monthly ? new Date(w.resetsAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }).toLowerCase() : resetAt(w.resetsAt, full));
     const tip = [
       `${a.tool}${a.group ? ` · ${a.group}` : ''}`,
       ...wins.map(({ w, left, long, none }) =>
-        none ? `no ${long} limit` : !w ? `${long}: no data yet` : left === null ? `${long}: waiting for ${a.tool} to report again` : `${long}: ${Math.round(left)}% left, fills again ${resetAt(w.resetsAt, true)}`,
+        none ? `no ${long} limit` : !w ? `${long}: no data yet` : left === null ? `${long}: waiting for ${a.tool} to report again` : `${long}: ${Math.round(left)}% left, fills again ${reset(w, true)}`,
       ),
     ];
     if (a.at) tip.push(`as of ${hhmmss(a.at).slice(0, 5)}`);
     const title = esc(tip.join('\n'));
     html +=
-      `<span class="lim-n" title="${title}">${esc(a.name)}</span>` +
+      `<span class="lim-n" title="${title}">${esc(a.name)}${a.monthly ? ' · mo' : ''}</span>` +
       wins
         .map(
           ({ w, left }) =>
-            `<span class="lim-c ${limitClass(left)}" title="${title}">${left === null ? '<i></i>' : `<i class="lim-b"><i style="width:${left}%"></i></i>`}<b>${left === null ? '—' : Math.round(left) + '%'}</b>${left !== null && left < 50 && w.resetsAt ? `<small>↻${resetAt(w.resetsAt)}</small>` : ''}</span>`,
+            `<span class="lim-c ${limitClass(left)}" title="${title}">${left === null ? '<i></i>' : `<i class="lim-b"><i style="width:${left}%"></i></i>`}<b>${left === null ? '—' : Math.round(left) + '%'}</b>${left !== null && left < 50 && w.resetsAt ? `<small>↻${reset(w)}</small>` : ''}</span>`,
         )
         .join('');
   }
@@ -1340,7 +1358,7 @@ function createCard() {
   el.innerHTML = `<div class="ch"><span class="lights"><i class="l-close"></i><i class="l-min"></i></span><b class="nm"></b><span class="kind"></span><span class="pill"></span></div>
 <div class="title"></div><div class="path"></div><div class="act"></div>
 <div class="ctx"><span>ctx</span><div class="bar"><i></i></div><span class="cv"></span></div>
-<div class="kv"><span class="md"></span><span>tools <b class="tl"></b></span><span>web <b class="wb"></b></span><span>err <b class="er"></b></span><span class="cost"></span></div>
+<div class="kv"><span class="md"></span><span>tools <b class="tl"></b></span><span>web <b class="wb"></b></span><span>err <b class="er"></b></span><span class="mem" hidden>mem <b class="mm"></b></span><span class="cost"></span></div>
 <svg class="spark" viewBox="0 0 120 20" preserveAspectRatio="none"></svg><div class="ag"></div><div class="flags"></div>`;
   el.addEventListener('click', () => focusSession(el.dataset.key));
   el.querySelector('.l-close').addEventListener('click', (e) => {
@@ -1352,6 +1370,11 @@ function createCard() {
     toggleCollapsed(el.dataset.key);
   });
   return el;
+}
+function pathHTML(s) {
+  const wt = s.wt;
+  if (!wt) return `<span class="p"><bdi>${esc(s.cwd + (s.branch ? `  ⎇ ${s.branch}` : ''))}</bdi></span>`;
+  return `<span class="p"><bdi>${esc(wt.main + (wt.sub ? '/' + wt.sub : ''))}</bdi></span><span class="wtchip">⎇ <span class="k">worktree ·</span> ${esc(wt.branch)}</span>`;
 }
 function updateCard(el, s) {
   const q = (sel) => el.querySelector(sel);
@@ -1372,7 +1395,8 @@ function updateCard(el, s) {
   setText(pill, `${STATUS[s.status].label} ${s.status === 'ended' ? '' : clock(Date.now() - (s.statusSince || s.lastTs))}`);
   setText(q('.title'), s.title || s.lastPrompt || '—');
   q('.title').title = s.lastPrompt || '';
-  setText(q('.path'), s.cwd + (s.branch ? `  ⎇ ${s.branch}` : ''));
+  // A worktree's card shows its main repo's path (so a repo's cards read as one project) and a chip saying which worktree.
+  setHTML(q('.path'), pathHTML(s));
   setHTML(q('.act'), actionHTML(s));
   const pct = s.ctxMax ? Math.min(1, s.ctx / s.ctxMax) : 0;
   const bar = q('.bar > i');
@@ -1384,6 +1408,15 @@ function updateCard(el, s) {
   setText(q('.wb'), s.web);
   setText(q('.er'), s.errors);
   q('.er').classList.toggle('red', s.errors > 0);
+  // What this chat and everything it started hold (the app measures the whole tree: a test run's 2 GB is in it); 2 GB and more is amber.
+  const mem = q('.mem');
+  if (mem) {
+    const mt = memText(s);
+    mem.hidden = !mt.text;
+    setText(q('.mm'), mt.text);
+    mem.classList.toggle('heavy', mt.heavy);
+    mem.title = mt.title;
+  }
   setText(q('.cost'), s.tool && s.tool !== 'Claude Code' ? '' : fmtUsd(s.cost)); // the others have no price list
   setHTML(q('.spark'), sparkBars(s.spark, col));
   setText(q('.ag'), s.agents.length ? `⤷ ${s.agentsRunning} running · ${s.agents.length} subagents (15 min)` : '');
@@ -1514,11 +1547,15 @@ function panelMenu(e) {
   document.querySelector('.pn-ctx')?.remove();
   const p = e.target.closest('section.panel[id^="p-"]');
   if (!p || !(CLEARABLE.includes(p.id) || window.PanelLayout?.hide)) return;
+  // A note's text keeps the system's menu (Copy, Paste, Select All); the notes script takes the lit blocks' own.
+  if (e.target.closest('.np-ed')) return;
   e.preventDefault();
   const menu = document.createElement('div');
   menu.className = 'pn-ctx';
   const can = CLEARABLE.includes(p.id) && STATE;
+  const naiOk = p.id === 'p-notes' && window.Notes?.openAi && window.webkit?.messageHandlers?.notesai;
   menu.innerHTML =
+    (naiOk ? `<button type="button" data-ctx="notesai">\u2726 notes and AI\u2026</button>${window.PanelLayout?.hide ? '<hr>' : ''}` : '') +
     (can ? `<button type="button" data-ctx="clear">⌫ clear this panel</button>` : '') +
     (can && clearedOf(p.id) ? `<button type="button" data-ctx="restore">↺ show what was cleared</button>` : '') +
     (window.PanelLayout?.hide ? `${can ? '<hr>' : ''}<button type="button" data-ctx="hide">– hide this panel</button>` : '');
@@ -1530,6 +1567,7 @@ function panelMenu(e) {
     if (!b) return;
     menu.remove();
     if (b.dataset.ctx === 'hide') return PanelLayout.hide(p.id);
+    if (b.dataset.ctx === 'notesai') return window.Notes.openAi();
     setCleared(p.id, b.dataset.ctx === 'clear');
   };
 }
@@ -1727,7 +1765,7 @@ function spendLabel(key, unit, full) {
 }
 
 // The AIs in spend.ledger's rows, in this order; Claude Code's limits and spend are the Claude account's.
-const AI_ORDER = ['Claude Code', 'Codex', 'Antigravity'];
+const AI_ORDER = ['Claude Code', 'Codex', 'Antigravity', 'Cursor'];
 const aiName = (tool) => (tool === 'Claude Code' ? 'claude' : String(tool).toLowerCase());
 
 // The rows' and the bars' colour: the sessions' hues, "other" dim.
@@ -1967,12 +2005,14 @@ function map(fn, ...args) {
 function sessionTip(s) {
   const pct = s.ctxMax ? ` (${Math.round((s.ctx / s.ctxMax) * 100)}%)` : '';
   const p = s.pending[0];
-  const sys = [s.model, s.effort, s.tty && s.tty.replace('/dev/', ''), s.cpu ? s.cpu.toFixed(0) + '% cpu' : '', s.mem ? s.mem + ' MB' : ''].filter(Boolean).join(' · ');
+  const sys = [s.model, s.effort, s.tty && s.tty.replace('/dev/', ''), s.cpu ? s.cpu.toFixed(0) + '% cpu' : '', memText(s).text].filter(Boolean).join(' · ');
   return (
     `<div class="h" style="color:${STATUS[s.status].color}">${esc(s.name)} · ${STATUS[s.status].label}${s.waitingFor ? ' · ' + esc(s.waitingFor) : ''}</div>` +
     (s.title ? `<div class="r">${esc(s.title)}</div>` : '') +
     (s.lastPrompt ? `<div class="d">› ${esc(clipT(s.lastPrompt, 170))}</div>` : '') +
-    `<div class="d">${esc(s.cwd)}${s.branch ? ' ⎇ ' + esc(s.branch) : ''}</div>` +
+    (s.wt
+      ? `<div class="d">${esc(s.wt.main + (s.wt.sub ? '/' + s.wt.sub : ''))} <span class="w">⎇ worktree · ${esc(s.wt.branch)}</span></div>`
+      : `<div class="d">${esc(s.cwd)}${s.branch ? ' ⎇ ' + esc(s.branch) : ''}</div>`) +
     (sys ? `<div class="d">${esc(sys)}</div>` : '') +
     `<div class="r">ctx ${fmtTok(s.ctx)}${pct}${s.tool && s.tool !== 'Claude Code' ? '' : ` · ${fmtUsd(s.cost)}`} · ${s.tools} tools · ${s.web} web · ${s.errors} err · ${s.prompts} prompts</div>` +
     (p ? `<div class="r" style="color:${CAT[p.c]?.color}">▸ ${esc(p.n)} ${esc(p.l)} · ${fmtDur(Date.now() - p.t)}</div>` : '') +
@@ -1984,7 +2024,7 @@ function agentTip(a, parent) {
   return (
     `<div class="h" style="color:#9d6bff">◆ ${esc(a.desc)}</div>` +
     `<div class="d">${esc([a.type, a.model, a.bg ? 'background' : '', parent ? 'from ' + parent.name : ''].filter(Boolean).join(' · '))}</div>` +
-    `<div class="r">${a.running ? 'running ' + clock(Date.now() - a.firstTs) : 'finished ' + ago(a.lastTs) + ' ago'} · ${a.tools} tools · ${fmtUsd(a.cost)} · ${a.errors} err</div>` +
+    `<div class="r">${a.running ? 'running ' + clock(Date.now() - a.firstTs) : a.parked ? 'idle · quiet ' + ago(a.lastTs) : 'finished ' + ago(a.lastTs) + ' ago'} · ${a.tools} tools · ${fmtUsd(a.cost)} · ${a.errors} err</div>` +
     (p ? `<div class="r" style="color:${CAT[p.c]?.color}">▸ ${esc(p.n)} ${esc(p.l)}</div>` : '')
   );
 }

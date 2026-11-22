@@ -104,13 +104,13 @@
     el('circle', { class: 'pulse', cx: C, cy: C, r: R0 - 6 }, hub);
     el('circle', { class: 'core', cx: C, cy: C, r: R0 - 6 }, hub);
     el('text', { class: 'brand', x: C, y: C - 12 }, hub).textContent = 'ORBITERM';
-    el('text', { class: 'title', x: C, y: C + 3 }, hub).textContent = 'SHORTCUTS';
+    el('text', { class: 'title', x: C, y: C + 3 }, hub).textContent = 'RING';
     el('text', { class: 'sub', x: C, y: C + 16 }, hub).textContent = SLOTS.some(Boolean) ? 'pick a folder' : 'add your folders';
     hub.addEventListener('click', (e) => (e.stopPropagation(), close()));
 
     const hint = document.createElement('div');
     hint.className = 'hint';
-    hint.textContent = `${WIN ? 'Ctrl + middle click' : '4-finger click'} · keys 1–5 · right-click a folder to change it · esc`;
+    hint.textContent = `${how} · keys 1–5 · right-click a folder to change it · esc`;
     pie.appendChild(hint);
     root.appendChild(pie);
     root.classList.add('on');
@@ -120,7 +120,11 @@
   // folder renamed or deleted since would stay on the wheel (the Windows app leaves out a folder that is gone). A close
   // before they're in (the overlay hidden) drops the open.
   let showing = 0;
-  async function show(x, y) {
+  // How it was opened, from the app (Mac: the trackpad click and keys set in Settings; Windows: the middle mouse button
+  // and keys set in Settings › Shortcuts); kept for the reopen after a picker. Until the app says, each one's default.
+  let how = WIN ? 'Ctrl + middle click' : '4-finger click';
+  async function show(x, y, opened) {
+    if (opened) how = opened;
     const n = ++showing;
     await loadSlots();
     if (n === showing) open(x, y);
@@ -136,7 +140,7 @@
     const s = SLOTS[i];
     const [title, sub] = pie.querySelectorAll('.hub .title, .hub .sub');
     if (i < 0) {
-      title.textContent = 'SHORTCUTS';
+      title.textContent = 'RING';
       sub.textContent = SLOTS.some(Boolean) ? 'pick a folder' : 'add your folders';
     } else {
       title.textContent = s ? s.name.slice(0, 12) : `SLOT ${i + 1}`;
@@ -150,10 +154,10 @@
     pie.querySelectorAll('.slice')[i].classList.add('pick');
     setTimeout(() => {
       close(false, true);
-      if (s) {
+      if (s && !s.missing) {
         API.newTerminal(s.dir, s.name);
         API.done();
-      } else choose(i);
+      } else choose(i, s?.dir);
     }, 140);
   }
 
@@ -168,7 +172,7 @@
         if (await saveSlots(next)) {
           toast(`shortcut ${i + 1} → ${baseName(dir)}`);
           open(at.x, at.y, i);
-        }
+        } else open(at.x, at.y);
       },
       onCancel: () => open(at.x, at.y),
     });
@@ -181,11 +185,16 @@
     const r = pie.getBoundingClientRect();
     m.style.left = x - r.left + 'px';
     m.style.top = y - r.top + 'px';
-    m.innerHTML = `<div class="t">${esc(SLOTS[i].display || SLOTS[i].dir)}</div><button data-a="change">Change folder…</button><button data-a="remove">Remove from slot ${i + 1}</button>`;
+    // `git`: the slice's folder is in a git repo (the Mac app says; the Windows one doesn't, and then there's no entry).
+    const wt = SLOTS[i].git && !SLOTS[i].missing && window.Worktree ? '<button data-a="worktree">New worktree here…</button>' : '';
+    m.innerHTML = `<div class="t">${esc(SLOTS[i].display || SLOTS[i].dir)}${SLOTS[i].missing ? ' (missing)' : ''}</div>${wt}<button data-a="change">Change folder…</button><button data-a="remove">Remove from slot ${i + 1}</button>`;
     m.addEventListener('click', async (e) => {
       e.stopPropagation();
       const a = e.target.dataset.a;
-      if (a === 'change') {
+      if (a === 'worktree') {
+        close(false, true);
+        Overlay.newWorktree(SLOTS[i].dir);
+      } else if (a === 'change') {
         close(false, true);
         choose(i, SLOTS[i].dir);
       } else if (a === 'remove') {
@@ -235,5 +244,5 @@
   }, true);
 
   loadSlots();
-  window.Shortcuts = { open, show, close, slots: () => SLOTS };
+  window.Shortcuts = { open, show, close, slots: () => SLOTS, refresh: loadSlots };
 })();

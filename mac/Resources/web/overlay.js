@@ -13,20 +13,53 @@ function toast(msg) {
   toastTimer = setTimeout(() => t.classList.remove('on'), 2400);
 }
 
+let doneTimer = 0;
+// A new request cancels the pending delayed hide of the last one (it would hide what was just opened).
+const fresh = () => {
+  clearTimeout(doneTimer);
+  return !window.Worktree?.isBusy();
+};
+
 window.Overlay = {
-  shortcuts(x, y) {
-    window.Shortcuts.show(x, y);
+  shortcuts(x, y, how) {
+    if (!fresh()) return;
+    window.Shortcuts.show(x, y, how);
   },
-  newTerminal() {
+  // opts.worktree (Chat → New Worktree…, ⌥⇧⌘N): the picker's main button is the worktree sheet's.
+  newTerminal(opts) {
+    if (!fresh()) return;
+    window.Worktree?.close();
+    const wt = !!(opts && opts.worktree);
     window.Picker.open({
-      title: 'NEW TERMINAL',
+      title: wt ? 'NEW WORKTREE' : 'NEW TERMINAL',
       forLabel: 'choose the folder',
       around: 'picker',
-      onPick: (dir) => {
-        API.newTerminal(dir, dir.replace(/\/+$/, '').split('/').pop());
+      mode: wt ? 'wt' : 'term',
+      onPick: (dir, meta) => {
+        API.newTerminal(dir, dir.replace(/\/+$/, '').split('/').pop(), meta && meta.told);
         API.done();
       },
       onCancel: () => API.done(),
     });
+  },
+  // The name sheet on its own, for the repo `dir` is in (the chats list's ⎇ and menus, the Ring's right-click).
+  // opts.ai: the AI "Open with" starts on; opts.moving: the chat this was opened from ({ replacing, sid, tool, folder }); it keeps running.
+  newWorktree(dir, opts) {
+    if (!fresh()) return;
+    window.Worktree.close();
+    window.Worktree.open({
+      dir,
+      alone: true,
+      ai: opts && opts.ai,
+      moving: opts && opts.moving,
+      onDone: (r) => API.worktreeOpen(r.open, r.ai, opts && opts.moving),
+      onCancel: () => API.done(),
+    }).then((shown) => shown || (doneTimer = setTimeout(API.done, 2500))); // the toast (worktree.js) shows first
+  },
+  // Create PR / Merge / Delete worktree for the worktree `opts.top` (worktree-ship.js): anchored to the window that asked, or alone.
+  ship(opts) {
+    if (!fresh()) return;
+    window.Worktree.close();
+    window.Worktree.ship(opts);
   },
 };

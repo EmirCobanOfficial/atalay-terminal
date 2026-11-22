@@ -11,9 +11,11 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/atalaykarahan/orbiterm-releases/releases/latest/download/Atalays-Terminal.dmg"><b>⬇&nbsp; Download for macOS</b></a>
+  <a href="https://orbiterm.dev/"><b>orbiterm.dev</b></a>
   &nbsp;·&nbsp;
-  <a href="https://github.com/atalaykarahan/orbiterm-releases/releases/download/windows/Atalays-Terminal-Setup.exe"><b>⬇&nbsp; Download for Windows</b></a>
+  <a href="https://github.com/atalaykarahan/orbiterm-releases/releases/latest/download/Orbiterm.dmg"><b>⬇&nbsp; Download for macOS</b></a>
+  &nbsp;·&nbsp;
+  <a href="https://github.com/atalaykarahan/orbiterm-releases/releases/download/windows/Orbiterm-Setup.exe"><b>⬇&nbsp; Download for Windows</b></a>
   &nbsp;·&nbsp;
   <a href="https://github.com/atalaykarahan/orbiterm-releases">Install notes and screenshots</a>
 </p>
@@ -43,18 +45,31 @@ Works with Claude Code, Codex and Antigravity; not affiliated with Anthropic, Op
 
 ## Privacy
 
+The full Privacy Notice and the Terms of Use are at https://orbiterm.dev/privacy/ and https://orbiterm.dev/terms/ (Turkish: https://orbiterm.dev/tr/gizlilik/ and https://orbiterm.dev/tr/kosullar/). In short:
+
 - The dashboard reads Claude Code's own files on your Mac (`~/.claude`: the session list and transcripts), and Codex's
   and Antigravity's own logs (`~/.codex/sessions`, `~/.gemini/antigravity-cli`), read only.
-  None of it leaves your Mac: no prompts, no code, no transcripts, no file names, no token counts.
+  None of it leaves your Mac: no prompts, no code, no transcripts, no file names. The one exception is your token
+  counts, for the Tokens leaderboard: for each day, AI tool, model (its name as the tool records it, a custom one's
+  too) and effort level, the input, output, cache-read, cache-write and reasoning tokens and how many replies, never
+  what was in them. They're sent at most every five minutes with a random ID for this computer's counts, and the
+  first time the app also sends the past days the AI tools still have on record.
+  Turn off "Share my token counts for the Tokens board" in Settings · Privacy and none are sent at all, past days
+  included; what was already sent stays on the board. Turned back on, only the days after that day are sent: the
+  days it was off, the day it's turned back on and anything not sent before stay on your computer. To keep your name
+  off that board, turn off "Show my name on the Tokens board" (you then show as Anonymous; your total still counts).
 - The app talks to its server only for the social parts, feedback and updates: your hacker name and tag, the app and
   macOS version, whether you're working each minute (for XP) and your time zone, your friends, requests, messages and
-  status, the leaderboard, and the feedback you send (kept with your name#tag and the time, no e-mail).
+  status, the notes you share, the leaderboard, your token counts (above, unless you turn them off), and the feedback you send (kept with
+  your name#tag and the time, no e-mail).
 - Your Mac is known to the server by a salted hash of its hardware UUID (never the UUID itself) and a random token
   kept on the Mac.
 - On Windows the same goes for your PC: Claude Code's files are in `%USERPROFILE%\.claude`, the server gets the
   Windows version, and the PC is known by a salted hash of Windows' MachineGuid.
 - Messages are stored on the server so they reach your friends; they aren't end-to-end encrypted.
-- Settings can hide your active time from friends and your name on the leaderboard.
+- Notes stay on your computer, encrypted, unless you share one. A shared note is stored on the server so the friends you invite can edit it with you: encrypted at rest like messages (the server can read it; it isn't end-to-end encrypted), sent only to those friends, and deleted from the server when the owner stops sharing it or deletes it. A shared note shows on every Mac of your account (Windows later); your other notes don't.
+- Settings can hide your active time from friends and your name on the leaderboard and the Tokens board, keep which
+  AI and model you use from friends, and stop sending your token counts.
 - Discord presence (on unless Settings · DISCORD turns it off) tells the Discord app on your computer how many
   sessions run and the AI tools at work, for your Discord profile, with your level; the project folders' names and
   today's active time each have their own switch. Never prompts, code or file names.

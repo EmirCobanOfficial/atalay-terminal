@@ -3,6 +3,56 @@
 Each version's lines are its release notes: the app lists them on its "what's new" screen
 (`app/scripts/release.sh <version> "<one line per change>"`).
 
+## Next
+
+## 0.27.0
+
+- Mac: Orbiterm is now signed and notarized by Apple: after this update macOS asks once more for the permissions you gave before (Automation, Files and Folders), then never again
+- Spaceship attack: fire at an online friend from Friends (🚀). They see LOCKED ON, then a ship on their map fires at its centre and it blows up and rebuilds; they're shielded for 30 minutes. You feel it too: an In flight countdown, two hit ticks, their row cracking and flaring at the blast, with sounds
+- ORB: you earn 12.71 ORB an hour while you work (the time XP counts, up to 16 hours a day). An attack costs 42.32 ORB, back if you cancel during the lock-on, and a friend can be hit 3 times a day. Everyone starts with 42.32 ORB
+- Notes: links (⌘K), and AI tools can create, pin, show and hide notes on your screen; AI settings on the notes screen
+- Mac: terminals run on the app's own terminal instead of screen: emoji and wide characters show right
+- Privacy Notice and Terms of Use: linked from the welcome screen and Settings; accounts from before ask once (Agree / Not now)
+- Quitting Orbiterm closes every terminal it started; an update's restart still keeps them
+- Subagents: a finished subagent leaves the orbit at once, a quiet one parks as an idle hexagon
+- Top bar: icons for New Terminal and sound
+- Badges: Rare now starts at 5% (was 9%)
+
+- Windows: the env button (Ctrl+Shift+E) in a terminal's strip lists the .env files in its folder and the ones in it, and edits one with the values hidden until you open them; Copy all copies the whole file with its real values
+- Windows: shared notes as on the Mac. Share a note with friends and write it together live (cursors, offline edits merged), accept invites from the corner, the bell or the notes board, add pictures and files to a note (shared notes upload them for the others; Save puts a file in Downloads), link a note to a project so the AIs in that project see it first, and AI tools can now create, pin and open notes on your screen too
+- Windows: Settings › Shortcuts. Change the app's keys (Help › Keyboard Shortcuts, or ? on the dashboard, lists them all), choose how the middle mouse button opens the Ring (with Ctrl, alone, or not at all; a touchpad's three-finger tap can be set to a middle click in Windows) and its keys, and swap Esc and Ctrl+W: Esc hides the terminal, Ctrl+W sends Esc to Claude, Codex or agy
+- Windows: the weekly share card copies its picture, saves it to Downloads and shows it in its folder, with your avatar and badges on it
+- Windows: when a terminal hides (Ctrl+W, its ×), the dashboard takes the keys, so Ctrl+Shift+N or the Ring's keys work right away
+- Windows: Esc Esc in an Antigravity chat waiting for you with an empty prompt opens its Rewind (Ctrl+W Ctrl+W with Esc and Ctrl+W swapped)
+- Windows: the app's keys work when they come from Remote Desktop, the on-screen keyboard or a key-sending program too
+- Windows: Cursor's CLI (cursor-agent) is a session on the map like Claude Code, Codex and agy: working, needs you and your turn, its calls on every panel (its web searches too), its subagents, its tokens on the spend panel and the leaderboard, its monthly usage limit in the top bar, its chats in the chats list (resume, delete), and Claude reading it over MCP
+- Windows: a terminal in a worktree (one made with claude -w or git worktree add) shows its branch and changes in its header, with a button for the next step: Create PR (commits, pushes, then opens the pull request with GitHub CLI, or GitHub's form in your browser filled in), Merge PR, or Delete worktree (the folder goes to the Recycle Bin; the branch only when its work is safe elsewhere). ▾, File and the chats list's right-click have Merge into the base branch too, and Ctrl+Shift+P opens Create PR. Nothing happens until you press the sheet's own button
+- Windows: Clean Up. A calm line on the map says when your PC is running low on memory, and File › Clean Up… (or Settings › General › memory) lists the chats you left alone in the app's terminals, the test runs, dev servers and browsers they started and what a closed terminal left running, each with the memory it gives back. Tick what you want, read the summary, and nothing is closed before you press Clean Up. Chats stay in your chats list. Chat cards show the memory of everything a chat started. Worktrees aren't listed on Windows yet.
+- Mac: Clean Up. A calm line on the map says when your Mac is running low on memory, and Orbiterm ▸ Clean Up… lists the chats you left alone, the test runs, dev servers and browsers they started, and finished worktrees, each with the memory or disk it gives back. Tick what you want, read the summary, and nothing is closed before you press Clean Up. Chats stay in your chats list, worktree folders go to the Trash and their branches stay. Chat cards show the memory of everything a chat started.
+- Notes: write a note together with friends. Share a note from its Share button (the note is then stored on Orbiterm's server, encrypted; the server can read it, it isn't end-to-end encrypted), pick friends, and they get an invite in the corner, in the bell and on the notes board. Everyone edits the same line at once, you see each other's cursors and selections with names, and edits made offline merge when you're back online. A shared note shows who's in it and whether the line is live. AI tools can read a shared note only if its owner turns on "Let AI read this note" (off by default); when an AI edits it, the others see "Claude Code (Atalay) edited". Remove someone, leave (with "Keep a private copy", on by default) or stop sharing: a removed person keeps no copy. Mac only for now.
+- Mac: a terminal pinned above the dashboard drags with the cursor again, smoothly. Thanks to @EmirCobanOfficial on GitHub, EmirMac#7124 in the app (PR #44)
+- Settings · Privacy: "Share my token counts for the Tokens board". Off, the app sends no token counts at all, and the days it was off are never sent, even once it's back on. The README now lists exactly what the counts hold. Found by @EmirCobanOfficial on GitHub, EmirMac#7124 in the app
+- A required update says 5 minutes ahead when it will restart the app, if chats or terminals are running, with a button to restart now; the conversations stay saved. Found by @EmirCobanOfficial on GitHub, EmirMac#7124 in the app
+- Messages: once every older end-to-end encrypted message has been opened, the old keys file is deleted from your computer, and a bad page from the server can no longer keep the app asking for it. Found by @EmirCobanOfficial on GitHub, EmirMac#7124 in the app
+- Mac updates: a download that grows past 200 MB is stopped, and the zip is checked without reading it all into memory. Found by @EmirCobanOfficial on GitHub, EmirMac#7124 in the app
+- Security fix: Source Control no longer runs the commands a folder's own git settings name (an fsmonitor, a filter, a textconv), so a downloaded folder that a terminal is in can't start them, on the Mac and Windows. Found by @EmirCobanOfficial on GitHub, EmirMac#7124 in the app
+- Themes: Fazil416HK, a tactical HUD in titanium and reticle crimson. Thanks to @fazilmemmedzade on GitHub, Fazil416HK#9019 in the app (PR #42)
+- Themes: Emir, a profiler's timeline in graphite and bone. Thanks to @EmirCobanOfficial on GitHub, EmirMac#7124 in the app (PR #47)
+- Viktoria: the Mischief level you pick applies, terminals count while the dashboard is minimized, she no longer walks up through the air, and she sleeps at 10 fps. Thanks to @EmirCobanOfficial on GitHub, EmirMac#7124 in the app (PR #43)
+- Since 0.26.0 the orbit map draws far less behind another app or a full view like Source Control (about 52% of a core down to 29%, and 43% down to 13%). Thanks to @EmirCobanOfficial on GitHub, EmirMac#7124 in the app (PRs #37 and #38, missed in 0.26.0's notes)
+
+## 0.26.0
+
+- The four-finger menu is called the Ring now, and a folder renamed in Finder no longer freezes it
+- ⌘W hides the terminal again, and what runs in it keeps running
+- Dragging a terminal window is smooth again on Macs where it stuttered
+- A full-screen terminal no longer heats the Mac
+- Notes: selecting text works as in any editor, across lines, lists and to-dos
+- Notes: the eye button hides a note from AI
+- AI tools can read and edit your notes if you let them (Settings > Privacy, off by default)
+- Claude Desktop can watch and drive your Orbiterm chats and read your notes through a local MCP server (Settings > Claude, off by default)
+- The installer is now called Orbiterm.dmg
+
 ## 0.24.0
 
 - Tokens board: everyone is on it again, also with one AI picked, and two new switches in Settings keep your name or your AI and model off it

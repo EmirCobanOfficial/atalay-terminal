@@ -4,8 +4,9 @@
 // many are online, their XP, and the friends, messages and notifications that the API pushes into a live socket. It
 // ports the Mac app's Cloud.swift (with CloudBridge, the pages' "cloud" handler), Social.swift and ClientKey.swift.
 // main.js tells it what only main.js knows (whether the user is working, how long since the last input, the theme),
-// passes it the pages' "cloud" messages, pushes its state and live events to the pages, and kicks it after sleep or a
-// network change. Nothing here waits on the network: the dashboard and the terminals work offline, the API catches up.
+// passes it the pages' "cloud" messages, pushes its state and live events to the pages, and kicks it after sleep; a
+// network change it notices itself (watchNetwork). Nothing here waits on the network: the dashboard and the terminals
+// work offline, the API catches up.
 //
 // Updates are the one part left out. The Mac app takes its builds from the API's offers; this app updates from GitHub
 // releases (electron-updater, in main.js). So no build number goes to the API (its update offers, and its rule that
@@ -19,6 +20,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { createUnseal } = require('./unseal');
+const { dayAfterToday } = require('./tokenledger');
 
 const API = 'https://terminal-api.atalaykarahan.com';
 // Where Node's WebSocket reports the pings it answers (the API's, every 25 s); see `watch`.
@@ -27,14 +29,28 @@ const THEME = /^[a-z0-9-]{1,40}$/;
 
 // Only the friends, messages, notifications, feedback, Roadmap, account, sign-in, settings-sync, badges and releases endpoints,
 // as the Mac's CloudBridge allows them; the pages never reach anything else with the token.
-// v1/me/profile and v1/me/avatar: Settings → PROFILE's links and picture (profile.js).
-const SOCIAL_ROUTES = ['v1/me/status', 'v1/me/activity', 'v1/me/leaderboard', 'v1/me/profile', 'v1/me/avatar', 'v1/feedback'];
+// v1/me/profile and v1/me/avatar: Settings → PROFILE's links and picture (profile.js). v1/orb/me: your ORB (social.js loadOrb).
+const SOCIAL_ROUTES = ['v1/me/status', 'v1/me/activity', 'v1/me/leaderboard', 'v1/me/profile', 'v1/me/avatar', 'v1/feedback', 'v1/orb/me'];
 const SOCIAL_TREES = [
   'v1/social', 'v1/friends', 'v1/messages', 'v1/leaderboard', 'v1/notifications',
   'v1/roadmap', 'v1/account', 'v1/auth', 'v1/settings', 'v1/badges', 'v1/releases',
+  // The shared notes (share, invite, accept, remove, leave, stop; web/notes.js and social.js), as the Mac's CloudBridge.
+  'v1/notes',
   // A whole screen in one answer (the API's screens.ts: a person's profile page).
   'v1/screens',
 ];
+// The calls the app makes itself for the notes' files and live line (attachments.js, notessync.js), never a page's: a file's
+// upload is made and finished, removed or brought back, and a note's socket ticket asked for, each by its id.
+const ID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
+const APP_CALLS = [
+  ['POST', new RegExp(`^v1/notes/${ID}/attachments$`)],
+  ['POST', new RegExp(`^v1/notes/${ID}/ticket$`)],
+  ['POST', new RegExp(`^v1/attachments/${ID}/(?:done|restore)$`)],
+  ['DELETE', new RegExp(`^v1/attachments/${ID}$`)],
+];
+const FILE_PATH = new RegExp(`^v1/attachments/${ID}/file$`);
+// A note's file is 20 MB at most (attachments.js): a download that says it's bigger isn't read.
+const FILE_MAX = 20 * 1024 * 1024;
 const under = (p, t) => p === t || p.startsWith(t + '/') || p.startsWith(t + '?');
 // Signing out answers with this PC's new token: only signOut() here calls it, so the token stays in the main process
 // and never reaches a page. Checked as the API reads the path (decoded, any case, slashes squeezed).
@@ -53,7 +69,7 @@ const isPrivate = (p) => {
 const allowed = (p) =>
   !/[#;]/.test(p) && !p.includes('..') && !isPrivate(p) && (SOCIAL_ROUTES.includes(p) || SOCIAL_TREES.some((t) => under(p, t)));
 // The AI tools the API counts hours with for their badges (its badges.ts).
-const TOOLS = new Set(['claude', 'codex', 'gemini', 'antigravity']);
+const TOOLS = new Set(['claude', 'codex', 'gemini', 'antigravity', 'cursor']);
 
 const sha256 = (data) => crypto.createHash('sha256').update(data).digest('hex');
 
@@ -162,6 +178,18 @@ function signer(clientKey, guard, intact = () => true) {
   };
 }
 
+// Whether this PC has a network, as Chromium's own watch on Windows' network adapters has it (Electron's net.isOnline:
+// a reading, nothing goes out to ask). Null outside Electron (cloud.js run by plain Node, where `electron` is only the
+// path to its program): then only main.js's kicks tell of a change.
+function electronOnline() {
+  try {
+    const { net } = require('electron');
+    return net && typeof net.isOnline === 'function' ? () => net.isOnline() : null;
+  } catch {
+    return null;
+  }
+}
+
 // A reply outside 2xx: its status and the API's error code ('' when it gave none).
 class Failure extends Error {
   constructor(status, code) {
@@ -186,9 +214,11 @@ class Failure extends Error {
 //   `open` is used, to read the keys the old end-to-end encrypted messages were sealed with (unseal.js). Without it
 //   nothing of them is opened here.
 // - tokens: the token ledger (tokenledger.js), { start(), batch(max), sent(batch) }: the tokens burned, sent after a heartbeat
+// - isOnline(): whether the PC has a network now (default Electron's net.isOnline; none outside Electron)
 function createCloud(opts = {}) {
   const dataDir = opts.dataDir;
   if (!dataDir) throw new Error('createCloud: dataDir is required');
+  const isOnline = typeof opts.isOnline === 'function' ? opts.isOnline : electronOnline();
   const isActive = opts.isActive || (() => false);
   const toolsAtWork = opts.tools || (() => []);
   const idleSeconds = opts.idleSeconds || (() => 0);
@@ -199,6 +229,9 @@ function createCloud(opts = {}) {
   // How calls go out: Node's fetch by default; the app passes Electron's net.fetch, which goes through Windows' proxy
   // settings and certificate store (antivirus that scans HTTPS, a company proxy).
   const fetcher = opts.fetch || fetch;
+  // The shared staging API answers only calls with its access key (the API's src/gate.ts); anything else gets a plain 404.
+  // Only a staging build has one (main.js), and it goes to that API's own address and nowhere else.
+  const accessKey = typeof opts.accessKey === 'string' && opts.accessKey ? opts.accessKey : null;
   // Paths resolve against the base like links in a page, so it ends with a slash.
   const base = new URL(String(opts.apiBase || process.env.ATALAY_API_URL || API).replace(/\/*$/, '/'));
   const version = clean(opts.version || 'dev', /[^A-Za-z0-9.+-]/g, 32) || 'dev';
@@ -228,7 +261,8 @@ function createCloud(opts = {}) {
   };
 
   // What the Mac app keeps in UserDefaults, under the same names: the last known name, tag and XP (an offline launch
-  // shows them), a name picked offline, "install updates right away" and a machine ID of its own when there's none.
+  // shows them), a name picked offline, "install updates right away", "share my token counts" (and the first day it lets
+  // go out) and a machine ID of its own when there's none.
   const settingsFile = path.join(dataDir, 'cloud.json');
   let settings = {};
   try {
@@ -270,16 +304,20 @@ function createCloud(opts = {}) {
     // Names repeat; name + tag (1-9999, shown as #0427) is unique, like Discord.
     tag: Number.isInteger(settings.hackerTag) ? settings.hackerTag : null,
     online: 0,
+    working: null,
     // Settings: "install updates right away", kept for main.js's updater to read.
     updateRightAway: settings.updateRightAway === true,
     // Settings, "check for updates": asking now, and when it last asked (ms).
     checking: false,
     checkedAt: null,
     xpPaused: false,
+    orb: null,
     // Why the API refused a name picked offline ("name_full", ...), for the page to show once.
     nameError: null,
     // Your level and active time as the API counts them (api/src/xp.ts); the pages show them as they are.
     xp: settings.xp && typeof settings.xp === 'object' ? settings.xp : null,
+    // Settings → Privacy, "share my token counts": off, this PC sends the API no token counts at all (sendUsage).
+    shareTokens: settings.shareTokens !== false,
   };
   let running = false;
 
@@ -288,10 +326,11 @@ function createCloud(opts = {}) {
   function json() {
     return {
       reachable: S.reachable, registered: S.registered, hackerName: S.hackerName, tag: S.tag,
-      online: S.online, version, build: 0,
+      online: S.online, working: S.working, version, build: 0,
       update: null, updating: null, updateError: null, nameError: S.nameError,
       updateReady: false, updateRightAway: S.updateRightAway, checking: S.checking, checkedAt: S.checkedAt,
-      xpPaused: S.xpPaused, xp: S.xp,
+      xpPaused: S.xpPaused, xp: S.xp, orb: S.orb,
+      shareTokens: S.shareTokens,
     };
   }
 
@@ -380,8 +419,9 @@ function createCloud(opts = {}) {
       }
     }
     set({
-      reachable: true, registered: true, hackerName: name, tag, online: a.online,
+      reachable: true, registered: true, hackerName: name, tag, online: a.online, working: Number.isInteger(a.working) ? a.working : null,
       xp: a.xp && typeof a.xp === 'object' ? a.xp : S.xp, xpPaused: a.xpPaused === true,
+      orb: a.orb && typeof a.orb === 'object' ? a.orb : S.orb,
     });
     // Without a name the API takes none yet: they wait for the account it signs in to. Not awaited: the first read of
     // every transcript and the POSTs can take minutes, and the beat must stay free meanwhile.
@@ -396,13 +436,19 @@ function createCloud(opts = {}) {
   let sendingUsage = false;
   async function sendUsage(token) {
     const tokens = opts.tokens;
-    if (!tokens || sendingUsage || Date.now() - usageAt < 290_000) return;
+    // Settings → Privacy, "share my token counts" off: none go out, nor the past days the first read found. Turned back
+    // on, only the days after that day go out (shareTokensFrom, setShareTokens).
+    if (!tokens || !S.shareTokens || sendingUsage || Date.now() - usageAt < 290_000) return;
     sendingUsage = true;
     usageAt = Date.now();
     try {
       for (let i = 0; i < 8; i++) {
-        const batch = await tokens.batch();
+        const from = shareTokensFrom();
+        const batch = await tokens.batch(500, from);
         if (!batch) return;
+        // Asked again right before each call: making a batch can take minutes the first time, and the switch may have
+        // been turned off meanwhile (or off and on again, which moves the first day that may go out).
+        if (!S.shareTokens || shareTokensFrom() !== from) return;
         try {
           const a = await call('POST', 'v1/usage', { source: batch.source, days: batch.rows }, token);
           if (Array.isArray(a.rejected) && a.rejected.length) console.warn(`cloud: the API left out ${a.rejected.length} token rows of ${batch.rows.length}`);
@@ -415,6 +461,22 @@ function createCloud(opts = {}) {
     } finally {
       sendingUsage = false;
     }
+  }
+
+  // The first day whose token counts may go out (the ledger's batch), null when "share my token counts" was never turned
+  // back on after being off.
+  const shareTokensFrom = () => (typeof settings.shareTokensFrom === 'string' && settings.shareTokensFrom) || null;
+
+  // Settings → Privacy, "share my token counts" (the "cloud" handler's shareTokens), kept on this PC.
+  function setShareTokens(on) {
+    // Back on after being off: only the days after today go out from now on. Today, the days it was off and any day not
+    // sent before it was turned off stay on this PC, since it was off on all or part of them.
+    if (on && !S.shareTokens) {
+      const from = dayAfterToday();
+      if (from > (shareTokensFrom() || '')) save({ shareTokensFrom: from });
+    }
+    save({ shareTokens: on });
+    set({ shareTokens: on });
   }
 
   async function identify() {
@@ -601,7 +663,7 @@ function createCloud(opts = {}) {
     saveToken(null);
     setPending(null);
     save({ xp: null });
-    set({ registered: false, hackerName: null, tag: null, xp: null });
+    set({ registered: false, hackerName: null, tag: null, xp: null, orb: null });
     await identify();
     return null;
   }
@@ -624,6 +686,9 @@ function createCloud(opts = {}) {
     const u = new URL('v1/live', base);
     u.protocol = base.protocol === 'https:' ? 'wss:' : 'ws:';
     u.searchParams.set('ticket', ticket);
+    // A WebSocket from here can't count on carrying a header, so the address carries an HMAC of its one-use ticket
+    // under the access key instead: it proves the key without giving it away, and is no use with another ticket.
+    if (accessKey) u.searchParams.set('ak', crypto.createHmac('sha256', accessKey).update(ticket).digest('hex'));
     return u.href;
   }
 
@@ -661,10 +726,76 @@ function createCloud(opts = {}) {
     }
   }
 
+  // ---------- the shared notes' own calls (the Mac's Cloud.notesTicket and fileData, Attachments.swift) ----------
+
+  // One of APP_CALLS: the API's JSON, or { error } with its code. Never a page's path (attachments.js and notessync.js build
+  // these from ids they checked).
+  async function appCall(method, p, body) {
+    const m = String(method || '').toUpperCase();
+    if (!APP_CALLS.some(([verb, rx]) => verb === m && rx.test(p))) return { error: 'bad_path' };
+    return social(m, p, body, true);
+  }
+
+  // A shared note's socket: a ticket (one use, 30 s) and the address to open it at, { url }; { gone } when this account isn't in
+  // the note any more, { error } when the API can't be reached. The page opens the socket; the staging API's gate takes the
+  // `ak` proof in the address (a page's WebSocket can't add a header), as the live line does.
+  async function notesTicket(id) {
+    const nid = String(id || '').toLowerCase();
+    if (!new RegExp(`^${ID}$`).test(nid)) return { error: 'bad_id' };
+    const d = await appCall('POST', `v1/notes/${nid}/ticket`, {});
+    if (!d || typeof d !== 'object') return { error: 'offline' };
+    if (typeof d.ticket === 'string' && d.ticket) {
+      const u = new URL(`v1/notes/${nid}/sync`, base);
+      u.protocol = base.protocol === 'https:' ? 'wss:' : 'ws:';
+      u.searchParams.set('ticket', d.ticket);
+      if (accessKey) u.searchParams.set('ak', crypto.createHmac('sha256', accessKey).update(d.ticket).digest('hex'));
+      return { url: u.href };
+    }
+    if (d.error === 'not_found') return { gone: true };
+    return { error: typeof d.error === 'string' ? d.error : 'offline' };
+  }
+
+  // A signed GET of a shared note's file, streamed by the API: { data, headers } (names in lower case), or { error, headers }
+  // with the API's code ("offline", "signed_out", "http_<status>"). Two minutes at most.
+  async function fileData(p) {
+    const token = readToken();
+    if (!token) return { error: 'signed_out', headers: {} };
+    if (!FILE_PATH.test(p)) return { error: 'bad_path', headers: {} };
+    const url = new URL(p, base);
+    const headers = { authorization: 'Bearer ' + token };
+    if (accessKey) headers['x-orbiterm-access'] = accessKey;
+    key.sign('GET', url, undefined, headers);
+    try {
+      const res = await fetcher(String(url), { method: 'GET', headers, signal: AbortSignal.timeout(120_000) });
+      key.learn(res);
+      const h = {};
+      res.headers.forEach((v, k) => {
+        h[k.toLowerCase()] = v;
+      });
+      if (res.status >= 200 && res.status < 300) {
+        if (Number(h['content-length']) > FILE_MAX + 1024) return { error: 'bad_answer', headers: h };
+        const data = Buffer.from(await res.arrayBuffer());
+        if (data.length > FILE_MAX + 1024) return { error: 'bad_answer', headers: h };
+        return { data, headers: h };
+      }
+      if (res.status === 401 && running) beat();
+      if (res.status === 426 && typeof opts.onUpdateRequired === 'function') opts.onUpdateRequired();
+      let code = '';
+      try {
+        const j = JSON.parse(await res.text());
+        if (j && typeof j.error === 'string') code = j.error;
+      } catch {}
+      return { error: code || `http_${res.status}`, headers: h };
+    } catch {
+      return { error: 'offline', headers: {} };
+    }
+  }
+
   // ---------- the messages sealed end to end before (unseal.js, the Mac's Unseal.swift) ----------
   // Messages are encrypted on the server now. The keys the old versions kept sit in a file of the app's folder sealed by
   // Windows for this user, one per API as the token is; unseal.js reads them and hands the server what it needs to open
-  // the old messages. Nothing is ever written to that file.
+  // the old messages. Nothing is ever written to that file; once the server has no sealed message of this account left,
+  // unseal.js has it deleted, so the old keys stop existing.
   const vaultFile = path.join(dataDir, `e2ee-vault-${host}${base.port ? `-${base.port}` : ''}`);
   const unseal =
     opts.protect && typeof opts.protect.open === 'function'
@@ -680,13 +811,16 @@ function createCloud(opts = {}) {
             }
             return opts.protect.open(sealed);
           },
+          dropVault() {
+            fs.rmSync(vaultFile, { force: true });
+          },
         })
       : null;
 
   // ---------- the live socket (Social.swift) ----------
   // The app's live line to the API for friends and messages: one WebSocket the API pushes events into (a message, a
   // friend request, a friend coming online). It opens once this PC is signed in and reopens on its own after a drop, at
-  // once when main.js says the PC woke up or the network came back.
+  // once when the PC woke up (main.js) or the network came back (watchNetwork).
 
   let ws = null;
   let opening = false;
@@ -775,7 +909,9 @@ function createCloud(opts = {}) {
   }
 
   // The API pings every 25 s and Node's WebSocket answers by itself, but unlike the Mac app's it can't ping on its own
-  // to check the line. So this side listens for the API's pings: a line that died silently (sleep, a network switch)
+  // to check the line (Electron 45's, Node 24 with undici 7, has no ping; Electron's net.WebSocket neither), and the API
+  // answers nothing the app sends (it only reads `afk`), so a ping of the app's own would go unanswered. So this side
+  // listens for the API's pings, the Mac's check turned around: a line that died silently (sleep, a network switch)
   // shows by their stopping, and with nothing heard for 35 s (a ping missed, plus the 10 s the Mac app waits for a
   // pong) it counts as dead. Node tells of pings only on a diagnostics channel; until one has come through, nothing is
   // called dead, so a Node or a proxy that doesn't pass them on just leaves this check off.
@@ -864,6 +1000,7 @@ function createCloud(opts = {}) {
     const data = body === undefined ? undefined : JSON.stringify(body);
     if (data !== undefined) headers['content-type'] = 'application/json';
     if (token) headers.authorization = 'Bearer ' + token;
+    if (accessKey && new URL(url).origin === base.origin) headers['x-orbiterm-access'] = accessKey;
     key.sign(method, url, data, headers);
     const res = await fetcher(String(url), { method, headers, body: data, signal: AbortSignal.timeout(15_000) });
     key.learn(res);
@@ -926,6 +1063,10 @@ function createCloud(opts = {}) {
         return { error: await signOut(), state: json() };
       case 'deleteAccount':
         return { error: await deleteAccount(b.reason, b.text), state: json() };
+      // Settings → Privacy, "share my token counts": kept on this PC, asked before every call that sends them.
+      case 'shareTokens':
+        setShareTokens(b.on === true);
+        return json();
       default:
         throw new Error('unknown message');
     }
@@ -945,6 +1086,7 @@ function createCloud(opts = {}) {
     beat();
     timer = setInterval(beat, 60_000);
     timer.unref?.();
+    watchNetwork();
     // Started again after a stop: the line comes back with the state it had.
     sync();
   }
@@ -956,13 +1098,45 @@ function createCloud(opts = {}) {
     timer = null;
     clearInterval(awayTimer);
     awayTimer = null;
+    clearInterval(netTimer);
+    netTimer = null;
     close();
     dc.unsubscribe(PING, onPing);
   }
 
-  // The PC woke up or the network came back (main.js): a line opened before may be dead without anyone noticing (no
-  // error comes until something is sent), so a fresh one now instead of waiting out a backoff; and a heartbeat, which
-  // shows at once whether the API can be reached again.
+  // ---------- the network coming and going (Cloud.swift's NWPathMonitor) ----------
+  // The network coming back syncs at once instead of at the next heartbeat (and the live socket opens again without
+  // waiting out its backoff); losing it shows offline at once. Nothing here can be told of a change, so Chromium's
+  // reading is looked at every few seconds: a reading, no traffic, and nothing goes to the API while it stays the same.
+  // The first reading only says where it stands.
+  let netUp = null;
+  let netTimer = null;
+
+  function watchNetwork() {
+    if (!isOnline || netTimer) return;
+    netUp = null;
+    checkNetwork();
+    netTimer = setInterval(checkNetwork, 3_000);
+    netTimer.unref?.();
+  }
+
+  function checkNetwork() {
+    let up;
+    try {
+      up = isOnline() === true;
+    } catch {
+      return;
+    }
+    const was = netUp;
+    netUp = up;
+    if (!running || was === null || was === up) return;
+    if (up) kick();
+    else set({ reachable: false });
+  }
+
+  // The PC woke up (main.js) or the network came back (checkNetwork): a line opened before may be dead without anyone
+  // noticing (no error comes until something is sent), so a fresh one now instead of waiting out a backoff; and a
+  // heartbeat, which shows at once whether the API can be reached again.
   function kick() {
     if (!running) return;
     beat();
@@ -988,7 +1162,8 @@ function createCloud(opts = {}) {
     }
   };
 
-  return { start, stop, kick, json, handle, api };
+  // `social`: the pages' calls (the allow-list above), for a note window's page, which has no `cloud` handler (notewindow.js).
+  return { start, stop, kick, json, handle, api, social: (method, p, body) => (allowed(String(p)) ? social(String(method || 'GET'), String(p), body) : { error: 'bad_path' }), appCall, notesTicket, fileData };
 }
 
 module.exports = { createCloud };

@@ -13,9 +13,16 @@ window.CheatSheet = (() => {
   // The filter finds them as Settings › Shortcuts' search does (cloud.js keyFind: "cmd t" finds ⌘T).
   const finder = () => window.Cloud?.keyFind;
   // The ones nobody changes (Shortcuts.swift's reserved), each with the group it belongs to.
-  const FIXED = [
+  // Windows has no tabs; its rewind, swapped, is the close keys twice, whatever they are now (swapLabel null).
+  const WIN = window.__platform === 'win32';
+  const FIXED = WIN ? [
+    { group: 'Chats', title: 'Rewind a chat (Claude Code, Antigravity)', label: 'Esc Esc', swapLabel: null },
+  ] : [
     { group: 'Tabs and panes', title: 'Tab 1 to 9 of the window', label: '⌘1 … ⌘9' },
+    { group: 'Chats', title: 'Rewind a chat (Claude Code, Antigravity)', label: 'Esc Esc', swapLabel: '⌘W ⌘W' },
   ];
+  // Windows: how the middle mouse button opens the Ring (its shortcuts.js ringMouse).
+  const RING_MOUSE = { ctrl: 'Ctrl + middle click', plain: 'middle click', off: '' };
 
   let el = null;
   let told = false; // the app was told a window is over the dashboard (its pinned chats step aside), as cloud.js does
@@ -26,15 +33,24 @@ window.CheatSheet = (() => {
     } catch {}
   };
 
-  function groupsOf(list) {
+  function groupsOf(list, fingers = 4, escOn, mouse) {
     const groups = [];
     const add = (k) => (groups.find((g) => g.name === k.group) || (groups.push({ name: k.group, items: [] }), groups[groups.length - 1])).items.push(k);
     for (const k of list) {
-      // The shortcut wheel opens with the trackpad first, then with the keys or the mouse button set for it.
-      if (k.id === 'shortcutsWheel') add({ ...k, keys: ['4-finger click', k.label].filter(Boolean) });
+      // The shortcut wheel opens with the trackpad first (4 fingers, 3, or none: Settings), then with the keys or the mouse button set for it.
+      if (k.id === 'shortcutsWheel') add({ ...k, keys: [typeof mouse === 'string' ? RING_MOUSE[mouse] || '' : fingers ? `${fingers}-finger click` : '', k.label].filter(Boolean) });
+      else if (k.id === 'closePane' && escOn) {
+        // Swapped (Settings › Shortcuts): Esc closes, the close keys send Esc to the terminal.
+        add({ ...k, keys: ['Esc'] });
+        if (k.label) add({ ...k, id: 'escSend', title: 'Send Esc to the terminal', keys: [k.label] });
+      }
       else add({ ...k, keys: k.label ? [k.label] : [] });
     }
-    for (const k of FIXED) add({ ...k, keys: [k.label] });
+    const close = list.find((k) => k.id === 'closePane')?.label || '';
+    for (const k of FIXED) {
+      const swapped = k.swapLabel === null ? (close ? `${close} ${close}` : '') : k.swapLabel;
+      add({ ...k, keys: [escOn && k.swapLabel !== undefined ? swapped : k.label].filter(Boolean) });
+    }
     return groups;
   }
 
@@ -60,7 +76,7 @@ window.CheatSheet = (() => {
       '<input type="search" class="cs-find" placeholder="type to filter" aria-label="Filter shortcuts" spellcheck="false" autocomplete="off" autocapitalize="off"></label></div>' +
       '<div class="cs-body"><div class="cs-cols">' +
       // A group may go on in the next column, so that they all fit without scrolling; its name stays with its first rows.
-      groupsOf(list).map((g) => {
+      groupsOf(list, st?.ringFingers ?? 4, st?.escClose === true, st?.ringMouse).map((g) => {
         const rows = g.items.map((k) => row(g, k));
         return `<section class="cs-group"><div class="cs-head"><h3>${esc(g.name)}</h3><dl>${rows.slice(0, 2).join('')}</dl></div>` +
           (rows.length > 2 ? `<dl>${rows.slice(2).join('')}</dl>` : '') + '</section>';

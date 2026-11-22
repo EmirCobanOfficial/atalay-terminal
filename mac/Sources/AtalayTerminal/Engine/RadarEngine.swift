@@ -1,4 +1,5 @@
 import CoreServices
+import CryptoKit
 import Foundation
 import SQLite3
 
@@ -36,6 +37,8 @@ final class RadarEngine {
     /// Bash tool uses that spawn another AI CLI (Codex, Antigravity, Gemini): tool_use id → the SubAgent holding the
     /// drone on the orbit, so the pending clears and the drone retires on the tool's result.
     private var externalBashAgent: [String: SubAgent] = [:]
+    /// End signals that reached an agent's key before its own transcript did (the main file is read first).
+    private var earlyEnds: [String: Double] = [:]
     private var log: [LogEntry] = []
     private var logIndex: [String: LogEntry] = [:]
     private var outbox: [[String: Any]] = []
@@ -81,6 +84,10 @@ final class RadarEngine {
     private var agyUsage: [String: Any]? = Limits.load("antigravity")
     private var agyUsagePending = false, agyWasRunning = false
     private var agyModel = Limits.load("antigravity")?["model"] as? String ?? ""
+    /// Cursor's limit (CursorUsage): the last one read, kept like the others; when to ask again (ms).
+    private var cursorUsage: [String: Any]? = Limits.load("cursor")
+    private var cursorUsagePending = false
+    private var cursorUsageNext = 0.0
     /// Each Antigravity CLI's own log, read on, by its session id: the confirmation or question it shows right now (the
     /// step it asks about, the tool, since when), and its turn as the log tells it (working, or idle since when) with the
     /// conversation it sent the user's message to.
@@ -103,6 +110,7 @@ final class RadarEngine {
     func start() {
         Limits.installScript()
         CodexHooks.install()
+        CursorHooks.install()
         let activity = ProcessInfo.processInfo.beginActivity(options: [.userInitiated], reason: "Indexing Claude Code transcripts")
         queue.async(qos: .userInitiated) {
             self.boot()
@@ -122,6 +130,11 @@ final class RadarEngine {
             self.appShells = map
             self.matchTabs()
         }
+    }
+
+    /// The record file (Codex's log, Antigravity's transcript) the engine matched to another AI's session, for the local MCP server's read_session.
+    func logPath(ofOther id: String, completion: @escaping (String?) -> Void) {
+        queue.async { completion(self.others[id]?.log) }
     }
 
     func refreshHistorySoon() { queue.async { self.scanHistory(force: false) } }
@@ -157,6 +170,7 @@ final class RadarEngine {
         lastScan = nowMs()
         refreshCodexUsage()
         refreshAgyUsage()
+        refreshCursorUsage()
         // FSEvents delivers transcript and registry changes as they happen; these timers are only
         // slow safety nets. Their leeway lets macOS batch the wake-ups with other work.
         every(5) { self.pollRegistry() }
@@ -176,6 +190,7 @@ final class RadarEngine {
         every(60) {
             self.refreshCodexUsage()
             self.refreshAgyUsage()
+            self.refreshCursorUsage()
         }
         every(60) { self.maybeNewDay() }
         every(1) { self.publishState() }
@@ -226,6 +241,35 @@ final class RadarEngine {
                 guard let fresh else { return }
                 self.agyUsage = fresh
                 Limits.save(fresh.merging(["model": self.agyModel]) { $1 }, as: "antigravity")
+                self.stateDirty = true
+                self.publishState()
+            }
+        }
+    }
+
+    /// Cursor's usage limit, from its server (CursorUsage): every 5 minutes while a Cursor runs, every 30 otherwise; only
+    /// with a login (the token is found), and after a failure not before its wait is over. No login or a refusal clears it.
+    private func refreshCursorUsage() {
+        let now = nowMs()
+        guard !cursorUsagePending, now >= cursorUsageNext else { return }
+        let running = others.values.contains { $0.tool == "Cursor" && $0.endedAt == 0 }
+        cursorUsagePending = true
+        DispatchQueue.global(qos: .utility).async {
+            let outcome = CursorUsage.read()
+            self.queue.async {
+                self.cursorUsagePending = false
+                switch outcome {
+                case .value(let v):
+                    self.cursorUsage = v
+                    Limits.save(v, as: "cursor")
+                    self.cursorUsageNext = nowMs() + (running ? 300_000 : 1_800_000)
+                case .none:
+                    self.cursorUsage = nil
+                    Limits.remove("cursor")
+                    self.cursorUsageNext = nowMs() + 1_800_000
+                case .retry(let after):
+                    self.cursorUsageNext = nowMs() + after * 1000
+                }
                 self.stateDirty = true
                 self.publishState()
             }
@@ -327,6 +371,28 @@ final class RadarEngine {
         }
     }
 
+    private var cursorPending = false
+
+    /// Cursor's hook wrote an event: its planet's turn, calls and subagents are read again at once.
+    private func cursorChanged() {
+        guard !cursorPending else { return }
+        cursorPending = true
+        queue.asyncAfter(deadline: .now() + 0.05) {
+            self.cursorPending = false
+            let ms = nowMs()
+            for O in self.others.values where O.tool == "Cursor" && O.endedAt == 0 {
+                self.readCursorEvents(O)
+                let shown = self.otherStatus(O, ms).status
+                if shown != O.shown {
+                    O.shown = shown
+                    O.statusSince = ms
+                    self.stateDirty = true
+                }
+            }
+            self.publishState()
+        }
+    }
+
     private func startWatch() {
         let agyRoot = HOME + "/.gemini/antigravity-cli"
         var ctx = FSEventStreamContext(version: 0, info: Unmanaged.passUnretained(self).toOpaque(), retain: nil, release: nil, copyDescription: nil)
@@ -336,7 +402,12 @@ final class RadarEngine {
             let agyDir = HOME + "/.gemini/antigravity-cli"
             let list = unsafeBitCast(paths, to: NSArray.self)
             for case let p as String in list {
-                if p.hasPrefix(RadarEngine.codexSessionsRoot + "/") {
+                // Cursor's first: its hooks' event files end in .jsonl too, and its own transcripts are what Claude's are.
+                if p.hasPrefix(CursorHooks.dir + "/") {
+                    engine.cursorChanged()
+                } else if p.hasPrefix(ChatTrash.cursorHome + "/projects/") {
+                    if p.hasSuffix(".jsonl") { engine.cursorChanged() }
+                } else if p.hasPrefix(RadarEngine.codexSessionsRoot + "/") {
                     if p.hasSuffix(".jsonl") { engine.codexChanged() }
                 } else if p.hasPrefix(HOME + "/.codex/") {
                     // Codex's own log database: the user's answer to a request waiting on screen lands there.
@@ -353,6 +424,9 @@ final class RadarEngine {
                     engine.registryChanged()
                 } else if p.hasPrefix(CodexHooks.dir + "/") {
                     engine.codexWaitChanged()
+                } else if p.hasPrefix(ChatTrash.cursorHome + "/chats/") {
+                    // Cursor's chats: a new one, or a title it gave.
+                    if p.hasSuffix("meta.json") { engine.historyChanged() }
                 }
             }
         }
@@ -365,6 +439,11 @@ final class RadarEngine {
         // user's answer to one lands.
         if FileManager.default.fileExists(atPath: CodexHooks.dir) { watched.append(CodexHooks.dir) }
         if FileManager.default.fileExists(atPath: HOME + "/.codex") { watched.append(HOME + "/.codex") }
+        // And Cursor's hooks events (CursorHooks), the moment they're written.
+        if FileManager.default.fileExists(atPath: CursorHooks.dir) { watched.append(CursorHooks.dir) }
+        if FileManager.default.fileExists(atPath: ChatTrash.cursorHome + "/chats") { watched.append(ChatTrash.cursorHome + "/chats") }
+        // And its transcripts, where the web calls no hook tells of are.
+        if FileManager.default.fileExists(atPath: ChatTrash.cursorHome + "/projects") { watched.append(ChatTrash.cursorHome + "/projects") }
         guard let s = FSEventStreamCreate(nil, callback, &ctx, watched as CFArray,
                                           FSEventStreamEventId(kFSEventStreamEventIdSinceNow), 0.2, flags) else { return }
         FSEventStreamSetDispatchQueue(s, queue)
@@ -436,6 +515,7 @@ final class RadarEngine {
         let key = "\(sid):\(aid)"
         if let A = agents[key] { return A }
         let A = SubAgent(sid: sid, id: aid)
+        if let t = earlyEnds.removeValue(forKey: key) { A.end(t) }
         agents[key] = A
         return A
     }
@@ -547,6 +627,9 @@ final class RadarEngine {
             if let t = rec["aiTitle"] as? String { S.title = clip(redact(t), 90) }
         case "last-prompt":
             if A == nil, let p = rec["lastPrompt"] as? String { S.lastPrompt = clip(redact(p), 220) }
+        case "api-request":
+            // A model call went out: the agent is working even if nothing is written for minutes (a long think, a big Write).
+            if let A, ts > 0 { A.inFlight = true; A.workTs = max(A.workTs, ts) }
         case "assistant": onAssistant(rec, S, A, ts, today)
         case "user": onUser(rec, S, A, ts, today)
         case "system": onSystem(rec, S, A, ts, today)
@@ -562,6 +645,8 @@ final class RadarEngine {
         if (rec["isApiErrorMessage"] as? Bool) == true || model == "<synthetic>" {
             let txt = clip(redact(content.compactMap { $0["text"] as? String }.joined(separator: " ")), 100)
             emit(ev("sys", ts, S, A, ["l": txt.isEmpty ? "API error" : txt, "err": true]), today)
+            // A subagent that died on a quota or API error writes nothing more.
+            if let A { A.end(ts) }
             return
         }
         if let model {
@@ -603,7 +688,11 @@ final class RadarEngine {
                 emit(ev("usage", ts, S, A, ["out": o, "cr": r, "cw": w, "in": i, "c": c, "m": mk]), today)
             }
         }
-        if let stop = m["stop_reason"] as? String { actor.endTurn = stop == "end_turn" }
+        if let A, ts > 0 { A.inFlight = false; A.workTs = max(A.workTs, ts) }
+        if let stop = m["stop_reason"] as? String {
+            actor.endTurn = stop == "end_turn"
+            if let A, stop == "end_turn" { A.end(ts) }
+        }
         for b in content {
             switch b["type"] as? String {
             case "tool_use": onToolUse(b, S, A, ts, today)
@@ -625,6 +714,8 @@ final class RadarEngine {
         let sm = summarize(name, b["input"])
         let p = Pending(n: name, c: c, l: sm.label, t: ts)
         actor.pendingSet(id, p)
+        // Claude Code ends a subagent by calling SubagentHandback (its last record then has stop_reason "tool_use").
+        if let A, name == "SubagentHandback" { A.end(ts) }
         actor.last = p
         actor.sig.append("\(name)|\(sm.label)")
         if actor.sig.count > 4 { actor.sig.removeFirst() }
@@ -667,6 +758,8 @@ final class RadarEngine {
                 if X.model.isEmpty { X.model = tool }
                 X.bg = false
                 X.endTurn = false
+                X.endedAt = 0
+                X.workTs = ts
                 X.pendingSet(id, Pending(n: tool, c: "agent", l: clip(sm.label, 70), t: ts))
                 externalBashAgent[id] = X
             }
@@ -693,6 +786,7 @@ final class RadarEngine {
     private func onUser(_ rec: [String: Any], _ S: Session, _ A: SubAgent?, _ ts: Double, _ today: Bool) {
         let content = (rec["message"] as? [String: Any])?["content"]
         if let text = content as? String {
+            noteEnds(text, S, A, ts)
             if A == nil { onPrompt(text, rec, S, ts, today) }
             return
         }
@@ -707,7 +801,30 @@ final class RadarEngine {
                 texts.append(t)
             }
         }
+        if !hasResult, !texts.isEmpty { noteEnds(texts.joined(separator: " "), S, A, ts) }
         if !hasResult, !texts.isEmpty, A == nil { onPrompt(texts.joined(separator: " "), rec, S, ts, today) }
+    }
+
+    /// End signals in a user record's text: a subagent's own file says "[Request interrupted" when it was stopped, and
+    /// a `<task-notification>` (in the main file, or an outer subagent's for a nested one) names the agent by its task id.
+    private func noteEnds(_ text: String, _ S: Session, _ A: SubAgent?, _ ts: Double) {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let A, t.hasPrefix("[Request interrupted") { A.end(ts); return }
+        guard t.hasPrefix("<task-notification") else { return }
+        func tag(_ n: String) -> String? {
+            guard let r = t.range(of: "<\(n)>([^<]+)</\(n)>", options: .regularExpression) else { return nil }
+            return String(t[r]).replacingOccurrences(of: "<\(n)>", with: "").replacingOccurrences(of: "</\(n)>", with: "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        guard let id = tag("task-id"), let st = tag("status"),
+              ["completed", "failed", "killed", "stopped"].contains(st) else { return }
+        let key = "\(S.id):\(id)"
+        // A shell's background task notifies too: an id with no agent never gets a drone, it is only remembered in case
+        // the agent's own transcript is read after this record.
+        if let X = agents[key] { X.end(ts) } else {
+            if earlyEnds.count > 500 { earlyEnds.removeAll() }
+            earlyEnds[key] = max(earlyEnds[key] ?? 0, ts)
+        }
     }
 
     private func onPrompt(_ text: String, _ rec: [String: Any], _ S: Session, _ ts: Double, _ today: Bool) {
@@ -750,6 +867,7 @@ final class RadarEngine {
             X.pendingRemove(id)
             X.lastTs = max(X.lastTs, ts)
             X.endTurn = true
+            X.end(ts)
             if !ok { X.errors += 1 }
         }
         var meta = ""
@@ -774,6 +892,8 @@ final class RadarEngine {
                 if sub.desc.isEmpty { sub.desc = clip((tr["description"] as? String) ?? hint?.desc, 70) }
                 if sub.type.isEmpty, let ty = hint?.type { sub.type = ty }
                 if sub.model.isEmpty, let rm = tr["resolvedModel"] as? String { sub.model = rm }
+                // A foreground Agent/Task call's result: the agent is done (a background launch answers "async_launched").
+                if let st = tr["status"] as? String, st != "async_launched", st != "running" { sub.end(ts) }
             } else if (tr["interrupted"] as? Bool) == true {
                 meta = "interrupted"
             }
@@ -850,6 +970,8 @@ final class RadarEngine {
         if let t = meta["agentType"] as? String { A.type = t }
         if let m = meta["model"] as? String, m != "inherit" { A.model = m }
         A.bg = meta["requestShape"] as? String == "background"
+        // Claude Code (since 14 Nov) writes "finished": true into the meta when the agent is done.
+        if (meta["finished"] as? Bool) == true, let st = fileStat(metaPath) { A.end(st.mtime) }
     }
 
     private func fileStat(_ path: String) -> (size: UInt64, mtime: Double)? { Self.fileStat(path) }
@@ -1132,6 +1254,23 @@ final class RadarEngine {
             } else {
                 O = OtherAI(id: id, tool: f.tool, pid: pid)
                 if f.tool == "Antigravity" { O.turnOpen = false }
+                // A Cursor's hooks go in when it is first seen too (it may be installed after Orbiterm started).
+                if f.tool == "Cursor" {
+                    CursorHooks.install()
+                    // With its hooks in, its turns are told exactly: idle until one begins (its CPU, 2-3 % always, says nothing).
+                    // Not for one that began before they went in: it never read them, and its CPU is all there is.
+                    if let at = CursorHooks.installedAt, at < Double(f.info.started) / 1_000_000 { O.turnOpen = false }
+                    // `--resume <id>` starts in that chat, and Cursor fires no sessionStart for it.
+                    if let args = Proc.arguments(pid), let i = args.firstIndex(where: { $0 == "--resume" || $0.hasPrefix("--resume=") }) {
+                        let id = args[i].hasPrefix("--resume=") ? String(args[i].dropFirst(9)) : (args.indices.contains(i + 1) ? args[i + 1] : "")
+                        if ChatTrash.isSessionId(id) {
+                            O.convId = id
+                            O.log = CursorHooks.log(of: id)
+                            // From this process's own start: a turn it is in the middle of still counts.
+                            O.logOffset = CursorHooks.offset(of: O.log!, since: Double(f.info.started) / 1000 - 2000)
+                        }
+                    }
+                }
                 O.firstTs = Double(f.info.started) / 1000
                 O.lastTs = ms
                 O.statusSince = ms
@@ -1155,6 +1294,9 @@ final class RadarEngine {
                 level = level.flatMap { Proc.children(of: $0) }
             }
             O.cpu = used
+            // The screen alone draws 2-3 % all the time: more than that, with its servers and children counted whenever they
+            // began, is a call at work (an MCP server, a web fetch in-process).
+            if O.tool == "Cursor", used >= 8 { O.cursorWorkAt = ms }
             O.mem = Int(f.info.rss / 1_048_576)
             if O.cpu >= 1 { O.busyUntil = ms + 10_000 }
             let busy = ms < O.busyUntil
@@ -1169,6 +1311,10 @@ final class RadarEngine {
             O.commandStarted = running?.started ?? 0
             if O.tool == "Codex", !cwd.isEmpty { readCodexLog(O, cwd: cwd, since: Double(f.info.started) / 1_000_000, now: ms) }
             if O.tool == "Antigravity", !cwd.isEmpty { readAntigravity(O, cwd: cwd) }
+            if O.tool == "Cursor" {
+                if !cwd.isEmpty { O.cwd = cwd }
+                readCursorEvents(O)
+            }
             if busy != O.busy || cwd != O.cwd || O.tty != f.info.tty || O.ppid != f.info.ppid {
                 O.busy = busy
                 O.cwd = cwd
@@ -1240,10 +1386,29 @@ final class RadarEngine {
             if open, let command = codexWait(O) { return ("waiting", "approval: " + command) }
             return (open ? "busy" : "idle", nil)
         }
+        // Cursor's hooks tell its turns exactly (beforeSubmitPrompt, stop). It asks before a shell command, an edit, a web
+        // fetch or an MCP tool, and no hook says so: a call of those it has out that runs nothing (no shell below it, no CPU)
+        // for a few seconds waits for the user (its screen draws all the time, 2-3 % CPU: no use as a sign). Its subagents at work keep the session working after its turn.
+        if O.tool == "Cursor" {
+            if open {
+                let wait = O.call.map { Self.cursorAskAfter[$0.p.c, default: .infinity] * 1000 } ?? .infinity
+                // A web, MCP or browser call waits on the network or a server of its own: one that works the CPU isn't asking.
+                if let call = O.call?.p, !(O.call?.id.hasPrefix("cursor:tr:") ?? false), command == nil, now - call.t > wait, ["bash", "edit"].contains(call.c) || now - max(O.childCpuAt, O.cursorWorkAt) > wait {
+                    return ("waiting", "approval: " + call.l)
+                }
+                return ("busy", nil)
+            }
+            return (O.agents.contains { $0["running"] as? Bool == true } ? "busy" : "idle", nil)
+        }
         if !open { return ((O.tool != "Antigravity" && command != nil) || O.agents.contains { $0["running"] as? Bool == true } ? "busy" : "idle", nil) }
         if O.tool != "Antigravity", !O.stepsKnown, command == nil, !O.busy, let call = O.call, now - call.p.t > 4000 { return ("waiting", "approval: " + call.p.l) }
         return ("busy", nil)
     }
+
+    /// How long (seconds) a Cursor tool call of each kind may run with nothing to show for it (no shell, no CPU) before it's
+    /// taken for waiting on the user's approval. The ones that never ask (reads, searches) aren't here; a web or MCP call
+    /// waits on the network, so it gets longer.
+    private static let cursorAskAfter: [String: Double] = ["bash": 4, "edit": 4, "web": 20, "mcp": 20, "browser": 20]
 
     /// What a Codex waits for the user to approve (CodexHooks): its session's request, until it's answered. Codex's own
     /// hooks drop it once the tool ran, the turn stopped or was interrupted, or a new prompt came; before those, a command
@@ -1262,7 +1427,7 @@ final class RadarEngine {
     private func otherCommand(_ O: OtherAI) -> String? {
         guard let c = O.command else { return nil }
         if O.tool == "Antigravity" { return O.turnOpen == true && O.turnStart > 0 && O.commandStarted >= max(O.turnStart, O.firstTs + 5000) ? c : nil }
-        guard O.tool == "Codex" else { return c }
+        guard O.tool == "Codex" || O.tool == "Cursor" else { return c }
         return O.turnOpen == true && O.turnStart > 0 && O.commandStarted >= max(O.turnStart, O.firstTs + 5000) ? c : nil
     }
 
@@ -1457,6 +1622,406 @@ final class RadarEngine {
             default:
                 break
             }
+        }
+        stateDirty = true
+    }
+
+    // MARK: Cursor (cursor-agent): its hooks' events
+
+    /// The lines of a hooks event file past `offset` (read on from there; a long file's last 2 MB), each parsed.
+    private static func cursorLines(_ path: String, offset: inout UInt64) -> [[String: Any]] {
+        guard let st = fileStat(path), st.size > offset, let fh = FileHandle(forReadingAtPath: path) else { return [] }
+        defer { try? fh.close() }
+        let from = max(offset, st.size > 2 << 20 ? st.size - (2 << 20) : 0)
+        try? fh.seek(toOffset: from)
+        let data = fh.readDataToEndOfFile()
+        guard let lastBreak = data.lastIndex(of: 0x0A) else { return [] }
+        offset = from + UInt64(lastBreak - data.startIndex + 1)
+        return data[data.startIndex...lastBreak].split(separator: 0x0A).compactMap { try? JSONSerialization.jsonObject(with: Data($0)) as? [String: Any] }
+    }
+
+    /// A Cursor tool call as a pending tool: its kind and what it's on, from the hook's tool name and input.
+    private static func cursorCall(name: String, input: Any?, at: Double, cwd: String = "", server: String? = nil) -> (call: Pending, file: String?) {
+        let args = input as? [String: Any] ?? [:]
+        func str(_ keys: [String]) -> String? { keys.lazy.compactMap { args[$0] as? String }.first { !$0.isEmpty } }
+        var file = str(["path", "file_path", "target_file", "filePath", "target_notebook"])
+        // Its calls name a file as they were asked to (`m.py`): one file, whichever way it's named.
+        if let f = file, !f.hasPrefix("/"), !f.hasPrefix("~"), !cwd.isEmpty { file = (cwd as NSString).appendingPathComponent(f) }
+        var what = str(["command", "query", "search_term", "url", "pattern", "glob_pattern", "glob", "description", "prompt"]) ?? file ?? name
+        var name = name
+        // Its Glob comes as a Grep with no pattern, only a `glob`.
+        if name == "Grep", (args["pattern"] as? String ?? "").isEmpty, let g = args["glob"] as? String, !g.isEmpty { name = "Glob"; what = g }
+        let low = name.lowercased()
+        let (n, c): (String, String)
+        switch low {
+        case "shell", "bash", "writeshellstdin", "runterminalcmd", "run_terminal_cmd": (n, c) = ("Bash", "bash")
+        case "websearch", "web_search": (n, c) = ("WebSearch", "web")
+        case "webfetch", "fetch", "web_fetch": (n, c) = ("WebFetch", "web")
+        case "read", "readfile", "read_file", "readlints": (n, c) = ("Read", "read")
+        case "glob", "ls", "list_dir", "listdir": (n, c) = ("Glob", "search")
+        case "grep", "semanticsearch", "codebase_search", "filesearch", "file_search": (n, c) = ("Grep", "search")
+        case "write", "strreplace", "str_replace", "delete", "applypatch", "apply_patch", "editnotebook", "edit", "multiedit", "edit_file", "delete_file":
+            (n, c) = ("Edit", "edit")
+        case "task", "subagent": (n, c) = ("Task", "agent")
+        case "computeruse", "recordscreen": (n, c) = ("Browser", "browser")
+        case let x where x.hasPrefix("mcp") || x == "callmcptool" || x == "fetchmcpresource" || x == "listmcpresources": (n, c) = ("MCP", "mcp")
+        default: (n, c) = (name, "plan")
+        }
+        // Named as Claude's calls are (summarize), so the map's beams, the log and the panels read the same for either.
+        var claude: [String: Any] = [:]
+        switch n {
+        case "WebSearch": claude["query"] = str(["search_term", "query"]) ?? what
+        case "WebFetch": claude["url"] = str(["url"]) ?? what
+        case "Read", "Edit": claude["file_path"] = file ?? ""
+        case "Grep": claude["pattern"] = args["pattern"] as? String ?? what; claude["path"] = file ?? ""
+        case "Glob": claude["pattern"] = str(["glob_pattern", "glob"]) ?? what
+        case "Bash": claude["command"] = str(["command"]) ?? what; claude["description"] = str(["description"]) ?? ""
+        case "Task": claude["description"] = str(["description"]) ?? what
+        default: break
+        }
+        var label = summarize(n, claude).label
+        if n == "MCP" {
+            let tool = name.hasPrefix("MCP:") ? String(name.dropFirst(4)) : name
+            label = server.map { "\($0).\(tool)" } ?? tool
+        }
+        if label.isEmpty || n == "plan" { label = clip(what.replacingOccurrences(of: "\n", with: " "), 120) }
+        // One file, whichever way its folder is named (`/tmp` and `/private/tmp`).
+        let real = (c == "read" || c == "edit") ? file.map { realFolder($0) } : nil
+        return (Pending(n: n, c: c, l: label.replacingOccurrences(of: "\n", with: " "), t: at), real)
+    }
+
+    /// Cursor's own records of the chat: its title, from the meta.json of its saved chat (~/.cursor/chats/<md5 of the
+    /// folder>/<conversation id>/), read again when it changes.
+    private func readCursorTitle(_ O: OtherAI) {
+        guard let conv = O.convId, !O.cwd.isEmpty else { return }
+        let path = Self.cursorChatsRoot + "/" + Self.cursorFolderKey(O.cwd) + "/" + conv + "/meta.json"
+        guard let st = fileStat(path), st.mtime != O.cursorMetaMark else { return }
+        O.cursorMetaMark = st.mtime
+        guard let data = FileManager.default.contents(atPath: path), let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let title = j["title"] as? String else { return }
+        let t = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        if t != O.title { O.title = clip(t, 90); stateDirty = true }
+    }
+
+    static var cursorChatsRoot: String { (ProcessInfo.processInfo.environment["CURSOR_CONFIG_DIR"] ?? HOME + "/.cursor") + "/chats" }
+    /// Cursor files a chat under the md5 of its folder's path.
+    static func cursorFolderKey(_ cwd: String) -> String {
+        // As its process sees the folder (a real path: /private/tmp, not /tmp), without a closing slash.
+        var resolved = cwd
+        while resolved.count > 1, resolved.hasSuffix("/") { resolved.removeLast() }
+        return Insecure.MD5.hash(data: Data(resolved.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Cursor's hooks events (CursorHooks) for the conversation this cursor-agent is in: the turn open or over, the prompt,
+    /// the tools it calls and their results, its subagents, its tokens. The conversation is the one its process last
+    /// announced; a new one (`/new`, a resume) starts the reading again.
+    private func readCursorEvents(_ O: OtherAI) {
+        if let conv = CursorHooks.conversation(ofPid: O.pid, since: O.firstTs / 1000), conv != O.convId {
+            O.convId = conv
+            O.log = CursorHooks.log(of: conv)
+            O.logOffset = 0
+            O.turnOpen = false
+            O.call = nil
+            O.cursorSubs.removeAll()
+            O.cursorSubFiles.removeAll()
+            O.cursorTrOffset.removeAll()
+            O.cursorTrLines.removeAll()
+            O.cursorWebOpen.removeAll()
+            O.cursorFiles.removeAll()
+            O.cursorMcpServer.removeAll()
+            O.agents = []
+            O.title = ""
+            O.prompt = ""
+            O.cursorMetaMark = 0
+            stateDirty = true
+        }
+        guard let path = O.log else { return }
+        // Its transcript first, once it's known: it says which server an MCP call goes to, the hook's own event doesn't.
+        if !O.cursorTrOffset.isEmpty { readCursorTranscripts(O) }
+        applyCursorLines(O, Self.cursorLines(path, offset: &O.logOffset), sub: nil)
+        readCursorSubFiles(O)
+        readCursorTranscripts(O)
+        readCursorTitle(O)
+        let now = nowMs()
+        var views: [[String: Any]] = []
+        for s in O.cursorSubs.values.sorted(by: { $0.start < $1.start }) {
+            // Finished more than 15 minutes ago: off the list, as Claude's.
+            guard !s.ended || now - s.last < 15 * Self.MIN else { continue }
+            var v: [String: Any] = [
+                "id": s.id, "sid": O.id, "desc": s.desc.isEmpty ? (s.type.isEmpty ? "subagent" : s.type) : s.desc,
+                "type": s.type, "model": s.model.isEmpty ? O.model : s.model, "bg": s.background, "running": !s.ended, "parked": false, "ended": s.ended,
+                "firstTs": s.start, "lastTs": s.last, "tools": s.tools, "errors": s.errors, "web": s.web, "cost": 0.0,
+                "tok": ["in": s.tokIn, "out": s.tokOut, "cr": s.tokCache, "cw": 0],
+                "pending": s.call.map { [$0.p.dict] } ?? [[String: Any]](), "loop": false,
+            ]
+            if let call = s.call { v["last"] = call.p.dict }
+            views.append(v)
+        }
+        let key = { (list: [[String: Any]]) in list.map { "\($0["id"] ?? "")\($0["running"] ?? "")\($0["ended"] ?? "")\(($0["last"] as? [String: Any])?["l"] ?? "")\($0["tools"] ?? "")" } }
+        if key(views) != key(O.agents) { stateDirty = true }
+        O.agents = views
+    }
+
+    /// Cursor spills a big tool result (a web page, a long output) into a file of its own under its folder
+    /// (`~/.cursor/projects/<folder>/agent-tools/<id>.txt`) with a Write call: its housekeeping, not the user's file.
+    private static func cursorInternal(_ p: [String: Any]) -> Bool {
+        let input = p["tool_input"] as? [String: Any] ?? [:]
+        let f = (input["file_path"] as? String) ?? (input["path"] as? String) ?? (p["file_path"] as? String) ?? ""
+        return f.contains("/agent-tools/") && (f.hasPrefix(ChatTrash.cursorHome + "/projects/") || f.contains("/.cursor/projects/"))
+    }
+
+    /// The Read and the Write Cursor fires for one edit call are the same call (one id): what was counted as a read of the
+    /// file becomes the edit it was part of, in the day's counts, the ticker, the files and on the map.
+    private func cursorReadBecameEdit(_ O: OtherAI, _ key: String, from old: Pending, to p: Pending, file: String?, aid: String?) {
+        let ts = p.t
+        O.resulted.remove(key)
+        O.byCat["read", default: 0] = max(0, O.byCat["read", default: 0] - 1)
+        O.byCat["edit", default: 0] += 1
+        G.byCat["read", default: 0] = max(0, G.byCat["read", default: 0] - 1)
+        G.byCat["edit", default: 0] += 1
+        let mb = minute(old.t)
+        mb.cats["read", default: 0] = max(0, mb.cats["read", default: 0] - 1)
+        mb.cats["edit", default: 0] += 1
+        if let i = G.ticker.lastIndex(where: { $0["id"] as? String == key }) {
+            G.ticker[i]["c"] = "edit"
+            G.ticker[i]["n"] = p.n
+            G.ticker[i]["st"] = "run"
+        }
+        if let f = O.cursorFiles.removeValue(forKey: key), let heat = G.files[f] { heat.r = max(0, heat.r - 1) }
+        if ts >= (G.lastByCat["edit"]?["t"] as? Double ?? 0) { G.lastByCat["edit"] = ["l": p.l, "t": ts, "s": O.id] }
+        // The read line on the map and in the log ends there, the edit starts under the same name.
+        emit(ev("result", ts, sid: O.id, aid: aid, ["id": key, "ok": true, "m": "", "n": old.n, "c": old.c]), true)
+        otherCalls[key] = (p, false)
+        if let file { touchFile(file, "Edit", sid: O.id, aid: aid, ts) }
+        emit(ev("tool", ts, sid: O.id, aid: aid, ["id": key, "n": p.n, "c": p.c, "l": p.l]), true)
+        stateDirty = true
+    }
+
+    /// Web calls (WebSearch, WebFetch) fire no hook at all in Cursor. They are in its transcript of the chat, which it
+    /// writes as it goes (`~/.cursor/projects/<folder>/agent-transcripts/<chat id>/<chat id>.jsonl`, a subagent's under
+    /// `subagents/`) as a `CallDynamicTool` of the `cursor` namespace: read from there, each line named by its number.
+    /// The transcript has no times and no results: a call began when its line was first seen, and ended when the next line
+    /// came or the turn did.
+    private func readCursorTranscripts(_ O: OtherAI) {
+        guard let conv = O.convId, !O.cwd.isEmpty else { return }
+        let base = ChatTrash.cursorHome + "/projects/" + ChatTrash.cursorProjectSlug(O.cwd) + "/agent-transcripts/" + conv
+        var files: [(path: String, owner: String, aid: String?)] = [(base + "/" + conv + ".jsonl", conv, nil)]
+        for (sid, s) in O.cursorSubs where !s.conv.isEmpty { files.append((base + "/subagents/" + s.conv + ".jsonl", s.conv, sid)) }
+        let now = nowMs()
+        for (path, owner, aid) in files {
+            guard let st = fileStat(path), st.size > 0 else { continue }
+            // First time this process sees the file (the app was reopened, Cursor was found running, a chat was resumed): what's in
+            // it is history, not live. Only the turn in progress counts, from the last prompt line on, at that turn's start, and
+            // its calls are over at once: nothing replays beams or waits for a result.
+            let first = O.cursorTrOffset[path] == nil
+            var offset = O.cursorTrOffset[path] ?? 0
+            guard st.size > offset, let fh = FileHandle(forReadingAtPath: path) else { O.cursorTrOffset[path] = offset; continue }
+            defer { try? fh.close() }
+            let from = max(offset, st.size > 2 << 20 ? st.size - (2 << 20) : 0)
+            try? fh.seek(toOffset: from)
+            let data = fh.readDataToEndOfFile()
+            guard let lastBreak = data.lastIndex(of: 0x0A) else { continue }
+            offset = from + UInt64(lastBreak - data.startIndex + 1)
+            O.cursorTrOffset[path] = offset
+            // Each line with the byte offset it starts at: the name of its calls (a resumed chat counts from where it is).
+            var lines: [(at: UInt64, j: [String: Any])] = []
+            var pos = from
+            for raw in data[data.startIndex...lastBreak].split(separator: 0x0A, omittingEmptySubsequences: false) {
+                if let j = try? JSONSerialization.jsonObject(with: Data(raw)) as? [String: Any] { lines.append((pos, j)) }
+                pos += UInt64(raw.count) + 1
+            }
+            if first {
+                guard aid == nil ? (O.turnOpen == true && O.turnStart > 0) : true else { continue }
+                if let u = lines.lastIndex(where: { $0.j["role"] as? String == "user" }) { lines = Array(lines[u...]) }
+                else if aid == nil { continue }
+            }
+            guard !lines.isEmpty else { continue }
+            let when = first ? (aid.flatMap { O.cursorSubs[$0]?.start } ?? O.turnStart) : now
+            // A line after the open web calls tells they're over.
+            for (key, open) in O.cursorWebOpen where open.aid == aid { otherResult(O, key, ok: true, now, d: max(0, now - open.start), aid: aid); O.cursorWebOpen[key] = nil }
+            if aid == nil, O.call?.p.c == "web" { O.call = nil }
+            for (at, j) in lines {
+                if j["type"] as? String == "turn_ended" { continue }
+                guard let content = (j["message"] as? [String: Any])?["content"] as? [[String: Any]] else { continue }
+                for (k, item) in content.enumerated() {
+                    guard item["type"] as? String == "tool_use", item["name"] as? String == "CallDynamicTool",
+                          let input = item["input"] as? [String: Any], let ns = input["namespace"] as? String,
+                          let tool = input["toolName"] as? String else { continue }
+                    // An MCP tool's server is the namespace Cursor calls it in (its hook says only the tool).
+                    if ns != "cursor" { O.cursorMcpServer[tool] = ns; continue }
+                    guard tool == "WebSearch" || tool == "WebFetch" else { continue }
+                    // Named as the hook calls are (Claude's labels: a URL as host and path, a query with its secrets masked).
+                    let (call, _) = Self.cursorCall(name: tool, input: input["arguments"] as? [String: Any] ?? [:], at: when, cwd: O.cwd)
+                    let key = "cursor:tr:\(owner):\(at):\(k)"
+                    otherTool(O, key, call, aid: aid)
+                    if first {
+                        otherResult(O, key, ok: true, when, d: 0, aid: aid)
+                    } else {
+                        O.cursorWebOpen[key] = (now, aid)
+                        if aid == nil { O.call = (key, call) }
+                        else { O.cursorSubs[aid!]?.call = (key, call) }
+                    }
+                    if let aid { O.cursorSubs[aid]?.tools += 1; O.cursorSubs[aid]?.web += 1 }
+                }
+            }
+        }
+    }
+
+    /// The web calls still open (their end isn't in any hook) end with the turn.
+    private func closeCursorWeb(_ O: OtherAI, _ ts: Double) {
+        for (key, open) in O.cursorWebOpen {
+            otherResult(O, key, ok: true, ts, d: max(0, ts - open.start), aid: open.aid)
+            if let a = open.aid { O.cursorSubs[a]?.call = nil }
+        }
+        O.cursorWebOpen.removeAll()
+        if O.call?.p.c == "web" { O.call = nil }
+    }
+
+    /// A subagent's own tool events: Cursor runs it as a conversation of its own, in an event file of the same cursor-agent
+    /// process (each event names it) that begins with a tool call, not a session. Its file goes to the Task call whose
+    /// result names it (agentId), or while that is out, to the oldest Task call without one.
+    private func readCursorSubFiles(_ O: OtherAI) {
+        guard O.cursorSubs.values.contains(where: { !$0.ended || $0.background }) || !O.cursorSubFiles.isEmpty else { return }
+        let fm = FileManager.default
+        let names = ((try? fm.contentsOfDirectory(atPath: CursorHooks.dir)) ?? []).filter { $0.hasSuffix(".jsonl") }
+        for name in names {
+            let path = CursorHooks.dir + "/" + name
+            guard path != O.log, O.cursorSubFiles[path] == nil, !O.cursorSkip.contains(path),
+                  let st = fileStat(path), st.mtime >= O.firstTs else { continue }
+            var off: UInt64 = 0
+            guard let first = Self.cursorLines(path, offset: &off).first, first["agent"] as? Int == Int(O.pid),
+                  first["e"] as? String == "preToolUse" else {
+                O.cursorSkip.insert(path)
+                continue
+            }
+            O.cursorSubFiles[path] = first["t"] as? Double ?? st.mtime
+        }
+        // Which subagent each file is: by the Task result's agentId, else in order.
+        var free = O.cursorSubFiles.sorted { $0.value < $1.value }.map(\.key).filter { path in
+            !O.cursorSubs.values.contains { !$0.conv.isEmpty && CursorHooks.log(of: $0.conv) == path }
+        }
+        for id in O.cursorSubs.keys.sorted(by: { O.cursorSubs[$0]!.start < O.cursorSubs[$1]!.start }) where O.cursorSubs[id]!.conv.isEmpty && !free.isEmpty {
+            O.cursorSubs[id]?.conv = ((free.removeFirst() as NSString).lastPathComponent as NSString).deletingPathExtension
+        }
+        for (id, s) in O.cursorSubs where !s.conv.isEmpty {
+            var offset = s.offset
+            let lines = Self.cursorLines(CursorHooks.log(of: s.conv), offset: &offset)
+            O.cursorSubs[id]?.offset = offset
+            applyCursorLines(O, lines, sub: id)
+            // A background one has no result at its end: quiet for two minutes, it's over.
+            if s.background, !s.ended, nowMs() - s.last > 2 * Self.MIN { O.cursorSubs[id]?.ended = true }
+        }
+    }
+
+    /// A batch of hooks events.
+    private func applyCursorLines(_ O: OtherAI, _ lines: [[String: Any]], sub: String?) {
+        for j in lines { applyCursorEvent(O, j, sub: sub) }
+    }
+
+    /// One hooks event; `sub` is the subagent whose own file it is from.
+    private func applyCursorEvent(_ O: OtherAI, _ j: [String: Any], sub: String?) {
+        guard let e = j["e"] as? String, let p = j["p"] as? [String: Any] else { return }
+        let ts = (j["t"] as? Double) ?? nowMs()
+        let gen = p["generation_id"] as? String ?? ""
+        // Its hooks call the model it picks for itself "default": the TUI says Auto.
+        if sub == nil, let m = p["model"] as? String, !m.isEmpty, m != "unknown" { O.model = m == "default" ? "auto" : m }
+        if let sub, let l = O.cursorSubs[sub]?.last { O.cursorSubs[sub]?.last = max(l, ts) }
+        let turnKey = "cursor:\(gen.isEmpty ? "\(O.convId ?? ""):\(Int(ts))" : gen)"
+        switch e {
+        case "sessionStart":
+            if O.turnOpen == nil { O.turnOpen = false }
+        case "beforeSubmitPrompt":
+            guard sub == nil else { break }
+            closeCursorWeb(O, ts)
+            O.turnOpen = true
+            O.turnStart = ts
+            O.call = nil
+            O.turns += 1
+            let text = (p["prompt"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            if !text.isEmpty {
+                O.prompt = clip(text, 200)
+                otherText(O, turnKey + ":in", "prompt", text, ts)
+            }
+        case "afterAgentResponse":
+            if sub == nil {
+                if let text = p["text"] as? String { otherText(O, turnKey + ":say:\(text.hashValue)", "say", text, ts) }
+            }
+        case "stop":
+            guard sub == nil else { break }
+            O.turnOpen = false
+            O.call = nil
+            closeCursorWeb(O, ts)
+            // The turn is over: a subagent still out (its result lost, or interrupted) isn't running any more.
+            for (id, s) in O.cursorSubs where !s.ended && !s.background { O.cursorSubs[id]?.ended = true }
+            // Its input counts the cache reads and writes too: what's left is new input (the writes are in it already).
+            let cached = int(p["cache_read_tokens"])
+            let i = max(0, int(p["input_tokens"]) - cached), o = int(p["output_tokens"])
+            if i + o + cached > 0 { otherTokens(O, turnKey + ":tok", ts, i, o, cached) }
+        case "sessionEnd":
+            O.turnOpen = false
+            O.call = nil
+            closeCursorWeb(O, ts)
+            for (id, s) in O.cursorSubs where !s.ended { O.cursorSubs[id]?.ended = true }
+        case "preCompact":
+            if sub == nil {
+                O.ctx = int(p["context_tokens"])
+                O.ctxMax = Double(int(p["context_window_size"]))
+            }
+        case "preToolUse":
+            guard let id = p["tool_use_id"] as? String, !Self.cursorInternal(p) else { break }
+            // A payload cut down by the hook script (a big file written) keeps its names at the top, not under tool_input.
+            let (call, file) = Self.cursorCall(name: p["tool_name"] as? String ?? "tool", input: p["tool_input"] ?? p, at: ts, cwd: O.cwd, server: (p["tool_name"] as? String).flatMap { $0.hasPrefix("MCP:") ? O.cursorMcpServer[String($0.dropFirst(4))] : nil })
+            let key = "cursor:" + id
+            let isNew = !O.counted.contains(key)
+            if let sub {
+                O.cursorSubs[sub]?.call = (id, call)
+                if isNew { O.cursorSubs[sub]?.tools += 1; if call.c == "web" { O.cursorSubs[sub]?.web += 1 } }
+            } else {
+                O.call = (id, call)
+                // A Task call is a subagent, running until its result.
+                if call.n == "Task" {
+                    let input = p["tool_input"] as? [String: Any] ?? [:]
+                    let sid = String(format: "%08x", UInt32(truncatingIfNeeded: TokenLedger.hash(id)))
+                    var s = O.cursorSubs[sid] ?? CursorSub(id: sid)
+                    s.callId = id
+                    s.type = input["subagent_type"] as? String ?? s.type
+                    s.desc = clip((input["description"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? (input["prompt"] as? String ?? "").split(whereSeparator: \.isNewline).first.map(String.init) ?? "", 90)
+                    if let m = input["model"] as? String, !m.isEmpty, m != "inherit" { s.model = m }
+                    s.background = input["run_in_background"] as? Bool == true
+                    if s.start == 0 { s.start = ts }
+                    s.last = max(s.last, ts)
+                    O.cursorSubs[sid] = s
+                }
+            }
+            // Its edit tool reads the file first and writes it after, both under ONE call id: one edit, not a read and an edit.
+            if let old = otherCalls[key], old.p.c == "read", call.c == "edit" {
+                cursorReadBecameEdit(O, key, from: old.p, to: call, file: file, aid: sub)
+            } else {
+                if let file, call.c == "read" { O.cursorFiles[key] = file }
+                otherTool(O, key, call, files: file.map { [$0] } ?? [], aid: sub)
+            }
+        case "postToolUse", "postToolUseFailure":
+            guard let id = p["tool_use_id"] as? String, !Self.cursorInternal(p) else { break }
+            let key = "cursor:" + id
+            if let sub {
+                if O.cursorSubs[sub]?.call?.id == id { O.cursorSubs[sub]?.call = nil }
+                if e == "postToolUseFailure", O.counted.contains(key), !O.resulted.contains(key) { O.cursorSubs[sub]?.errors += 1 }
+            } else {
+                if O.call?.id == id { O.call = nil }
+                if let sid = O.cursorSubs.first(where: { $0.value.callId == id })?.key {
+                    // The Task is over, and its result names the subagent's conversation.
+                    if let out = (p["tool_output"] as? String).flatMap({ $0.data(using: .utf8) }).flatMap({ try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }) {
+                        if let agent = out["agentId"] as? String, !agent.isEmpty { O.cursorSubs[sid]?.conv = agent }
+                        if out["isBackground"] as? Bool == true { O.cursorSubs[sid]?.background = true }
+                    }
+                    if O.cursorSubs[sid]?.background != true || e == "postToolUseFailure" { O.cursorSubs[sid]?.ended = true }
+                    if let l = O.cursorSubs[sid]?.last { O.cursorSubs[sid]?.last = max(l, ts) }
+                    O.cursorSubs[sid]?.call = nil
+                }
+            }
+            otherResult(O, key, ok: e == "postToolUse", ts, d: otherCalls[key].map { max(0, ts - $0.p.t) }, aid: sub)
+        default:
+            break
         }
         stateDirty = true
     }
@@ -2247,10 +2812,17 @@ final class RadarEngine {
     }
 
     private func agentView(_ A: SubAgent, _ S: Session, _ now: Double) -> [String: Any] {
-        let running = !A.pending.isEmpty || (!A.endTurn && now - A.lastTs < (S.reg == "busy" ? 15 : 3) * Self.MIN)
+        // A finished agent is "ended" and leaves the map at once. One still open is "running" while it has a tool call
+        // out, a model call open (it can be silent for 13 minutes inside one) or wrote within 3 minutes; else "parked"
+        // (dim, not orbiting) until 30 minutes of silence. The chat's own busy/idle no longer matters: Claude keeps a chat
+        // "busy" for as long as any background agent lives.
+        let quiet = now - A.lastTs
+        let alive = !A.ended && (quiet < 30 * Self.MIN || (!A.pending.isEmpty && quiet < 180 * Self.MIN))
+        let running = alive && (!A.pending.isEmpty || A.inFlight || quiet < 3 * Self.MIN)
         var v: [String: Any] = [
             "id": A.id, "sid": A.sid, "desc": A.desc.isEmpty ? (A.type.isEmpty ? String(A.id.prefix(8)) : A.type) : A.desc,
             "type": A.type, "model": shortModel(A.model), "bg": A.bg, "running": running,
+            "parked": alive && !running, "ended": A.ended,
             "firstTs": A.firstTs, "lastTs": A.lastTs, "tools": A.tools, "errors": A.errors, "web": A.web,
             "cost": A.cost, "tok": A.tokDict, "pending": pendingList(A, now), "loop": A.isLoop,
         ]
@@ -2298,7 +2870,7 @@ final class RadarEngine {
             // Claude ended its turn to wait for its background subagents: not the user's turn yet. Nor right after
             // one has finished; Claude picks its result up a moment later.
             if status == "idle", (agentsBySession[S.id] ?? []).contains(where: { A in
-                A.bg && (!A.pending.isEmpty || (!A.endTurn && now - A.lastTs < 3 * Self.MIN) || now - A.lastTs < 20_000)
+                A.bg && !A.ended && (!A.pending.isEmpty || A.inFlight || now - A.lastTs < 3 * Self.MIN || now - A.lastTs < 20_000)
             }) {
                 status = "busy"
             }
@@ -2306,7 +2878,7 @@ final class RadarEngine {
             guard S.live || now - S.lastTs < 30 * Self.MIN else { continue }
             let subs = (agentsBySession[S.id] ?? [])
                 .map { agentView($0, S, now) }
-                .filter { ($0["running"] as? Bool) == true || now - ($0["lastTs"] as? Double ?? 0) < 15 * Self.MIN }
+                .filter { ($0["running"] as? Bool) == true || ($0["parked"] as? Bool) == true || now - ($0["lastTs"] as? Double ?? 0) < 15 * Self.MIN }
                 .sorted {
                     let ra = ($0["running"] as? Bool) == true, rb = ($1["running"] as? Bool) == true
                     if ra != rb { return ra }
@@ -2327,6 +2899,7 @@ final class RadarEngine {
                 "id": S.id, "name": displayName(S),
                 "tool": "Claude Code",
                 "title": S.title, "lastPrompt": S.lastPrompt, "cwd": cwdLabel(S.cwd), "branch": S.branch,
+                "wt": orNull(Worktrees.info(of: S.cwd).flatMap { $0.linked ? $0.json : nil }),
                 "model": shortModel(S.model), "effort": S.effort, "status": status, "live": S.live,
                 "statusSince": S.live ? S.statusSince : (S.endedAt > 0 ? S.endedAt : S.lastTs),
                 "cpu": S.cpu, "mem": S.mem, "kind": S.kind, "entry": S.entry,
@@ -2337,6 +2910,7 @@ final class RadarEngine {
             item["waitingFor"] = orNull(S.waitingFor)
             item["tty"] = orNull(S.tty)
             item["pid"] = orNull(S.pid.map { Int($0) })
+            if let pid = S.pid, let t = MemoryWatch.tree(of: pid) { item["memTree"] = t.bytes; item["memTop"] = t.top.map { [$0.0, $0.1] as [Any] } }
             item["host"] = orNull(host)
             item["tab"] = orNull(S.hostTab)
             if let last = S.last { item["last"] = last.dict }
@@ -2346,6 +2920,7 @@ final class RadarEngine {
                                      status: status, waitingFor: S.waitingFor, cwd: S.cwd, live: S.live, pid: S.pid, host: host, tab: S.hostTab)
             brief.model = shortModel(S.model)
             brief.effort = S.effort
+            brief.fresh = S.lastPrompt.isEmpty && S.title.isEmpty && S.prompts == 0
             brief.ctx = S.ctx
             brief.ctxMax = S.ctxMax
             brief.cost = S.cost
@@ -2371,7 +2946,8 @@ final class RadarEngine {
             if let ended = dismissed[O.id], ended == O.pid { continue }
             let live = O.endedAt == 0
             // What it runs: a shell of its own right now, else the tool call its log has it on.
-            let running = otherCommand(O).map { Pending(n: "Bash", c: "bash", l: $0, t: O.commandSince) } ?? O.call?.p
+            // Cursor's hooks name its call exactly; its shell child's own line is a long wrapper script.
+            let running = O.tool == "Cursor" && O.call != nil ? O.call?.p : otherCommand(O).map { Pending(n: "Bash", c: "bash", l: $0, t: O.commandSince) } ?? O.call?.p
             let (status, waiting) = otherStatus(O, now)
             // Its subagents end with it.
             let agents = live ? O.agents : O.agents.map { var a = $0; a["running"] = false; a["pending"] = [[String: Any]](); return a }
@@ -2386,7 +2962,8 @@ final class RadarEngine {
             let spark = ((k0 - 29)...k0).map { O.spark[$0] ?? 0 }
             let flags = O.ctxMax > 0 && Double(O.ctx) / O.ctxMax > 0.8 ? ["ctx 80%+"] : [String]()
             var item: [String: Any] = [
-                "id": O.id, "name": O.tool, "title": O.title.isEmpty ? folder : O.title, "lastPrompt": O.prompt, "cwd": cwdLabel(O.cwd), "branch": "",
+                "id": O.id, "name": O.tool, "title": O.title.isEmpty ? folder : O.title, "lastPrompt": O.prompt, "cwd": cwdLabel(O.cwd), "branch": Worktrees.info(of: O.cwd)?.branch ?? "",
+                "wt": orNull(Worktrees.info(of: O.cwd).flatMap { $0.linked ? $0.json : nil }),
                 "tool": O.tool,
                 "model": O.model.isEmpty ? O.tool : O.model, "effort": O.effort, "status": status, "live": live,
                 "statusSince": live ? O.statusSince : O.endedAt, "cpu": O.cpu, "mem": O.mem, "kind": "", "entry": "",
@@ -2399,6 +2976,7 @@ final class RadarEngine {
             item["waitingFor"] = orNull(waiting)
             item["tty"] = orNull(O.tty)
             item["pid"] = Int(O.pid)
+            if let t = MemoryWatch.tree(of: O.pid) { item["memTree"] = t.bytes; item["memTop"] = t.top.map { [$0.0, $0.1] as [Any] } }
             item["host"] = orNull(host)
             item["tab"] = orNull(O.hostTab)
             item["convId"] = orNull(O.convId)
@@ -2411,6 +2989,7 @@ final class RadarEngine {
                                      cwd: O.cwd, live: live, pid: O.pid, host: host, tab: O.hostTab, convId: conv)
             brief.model = O.model.isEmpty ? O.tool : O.model
             brief.effort = O.effort
+            brief.fresh = O.prompt.isEmpty && O.title.isEmpty && O.turns == 0
             brief.ctx = O.ctx
             brief.ctxMax = O.ctxMax
             brief.tools = O.tools
@@ -2515,6 +3094,7 @@ final class RadarEngine {
         var pools: [(tool: String, value: [String: Any]?)] = [("Claude Code", limits.json?.merging(["id": "claude", "name": "claude"]) { $1 }),
                                                              ("Codex", codexUsage?.merging(["id": "codex", "name": "codex"]) { $1 })]
         pools += (agyUsage.map { AgyUsage.pools($0, model: agyModel) } ?? []).map { ("Antigravity", $0) }
+        pools.append(("Cursor", cursorUsage))
         for (tool, value) in pools {
             guard var v = value, now - ((v["at"] as? NSNumber)?.doubleValue ?? 0) < 7 * 24 * 3_600_000 else { continue }
             v["tool"] = tool
@@ -2596,8 +3176,13 @@ final class RadarEngine {
     func gitSources(_ completion: @escaping ([GitSession], [String: [String]]) -> Void) {
         queue.async {
             let now = nowMs()
-            let list = self.sessions.values.filter { !$0.cwd.isEmpty && ($0.live || $0.lastTs >= self.day0) }.map { S in
+            var list = self.sessions.values.filter { !$0.cwd.isEmpty && ($0.live || $0.lastTs >= self.day0) }.map { S in
                 GitSession(id: S.id, name: self.displayName(S), title: S.title, status: self.statusOf(S, now), live: S.live, cwd: S.cwd)
+            }
+            // Cursor's too: its hooks name the files it writes, so its repo shows with its chip and its files carry its mark.
+            for O in self.others.values where O.tool == "Cursor" && !O.cwd.isEmpty && (O.endedAt == 0 || O.lastTs >= self.day0) {
+                list.append(GitSession(id: O.id, name: O.tool, title: O.title.isEmpty ? O.prompt : O.title, status: self.otherStatus(O, now).status,
+                                       live: O.endedAt == 0, cwd: O.cwd))
             }
             var written: [String: [String]] = [:]
             for F in self.G.files.values where F.w > 0 {
@@ -2641,6 +3226,8 @@ final class RadarEngine {
         changed = scanAgyHistory(present: &present) || changed
         // And Codex's.
         changed = scanCodexHistory() || changed
+        // And Cursor's.
+        changed = scanCursorHistory() || changed
         guard changed else { return }
         let items = history.values
             .filter { !$0.cwd.isEmpty && (!$0.title.isEmpty || !$0.lastPrompt.isEmpty) }
@@ -2791,6 +3378,48 @@ final class RadarEngine {
             return true
         }
         return prune()
+    }
+
+    /// Cursor's saved chats, from the meta.json it keeps of each (~/.cursor/chats/<md5 of the folder>/<chat id>/): the folder,
+    /// the title it gave (after the first turn), the last change; the first line of the chat's transcript is its prompt.
+    /// Not its subagents' chats, nor one nothing was said in. Returns true when anything changed.
+    private func scanCursorHistory() -> Bool {
+        let root = ChatTrash.cursorHome + "/chats", fm = FileManager.default
+        var present = Set<String>(), changed = false
+        for key in (try? fm.contentsOfDirectory(atPath: root)) ?? [] {
+            for id in (try? fm.contentsOfDirectory(atPath: root + "/" + key)) ?? [] where ChatTrash.isSessionId(id) {
+                let path = "\(root)/\(key)/\(id)/meta.json"
+                guard let st = fileStat(path), let data = fm.contents(atPath: path),
+                      let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      j["hasConversation"] as? Bool == true, j["isSubagent"] as? Bool != true,
+                      let cwd = j["cwd"] as? String, !cwd.isEmpty else { continue }
+                present.insert(id)
+                let mtime = max(Double(int(j["updatedAtMs"])), st.mtime)
+                if let old = history[id], old.mtime == mtime { continue }
+                var title = (j["title"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines), prompt = ""
+                let transcript = "\(ChatTrash.cursorHome)/projects/\(ChatTrash.cursorProjectSlug(cwd))/agent-transcripts/\(id)/\(id).jsonl"
+                if let fh = FileHandle(forReadingAtPath: transcript), let head = try? fh.read(upToCount: 16_384) {
+                    try? fh.close()
+                    if let line = head.split(separator: 10).first, let rec = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any],
+                       let text = ((rec["message"] as? [String: Any])?["content"] as? [[String: Any]])?.compactMap({ $0["text"] as? String }).first {
+                        prompt = text
+                        if let a = text.range(of: "<user_query>"), let b = text.range(of: "</user_query>", range: a.upperBound..<text.endIndex) {
+                            prompt = String(text[a.upperBound..<b.lowerBound])
+                        }
+                        prompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+                    }
+                }
+                if title.isEmpty { title = prompt }
+                history[id] = ChatItem(id: id, path: path, cwd: cwd, mtime: mtime, size: Int(st.size), title: clip(title, 90),
+                                       lastPrompt: clip(prompt, 160), tool: "cursor")
+                changed = true
+            }
+        }
+        for sid in history.keys where history[sid]?.tool == "cursor" && !present.contains(sid) {
+            history.removeValue(forKey: sid)
+            changed = true
+        }
+        return changed
     }
 
     private func readTail(_ item: inout ChatItem) {

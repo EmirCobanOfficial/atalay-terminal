@@ -3,22 +3,27 @@
 // .postMessage(body), a promise where the Mac's handler replies, and they get a few values the Mac sets before they
 // load (the terminals' font, the messages panel's role and friend). This gives them the same over Electron's IPC, so
 // they run unchanged, and inserts the theme's colours before they draw (and again when the theme changes).
-const { contextBridge, ipcRenderer, webFrame } = require('electron');
+const { contextBridge, ipcRenderer, webFrame, webUtils } = require('electron');
 
 const boot = ipcRenderer.sendSync('atl:boot') || {};
 
 // Viktoria's window (main.js's atl:boot says so) gets her own line and nothing else: no other handler, no terminal
-// channels, no shortcut wheel.
+// channels, no Ring.
 const full = !boot.mascot;
 const handlers = {};
+// `mcp`: Settings > Claude, the local MCP server (mcp.js); `notesai`: Settings > Privacy > AI tools and my notes
+// (notesai.js); `keys`: Settings › Shortcuts (shortcuts.js). main.js answers them for the dashboard's page only.
 for (const name of full
-  ? ['radar', 'cloud', 'git', 'theme', 'overlay', 'messages', 'savers', 'chats', 'archive', 'trash', 'spend', 'files', 'notes', 'noteWindow', 'feed']
+  ? ['radar', 'cloud', 'git', 'theme', 'overlay', 'messages', 'savers', 'chats', 'archive', 'trash', 'spend', 'files', 'notes', 'noteWindow', 'feed', 'mcp', 'notesai', 'keys']
   : ['mascot']) {
   handlers[name] = { postMessage: (body) => ipcRenderer.invoke('atl:post', name, body) };
 }
 contextBridge.exposeInMainWorld('webkit', { messageHandlers: handlers });
 // The pages name the computer and the command key by it ("this PC", Ctrl+).
 contextBridge.exposeInMainWorld('__platform', process.platform);
+// This app shares notes (notessync.js): social.js shows the shared notes' invites, as on the Mac (the corner notice, the bell,
+// the notes board). Every page with the full set of handlers, as the notices and chat panels have their own social.js.
+if (full) contextBridge.exposeInMainWorld('__notesSharing', true);
 // The terminal look is set by a function run in the page's own world: exposeInMainWorld would hand the page a frozen
 // object, and fonts.js assigns window.__terminalLook.font when the family changes.
 if (boot.look) contextBridge.executeInMainWorld({ func: (look) => { window.__terminalLook = { ...look }; }, args: [boot.look] });
@@ -40,6 +45,8 @@ if (boot.demo) contextBridge.exposeInMainWorld('__DEMO__', true);
 if (boot.noteWindow) contextBridge.exposeInMainWorld('__NOTE_WINDOW__', boot.noteWindow);
 // The chat window's size as it was left, without the ring for its glow (main.js's chatWindowSize), or null the first time.
 if (boot.role === 'chat') contextBridge.exposeInMainWorld('__CHAT_SIZE__', boot.chatSize || null);
+// A terminal window: the keys the app takes there and the Esc swap (shortcuts.js); changes come on term:keys.
+if (boot.keys) contextBridge.exposeInMainWorld('__keys', boot.keys);
 
 // A terminal window's line to its shell (pages/terminal.js): only its own channels.
 const TERM = /^term:/;
@@ -49,20 +56,34 @@ if (full) {
     on: (channel, fn) => TERM.test(channel) && ipcRenderer.on(channel, (_e, data) => fn(data)),
     // A question with an answer (which of a line's pieces are files).
     ask: (channel, data) => (TERM.test(channel) ? ipcRenderer.invoke(channel, data) : Promise.reject(new Error('not a terminal channel'))),
+    // Where a file dropped on the terminal is on disk, for its path to be pasted (the Mac's performDragOperation):
+    // Electron's webUtils, as a File's own path is gone. Empty for anything that isn't a file on disk.
+    pathForFile: (file) => {
+      try {
+        return webUtils.getPathForFile(file) || '';
+      } catch {
+        return '';
+      }
+    },
   });
 }
 
-// The shortcut wheel: Ctrl and the middle mouse button, anywhere in the app's windows (the Mac opens it with the middle
-// button; Ctrl+K still does here too). Neither the page nor the terminal under the pointer gets that press: no orbit
+// The Ring: the middle mouse button, anywhere in the app's windows, with Ctrl as it came, or alone (a touchpad's
+// three-finger tap can be one: Windows' touchpad settings), or not at all (Settings › Shortcuts, shortcuts.js; its keys,
+// Ctrl+K as it came, are the menu's). Neither the page nor the terminal under the pointer gets that press: no orbit
 // zoom, no autoscroll, no click sent to the program. Cancelling the pointer press keeps its mouse events from coming.
 let wheelPress = false;
+let ringMouse = ['ctrl', 'plain', 'off'].includes(boot.ringMouse) ? boot.ringMouse : 'ctrl';
+ipcRenderer.on('atl:ringMouse', (_e, mode) => {
+  if (['ctrl', 'plain', 'off'].includes(mode)) ringMouse = mode;
+});
 const swallow = (e) => {
   e.preventDefault();
   e.stopImmediatePropagation();
 };
 if (full) {
   window.addEventListener('pointerdown', (e) => {
-    wheelPress = e.button === 1 && e.ctrlKey;
+    wheelPress = e.button === 1 && (ringMouse === 'plain' || (ringMouse === 'ctrl' && e.ctrlKey));
     if (!wheelPress) return;
     swallow(e);
     ipcRenderer.send('atl:wheel');

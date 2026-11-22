@@ -34,11 +34,11 @@ final class Runaways {
     }
 
     private(set) var left: [Left] = []
+    /// The runaways of the last look (Clean Up lists them with the programs).
+    private(set) var found: [Item] = []
 
     private static let line = 50.0
     private static let sustain: Double = 120
-    private static let every: TimeInterval = 5
-
     var onChange: ((String) -> Void)?
     /// Live AI sessions `(cwd, started ms)` from the engine, so background work a live session started isn't mistaken
     /// for a leftover from a closed terminal.
@@ -51,7 +51,6 @@ final class Runaways {
     private(set) var json = "[]"
     private var last: [Int32: (started: UInt64, cpu: UInt64, at: Double)] = [:]
     private var over: [Int32: Double] = [:]
-    private var timer: Timer?
 
     /// System daemons, XPC services and app bundles are macOS / Activity Monitor's business, never a shell's leftover or
     /// runaway script. (macOS ships the `python3` CLI interpreter inside `Python.app`, so keep Python scripts eligible.)
@@ -84,22 +83,11 @@ final class Runaways {
         return r != HOME && d.hasPrefix(r + "/")
     }
 
-    func start() {
-        timer = Timer.scheduledTimer(withTimeInterval: Self.every, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.sample() }
-        }
-    }
-
-    private func sample() {
-        let me = getuid(), now = ProcessInfo.processInfo.systemUptime, wall = Date().timeIntervalSince1970 * 1000
-        let pids = Proc.all(), alive = Set(pids)
-        var infos: [Int32: Proc.Info] = [:]
-        var children: [Int32: [Int32]] = [:]
-        for pid in pids where pid > 1 {
-            guard let info = Proc.info(pid), info.uid == me else { continue }
-            infos[pid] = info
-            if info.ppid > 1 { children[info.ppid, default: []].append(pid) }
-        }
+    /// Looked at from MemoryWatch's round, every few seconds, with the one process snapshot it took (nothing scans twice).
+    func sample(_ snap: Proc.Snapshot) {
+        let now = snap.uptime, wall = snap.wall
+        let pids = snap.pids, alive = Set(pids)
+        let infos = snap.infos, children = snap.children
 
         // Live AI sessions in terminals (besides those MainWindowController passed from RadarEngine), so background work
         // a live session started in its project folder isn't mistaken for a leftover from a closed terminal.
@@ -164,6 +152,7 @@ final class Runaways {
         last = last.filter { seen.contains($0.key) }
         over = over.filter { roots.contains($0.key) }
         items.sort { $0.cpu > $1.cpu }
+        found = items
         let next = (try? JSONEncoder().encode(items)).flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
         if next != json {
             json = next
@@ -191,7 +180,7 @@ final class Runaways {
 
     /// A car left behind, ended on the orbit: it and everything it started (npm's child server too), deepest first. TERM,
     /// then KILL two seconds later for what's still there. Only the process the page showed: same pid, same start, yours.
-    func endLeft(pid: Int32, started: Double) {
+    func endLeft(pid: Int32, started: Double, grace: TimeInterval = 2) {
         guard pid > 1, let p = Proc.info(pid), p.uid == getuid(), abs(Double(p.started / 1000) - started) < 1 else { return }
         var tree: [(pid: Int32, started: UInt64)] = []
         func walk(_ pid: Int32) {
@@ -200,15 +189,14 @@ final class Runaways {
         }
         walk(pid)
         for t in tree { kill(t.pid, SIGTERM) }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + grace) {
             for t in tree where Proc.info(t.pid)?.started == t.started { kill(t.pid, SIGKILL) }
-            self?.sample()
         }
     }
 
     /// The dashboard's End button: ends the runaway process and its children, deepest first (TERM, then KILL two seconds
     /// later if still there). Only the process the page showed: same pid, same start, yours.
-    func end(pid: Int32, started: Double) {
-        endLeft(pid: pid, started: started)
+    func end(pid: Int32, started: Double, grace: TimeInterval = 2) {
+        endLeft(pid: pid, started: started, grace: grace)
     }
 }

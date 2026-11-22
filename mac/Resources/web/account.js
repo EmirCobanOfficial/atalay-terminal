@@ -67,6 +67,7 @@ window.Account = (() => {
     if (A.pending && (!was || !was.pending || was.pending.id !== A.pending.id)) mergeDialog();
     if (A.signedIn) Sync.start(A);
     else Sync.stop();
+    termsAsk();
     return A;
   }
 
@@ -356,7 +357,9 @@ window.Account = (() => {
       dangerHost,
       '<div class="hk-h danger-h">DANGER ZONE</div><div class="danger-zone"><div class="hk-row">' +
         `<span>${all ? 'delete account' : 'delete my data'}<small>${all ? 'your name, XP, friends, messages and synced settings, on all your computers' : 'your name, XP, friends and messages, here and on the server'} · chats and terminals stay on this computer</small></span>` +
-        `<button type="button" class="mn-btn acct-del" data-danger="delete">${all ? 'delete account…' : 'delete my data…'}</button></div></div>`,
+        `<button type="button" class="mn-btn acct-del" data-danger="delete">${all ? 'delete account…' : 'delete my data…'}</button></div></div>` +
+        '<p class="st-note"><a class="st-ln" href="https://orbiterm.dev/privacy/" target="_blank" rel="noopener noreferrer">Privacy Notice</a> \u00b7 ' +
+        '<a class="st-ln" href="https://orbiterm.dev/terms/" target="_blank" rel="noopener noreferrer">Terms of Use</a></p>',
     );
   }
   function mountDanger(el) {
@@ -674,6 +677,82 @@ window.Account = (() => {
     document.body.appendChild(el);
   }
 
+  // ---------- the Terms of Use ----------
+  // The API keeps which version of the Terms an account agreed to (account.ts `terms: { current, accepted }`). New
+  // accounts agree by getting through the welcome (its line under the buttons; agreeTerms below). An account signed in
+  // from before the Terms asks once per launch, the first time it's loaded: "Agree to the Terms", or "not now" (Esc, or a
+  // click outside), which closes it and nothing else: every feature stays on, and it comes back at the next launch.
+  // Guests are asked too (they're on the leaderboard, in friends' lists and messages); an account with no name yet isn't
+  // (nothing shows of it), and a computer with no account at all is never held up by any of it.
+  let termsShown = false;
+  let termsAgreed = false;
+  // POST the version the server says is current (never one this file guesses). Without the account loaded yet, load it first.
+  async function postTerms() {
+    if (!A || !A.terms) await load();
+    const v = A && A.terms && A.terms.current;
+    if (!v) return { error: 'offline' };
+    const r = await api('POST', 'v1/account/terms', { version: v });
+    if (r && !r.error) A = r;
+    return r;
+  }
+  // The welcome's way: no question. A failure leaves nothing marked, so the window below asks at the next launch.
+  async function agreeTerms() {
+    if (termsAgreed) return;
+    termsAgreed = true;
+    const r = await postTerms();
+    if (!r || r.error) termsAgreed = false;
+    return r;
+  }
+  function termsAsk() {
+    if (termsShown || termsAgreed || !A || !A.name || !A.terms || A.terms.accepted >= A.terms.current) return;
+    // Not over the welcome (it agrees when it ends), nor over another question (the merge, the settings question, a confirm).
+    if (document.querySelector('.pk.wel, .acct-confirm, .acct-merge, .acct-conflict, .acct-terms-box')) return;
+    termsShown = true;
+    const el = document.createElement('div');
+    el.className = 'mn-confirm acct-terms-box';
+    const L = (path, label) => `<a href="https://orbiterm.dev/${path}/" target="_blank" rel="noopener noreferrer">${label}</a>`;
+    el.innerHTML =
+      '<div class="mn-ask acct-ask acct-terms" role="dialog" aria-modal="true" aria-labelledby="acct-terms-h"><b id="acct-terms-h">Privacy Notice and Terms</b>' +
+      '<p>Orbiterm now has a Privacy Notice and Terms of Use. They put in writing what the app sends to its server, why, and how to delete it. ' +
+      'The Terms add one rule: Orbiterm is free and comes as is, and you stay in charge of what your terminals and AI tools do.</p>' +
+      `<p class="acct-terms-links">${L('privacy', 'Privacy Notice')} \u00b7 ${L('terms', 'Terms of Use')}</p>` +
+      '<div class="mn-ask-btns"><button type="button" class="acct-terms-del" data-ans="delete">Delete my account instead</button>' +
+      '<button type="button" class="mn-btn" data-ans="later">Not now</button><button type="button" class="mn-btn go" data-ans="agree">Agree to the Terms</button></div></div>';
+    const done = () => {
+      el.remove();
+      document.removeEventListener('keydown', key, true);
+    };
+    // Esc is "not now", and only that: the page behind (Settings, a profile) stays open.
+    const key = (e) => {
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      done();
+    };
+    el.onclick = async (e) => {
+      if (e.target === el) return done();
+      const b = e.target.closest('[data-ans]');
+      if (!b) return;
+      if (b.dataset.ans === 'later') return done();
+      if (b.dataset.ans === 'delete') {
+        done();
+        return deleteData();
+      }
+      b.disabled = true;
+      const r = await postTerms();
+      if (!r || r.error) {
+        b.disabled = false;
+        return say(errText(r?.error));
+      }
+      termsAgreed = true;
+      done();
+    };
+    document.addEventListener('keydown', key, true);
+    document.body.appendChild(el);
+    // "Not now" has the focus: the window opens by itself a moment after launch, and a stray Enter mustn't agree.
+    el.querySelector('[data-ans=later]').focus();
+  }
+
   // ---------- settings sync ----------
   // Each synced setting: how to read it here (undefined: not set here, the account's comes in), how to set one from
   // another computer, how to show it in the question, and its default (a value never changed here counts as not set).
@@ -844,5 +923,5 @@ window.Account = (() => {
   setTimeout(load, 2500);
 
   // errText and GH: the welcome's sign-in says the same (cloud.js openFirst).
-  return { mount, mountDanger, deleteData: () => deleteData(), load, menu, state: () => A, errText, GH };
+  return { mount, mountDanger, deleteData: () => deleteData(), agreeTerms: () => agreeTerms(), load, menu, state: () => A, errText, GH };
 })();

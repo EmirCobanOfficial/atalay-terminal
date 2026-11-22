@@ -30,7 +30,7 @@ window.ProfileStats = (() => {
   const DOW_LONG = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
   const LETTERS = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
   // The AIs in a fixed order and colour (the colour follows the AI, whatever its share); the name is always written too.
-  const AIS = { claude: ['Claude', 'var(--accent)'], codex: ['Codex', 'var(--amber)'], antigravity: ['Antigravity', 'var(--orange)'] };
+  const AIS = { claude: ['Claude', 'var(--accent)'], codex: ['Codex', 'var(--amber)'], antigravity: ['Antigravity', 'var(--orange)'], cursor: ['Cursor', 'var(--cyan)'] };
   // UP NEXT leaves these out: On Fire and Week of Work pull toward long days and weeks; nothing can be done for Veteran
   // and Founder.
   const NOT_NEXT = new Set(['fire', 'week', 'tenure', 'founder']);
@@ -328,7 +328,7 @@ window.ProfileStats = (() => {
         '<i class="bd-skel" style="display:block;width:54%;height:.75rem"></i>');
     }
     const list = (data.tools || []).filter((t) => AIS[t.tool] && t.seconds > 0);
-    if (!list.length) return wrap(`<p class="ps-empty">${key === 'me' ? 'Run Claude, Codex or Antigravity in a terminal and it shows here.' : 'No AI time recorded yet.'}</p>`);
+    if (!list.length) return wrap(`<p class="ps-empty">${key === 'me' ? 'Run Claude, Codex, Antigravity or Cursor in a terminal and it shows here.' : 'No AI time recorded yet.'}</p>`);
     const pct = percents(list);
     const bar = list.map((t, i) => `<i style="flex:${t.seconds} 1 0;background:${AIS[t.tool][1]}" title="${AIS[t.tool][0]} · ${pct[i] || '<1'}%"></i>`).join('');
     const rows = list.map((t, i) =>

@@ -12,7 +12,7 @@ window.Fire = (() => {
 precision mediump float;
 uniform vec2 res;
 uniform vec3 reach;
-uniform float t, k, scale, embers;
+uniform float t, k, scale, embers, mound;
 uniform vec3 pal[6];
 float hash(vec2 p) {
   p = fract(p * vec2(123.34, 456.21));
@@ -42,7 +42,8 @@ float tongues(vec2 q, float d, float speed) {
 void main() {
   vec2 px = gl_FragCoord.xy;
   float d = 9.0;
-  if (reach.x > 0.0) d = min(d, px.y / reach.x);
+  // A mound (1) is a fire of its own, not a burning edge: tallest in the middle of the canvas, down to nothing at its sides.
+  if (reach.x > 0.0) d = min(d, px.y / (reach.x * mix(1.0, max(pow(max(sin(3.14159 * px.x / res.x), 0.0), 0.7), 0.001), mound)));
   if (reach.y > 0.0) d = min(d, min(px.x, res.x - px.x) / reach.y);
   if (reach.z > 0.0) d = min(d, (res.y - px.y) / reach.z);
   if (d > 1.5) {
@@ -116,7 +117,7 @@ void main() {
     gl.enableVertexAttribArray(at);
     gl.vertexAttribPointer(at, 2, gl.FLOAT, false, 0, 0);
     const u = (name) => gl.getUniformLocation(prog, name);
-    G = { gl, canvas, uRes: u('res'), uReach: u('reach'), uT: u('t'), uK: u('k'), uScale: u('scale'), uPal: u('pal'), uEmbers: u('embers') };
+    G = { gl, canvas, uRes: u('res'), uReach: u('reach'), uT: u('t'), uK: u('k'), uScale: u('scale'), uPal: u('pal'), uEmbers: u('embers'), uMound: u('mound') };
     return G;
   }
 
@@ -124,8 +125,8 @@ void main() {
   // bottom, the sides and the top, in CSS px (0: that edge doesn't burn), or a function giving them each frame;
   // scale: the size of the flames' detail (CSS px); life: ms until it has died down (0: it burns on); res: canvas
   // pixels per CSS px; look: a name in LOOKS; mound: true for a fire tallest in the middle of the canvas and nothing at
-  // its sides, instead of one along the whole edge.
-  function burn(canvas, { reach, scale, life = 0, res = Math.min(2, devicePixelRatio || 1), look = 'orange' }) {
+  // its sides (a friend's spaceship attack, attack.js), instead of one along the whole edge.
+  function burn(canvas, { reach, scale, life = 0, res = Math.min(2, devicePixelRatio || 1), look = 'orange', mound = false }) {
     const ctx = canvas.getContext('2d');
     if (!ctx || !shared()) return () => {};
     const L = LOOKS[look] || LOOKS.orange;
@@ -169,6 +170,7 @@ void main() {
       gl.clear(gl.COLOR_BUFFER_BIT);
       gl.uniform2f(g.uRes, w, h);
       gl.uniform3f(g.uReach, r[0] * res * L.tall, r[1] * res * L.tall, r[2] * res * L.tall);
+      gl.uniform1f(g.uMound, mound ? 1 : 0);
       gl.uniform1f(g.uT, seed + ms / 1000);
       gl.uniform1f(g.uK, k);
       gl.uniform1f(g.uScale, scale * res);
@@ -183,5 +185,33 @@ void main() {
     return stop;
   }
 
-  return { burn };
+
+  // The share card (share-card.js): one frame of a fire that has fully caught, on a new w×h canvas (1 canvas px = 1 card px), for a
+  // picture. Same shader, same looks, same shared context; nothing keeps running. null without WebGL.
+  function still(w, h, { reach, scale, look = 'orange', t = 7 + Math.random() * 40 }) {
+    const g = shared();
+    if (!g) return null;
+    const { gl } = g;
+    const L = LOOKS[look] || LOOKS.orange;
+    if (g.canvas.width < w || g.canvas.height < h) { g.canvas.width = Math.max(g.canvas.width, w); g.canvas.height = Math.max(g.canvas.height, h); }
+    gl.viewport(0, 0, w, h);
+    gl.clearColor(0, 0, 0, 0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.uniform2f(g.uRes, w, h);
+    gl.uniform3f(g.uReach, reach[0] * L.tall, reach[1] * L.tall, reach[2] * L.tall);
+    gl.uniform1f(g.uT, t);
+    gl.uniform1f(g.uK, 1);
+    gl.uniform1f(g.uScale, scale);
+    gl.uniform3fv(g.uPal, new Float32Array(L.pal.flat()));
+    gl.uniform1f(g.uEmbers, L.embers);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    const out = document.createElement('canvas');
+    out.width = w;
+    out.height = h;
+    out.getContext('2d').drawImage(g.canvas, 0, g.canvas.height - h, w, h, 0, 0, w, h);
+    if (!live) g.canvas.width = g.canvas.height = 1;
+    return out;
+  }
+
+  return { burn, still };
 })();

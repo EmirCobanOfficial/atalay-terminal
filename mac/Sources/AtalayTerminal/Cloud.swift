@@ -38,6 +38,11 @@ enum DeviceID {
 final class Cloud {
     static let shared = Cloud()
 
+    /// Your ORB as the heartbeat answers it (api/src/orb.ts orbState, CONTRACT v3): money in units of 1/10000 ORB.
+    struct Orb: Codable, Equatable {
+        let balance: Int?, ratePerHour: Int?, dailyCapMin: Int?, earnedTodaySeconds: Int?, earnedToday: Int?
+        let attackPrice: Int?, shieldMin: Int?, cooldownMin: Int?, cancelCooldownMin: Int?, hitsPerDayMax: Int?
+    }
     /// Your level and active time as the API counts them (api/src/xp.ts); the pages show them as they are.
     struct XP: Codable, Equatable {
         let level: Int
@@ -77,6 +82,8 @@ final class Cloud {
         /// Names repeat; name + tag (1–9999, shown as #0427) is unique, like Discord.
         var tag: Int?
         var online = 0
+        /// How many are coding right now (the heartbeat carries it); nil until an API that sends it answers.
+        var working: Int?
         var update: Release?
         /// The build on offer is downloaded, checked and waiting next to the app (`Updater.prepare`).
         var updateReady = false
@@ -96,6 +103,10 @@ final class Cloud {
         /// Why the API refused a name picked offline ("name_full", …), for the page to show once.
         var nameError: String?
         var xp: XP?
+        /// Your ORB (CONTRACT v3), as the heartbeat answers it: units of 1/10000 ORB.
+        var orb: Orb?
+        /// Settings → Privacy, "share my token counts": off, this Mac sends the API no token counts at all (sendUsage).
+        var shareTokens = UserDefaults.standard.object(forKey: "shareTokens") as? Bool ?? true
     }
 
     /// What became of a name the user picked.
@@ -146,15 +157,9 @@ final class Cloud {
     let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
     /// 0 when run unbundled (swift run), which never asks for updates.
     let build = Int(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "") ?? 0
-    /// The API: Info.plist's AtalayAPIURL. ATALAY_API_URL overrides it only in the staging build and when run unbundled
-    /// (development): in the released app it would let anyone point the app, and its signed calls, at a server of theirs.
-    private let base = URL(string: (Cloud.mayRedirect ? ProcessInfo.processInfo.environment["ATALAY_API_URL"] : nil)
-        ?? Bundle.main.object(forInfoDictionaryKey: "AtalayAPIURL") as? String ?? "http://127.0.0.1:4800")!
+    /// The API: Info.plist's AtalayAPIURL (AccessKey.api).
+    private let base = AccessKey.api
     var apiBaseURL: URL { base }
-    private static var mayRedirect: Bool {
-        let id = Bundle.main.bundleIdentifier
-        return id == nil || id?.hasSuffix(".staging") == true
-    }
     /// The API's calls go through a session that keeps nothing on disk: URLSession.shared's cache kept their requests,
     /// token and signature included, in the app's Caches folder.
     private static let session: URLSession = {
@@ -233,7 +238,7 @@ final class Cloud {
     /// Keeps this Mac online, says whether its user is working (XP), picks up updates and sends a name picked offline.
     private func heartbeat(_ token: String) async {
         // No name (nor tag) yet: a token from `begin`, before signing in or picking one.
-        struct Answer: Decodable { let hackerName: String?; let tag: Int?; let online: Int; let update: Release?; let xp: XP?; let xpPaused: Bool? }
+        struct Answer: Decodable { let hackerName: String?; let tag: Int?; let online: Int; let working: Int?; let update: Release?; let xp: XP?; let xpPaused: Bool?; let orb: Orb? }
         // The theme too: the leaderboard shows someone's card in their theme, and anyone can take it.
         let work: [String: Any] = ["active": Activity.active, "tz": TimeZone.current.secondsFromGMT() / 60, "theme": ThemeStore.shared.chosenId,
                                    // Viktoria: -1 when she is off, else her Mischief level (0..3); a profile shows it.
@@ -262,6 +267,7 @@ final class Cloud {
             s.hackerName = name
             s.tag = tag
             s.online = a.online
+            s.working = a.working
             s.update = build > 0 ? a.update : nil
             s.updateReady = s.update != nil && staged?.build == s.update?.build
             if s.update?.force == true, !preparing, !applying, s.updating != nil {
@@ -270,6 +276,7 @@ final class Cloud {
             }
             s.xp = a.xp ?? s.xp
             s.xpPaused = a.xpPaused ?? false
+            s.orb = a.orb ?? s.orb
             state = s
             noteForce(s.update)
             if let u = state.update { prepareUpdate(u) }
@@ -293,13 +300,19 @@ final class Cloud {
     private var usageAt = Date.distantPast
     private var sendingUsage = false
     private func sendUsage(_ token: String) async {
-        guard !sendingUsage, Date().timeIntervalSince(usageAt) >= 290 else { return }
+        // Settings → Privacy, "share my token counts" off: none go out, nor the past days the first read found. Turned
+        // back on, only the days after that day go out (shareTokensFrom, setShareTokens).
+        guard state.shareTokens, !sendingUsage, Date().timeIntervalSince(usageAt) >= 290 else { return }
         sendingUsage = true
         defer { sendingUsage = false }
         usageAt = Date()
         struct Answer: Decodable { let stored: Int; let rejected: [Int]? }
         for _ in 0..<8 {
-            guard let batch = await TokenLedger.shared.batch() else { return }
+            let from = shareTokensFrom
+            guard let batch = await TokenLedger.shared.batch(from: from) else { return }
+            // Asked again right before each call: making a batch can take minutes the first time, and the switch may
+            // have been turned off meanwhile (or off and on again, which moves the first day that may go out).
+            guard state.shareTokens, shareTokensFrom == from else { return }
             do {
                 let a: Answer = try await call("POST", "v1/usage", body: ["source": batch.source, "days": batch.rows], token: token)
                 if let r = a.rejected, !r.isEmpty { NSLog("Orbiterm: the API left out %d token rows of %d", r.count, batch.rows.count) }
@@ -310,6 +323,22 @@ final class Cloud {
                 return
             }
         }
+    }
+
+    /// The first day whose token counts may go out (TokenLedger.batch), nil when "share my token counts" was never turned
+    /// back on after being off.
+    private var shareTokensFrom: String? { UserDefaults.standard.string(forKey: "shareTokensFrom") }
+
+    /// Settings → Privacy, "share my token counts" (the "cloud" handler's shareTokens), kept on this Mac.
+    func setShareTokens(_ on: Bool) {
+        // Back on after being off: only the days after today go out from now on. Today, the days it was off and any day
+        // not sent before it was turned off stay on this Mac, since it was off on all or part of them.
+        if on, !state.shareTokens {
+            let from = TokenLedger.dayAfterToday()
+            if from > (shareTokensFrom ?? "") { UserDefaults.standard.set(from, forKey: "shareTokensFrom") }
+        }
+        UserDefaults.standard.set(on, forKey: "shareTokens")
+        state.shareTokens = on
     }
 
     private func identify() async {
@@ -391,6 +420,7 @@ final class Cloud {
         s.hackerName = nil
         s.tag = nil
         s.xp = nil
+        s.orb = nil
         state = s
         await identify()
         return nil
@@ -552,7 +582,10 @@ final class Cloud {
 
     private func noteForce(_ u: Release?) {
         if let u, u.force == true {
-            if forcedSince?.build != u.build { forcedSince = (u.build, Date()) }
+            if forcedSince?.build != u.build {
+                forcedSince = (u.build, Date())
+                unwarnForce()
+            }
             if forceTimer == nil {
                 let t = Timer(timeInterval: 60, repeats: true) { _ in
                     Task { @MainActor in Cloud.shared.maybeRestart() }
@@ -563,6 +596,7 @@ final class Cloud {
             }
         } else {
             forcedSince = nil
+            unwarnForce()
             forceTimer?.invalidate()
             forceTimer = nil
         }
@@ -586,18 +620,47 @@ final class Cloud {
         maybeRestart()
     }
 
+    /// When the user was told that a forced build restarts the app over running chats (the notices' UPDATE), and for which
+    /// build: the restart comes 5 min after that at the soonest, however long the build had waited by then (the Mac
+    /// asleep, a slow download).
+    private var forceWarned: (build: Int, at: Date)?
+
     /// A staged build goes in when it interrupts nothing: the user has been away 10 minutes (or wants updates right away)
     /// and no chat runs outside its detached session, which quitting would stop. Forced builds skip the idle wait and
-    /// install after at most 60 min even if `canRestart()` keeps refusing.
+    /// install after 60 min even if `canRestart()` keeps refusing: the notices say when 5 min before, and the restart
+    /// never comes sooner than 5 min after they did.
+    /// A quit is waiting for a worktree job (AppDelegate): no restart of any kind starts meanwhile, a second quit from code would
+    /// skip the quit's own steps.
+    var quitPending = false
+
     func maybeRestart() {
-        guard let staged, staged.build == state.update?.build, !applying, !preparing else { return }
+        guard !quitPending, let staged, staged.build == state.update?.build, !applying, !preparing else { return }
         if state.update?.force == true {
-            let deadline = forcedSince.map { Date().timeIntervalSince($0.at) >= 3600 } ?? false
-            guard canRestart() || deadline else { return }
-            return restart(into: staged, overdueForce: deadline)
+            // At once only when that ends no terminal the user may be in: a restart ends every session the app runs itself
+            // (they come back resumed, but a half-typed prompt or a shell's state goes), so with any open it waits for the
+            // user to be away like any update, else the notice and the hour below.
+            if canRestart(), Sessions.live.isEmpty || rightAway || Social.idleSeconds() >= 600 { return restart(into: staged) }
+            guard let since = forcedSince else { return }
+            let now = Date()
+            let waited = now.timeIntervalSince(since.at)
+            // 5 min before the hour is up, with chats running that the restart stops: when it comes, in the corner.
+            if forceWarned?.build != staged.build, waited >= 3600 - 300 {
+                forceWarned = (staged.build, now)
+                MessagePanel.notices.restart(version: staged.version, at: max(since.at.addingTimeInterval(3600), now.addingTimeInterval(300)))
+            }
+            guard let warned = forceWarned, warned.build == staged.build, waited >= 3600, now.timeIntervalSince(warned.at) >= 300 else { return }
+            return restart(into: staged, overdueForce: true)
         }
         guard canRestart(), rightAway || Social.idleSeconds() >= 600 else { return }
         restart(into: staged)
+    }
+
+    /// The forced restart the user was told about isn't coming (the build is no longer forced, or a newer one came): the
+    /// notice goes.
+    private func unwarnForce() {
+        guard forceWarned != nil else { return }
+        forceWarned = nil
+        MessagePanel.notices.restartOver()
     }
 
     private func restart(into staged: Updater.Staged, overdueForce: Bool = false) {
@@ -666,6 +729,26 @@ final class Cloud {
         return a?.ticket
     }
 
+    /// A shared note's socket: a ticket (one use, 30 s) and the address to open it at, `{ url }`; `{ gone }` when this account isn't
+    /// in the note any more, `{ error }` when the API can't be reached. The page opens the socket; staging or production is
+    /// decided here, as for the live line.
+    func notesTicket(id: String) async -> [String: Any] {
+        let id = id.lowercased()
+        guard UUID(uuidString: id) != nil else { return ["error": "bad_id"] }
+        let r = await social("POST", "v1/notes/\(id)/ticket", body: [:])
+        guard let d = r as? [String: Any] else { return ["error": "offline"] }
+        if let t = d["ticket"] as? String {
+            var c = URLComponents(url: base.appendingPathComponent("v1/notes/\(id)/sync"), resolvingAgainstBaseURL: false)!
+            c.scheme = base.scheme == "https" ? "wss" : "ws"
+            c.queryItems = [URLQueryItem(name: "ticket", value: t)]
+            // The page opens this socket and can't add a header: the staging API's gate takes this proof instead.
+            if let proof = AccessKey.proof(ticket: t) { c.queryItems?.append(URLQueryItem(name: "ak", value: proof)) }
+            return ["url": c.url!.absoluteString]
+        }
+        if d["error"] as? String == "not_found" { return ["gone": true] }
+        return ["error": d["error"] as? String ?? "offline"]
+    }
+
     func liveURL(ticket: String) -> URL {
         var c = URLComponents(url: base.appendingPathComponent("v1/live"), resolvingAgainstBaseURL: false)!
         c.scheme = base.scheme == "https" ? "wss" : "ws"
@@ -685,6 +768,7 @@ final class Cloud {
             req.httpBody = try? JSONSerialization.data(withJSONObject: body)
             req.setValue("application/json", forHTTPHeaderField: "content-type")
         }
+        AccessKey.add(&req)
         ClientKey.sign(&req)
         do {
             let (data, response) = try await Cloud.session.data(for: req)
@@ -703,12 +787,40 @@ final class Cloud {
 
     // MARK: HTTP
 
+    /// A signed GET of a file's bytes (a shared note's file, streamed by the API): the data and the reply's headers (names in lower
+    /// case), or the API's error code ("offline", "signed_out", "http_<status>").
+    func fileData(_ path: String) async -> (data: Data?, headers: [String: String], error: String?) {
+        guard let token else { return (nil, [:], "signed_out") }
+        guard let url = URL(string: path, relativeTo: base) else { return (nil, [:], "bad_path") }
+        var req = URLRequest(url: url, timeoutInterval: 120)
+        req.httpMethod = "GET"
+        req.setValue("Bearer " + token, forHTTPHeaderField: "authorization")
+        AccessKey.add(&req)
+        ClientKey.sign(&req)
+        do {
+            let (data, response) = try await Cloud.session.data(for: req)
+            ClientKey.learn(from: response)
+            let http = response as? HTTPURLResponse
+            let status = http?.statusCode ?? 0
+            var h: [String: String] = [:]
+            for (k, v) in http?.allHeaderFields ?? [:] { if let k = k as? String, let v = v as? String { h[k.lowercased()] = v } }
+            if (200..<300).contains(status) { return (data, h, nil) }
+            if status == 401 { Task { await self.beat() } }
+            if status == 426 { UpdateWatch.shared.checkNow() }
+            let code = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["error"] as? String
+            return (nil, h, code ?? "http_\(status)")
+        } catch {
+            return (nil, [:], "offline")
+        }
+    }
+
     /// A client-signed GET with no Authorization header (works before a device is registered): for the app's own public
     /// reads, such as Viktoria's download address. The JSON object, or nil.
     func publicGet(_ path: String) async -> [String: Any]? {
         guard let url = URL(string: path, relativeTo: base) else { return nil }
         var req = URLRequest(url: url, timeoutInterval: 15)
         req.httpMethod = "GET"
+        AccessKey.add(&req)
         ClientKey.sign(&req)
         guard let (data, response) = try? await Cloud.session.data(for: req) else { return nil }
         ClientKey.learn(from: response)
@@ -728,6 +840,7 @@ final class Cloud {
             req.setValue("application/json", forHTTPHeaderField: "content-type")
         }
         if let token { req.setValue("Bearer " + token, forHTTPHeaderField: "authorization") }
+        AccessKey.add(&req)
         ClientKey.sign(&req)
         let (data, response) = try await Cloud.session.data(for: req)
         ClientKey.learn(from: response)
@@ -748,12 +861,14 @@ extension Cloud {
         return [
             "reachable": s.reachable, "registered": s.registered.map { $0 as Any } ?? NSNull(),
             "hackerName": s.hackerName ?? NSNull(), "tag": s.tag.map { $0 as Any } ?? NSNull(),
-            "online": s.online, "version": version, "build": build,
+            "online": s.online, "working": s.working.map { $0 as Any } ?? NSNull(), "version": version, "build": build,
             "update": s.update.map { ["version": $0.version, "build": $0.build, "notes": $0.notes] as [String: Any] } ?? NSNull(),
             "updating": s.updating ?? NSNull(), "updateProgress": s.updateProgress ?? NSNull(), "updateError": s.updateError ?? NSNull(), "nameError": s.nameError ?? NSNull(),
             "updateReady": s.updateReady, "updateRightAway": s.updateRightAway, "checking": s.checking,
             "checkedAt": s.checkedAt.map { $0.timeIntervalSince1970 * 1000 } ?? NSNull(), "xpPaused": s.xpPaused,
             "xp": s.xp.flatMap { try? JSONSerialization.jsonObject(with: JSONEncoder().encode($0)) } ?? NSNull(),
+            "shareTokens": s.shareTokens,
+            "orb": s.orb.flatMap { try? JSONSerialization.jsonObject(with: JSONEncoder().encode($0)) } ?? NSNull(),
         ]
     }
 }
@@ -769,9 +884,10 @@ final class CloudBridge: NSObject, WKScriptMessageHandlerWithReply {
         // A fragment or a ';' parameter isn't sent as part of the path, so what's checked below wouldn't be what goes
         // out ("v1/account/signout#" reached sign-out).
         guard !path.contains("#"), !path.contains(";") else { return false }
-        let routes = ["v1/me/status", "v1/me/activity", "v1/me/leaderboard", "v1/me/profile", "v1/me/avatar", "v1/feedback"]
+        // v1/orb/me: your ORB and its last moves (the API's orb.ts; social.js loadOrb).
+        let routes = ["v1/me/status", "v1/me/activity", "v1/me/leaderboard", "v1/me/profile", "v1/me/avatar", "v1/feedback", "v1/orb/me"]
         let trees = ["v1/social", "v1/friends", "v1/messages", "v1/leaderboard", "v1/notifications", "v1/roadmap", "v1/account", "v1/auth",
-                     "v1/settings", "v1/badges", "v1/releases",
+                     "v1/settings", "v1/badges", "v1/releases", "v1/notes",
                      // A whole screen in one answer (the API's screens.ts: a person's profile page).
                      "v1/screens"]
         guard routes.contains(path) || trees.contains(where: { path == $0 || path.hasPrefix($0 + "/") || path.hasPrefix($0 + "?") }),
@@ -842,6 +958,10 @@ final class CloudBridge: NSObject, WKScriptMessageHandlerWithReply {
             case "deleteAccount":
                 let error = await cloud.deleteAccount(reason: body["reason"] as? String, text: body["text"] as? String)
                 replyHandler(["error": error.map { $0 as Any } ?? NSNull(), "state": cloud.json], nil)
+            // Settings → Privacy, "share my token counts": kept on this Mac, asked before every call that sends them.
+            case "shareTokens":
+                cloud.setShareTokens(body["on"] as? Bool ?? false)
+                replyHandler(cloud.json, nil)
             // The terminals' text size, for Settings sync: read it, or set one from another computer.
             case "terminalFont":
                 guard let main = MainWindowController.shared else { return replyHandler(nil, nil) }
@@ -854,10 +974,117 @@ final class CloudBridge: NSObject, WKScriptMessageHandlerWithReply {
             // The Mac's monospaced fonts, for Settings' list.
             case "terminalFonts":
                 replyHandler(["families": TerminalFont.families], nil)
+            // The share card (web/share-card.js): its picture to the pasteboard or to ~/Downloads, shown in Finder, and the
+            // few images it draws (badges, avatars) fetched here, as data: addresses, so the picture never depends on the
+            // image servers' CORS headers (a canvas drawn with a cross-origin image can't be exported).
+            case "shareImage":
+                replyHandler(Self.shareImage(action: body["action"] as? String ?? "", base64: body["png"] as? String ?? "", name: body["name"] as? String ?? ""), nil)
+            case "revealFile":
+                replyHandler(Self.reveal(path: body["path"] as? String ?? ""), nil)
+            case "fetchImage":
+                replyHandler(await Self.fetchImage(body["url"] as? String ?? "", api: cloud.apiBaseURL), nil)
             default:
                 replyHandler(nil, "unknown message")
             }
         }
+    }
+
+    // MARK: the share card
+
+    private static let pngMagic: [UInt8] = [0x89, 0x50, 0x4E, 0x47]
+    private static var downloads: URL { FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first ?? URL(fileURLWithPath: NSHomeDirectory() + "/Downloads") }
+
+    /// `copy`: the picture on the general pasteboard (as PNG, and as TIFF for the apps that only read that); `save`: a new
+    /// file in Downloads, " (2)" and on if the name is taken. { ok, path? }.
+    private static func shareImage(action: String, base64: String, name: String) -> [String: Any] {
+        guard base64.count < 12_000_000, let data = Data(base64Encoded: base64), data.count > 8, [UInt8](data.prefix(4)) == pngMagic else { return ["ok": false] }
+        switch action {
+        case "copy":
+            let pb = NSPasteboard.general
+            pb.clearContents()
+            var ok = pb.setData(data, forType: .png)
+            if let tiff = NSImage(data: data)?.tiffRepresentation { ok = pb.setData(tiff, forType: .tiff) || ok }
+            return ["ok": ok]
+        case "save":
+            let base = (name as NSString).lastPathComponent
+            guard base.range(of: "^[A-Za-z0-9._ -]{1,80}\\.png$", options: .regularExpression) != nil else { return ["ok": false] }
+            let stem = (base as NSString).deletingPathExtension
+            var url = downloads.appendingPathComponent(base)
+            var n = 2
+            while FileManager.default.fileExists(atPath: url.path), n < 1000 {
+                url = downloads.appendingPathComponent("\(stem) (\(n)).png")
+                n += 1
+            }
+            do {
+                try data.write(to: url, options: .withoutOverwriting)
+                return ["ok": true, "path": url.path]
+            } catch { return ["ok": false] }
+        default: return ["ok": false]
+        }
+    }
+
+    /// Shows a file the card was saved as, in Finder: only one inside Downloads.
+    private static func reveal(path: String) -> Bool {
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        guard url.path.hasPrefix(downloads.standardizedFileURL.path + "/"), FileManager.default.fileExists(atPath: url.path) else { return false }
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+        return true
+    }
+
+    /// Whether the share card may fetch `url`: https only (no user, no port) for the files bucket's `/public/`, GitHub's avatars
+    /// and `*.orbiterm.dev`'s `/v1/avatars/`; and exactly the app's own configured API origin (a staging API: the shared one over https, or
+    /// plain http on 127.0.0.1) under `/v1/avatars/`. No "." or ".." segment (the path is read decoded, so %2e%2e counts), no backslash.
+    nonisolated static func mayFetchImage(_ url: URL, api: URL) -> Bool {
+        guard url.user == nil, url.password == nil, let scheme = url.scheme?.lowercased(), let host = url.host?.lowercased() else { return false }
+        let path = url.path
+        let segments = path.split(separator: "/", omittingEmptySubsequences: true)
+        guard !path.contains("\\"), !segments.contains(".."), !segments.contains(".") else { return false }
+        let port = url.port ?? (scheme == "https" ? 443 : 80)
+        let apiPort = api.port ?? (api.scheme?.lowercased() == "https" ? 443 : 80)
+        if scheme == api.scheme?.lowercased(), host == api.host?.lowercased(), port == apiPort { return path.hasPrefix("/v1/avatars/") }
+        guard scheme == "https", port == 443 else { return false }
+        return (host == "orbiterm-files.s3.eu-central-1.amazonaws.com" && path.hasPrefix("/public/"))
+            || host == "avatars.githubusercontent.com"
+            || (host.hasSuffix(".orbiterm.dev") && path.hasPrefix("/v1/avatars/"))
+    }
+
+    /// Every redirect is checked against the same list; one that leaves it is refused.
+    private final class ImageGuard: NSObject, URLSessionTaskDelegate {
+        let api: URL
+        init(api: URL) { self.api = api }
+        func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                        newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
+            completionHandler(request.url.map { CloudBridge.mayFetchImage($0, api: api) } == true ? request : nil)
+        }
+    }
+
+    /// A badge's picture (the files bucket), an avatar (the API's, or GitHub's) as a data: address, or nil. At most 3 MB,
+    /// counted as it arrives, and 10 s in all. Not on the main actor: the byte loop runs off it, and the reply is sent from main once.
+    nonisolated private static func fetchImage(_ s: String, api: URL) async -> Any {
+        guard let url = URL(string: s), mayFetchImage(url, api: api) else { return NSNull() }
+        let cap = 3_000_000
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 6
+        config.timeoutIntervalForResource = 10
+        let session = URLSession(configuration: config, delegate: ImageGuard(api: api), delegateQueue: nil)
+        defer { session.finishTasksAndInvalidate() }
+        var req = URLRequest(url: url, timeoutInterval: 6)
+        req.httpMethod = "GET"
+        AccessKey.add(&req)
+        do {
+            let (bytes, response) = try await session.bytes(for: req)
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200, http.expectedContentLength <= Int64(cap),
+                  let final = http.url, mayFetchImage(final, api: api) else { return NSNull() }
+            let type = (http.value(forHTTPHeaderField: "Content-Type") ?? "").split(separator: ";").first.map { $0.trimmingCharacters(in: .whitespaces).lowercased() } ?? ""
+            guard ["image/png", "image/jpeg", "image/webp", "image/gif"].contains(type) else { return NSNull() }
+            var data = Data()
+            for try await byte in bytes {
+                data.append(byte)
+                if data.count > cap { return NSNull() }
+            }
+            guard !data.isEmpty else { return NSNull() }
+            return "data:\(type);base64,\(data.base64EncodedString())"
+        } catch { return NSNull() }
     }
 
     /// `queued`: kept on this Mac (offline) and sent when the API answers again.

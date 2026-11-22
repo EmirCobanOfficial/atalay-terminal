@@ -1,6 +1,7 @@
 import AppKit
 import QuartzCore
 import SwiftTerm
+import Combine
 import SwiftUI
 
 // MARK: - live model for one chat window
@@ -16,8 +17,12 @@ struct TickerChip: Identifiable, Equatable {
 @MainActor
 final class ChatHUD: ObservableObject {
     @Published var brief: SessionBrief?
+    /// The second-AI note under the header (WorktreeNudge.swift): nil while there is none.
+    @Published var nudge: WorktreeOffer?
     /// Folder of a window opened as a terminal: Claude runs there only when started (or resumed) by hand.
     let terminalDir: String?
+    /// The AI this chat starts, for "starting …": claude, codex or antigravity.
+    var aiName = "claude"
     @Published var exited = false
     @Published var attached = true
     /// Above every app's windows (floating), like an always-on-top pin.
@@ -30,10 +35,25 @@ final class ChatHUD: ObservableObject {
     @Published var tabCount = 1
     /// Starred in the sidebar: the HUD's star icon fills in.
     @Published var isFavorite = false
+    /// The env view (EnvView.swift) is over the terminal, and it holds changes not saved: the header's env button.
+    @Published var envOpen = false
+    @Published var envUnsaved = false
     /// False while the window is hidden, so its clocks stop ticking.
     @Published var visible = false
     /// The dashboard's streamer mode (Streamer.swift): the header and the footer show made-up names.
     @Published var streamer = false
+    /// The linked worktree this window works in, and what the title row says about it (WorktreeChip.swift, WorktreeShip.swift).
+    var wtTop: String?
+    var wtMain = ""
+    var wtBranch = ""
+    @Published var wt: WorktreeStatus?
+    @Published var shipBusy: String?
+    @Published var shipDeleted = false
+    @Published var shipMenuOpen = false
+    /// The window's width, for the title row's three sizes (960 pt and up, 640 to 959, under 640).
+    @Published var width: CGFloat = 900
+    var onShip: ((String) -> Void)?
+    var onShipMenu: (() -> Void)?
     private var seq = 0
 
     init(terminalDir: String?) { self.terminalDir = terminalDir }
@@ -98,6 +118,7 @@ struct ChatHeaderView: View {
     let onEnd: () -> Void
     let onCopyReply: () -> Void
     let onToggleFavorite: () -> Void
+    let onToggleEnv: () -> Void
 
     var body: some View {
         // Clocks tick once a second. Per-frame effects here kept the main thread busy and froze the
@@ -111,8 +132,9 @@ struct ChatHeaderView: View {
                     TitleRow(hud: hud, now: tl.date, status: status, hex: hex)
                         .frame(height: 32)
                     HUDRow(hud: hud, now: tl.date, hex: hex, onTogglePin: onTogglePin, onEnd: onEnd,
-                           onCopyReply: onCopyReply, onToggleFavorite: onToggleFavorite)
+                           onCopyReply: onCopyReply, onToggleFavorite: onToggleFavorite, onToggleEnv: onToggleEnv)
                         .frame(height: 30)
+                        .zIndex(1)
                 }
             }
         }
@@ -131,7 +153,10 @@ private struct TitleRow: View {
     var body: some View {
         let color = Color(hex: hex)
         let dir = status == "terminal" ? hud.terminalDir : nil
-        let real = dir.map { ($0 as NSString).lastPathComponent } ?? hud.brief?.name ?? "chat"
+        // In a linked worktree the name is the repo's (the chip says which worktree), not the worktree folder's.
+        let inWorktree = hud.wtTop != nil
+        let narrow = inWorktree && hud.width < 640
+        let real = inWorktree ? Worktrees.home(hud.wtMain).leaf : dir.map { ($0 as NSString).lastPathComponent } ?? hud.brief?.name ?? "chat"
         let realTitle = dir.map(tildify) ?? hud.brief?.title ?? ""
         // Streamer mode: the made-up ones the dashboard shows (an AI tool's own name stays).
         let tools: Set<String> = ["chat", "Claude", "Codex", "Antigravity", "Gemini", "OpenCode", "Aider", "Cursor", "Copilot"]
@@ -145,22 +170,31 @@ private struct TitleRow: View {
                     .font(Mur47.stencil(15))
                     .foregroundColor(Theme.cAccent)
                     .shadow(color: Theme.cAccent.opacity(0.7), radius: 6)
-                Text(name.uppercased())
-                    .font(Mur47.stencil(12))
-                    .tracking(1.4)
-                    .foregroundColor(Mur47.titleText)
-                    .shadow(color: .black.opacity(0.7), radius: 0, x: 0, y: 1)
-                    .lineLimit(1)
+                if !narrow {
+                    Text(name.uppercased())
+                        .font(Mur47.stencil(12))
+                        .tracking(1.4)
+                        .foregroundColor(Mur47.titleText)
+                        .shadow(color: .black.opacity(0.7), radius: 0, x: 0, y: 1)
+                        .lineLimit(1)
+                }
             } else {
                 Image(systemName: "hexagon")
                     .font(.system(size: 12, weight: .bold))
                     .foregroundColor(color)
                     .shadow(color: color, radius: 6)
-                Text(name)
-                    .font(.mono(12, .bold))
-                    .foregroundColor(Theme.cAccent)
-                    .shadow(color: Theme.cAccent.opacity(0.6), radius: 6)
-                    .lineLimit(1)
+                if !narrow {
+                    Text(name)
+                        .font(.mono(12, .bold))
+                        .foregroundColor(Theme.cAccent)
+                        .shadow(color: Theme.cAccent.opacity(0.6), radius: 6)
+                        .lineLimit(1)
+                }
+            }
+            if inWorktree {
+                WorktreeChipView(branch: hud.streamer ? Streamer.fake("branch", hud.wt?.branch ?? hud.wtBranch) : hud.wt?.branch ?? hud.wtBranch,
+                                 st: hud.wt, deleted: hud.shipDeleted, wide: hud.width >= 960, compact: narrow, streamer: hud.streamer,
+                                 action: { hud.onShip?("changes") })
             }
             Text("·").font(.mono(12)).foregroundColor(mur47 ? Mur47.titleText.opacity(0.6) : Theme.cDim2)
             Text(title)
@@ -170,6 +204,11 @@ private struct TitleRow: View {
                 .lineLimit(1)
                 .truncationMode(.tail)
             Spacer(minLength: 8)
+            // A mirror shows the chip only: the actions are for the app the chat runs in. After a delete there's no button.
+            if inWorktree, !hud.mirror, !hud.shipDeleted, let wt = hud.wt {
+                WorktreeShipButton(st: wt, busy: hud.shipBusy, menuOpen: hud.shipMenuOpen, streamer: hud.streamer,
+                                   onMain: { hud.onShip?($0) }, onMore: { hud.onShipMenu?() })
+            }
             StatusPill(status: status, hex: hex, since: hud.brief?.statusSince ?? 0,
                        waitingFor: hud.streamer ? hud.brief?.waitingFor.map { Streamer.fake("wait", $0) } : hud.brief?.waitingFor, now: now)
         }
@@ -200,7 +239,63 @@ private struct StatusPill: View {
             .overlay(RoundedRectangle(cornerRadius: 3).stroke(color, lineWidth: 1))
             .shadow(color: color.opacity(0.6), radius: 8)
             .opacity(waiting && Int(now.timeIntervalSinceReferenceDate) % 2 == 0 ? 0.45 : 1)
-            .help(waitingFor ?? "")
+            .hoverTag(waitingFor ?? "", hex: hex, side: .left)
+    }
+}
+
+/// Our own hover tag. The header redraws every second (TimelineView), which keeps macOS's native help tag
+/// from ever appearing, so the buttons here show this one after the pointer rests on them for half a second.
+private struct HoverTag: ViewModifier {
+    enum Side { case above, left }
+    let text: String
+    let hex: UInt32
+    let side: Side
+    @State private var hover = false
+    @State private var show = false
+
+    func body(content: Content) -> some View {
+        content
+            .onHover { inside in
+                hover = inside
+                if !inside { show = false }
+            }
+            .simultaneousGesture(TapGesture().onEnded { show = false })
+            .task(id: hover) {
+                guard hover else { return }
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                if hover && !Task.isCancelled { show = true }
+            }
+            .overlay(alignment: side == .above ? .topTrailing : .leading) {
+                if show && !text.isEmpty { tag }
+            }
+            .accessibilityHint(text)
+    }
+
+    private var tag: some View {
+        let above = side == .above
+        let box = Text(text)
+            .font(.system(size: 10.5))
+            .foregroundColor(Theme.cText)
+            .lineLimit(1)
+            .fixedSize()
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(Theme.cBg)
+            .overlay(Rectangle().stroke(Color(hex: hex), lineWidth: 1))
+            .allowsHitTesting(false)
+        return Group {
+            if above {
+                box.alignmentGuide(.top) { d in d.height + 4 }
+            } else {
+                box.alignmentGuide(.leading) { d in d.width + 6 }
+            }
+        }
+    }
+}
+
+private extension View {
+    func hoverTag(_ text: String, hex: UInt32, side: HoverTag.Side = .above) -> some View {
+        modifier(HoverTag(text: text, hex: hex, side: side))
     }
 }
 
@@ -212,6 +307,7 @@ private struct HUDRow: View {
     let onEnd: () -> Void
     let onCopyReply: () -> Void
     let onToggleFavorite: () -> Void
+    let onToggleEnv: () -> Void
 
     var body: some View {
         HStack(spacing: 14) {
@@ -233,7 +329,7 @@ private struct HUDRow: View {
                     ActionLabel(b: b, now: now, streamer: hud.streamer)
                 }
             } else {
-                Text("starting claude…").foregroundColor(Theme.cDim)
+                Text("starting \(hud.aiName)…").foregroundColor(Theme.cDim)
             }
             Spacer(minLength: 6)
             if let b = hud.brief, !b.spark.isEmpty, hud.status != "terminal" {
@@ -241,21 +337,26 @@ private struct HUDRow: View {
             }
             if hud.status != "terminal" {
                 HUDButton(symbol: "doc.on.doc", active: false,
-                          help: "Copy Claude's last reply, all of it, even past what fits the window (⇧⌘C)", hex: hex, action: onCopyReply)
+                          help: "Copy the AI's last reply, all of it (⇧⌘C)", hex: hex, action: onCopyReply)
             }
+            HUDButton(symbol: "", label: "env", active: hud.envOpen,
+                      help: hud.envOpen ? "Back to the terminal (⇧⌘E)"
+                          : "The env files in this folder and the ones in it: open one to edit or copy from it (⇧⌘E)."
+                              + (hud.envUnsaved ? " It has changes not saved." : ""),
+                      hex: ThemeStore.shared.hex("--amber"), badge: hud.envUnsaved, action: onToggleEnv)
             HUDButton(symbol: hud.isFavorite ? "star.fill" : "star", active: hud.isFavorite,
-                      help: hud.isFavorite ? "Starred. Click to take it out of the sidebar's favourites."
-                          : "Star this chat in the sidebar's favourites list.",
+                      help: hud.isFavorite ? "Remove this chat from your favorites"
+                          : "Add this chat to your favorites in the sidebar",
                       hex: ThemeStore.shared.hex("--amber"), action: onToggleFavorite)
             HUDButton(symbol: hud.onTop ? "pin.fill" : "pin", active: hud.onTop,
-                      help: hud.onTop ? "Pinned on top of every app, on any desktop. Click to put it back above the dashboard."
-                          : "Pin on top of every app (Discord, Chrome…). It leaves the dashboard, even a full-screen one.",
+                      help: hud.onTop ? "Stop keeping this window above all other apps"
+                          : "Keep this window above all other apps",
                       hex: hex, action: onTogglePin)
             // With two or more tabs the HUD's End Session ended the window, not the tab in front: ambiguous. The × on
             // each tab chip ends that tab, so the HUD button hides in multi-tab mode.
             if hud.tabCount <= 1 {
                 HUDButton(symbol: "power", active: false,
-                          help: hud.mirror ? "End this chat (it runs in the other app, and ends there too)" : hud.status == "terminal" ? "Close this terminal" : "End this chat",
+                          help: hud.mirror ? "End this chat here and in the other app" : hud.status == "terminal" ? "Close this terminal" : "End this chat and stop the AI",
                           hex: ThemeStore.shared.hex("--red"), action: onEnd)
             }
         }
@@ -345,29 +446,39 @@ private struct SparkView: View {
 
 private struct HUDButton: View {
     let symbol: String
+    /// Words instead of a symbol (the env button): the same square, as wide as the word needs.
+    var label: String?
     let active: Bool
     let help: String
     let hex: UInt32
+    /// A dot at the corner: the env view holds changes not saved.
+    var badge = false
     let action: () -> Void
     @State private var hover = false
 
     var body: some View {
         let color = Color(hex: hex)
         Button(action: action) {
-            Image(systemName: symbol)
-                .font(.system(size: 10, weight: .bold))
+            Group {
+                if let label { Text(label).font(.mono(10, .bold)).accessibilityLabel(badge ? "\(label) files, unsaved changes" : "\(label) files") } else { Image(systemName: symbol).font(.system(size: 10, weight: .bold)) }
+            }
                 .foregroundColor(active ? Theme.cInk : (hover ? Theme.cHi : Theme.cDim))
-                .frame(width: 24, height: 20)
+                .frame(width: label == nil ? 24 : 34, height: 20)
                 // The whole square takes the click, not only the symbol's own pixels (a plain button's default):
                 // the power symbol is a thin ring, and most clicks on it missed.
                 .contentShape(Rectangle())
                 .background(active ? color : Color.clear)
                 .overlay(Rectangle().stroke(color.opacity(hover || active ? 1 : 0.4), lineWidth: 1))
                 .shadow(color: hover ? color.opacity(0.6) : .clear, radius: 6)
+                .overlay(alignment: .topTrailing) {
+                    if badge { Circle().fill(Theme.cAmber).frame(width: 6, height: 6).offset(x: 2, y: -2) }
+                }
         }
         .buttonStyle(.plain)
         .onHover { hover = $0 }
-        .help(help)
+        .hoverTag(help, hex: hex)
+        // An icon alone: the tag's text is its name for VoiceOver too.
+        .accessibilityLabel(help)
     }
 }
 
@@ -431,7 +542,7 @@ struct ChatTickerView: View {
         case "idle": return "◆ your turn"
         case "waiting": return "⚠ NEEDS YOU" + (hud.brief?.waitingFor.map { " · \(hud.streamer ? Streamer.fake("wait", $0) : $0)" } ?? "")
         case "terminal": return "▸ terminal · claude to start · claude -r to resume"
-        case "starting": return "◌ starting claude…"
+        case "starting": return "◌ starting \(hud.aiName)…"
         default: return "○ ended · close the window to remove it"
         }
     }
@@ -468,32 +579,46 @@ final class PassThroughVeil: NSVisualEffectView {
 // MARK: - neon border, flash, beam
 
 /// Rotating conic-gradient edge around the window; colour and speed follow the session status.
+/// The look is drawn in four edge strips (top, bottom, left, right), each clipped to its own rectangle. One layer
+/// spanning the window made the spin and the shadow pulse dirty the whole window every frame; on a full-screen,
+/// see-through chat that meant WindowServer recompositing the entire screen at 120 Hz. Each strip holds the same
+/// full-window geometry offset by its origin, so it shows exactly the pixels the single layer showed there.
 final class NeonBorderView: NSView {
-    private let ring = CALayer()
-    private let gradient = CAGradientLayer()
-    private let ringMask = CAShapeLayer()
-    private let glow = CAShapeLayer()
+    private final class Strip {
+        let clip = CALayer()
+        let ring = CALayer()
+        let gradient = CAGradientLayer()
+        let ringMask = CAShapeLayer()
+        let glow = CAShapeLayer()
+        init() {
+            clip.masksToBounds = true
+            ring.mask = ringMask
+            ring.addSublayer(gradient)
+            clip.addSublayer(glow)
+            clip.addSublayer(ring)
+            gradient.type = .conic
+            gradient.startPoint = CGPoint(x: 0.5, y: 0.5)
+            gradient.endPoint = CGPoint(x: 0.5, y: 0)
+            ringMask.fillColor = nil
+            ringMask.strokeColor = NSColor.black.cgColor
+            ringMask.lineWidth = 2.5
+            glow.fillColor = nil
+            glow.lineWidth = 1
+            glow.shadowOffset = .zero
+            glow.shadowRadius = 9
+            glow.shadowOpacity = 0.8
+        }
+    }
+    /// Ring is 2.5 pt, its glow reaches about 1.25 + 9 * 1.5 pt inward and the corner radius is 12: 28 pt clips none of it.
+    private static let stripThickness: CGFloat = 28
+    private let strips = (0..<4).map { _ in Strip() }
     private var current = ""
 
     override init(frame: NSRect) {
         super.init(frame: frame)
         layer = CALayer()
         wantsLayer = true
-        layer!.addSublayer(glow)
-        ring.mask = ringMask
-        ring.addSublayer(gradient)
-        layer!.addSublayer(ring)
-        gradient.type = .conic
-        gradient.startPoint = CGPoint(x: 0.5, y: 0.5)
-        gradient.endPoint = CGPoint(x: 0.5, y: 0)
-        ringMask.fillColor = nil
-        ringMask.strokeColor = NSColor.black.cgColor
-        ringMask.lineWidth = 2.5
-        glow.fillColor = nil
-        glow.lineWidth = 1
-        glow.shadowOffset = .zero
-        glow.shadowRadius = 9
-        glow.shadowOpacity = 0.8
+        for s in strips { layer!.addSublayer(s.clip) }
         setStatus("starting")
     }
 
@@ -515,16 +640,31 @@ final class NeonBorderView: NSView {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         let b = bounds
-        ring.frame = b
-        ringMask.frame = b
-        glow.frame = b
+        let t = min(Self.stripThickness, b.height / 2)
+        let w = min(Self.stripThickness, b.width / 2)
+        // Top and bottom take the full width; left and right only the height between them, so nothing is drawn twice.
+        let rects = [
+            CGRect(x: 0, y: b.height - t, width: b.width, height: t),
+            CGRect(x: 0, y: 0, width: b.width, height: t),
+            CGRect(x: 0, y: t, width: w, height: max(0, b.height - 2 * t)),
+            CGRect(x: b.width - w, y: t, width: w, height: max(0, b.height - 2 * t)),
+        ]
         let d = hypot(b.width, b.height) * 1.05
-        gradient.bounds = CGRect(x: 0, y: 0, width: d, height: d)
-        gradient.position = CGPoint(x: b.midX, y: b.midY)
         let path = CGPath(roundedRect: b.insetBy(dx: 1.25, dy: 1.25), cornerWidth: 12, cornerHeight: 12, transform: nil)
-        ringMask.path = path
-        glow.path = path
-        glow.shadowPath = path.copy(strokingWithWidth: 2, lineCap: .round, lineJoin: .round, miterLimit: 1)
+        let shadowPath = path.copy(strokingWithWidth: 2, lineCap: .round, lineJoin: .round, miterLimit: 1)
+        for (s, r) in zip(strips, rects) {
+            s.clip.frame = r
+            // The old whole-window geometry, shifted so this strip's window is the part that shows.
+            let whole = CGRect(x: -r.minX, y: -r.minY, width: b.width, height: b.height)
+            s.ring.frame = whole
+            s.glow.frame = whole
+            s.ringMask.frame = CGRect(origin: .zero, size: b.size)
+            s.gradient.bounds = CGRect(x: 0, y: 0, width: d, height: d)
+            s.gradient.position = CGPoint(x: b.midX, y: b.midY)
+            s.ringMask.path = path
+            s.glow.path = path
+            s.glow.shadowPath = shadowPath
+        }
         CATransaction.commit()
     }
 
@@ -542,26 +682,32 @@ final class NeonBorderView: NSView {
         case "idle", "terminal": colors = [h("--cyan"), h("--idle-deep"), h("--violet"), h("--cyan")]; spin = 9; glowHex = h("--cyan")
         default: colors = [h("--dim2"), h("--ended-deep"), h("--dim2")]; spin = 0; glowHex = h("--dim2")
         }
-        gradient.colors = colors.map { NSColor(hex: $0).cgColor }
-        gradient.removeAnimation(forKey: "spin")
-        if spin > 0 {
-            let a = CABasicAnimation(keyPath: "transform.rotation.z")
-            a.fromValue = 0
-            a.toValue = -2 * Double.pi
-            a.duration = spin
-            a.repeatCount = .infinity
-            gradient.add(a, forKey: "spin")
+        // One start time for all four strips, so the spin and the pulse stay in step and the seams stay invisible.
+        let start = CACurrentMediaTime()
+        for s in strips {
+            s.gradient.colors = colors.map { NSColor(hex: $0).cgColor }
+            s.gradient.removeAnimation(forKey: "spin")
+            if spin > 0 {
+                let a = CABasicAnimation(keyPath: "transform.rotation.z")
+                a.fromValue = 0
+                a.toValue = -2 * Double.pi
+                a.duration = spin
+                a.repeatCount = .infinity
+                a.beginTime = s.gradient.convertTime(start, from: nil)
+                s.gradient.add(a, forKey: "spin")
+            }
+            s.glow.strokeColor = NSColor(hex: glowHex, alpha: 0.5).cgColor
+            s.glow.shadowColor = NSColor(hex: glowHex).cgColor
+            s.glow.removeAnimation(forKey: "pulse")
+            let p = CABasicAnimation(keyPath: "shadowOpacity")
+            p.fromValue = 0.2
+            p.toValue = 0.95
+            p.duration = 1.6
+            p.autoreverses = true
+            p.repeatCount = .infinity
+            p.beginTime = s.glow.convertTime(start, from: nil)
+            s.glow.add(p, forKey: "pulse")
         }
-        glow.strokeColor = NSColor(hex: glowHex, alpha: 0.5).cgColor
-        glow.shadowColor = NSColor(hex: glowHex).cgColor
-        glow.removeAnimation(forKey: "pulse")
-        let p = CABasicAnimation(keyPath: "shadowOpacity")
-        p.fromValue = 0.2
-        p.toValue = 0.95
-        p.duration = 1.6
-        p.autoreverses = true
-        p.repeatCount = .infinity
-        glow.add(p, forKey: "pulse")
     }
 
     /// The theme changed: the same status in its colours.
@@ -656,16 +802,42 @@ private final class HeaderHostingView<Content: View>: NSHostingView<Content> {
     }
 }
 
+/// A terminal's window. Pinned above the dashboard it's the dashboard's child window, and AppKit moves a child window
+/// itself, a few times a second (a drag left it in place on 158 of 180 frames), where the window server moves a free one
+/// with the cursor. So a press on the header lets go of the dashboard before AppKit picks how to move the window
+/// (onHeaderPress); the controller pins it again once the button is up.
+final class TerminalWindow: NSWindow {
+    var onHeaderPress: (() -> Void)?
+
+    override func sendEvent(_ event: NSEvent) {
+        if event.type == .leftMouseDown, parent != nil, frame.height - event.locationInWindow.y < 62 { onHeaderPress?() }
+        super.sendEvent(event)
+    }
+}
+
 @MainActor
 final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalProcessTerminalViewDelegate {
     let id = UUID().uuidString
     let cwd: String
     var sessionId: String?
-    /// The detached session this window shows; Claude runs there, not under the app. Nil only when screen
-    /// couldn't start it, and the chat then runs in the window itself.
+    /// The session this window shows: a pty of the app's own (PtySession, the window takes its view over) or a screen
+    /// session an older build left (the window attaches to it). Nil would mean the chat runs in the window itself, which
+    /// nothing opens any more.
     private(set) var detached: DetachedLink?
+    /// The window shows a pty of the app's own (not a screen session): nothing to attach, fit or save.
+    private var onPty = false
     /// A copy's original in iTerm2; it ends with this chat.
     var origin: ITermOrigin?
+    /// Sessions already looked at for the second-AI note (one look each), and whether the folder picker already said who works here.
+    var resumedStart = false
+    var nudgeSeen = Set<String>()
+    var nudgeTold = false
+    private var nudgeHeight: NSLayoutConstraint!
+    private var tabBarTop: NSLayoutConstraint!
+    private var nudgeSub: AnyCancellable?
+    private var shipSub: AnyCancellable?
+    private var shipLastStatus = ""
+    private var nudgeAnnounced: String?
     private(set) var terminal: ChatTerminalView!
     let hud: ChatHUD
     weak var manager: MainWindowController?
@@ -717,6 +889,10 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
     private var draggedTab: Int?
     private let dropZone = NSView()
     private var focusWatch: NSKeyValueObservation?
+    /// The env view over the terminal (EnvView.swift): its model while it is open, and the view while it shows.
+    private var env: EnvModel?
+    private var envHost: EnvHostingView?
+    private var envSub: AnyCancellable?
 
     /// `claudeArgs` nil opens a plain terminal in `cwd`.
     init(cwd: String, claudeArgs: [String]?, sessionId: String?, title: String, fontSize: CGFloat, frame: NSRect,
@@ -724,11 +900,20 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
         self.cwd = cwd
         self.realTitle = title
         self.sessionId = sessionId
+        // Opened on a saved conversation (a resume, a fork, Codex's resume, Antigravity's --conversation): not empty.
+        resumedStart = sessionId != nil || (claudeArgs ?? []).contains { ["resume", "fork", "-r", "--resume", "-c", "--continue", "--fork-session", "--conversation"].contains($0) }
         self.detached = detached
         self.hud = ChatHUD(terminalDir: claudeArgs == nil ? cwd : nil)
+        hud.aiName = claudeArgs?.first == "agy" ? "antigravity" : claudeArgs?.first == "codex" ? "codex" : claudeArgs?.first == "cursor-agent" ? "cursor" : "claude"
         hud.mirror = mirror
+        if let w = Worktrees.info(of: cwd), w.linked {
+            hud.wtTop = w.top
+            hud.wtMain = w.main
+            hud.wtBranch = w.branch
+        }
+        hud.width = frame.width
         self.manager = manager
-        let w = NSWindow(contentRect: frame, styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+        let w = TerminalWindow(contentRect: frame, styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
                          backing: .buffered, defer: false)
         w.title = title
         w.titlebarAppearsTransparent = true
@@ -744,7 +929,29 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
         w.isReleasedWhenClosed = false
         super.init(window: w)
         w.delegate = self
-        if detached != nil {
+        w.onHeaderPress = { [weak self] in self?.letGoForDrag() }
+        var adopted = false
+        var unavailable = false
+        if let d = detached, let pty = Sessions.live[d.name], !pty.ownerIsLive {
+            // The session runs already (started by MainWindowController.makeChat, or restored): its view is the window's.
+            // A parked one missed the theme and font changes made meanwhile.
+            terminal = pty.terminal
+            pty.owner = self
+            terminal.chatId = id
+            TerminalFactory.paint(terminal)
+            terminal.font = TerminalFont.font(fontSize)
+            adopted = true
+            onPty = true
+        } else if let d = detached, Sessions.ended.contains(d.name) || Sessions.live[d.name] != nil {
+            // Its session ended already, or another window or pane shows it (the callers check first, so this is only a
+            // guard): not attached to anything, and not taking the other window's view. An ended window, to be closed.
+            NSLog("Orbiterm: a window was asked to show a session that is gone or shown elsewhere (%@)", d.name)
+            terminal = TerminalFactory.makeIdle(chatId: id, fontSize: fontSize, delegate: self)
+            onPty = true
+            unavailable = true
+            // Not linked to the session either: ending this dead window must not end what the other window shows.
+            self.detached = nil
+        } else if detached != nil {
             terminal = TerminalFactory.makeIdle(chatId: id, fontSize: fontSize, delegate: self)
         } else {
             terminal = TerminalFactory.make(chatId: id, cwd: cwd, claudeArgs: claudeArgs, fontSize: fontSize, delegate: self)
@@ -759,6 +966,14 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
         }
         buildLayout()
         paintTheme()
+        hud.onShip = { [weak self] in self?.shipAction($0) }
+        hud.onShipMenu = { [weak self] in self?.popShipMenu() }
+        if let top = hud.wtTop { watchShip(top) }
+        if unavailable {
+            hud.exited = true
+            border.setStatus("ended")
+            terminal.feed(text: "\r\n\u{1b}[2m[this terminal ended or is shown in another window · close this window to remove it]\u{1b}[0m\r\n")
+        }
         themeWatch = NotificationCenter.default.addObserver(forName: ThemeStore.changed, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.themeChanged() }
         }
@@ -767,21 +982,12 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
         }
         // GPU text rendering: glyphs come from an atlas and cells are drawn as quads, far less CPU than
         // Core Graphics when Claude streams output. Falls back to Core Graphics if Metal can't start.
-        try? terminal.setUseMetal(true)
+        if !adopted { try? terminal.setUseMetal(true) }
         // Until the window is shown there is nothing to draw.
         terminal.suspendsRenderingWhenNotVisible = true
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
-
-    /// screen couldn't start the session: run the chat in this window instead (it then ends with the app).
-    func runLocally(claudeArgs: [String]?) {
-        guard detached != nil, !attached else { return }
-        detached = nil
-        attached = true
-        TerminalFactory.start(terminal, cwd: cwd, claudeArgs: claudeArgs)
-        manager?.chatProcessEnded(id)
-    }
 
     deinit {
         if let themeWatch { NotificationCenter.default.removeObserver(themeWatch) }
@@ -853,7 +1059,8 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
             onTogglePin: { [weak self] in self?.togglePin() },
             onEnd: { [weak self] in self?.endChat() },
             onCopyReply: { [weak self] in self?.copyLastReply() },
-            onToggleFavorite: { [weak self] in self?.toggleFavorite() }))
+            onToggleFavorite: { [weak self] in self?.toggleFavorite() },
+            onToggleEnv: { [weak self] in self?.toggleEnv() }))
         let ticker = NSHostingView(rootView: ChatTickerView(hud: hud))
         glowing = [header, ticker, paneArea, tabBar]
 
@@ -887,6 +1094,44 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
         container.addSubview(dropZone)
         tabs = [terminal]
         mount(terminal)
+        // The second-AI note: between the header and the terminal; it takes no focus and no key.
+        let nudgeBar = NSHostingView(rootView: WorktreeNudgeBar(hud: hud,
+            onMove: { [weak self] in guard let self else { return }; self.manager?.moveToWorktree(self) },
+            onClose: { [weak self] in self?.closeOpenedChat() },
+            onDismiss: { [weak self] in
+                guard let self, let o = self.hud.nudge else { return }
+                self.nudgeSeen.insert(o.sid)
+                self.hud.nudge = nil
+            },
+            onNotNow: { [weak self] in
+                guard let self, let o = self.hud.nudge else { return }
+                WorktreeNudge.quiet(o.top)
+                self.nudgeSeen.insert(o.sid)
+                self.hud.nudge = nil
+            }))
+        nudgeBar.translatesAutoresizingMaskIntoConstraints = false
+        // With no note the SwiftUI content is empty, and a hosting view's default size constraints would then pin
+        // the strip (and the window with it) to zero width. The strip's size comes only from the constraints below.
+        nudgeBar.sizingOptions = []
+        nudgeBar.isHidden = true
+        container.addSubview(nudgeBar, positioned: .below, relativeTo: border)
+        nudgeHeight = nudgeBar.heightAnchor.constraint(equalToConstant: 0)
+        tabBarTop = tabBar.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 4)
+        nudgeSub = hud.$nudge.receive(on: DispatchQueue.main).sink { [weak self, weak nudgeBar] offer in
+            nudgeBar?.isHidden = offer == nil
+            self?.layoutNudge(offer)
+            if let o = offer, self?.nudgeAnnounced != o.sid {
+                self?.nudgeAnnounced = o.sid
+                let text = o.openedIn != nil ? "Opened in the \(o.openedIn ?? "") worktree." : o.line.main + " " + o.line.rest + " Open in a worktree is in the Chat menu."
+                if let w = self?.window { NSAccessibility.post(element: w, notification: .announcementRequested, userInfo: [.announcement: text, .priority: NSAccessibilityPriorityLevel.medium.rawValue]) }
+            }
+        }
+        NSLayoutConstraint.activate([
+            nudgeBar.topAnchor.constraint(equalTo: header.bottomAnchor),
+            nudgeBar.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            nudgeBar.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            nudgeHeight,
+        ])
         paneTop = paneArea.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 6)
         paneTopUnderTabs = paneArea.topAnchor.constraint(equalTo: tabBar.bottomAnchor, constant: 5)
         for v in [backdrop, tint, border, flash] as [NSView] { pin(v, to: container) }
@@ -899,7 +1144,7 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
             ticker.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             ticker.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             ticker.heightAnchor.constraint(equalToConstant: 26),
-            tabBar.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 4),
+            tabBarTop,
             tabBar.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 14),
             tabBar.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -10),
             tabBarHeight,
@@ -915,6 +1160,12 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
             streamVeil.leadingAnchor.constraint(equalTo: paneArea.leadingAnchor),
             streamVeil.trailingAnchor.constraint(equalTo: paneArea.trailingAnchor),
         ])
+    }
+
+    /// The terminal's size in a window whose content is `content`: what buildLayout leaves of it between the header (62 pt and
+    /// 6 below it), the footer ticker (26 pt and 4 above it) and the sides (14 pt left, 6 right). Keep in step with buildLayout.
+    static func terminalSize(forContent content: NSSize) -> NSSize {
+        NSSize(width: max(0, content.width - 20), height: max(0, content.height - 98))
     }
 
     private static func lineCount(_ text: String) -> Int {
@@ -1029,6 +1280,7 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
             self.isShown = false
             // Nothing to draw while hidden; SwiftTerm resumes when the window is shown again.
             self.hud.visible = false
+            self.env?.mask()
             for tv in self.allTerminals { tv.suspendsRenderingWhenNotVisible = true }
             self.resetEffect()
             self.manager?.chatVisibilityChanged()
@@ -1152,6 +1404,7 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
             w.collectionBehavior = [.fullScreenAuxiliary, .moveToActiveSpace]
             if let parent = manager?.window, parent.isVisible { parent.addChildWindow(w, ordered: .above) }
         }
+        manager?.dashboardVisibilityChanged()
     }
 
     // MARK: tiling (Fn+Control+arrows, like macOS)
@@ -1337,8 +1590,9 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
         pin(v, to: paneArea)
     }
 
-    private func makeExtra(kind: PaneKind, cwd: String) -> ExtraPane {
-        let pane = ExtraPane(owner: self, cwd: cwd, kind: kind, fontSize: terminal.font.pointSize)
+    private func makeExtra(kind: PaneKind, cwd: String, session: String? = nil, size: NSSize? = nil) -> ExtraPane {
+        let pane = ExtraPane(owner: self, cwd: cwd, kind: kind, fontSize: terminal.font.pointSize, session: session, parent: detached?.name,
+                             size: size)
         pane.terminal.sessionShell = { [weak pane] in pane?.link?.shellPid ?? 0 }
         pane.terminal.workingDirectory = { [weak pane] in pane?.cwd }
         pane.terminal.onSelection = { [weak self] in self?.showSelection($0) }
@@ -1355,29 +1609,35 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
     /// ⌘T: a new tab with a shell in the folder of the pane in front. In a mirror too (a chat the other app runs): the
     /// tab's shell is this app's own.
     func newTab() {
-        let pane = makeExtra(kind: .tab, cwd: currentFolder)
+        // The new shell starts at the size of the pane in front (a tab fills the same area).
+        let pane = makeExtra(kind: .tab, cwd: currentFolder, size: focusedTerminal.frame.size)
         tabs.append(pane.terminal)
         selectTab(tabs.count - 1)
-        pane.start(session: nil, parent: detached?.name, fit: isShown)
         focus(pane.terminal)
     }
 
     /// ⌘D (`vertical`: side by side) / ⇧⌘D (one above the other): the pane in front gives half its place to a shell in
     /// its folder.
     func split(vertical: Bool) {
+        hideEnv()
         if zoomed { _ = toggleZoom() }
         let old = focusedTerminal
-        let pane = makeExtra(kind: vertical ? .vertical : .horizontal, cwd: currentFolder)
+        // The new shell starts at half the pane in front (less the divider).
+        var half = old.frame.size
+        if vertical { half.width = (half.width - 5) / 2 } else { half.height = (half.height - 5) / 2 }
+        let pane = makeExtra(kind: vertical ? .vertical : .horizontal, cwd: currentFolder, size: half)
         insert(pane.terminal, beside: old, vertical: vertical)
         refreshPanes()
         focus(pane.terminal)
-        pane.start(session: nil, parent: detached?.name, fit: isShown)
     }
 
     /// A pane's session still running (⇧⌘T right after closing it, or after the app restarted) comes back: in a tab of
     /// its own or split off the shown tab's last pane.
     func adoptPane(session: String, kind: PaneKind, cwd: String, focus: Bool) {
-        let pane = makeExtra(kind: kind, cwd: cwd)
+        // Not a session that ended meanwhile, nor one another window or pane shows (it can't be in two places).
+        if Sessions.ended.contains(session) { return }
+        if let pty = Sessions.live[session], pty.ownerIsLive { return }
+        let pane = makeExtra(kind: kind, cwd: cwd, session: session)
         if kind == .tab {
             tabs.append(pane.terminal)
             if focus { selectTab(tabs.count - 1) }
@@ -1387,7 +1647,7 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
         }
         refreshPanes()
         if focus { self.focus(pane.terminal) }
-        pane.start(session: session, parent: detached?.name, fit: isShown)
+        pane.start(session: session, fit: isShown)
     }
 
     /// A text file ⌘-clicked in `tv`: in Source Control's editor, its path shown from the folder `tv` is in. False for a
@@ -1443,6 +1703,7 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
 
     func selectTab(_ i: Int) {
         guard tabs.indices.contains(i) else { return }
+        hideEnv()
         if zoomed { _ = toggleZoom() }
         if tabs.indices.contains(activeTab), tabs[activeTab].superview === paneArea, activeTab != i { tabs[activeTab].removeFromSuperview() }
         activeTab = i
@@ -1559,7 +1820,7 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
         return true
     }
 
-    /// A tab's ×, the same as ⌘W on it: what runs in it exits at once (its planet or car leaves the orbit) and the other
+    /// A tab's ×: what runs in it exits at once (its planet or car leaves the orbit) and the other
     /// tabs stay.
     private func closeTab(_ i: Int) {
         guard tabs.indices.contains(i) else { return }
@@ -1577,6 +1838,7 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
 
     /// ⌘]/⌘[: the next or previous pane in the shown tab; false with only one.
     func selectPane(step: Int) -> Bool {
+        hideEnv()
         if zoomed { _ = toggleZoom() }
         let ts = terminals(in: activeTab)
         guard ts.count > 1 else { return false }
@@ -1587,6 +1849,7 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
 
     /// ⌥⌘ and an arrow (`dy` up is +1): the pane that way in the shown tab; false when there's none.
     func selectPane(dx: CGFloat, dy: CGFloat) -> Bool {
+        hideEnv()
         if zoomed { _ = toggleZoom() }
         let cur = focusedTerminal
         let cf = cur.convert(cur.bounds, to: nil)
@@ -1651,23 +1914,169 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
         return true
     }
 
-    /// ⌘W, as in iTerm2: the terminal in front exits at once, whatever runs in it (Claude, Codex, Antigravity, a shell):
-    /// its planet or car leaves the orbit, nothing is kept running. The other tabs and panes stay; the last one takes the
-    /// window with it. Only a chat copied from iTerm2 asks first, since its original tab there closes too. False for a
-    /// mirror: its chat runs in the other app, so the window only closes.
-    func closeFocusedPane() -> Bool {
-        let tv = focusedTerminal
-        if let pane = extra(of: tv) {
-            endPanes([pane])
-            return true
-        }
-        guard !hud.mirror else { return false }
-        if allTerminals.count > 1 {
-            endOwnTab(confirm: false)
+    // MARK: the env view
+
+    /// Env changes here are not saved.
+    var envUnsaved: Bool { env?.dirty == true }
+
+    /// Whether the env view is over the terminal now.
+    var envShown: Bool { envHost?.isHidden == false }
+
+    /// The env button, and ⇧⌘E: the env files under the folder of the pane in front, as a view over the terminal in this
+    /// window. Pressed again it goes back to the terminal.
+    func toggleEnv() {
+        if envShown { return leaveEnv() }
+        // Another folder in front now (another tab): a new look there, unless something here isn't saved.
+        if let m = env, m.root != currentFolder, !m.dirty { dropEnv() }
+        if let m = env {
+            // Shown again after a tab or pane change: where it was, the list looked at again.
+            m.scan(refresh: true)
         } else {
-            endChat(confirm: origin != nil)
+            let m = EnvModel(root: currentFolder)
+            m.onLeave = { [weak self] in self?.leaveEnv() }
+            m.onBack = { [weak self] in self?.envBack() }
+            let host = EnvHostingView(rootView: EnvPanel(model: m, hud: hud))
+            host.model = m
+            host.sizingOptions = []
+            host.translatesAutoresizingMaskIntoConstraints = false
+            container.addSubview(host, positioned: .above, relativeTo: streamVeil)
+            NSLayoutConstraint.activate([
+                host.topAnchor.constraint(equalTo: paneArea.topAnchor),
+                host.bottomAnchor.constraint(equalTo: paneArea.bottomAnchor),
+                host.leadingAnchor.constraint(equalTo: paneArea.leadingAnchor),
+                host.trailingAnchor.constraint(equalTo: paneArea.trailingAnchor),
+            ])
+            env = m
+            envHost = host
+            envSub = m.$dirty.receive(on: DispatchQueue.main).sink { [weak self] in self?.hud.envUnsaved = $0 }
+            m.scan()
         }
+        envHost?.isHidden = false
+        paneArea.isHidden = true
+        hud.envOpen = true
+        window?.makeFirstResponder(envHost)
+        if let w = window {
+            NSAccessibility.post(element: w, notification: .announcementRequested, userInfo: [.announcement: "Env files", .priority: NSAccessibilityPriorityLevel.low.rawValue])
+        }
+    }
+
+    /// The terminal comes in front again (a tab or a pane was picked): the env view stays as it is, values masked.
+    func hideEnv() {
+        guard envShown else { return }
+        envHost?.isHidden = true
+        paneArea.isHidden = false
+        env?.mask()
+        hud.envOpen = false
+    }
+
+    /// The env view and what it held go away at once (nothing unsaved is left, or it was given up).
+    private func dropEnv() {
+        envHost?.removeFromSuperview()
+        envHost = nil
+        envSub = nil
+        env?.forgetFile()
+        env = nil
+        paneArea.isHidden = false
+        hud.envOpen = false
+        hud.envUnsaved = false
+    }
+
+    /// A quit with the env file unsaved: asks, window in front. False when the user cancels (or the save fails).
+    func confirmEnvForQuit() -> Bool {
+        guard let m = env, m.dirty else { return true }
+        if !isShown { show() }
+        window?.makeKeyAndOrderFront(nil)
+        let alert = NSAlert()
+        alert.messageText = "Save changes to \((m.openRel as NSString?)?.lastPathComponent ?? "the env file")?"
+        alert.informativeText = "Without saving, your changes to it are lost."
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Don’t Save")
+        alert.addButton(withTitle: "Cancel")
+        switch alert.runModal() {
+        case .alertFirstButtonReturn: return m.save()
+        case .alertSecondButtonReturn: return true
+        default: return false
+        }
+    }
+
+    /// Leaves the env view for good: asks first when changes aren't saved. What it held is dropped.
+    func leaveEnv() {
+        confirmEnv { [weak self] in
+            guard let self else { return }
+            self.envHost?.removeFromSuperview()
+            self.envHost = nil
+            self.envSub = nil
+            self.env?.forgetFile()
+            self.env = nil
+            self.paneArea.isHidden = false
+            self.hud.envOpen = false
+            self.hud.envUnsaved = false
+            self.focus(self.focusedTerminal)
+        }
+    }
+
+    private func envBack() {
+        confirmEnv { [weak self] in
+            self?.env?.backToList()
+            self?.window?.makeFirstResponder(self?.envHost)
+        }
+    }
+
+    /// Runs `then` at once, or after the user saves or drops the changes in the env file shown.
+    private func confirmEnv(_ then: @escaping () -> Void) {
+        guard let m = env, m.dirty, let w = window else { return then() }
+        if !isShown { show() }
+        let alert = NSAlert()
+        alert.messageText = "Save changes to \((m.openRel as NSString?)?.lastPathComponent ?? "the env file")?"
+        alert.informativeText = "Without saving, your changes to it are lost."
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Don’t Save")
+        alert.addButton(withTitle: "Cancel")
+        alert.beginSheetModal(for: w) { r in
+            MainActor.assumeIsolated {
+                if r == .alertFirstButtonReturn { if m.save() { then() } } else if r == .alertSecondButtonReturn { then() }
+            }
+        }
+    }
+
+    /// ⌘W with the env view in front closes it, as it closes a tab: true when it did (or asked about changes).
+    func closeEnvKey() -> Bool {
+        guard envShown else { return false }
+        leaveEnv()
         return true
+    }
+
+    /// What ⌘W does here (MainWindowController.closePane): a pane besides the window's own closes, else the window
+    /// (it hides; what runs goes on).
+    func closeLikeCommandW() {
+        if closeEnvKey() { return }
+        if closeFocusedPane() { return }
+        window?.performClose(nil)
+    }
+
+    /// ⌘W: a pane besides this window's own closes, as in iTerm2. False for the window's own pane: the window itself
+    /// closes then (hides; its chat keeps running).
+    func closeFocusedPane() -> Bool {
+        guard let pane = extra(of: focusedTerminal) else { return false }
+        close(pane)
+        return true
+    }
+
+    /// Closes a pane as a window closes: what runs in it goes on, a car on the orbit until it's opened again (a click,
+    /// ⇧⌘T) or the window's End Session ends it. A pane that never got its session (a screen one not attached yet) just stops.
+    private func close(_ pane: ExtraPane) {
+        if zoomed { _ = toggleZoom() }
+        let folder = pane.currentFolder
+        removePaneView(pane.terminal)
+        extras.removeAll { $0 === pane }
+        if let name = pane.link?.name {
+            pane.detach()
+            manager?.closedPane(of: self, session: name, kind: pane.kind, cwd: folder)
+        } else {
+            pane.end()
+        }
+        refreshPanes()
+        focus(focusTarget(in: activeTab))
     }
 
     /// A pane's shell exited: the pane goes, as in iTerm2.
@@ -1685,7 +2094,86 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
         for pane in extras { pane.end() }
     }
 
-    /// The app quits: the panes let go of their sessions, which keep running and come back next launch.
+    // MARK: worktree: PR, merge, delete (WorktreeShip.swift)
+
+    /// Keeps the title row's chip and button in step with the worktree's status.
+    private func watchShip(_ top: String) {
+        let ship = WorktreeShip.shared
+        ship.startTimer()
+        syncShip(top)
+        shipSub = ship.objectWillChange.receive(on: DispatchQueue.main).sink { [weak self] _ in self?.syncShip(top) }
+        ship.refresh(top, pr: true)
+    }
+
+    private func syncShip(_ top: String) {
+        let ship = WorktreeShip.shared
+        if hud.wt != ship.status[top] { hud.wt = ship.status[top] }
+        if hud.shipBusy != ship.busy[top] { hud.shipBusy = ship.busy[top] }
+        let gone = ship.deleted.contains(top)
+        if hud.shipDeleted != gone { hud.shipDeleted = gone }
+    }
+
+    private func shipAction(_ id: String) {
+        guard let top = hud.wtTop else { return }
+        WorktreeShip.shared.handle(id, top: top, from: self)
+    }
+
+    /// ▾: every action of the worktree, as a system menu at the button.
+    private func popShipMenu() {
+        guard hud.wtTop != nil, let w = window, let view = w.contentView else { return }
+        let menu = WorktreeShip.menu(hud.wt, deleted: hud.shipDeleted, streamer: hud.streamer) { [weak self] id in self?.shipAction(id) }
+        hud.shipMenuOpen = true
+        let p = view.convert(w.mouseLocationOutsideOfEventStream, from: nil)
+        menu.popUp(positioning: nil, at: NSPoint(x: p.x, y: p.y - 6), in: view)
+        hud.shipMenuOpen = false
+    }
+
+    /// The chat's own title, offered as a pull request's title (the AI wrote it already).
+    func shipTitle() -> String? {
+        let t = hud.brief?.title.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return t.isEmpty ? nil : t
+    }
+
+    /// The AI's turn ended or began: the worktree's files may have changed, so its status is read again at once.
+    private func shipStatusChanged(_ status: String) {
+        guard let top = hud.wtTop, status != shipLastStatus else { return }
+        let before = shipLastStatus
+        shipLastStatus = status
+        if before == "busy", status != "busy" { WorktreeShip.shared.refresh(top, force: true) }
+    }
+
+    /// Delete worktree: this window's chat or terminal stops, as its End button stops it, but the window stays, ended, until the
+    /// user closes it (spec 9.2). Nothing else is closed.
+    func endLeavingWindow() {
+        guard !hud.exited, !hud.mirror else { return }
+        manager?.dismiss(sessionId: sessionId, pid: hud.brief?.live == true ? hud.brief?.pid : nil)
+        manager?.terminalEnding(carId)
+        if let detached {
+            Detached.quit(detached.name)
+            manager?.endParked(of: detached.name)
+        }
+        endPanes()
+        terminal.terminate()
+        // The process ending reports itself (processTerminated); when it doesn't within a moment, the window says it ended itself.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            guard let self, !self.hud.exited else { return }
+            self.processTerminated(source: self.terminal, exitCode: nil)
+        }
+    }
+
+    /// The panes of this window that are in the worktree `top` end (their shells, and what runs in them).
+    func endPanes(inTop top: String) {
+        let mine = extras.filter { Worktrees.info(of: $0.cwd)?.top == top }
+        if !mine.isEmpty { endPanes(mine) }
+    }
+
+    /// A dim line in the ended window's terminal.
+    func noteEnded(_ line: String) {
+        terminal.feed(text: "\u{1b}[2m\(line)\u{1b}[0m\r\n")
+    }
+
+    /// The app quits or restarts: the panes let go of their sessions (a screen session keeps running and comes back next
+    /// launch; a pty's shell ends with the app, its pane comes back from the snapshot).
     func detachPanes() {
         for pane in extras { pane.detach() }
     }
@@ -1723,6 +2211,8 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
 
     /// Gives a pane the keyboard.
     private func focus(_ tv: ChatTerminalView) {
+        // The env view is over the terminals: the keys go there, never to a terminal nobody sees.
+        if envShown { window?.makeFirstResponder(envHost); return }
         window?.makeFirstResponder(tv)
         focusChanged()
     }
@@ -1742,6 +2232,7 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
         steppedAside = true
         w.parent?.removeChildWindow(w)
         w.orderOut(nil)
+        manager?.dashboardVisibilityChanged()
     }
 
     func stepBack() {
@@ -1750,10 +2241,19 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
         guard isShown else { return }
         if hud.attached, let parent = manager?.window, parent.isVisible { parent.addChildWindow(w, ordered: .above) }
         w.orderFront(nil)
+        manager?.dashboardVisibilityChanged()
     }
 
     /// `confirm` false: asked already (a dashboard card's red button).
     func endChat(confirm: Bool = true) {
+        // Env changes not saved: asked first (what is dropped then is dropped with the window).
+        if env?.dirty == true {
+            confirmEnv { [weak self] in
+                self?.dropEnv()
+                self?.endChat(confirm: confirm)
+            }
+            return
+        }
         // With tabs, End Session ends the tab in front only: another tab's panes, or the window's own chat or terminal
         // (its tab goes, the others run on).
         if tabs.count > 1, !hud.mirror {
@@ -1862,6 +2362,47 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
 
     /// End Session on the window's own tab while others are open: its chat or terminal ends and its tab goes; the
     /// window lives on with the other tabs (closed, they keep running as cars).
+    /// The strip's "Close this chat" (after "Open in a worktree"): ends only this window's own AI, after asking, naming that AI
+    /// and anything else that stops with it. Never the front tab's chat, never other tabs' or panes' (they keep running).
+    func closeOpenedChat() {
+        let tool = hud.nudge?.tool ?? "The AI"
+        let alone = tabs.count == 1 && extras.isEmpty
+        let parked = detached.map { manager?.hasParked(of: $0.name) ?? false } ?? false
+        var text = "\(tool) in this window stops. The conversation stays saved."
+        if alone && parked { text += " Panes closed from this window earlier, still running, stop too." }
+        else if !alone { text += " The other tabs and panes keep running." }
+        if hud.status == "terminal" || hud.exited { return }
+        guard ask("End this chat?", text, "End Chat") else { return }
+        hud.nudge = nil
+        if alone { endChat(confirm: false) } else { endOwnTab(confirm: false) }
+    }
+
+    /// When something was last typed, pasted or dropped into the terminal that shows the session `name` (ms since 1970; 0 when
+    /// never, nil when this window doesn't show it): how long a chat has been left alone (Clean Up).
+    func lastInputAt(session name: String) -> Double? {
+        if detached?.name == name { return terminal.typedAt }
+        return extras.first(where: { $0.link?.name == name })?.terminal.typedAt
+    }
+
+    /// Why Clean Up can't end this window's chat without ending more than its summary names: ending a window that is alone also
+    /// stops the panes it closed earlier (still running) and the iTerm2 chat it was copied from. Nil: nothing else goes with it.
+    func cleanupBlocker() -> String? {
+        guard tabs.count == 1, extras.isEmpty else { return nil }
+        if let detached, manager?.hasParked(of: detached.name) == true { return "Panes it closed are still running in it" }
+        if let o = origin, Proc.info(o.claude)?.tty == o.tty, Proc.isClaude(o.claude) { return "It was copied from an iTerm2 chat" }
+        return nil
+    }
+
+    /// Clean Up (the user agreed on its summary): ends this window's own chat and nothing else, never the front tab's, and
+    /// never the other tabs' or panes'. False when there is nothing to end here.
+    @discardableResult
+    func endOwnChatForCleanup() -> Bool {
+        guard !hud.exited, !hud.mirror, hud.status != "terminal", cleanupBlocker() == nil else { return false }
+        hud.nudge = nil
+        if tabs.count == 1 && extras.isEmpty { endChat(confirm: false) } else { endOwnTab(confirm: false) }
+        return true
+    }
+
     private func endOwnTab(confirm: Bool) {
         let shellOnly = hud.status == "terminal"
         if confirm, !ask(shellOnly ? "End this terminal?" : "End this chat?",
@@ -1915,6 +2456,11 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
     func attachSession() {
         guard let detached, !attached else { return }
         attached = true
+        // A pty session is the window's view already: nothing to attach, and its scrollback came with the restart.
+        if onPty {
+            takesHistory = false
+            return
+        }
         if takesHistory {
             takesHistory = false
             let history = Detached.takeHistory(detached.name)
@@ -1930,7 +2476,7 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
 
     /// On quit: this window's scrollback, for the window that attaches to the session next time.
     func saveHistory() {
-        guard let detached, attached, !hud.mirror, !hud.exited else { return }
+        guard let detached, attached, !onPty, !hud.mirror, !hud.exited else { return }
         let text = String(decoding: terminal.getBufferAsData(kind: .normal), as: UTF8.self)
         Detached.saveHistory(detached.name, text: text, rows: termRows)
     }
@@ -1943,7 +2489,8 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
     /// Ctrl-^, then :fit; straight to the session, not as typing). That can show ":fit" on the bottom row for a moment,
     /// so only then.
     func fitSession() {
-        guard let detached, attached, isShown else { return }
+        // A pty takes its view's size by itself.
+        guard let detached, attached, isShown, !onPty else { return }
         fitWork?.cancel()
         let name = detached.name
         let work = DispatchWorkItem { [weak self] in
@@ -1959,6 +2506,13 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
 
     /// A mirror's window closes; the chat runs on in the app that owns it, and the window's own tabs as cars.
     private func closeMirror() {
+        if env?.dirty == true {
+            confirmEnv { [weak self] in
+                self?.dropEnv()
+                self?.closeMirror()
+            }
+            return
+        }
         parkPanes()
         let finish = { [weak self] in
             guard let self else { return }
@@ -2001,6 +2555,7 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
         if hud.terminalDir != nil, brief?.live != true { sessionId = nil }
         border.setStatus(hud.status)
         syncFavorite()
+        shipStatusChanged(brief?.status ?? "")
     }
 
     /// The window's title (Mission Control's, the Window menu's, its first tab's): made up in streamer mode.
@@ -2014,6 +2569,7 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
     func setStreamer(_ on: Bool) {
         guard hud.streamer != on else { return }
         hud.streamer = on
+        if on { env?.mask() }
         streamVeil.isHidden = !on
         nameWindow()
         if tabs.count > 1 { tabBar.show(titles: tabs.indices.map(tabTitle), active: activeTab) }
@@ -2028,11 +2584,61 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
         return terminal.process.shellPid
     }
 
+    // MARK: dragging a pinned window (TerminalWindow)
+
+    private var repinTimer: Timer?
+
+    private func letGoForDrag() {
+        guard let w = window, let parent = w.parent else { return }
+        parent.removeChildWindow(w)
+        repinTimer?.invalidate()
+        // In .common modes: a drag tracks the mouse, and default-mode timers wait.
+        // Stops itself if the controller is gone, or it would fire 20 times a second for good.
+        let t = Timer(timeInterval: 0.05, repeats: true) { [weak self] t in
+            MainActor.assumeIsolated {
+                guard let self else { return t.invalidate() }
+                self.repinAfterDrag()
+            }
+        }
+        RunLoop.main.add(t, forMode: .common)
+        repinTimer = t
+    }
+
+    /// The button is up: pinned again, unless the press changed that (the pin button, minimize, close).
+    private func repinAfterDrag() {
+        guard NSEvent.pressedMouseButtons & 1 == 0 else { return }
+        repinTimer?.invalidate()
+        repinTimer = nil
+        guard let w = window, w.parent == nil, isShown, !hiding, !steppedAside, !w.isMiniaturized, hud.attached,
+              let parent = manager?.window, parent.isVisible else { return }
+        parent.addChildWindow(w, ordered: .above)
+    }
+
     // MARK: NSWindowDelegate
+
+    /// The note's height: none, one line, or two when the window is narrow. Once per change: every height change resizes
+    /// the terminal, so it doesn't animate.
+    func layoutNudge(_ offer: WorktreeOffer?) {
+        let h: CGFloat = offer == nil ? 0 : (window?.frame.width ?? 900) < 700 ? 50 : 34
+        if nudgeHeight.constant != h {
+            nudgeHeight.constant = h
+            paneTop.constant = 6 + h
+            tabBarTop.constant = 4 + h
+        }
+    }
+
+    func windowDidResize(_ notification: Notification) {
+        layoutNudge(hud.nudge)
+        if let w = window, abs(hud.width - w.frame.width) >= 1 { hud.width = w.frame.width }
+    }
 
     // A window pinned above the dashboard is the dashboard's child, and a child minimized on its own left the
     // dashboard black. So it lets go of the dashboard on its way to the Dock and pins again when it comes back.
     func windowWillMiniaturize(_ notification: Notification) {
+        // A press on the minimize button (in the header) or ⌘M mid-drag left the repin timer running: it could pin the
+        // window again during the Dock animation. windowDidDeminiaturize pins it again.
+        repinTimer?.invalidate()
+        repinTimer = nil
         guard let w = window else { return }
         w.parent?.removeChildWindow(w)
     }
@@ -2041,6 +2647,7 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
     // parent's child windows on a click.
     func windowDidBecomeKey(_ notification: Notification) {
         focusChanged()
+        if let top = hud.wtTop { WorktreeShip.shared.refresh(top, pr: true) }
         manager?.terminalFocused(window: id)
         fitSession()
         guard let w = window, let parent = w.parent, parent.childWindows?.last != w else { return }
@@ -2057,6 +2664,13 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
         if hud.mirror {
             closeMirror()
         } else if hud.exited {
+            if env?.dirty == true {
+                confirmEnv { [weak self] in
+                    self?.dropEnv()
+                    self?.window?.performClose(nil)
+                }
+                return false
+            }
             // Its other tabs, still running, become cars instead of ending with it.
             parkPanes()
             hide { [weak self] in
@@ -2081,10 +2695,92 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
     func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
 
     func processTerminated(source: TerminalView, exitCode: Int32?) {
+        // The app is quitting or restarting: the views are being torn down, and what a screen relay's exit would do here
+        // (remove the chat, end its panes) is no news to act on.
+        guard !Sessions.stopping else { return }
         hud.exited = true
         border.setStatus("ended")
         terminal.feed(text: "\r\n\u{1b}[2m[chat ended · close this window to remove it]\u{1b}[0m\r\n")
         manager?.chatProcessEnded(id)
-        if !isShown { manager?.removeChat(id) }
+        // Env changes not saved: the window comes forward and asks (Save, Don't Save, Cancel); then it goes as any ended
+        // chat's does (removeChat ends its panes). Cancel keeps it, and closing it asks again.
+        if !isShown {
+            if env?.dirty == true {
+                confirmEnv { [weak self] in
+                    guard let self else { return }
+                    self.dropEnv()
+                    self.manager?.removeChat(self.id)
+                }
+            } else {
+                manager?.removeChat(id)
+            }
+        }
+    }
+}
+
+// MARK: - the second-AI note (SPEC §19.5)
+
+/// "Codex is already working in orbiterm-frontend. Both could change the same files." with Open in a worktree and Not now (after opening: Opened in the … worktree + Close this chat).
+struct WorktreeNudgeBar: View {
+    @ObservedObject var hud: ChatHUD
+    @ObservedObject var theme = ThemeStore.shared
+    let onMove: () -> Void
+    let onClose: () -> Void
+    let onDismiss: () -> Void
+    let onNotNow: () -> Void
+    @State private var hoverMove = false
+    @State private var hoverNot = false
+    @State private var shown = false
+
+    var body: some View {
+        if let o = hud.nudge {
+            GeometryReader { geo in
+                HStack(spacing: 8) {
+                    Image(systemName: "arrow.triangle.branch").font(.system(size: 12)).foregroundColor(Theme.cAccentSoft)
+                    // Under 420 pt the second sentence is left out (VoiceOver still reads both).
+                    let done = o.openedIn != nil
+                    let main = done ? "Opened in the \(o.openedIn ?? "") worktree." : o.line.main
+                    let rest = done ? "This chat is still running." : o.line.rest
+                    (Text(main).fontWeight(.semibold).foregroundColor(Theme.cHi)
+                        + Text(geo.size.width < 420 ? "" : " " + rest).foregroundColor(theme.swiftUI("--txt2")))
+                        .font(.system(size: 12))
+                        .lineSpacing(2)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .accessibilityLabel(main + " " + rest)
+                    Button(action: done ? onClose : onMove) {
+                        Text(done ? "Close this chat" : "Open in a worktree")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundColor(hoverMove ? Theme.cHi : Theme.cAccentSoft)
+                            .padding(.horizontal, 10)
+                            .frame(height: 24)
+                            .background(RoundedRectangle(cornerRadius: 6).fill(Theme.cAccent.opacity(hoverMove ? 0.14 : 0)))
+                            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Theme.cAccent, lineWidth: 1))
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .onHover { hoverMove = $0 }
+                    .help(done ? "Ends this chat, after the usual question. The new one in the worktree keeps going."
+                          : "Start a chat in its own copy of the repo, on a branch of its own. This one keeps running.")
+                    Button(action: done ? onDismiss : onNotNow) {
+                        Text(done ? "Dismiss" : "Not now").font(.system(size: 12)).foregroundColor(hoverNot ? Theme.cHi : theme.swiftUI("--txt3"))
+                            .padding(.horizontal, 6).frame(height: 24).contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .onHover { hoverNot = $0 }
+                    .help(done ? "Hide this note. Nothing is closed." : "Hide this. Not again for \(o.folder) for a day.")
+                }
+                .padding(.horizontal, 12)
+                .frame(maxHeight: .infinity)
+                .background(Theme.cAccent.opacity(0.08))
+                .overlay(alignment: .top) { Rectangle().fill(Theme.cAccent.opacity(0.18)).frame(height: 1) }
+                .overlay(alignment: .bottom) { Rectangle().fill(Theme.cAccent.opacity(0.35)).frame(height: 1) }
+            }
+            .accessibilityElement(children: .contain)
+            .opacity(shown ? 1 : 0)
+            .onAppear {
+                // 150 ms ease-out in; instantly with Reduce Motion.
+                if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion { shown = true } else { withAnimation(.easeOut(duration: 0.15)) { shown = true } }
+            }
+        }
     }
 }

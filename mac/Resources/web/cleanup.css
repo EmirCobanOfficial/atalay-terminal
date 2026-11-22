@@ -1,0 +1,217 @@
+/* ===== 2. NEW: cleanup.css — the memory line on the map, a card's memory, the Clean Up view and its summary sheet =====
+   Everything takes the theme's tokens; sizes in rem so the app's text size scales it. Glass only where something floats
+   over content (the line on the map, the action bar); groups and rows are content on the standard raised surface. */
+#cleanup-view, .cu-strip, .cu-sheet {
+  --cu-hair: rgba(var(--accent-rgb), 0.14);
+  --cu-raise: rgba(255, 244, 230, 0.035);
+  --cu-edge: inset 0 1px 0 rgba(255, 244, 230, 0.07);
+  --cu-glass: rgba(var(--glass-top-rgb), 0.62);
+  --cu-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --cu-spring: linear(0, 0.049, 0.157, 0.285, 0.411, 0.525, 0.624, 0.706, 0.772, 0.825, 0.866, 0.899, 0.924, 0.943, 0.957, 0.968, 0.976, 0.982, 0.987, 0.99, 0.993, 0.995, 0.996, 0.997, 1);
+  --cu-pop: linear(0, 0.042, 0.143, 0.275, 0.415, 0.55, 0.672, 0.774, 0.858, 0.922, 0.969, 1.001, 1.022, 1.033, 1.038, 1.038, 1.035, 1.03, 1.025, 1.02, 1.015, 1.011, 1.007, 1.004, 1);
+  --cu-k: var(--amber-rgb); /* the memory state's colour (r, g, b): amber = low, red = almost out, accent-soft = fine */
+}
+
+/* ---------- the memory line on the map (#mapwrap) ---------- */
+.cu-strip {
+  position: absolute; z-index: 4; top: 2.75rem; left: 50%; transform: translateX(-50%);
+  display: flex; align-items: center; gap: 0.625rem; width: max-content; max-width: calc(100% - 2rem); min-height: 3rem;
+  padding: 0.375rem 0.375rem 0.375rem 0.375rem; border-radius: 1.5rem;
+  background: var(--cu-glass); -webkit-backdrop-filter: blur(20px) saturate(1.6); backdrop-filter: blur(20px) saturate(1.6);
+  box-shadow: inset 0 1px 0 rgba(255, 236, 214, 0.13), inset 0 0 0 1px rgba(var(--cu-k), 0.42), 0 0.75rem 2rem rgba(0, 0, 0, 0.45), 0 0 1.5rem rgba(var(--cu-k), 0.14);
+  font-family: var(--font-sans); animation: cu-drop 0.42s var(--cu-pop) both;
+}
+.cu-strip.out { --cu-k: var(--red-rgb); }
+.cu-strip .x { flex: none; display: grid; place-items: center; width: 1.75rem; height: 1.75rem; border: 0; border-radius: 50%; background: rgba(255, 244, 230, 0.06); color: var(--txt3); cursor: pointer; }
+.cu-strip .x:hover { background: rgba(255, 244, 230, 0.12); color: var(--hi); }
+.cu-strip .x svg { width: 0.625rem; height: 0.625rem; }
+.cu-strip .ico { flex: none; display: grid; place-items: center; width: 2.125rem; height: 2.125rem; border-radius: 50%; color: rgb(var(--cu-k)); background: radial-gradient(circle at 35% 30%, rgba(var(--cu-k), 0.34), rgba(var(--cu-k), 0.1)); box-shadow: inset 0 0 0 1px rgba(var(--cu-k), 0.55); }
+.cu-strip .ico svg { width: 1.125rem; height: 1.125rem; }
+.cu-strip .txt { min-width: 0; padding-right: 0.25rem; line-height: 1.3; }
+.cu-strip .txt > b { display: block; color: var(--hi); font-size: 0.875rem; font-weight: 650; }
+.cu-strip .txt > span { display: block; color: var(--txt2); font-size: 0.8125rem; }
+.cu-num { color: rgb(var(--cu-k)); font-family: var(--font-mono); font-weight: 600; font-variant-numeric: tabular-nums; }
+.cu-strip .go { flex: none; height: 2.25rem; padding: 0 1.125rem; border: 0; border-radius: 999px; background: linear-gradient(180deg, var(--accent-soft), var(--accent)); color: var(--ink); font: 650 0.8125rem var(--font-sans); box-shadow: inset 0 1px 0 rgba(255, 240, 210, 0.5), 0 0.375rem 1rem rgba(var(--accent-rgb), 0.3); cursor: pointer; }
+.cu-strip .go:hover { box-shadow: inset 0 1px 0 rgba(255, 240, 210, 0.5), 0 0.375rem 1.25rem rgba(var(--accent-rgb), 0.5); }
+.cu-strip button:focus-visible { outline: 2px solid var(--accent-soft); outline-offset: 2px; }
+.cu-strip.leaving { animation: cu-fade-out 0.16s ease-out both; }
+@keyframes cu-drop { from { opacity: 0; transform: translate(-50%, -0.5rem); } to { opacity: 1; transform: translate(-50%, 0); } }
+@keyframes cu-fade-out { to { opacity: 0; } }
+
+/* ---------- a session card's memory (app.js updateCard, the .kv row) ---------- */
+.card .kv .mem b { font-variant-numeric: tabular-nums; }
+.card .kv .mem.heavy b { color: var(--amber); }
+
+/* ---------- the view (cloud.js views: #cleanup-view, where the dashboard's middle is) ---------- */
+#cleanup-view .cv-cleanup { flex: 1; }
+#cleanup-view .cu-body { container: cu / inline-size; position: relative; display: flex; flex-direction: column; flex: 1; min-height: 0; padding: 0; overflow: hidden; font-family: var(--font-sans); }
+#cleanup-view button { font-family: inherit; }
+.cu-scroll { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.cu-in { max-width: 68rem; margin: 0 auto; padding: 1.75rem 2.25rem 2.5rem; }
+
+/* the picture of memory */
+.cu-hero { position: relative; padding: 1.375rem 1.75rem 1.25rem; border-radius: 1.25rem; background: radial-gradient(120% 160% at 0% 0%, rgba(var(--cu-k), 0.15), transparent 55%), var(--cu-raise); box-shadow: var(--cu-edge), inset 0 0 0 1px var(--cu-hair); }
+.cu-hero.fine { --cu-k: var(--accent-soft-rgb); }
+.cu-hero.out { --cu-k: var(--red-rgb); }
+.cu-eyebrow { display: flex; align-items: center; gap: 0.5rem; min-height: 1.5rem; color: rgb(var(--cu-k)); font: 700 0.6875rem/1 var(--font-mono); letter-spacing: 0.14em; text-transform: uppercase; }
+.cu-press { margin-left: auto; display: inline-flex; align-items: center; gap: 0.4rem; height: 1.5rem; padding: 0 0.625rem; border-radius: 999px; background: rgba(var(--cu-k), 0.13); box-shadow: inset 0 0 0 1px rgba(var(--cu-k), 0.45); color: rgb(var(--cu-k)); font: 600 0.75rem var(--font-sans); letter-spacing: 0; text-transform: none; }
+.cu-press i { width: 0.5rem; height: 0.5rem; border-radius: 50%; background: currentColor; box-shadow: 0 0 0.5rem currentColor; }
+.cu-hero h2 { margin: 0.5rem 0 0.375rem; color: var(--hi); font-size: 1.625rem; font-weight: 750; letter-spacing: -0.01em; line-height: 1.2; }
+.cu-lead { margin: 0; max-width: 46rem; color: var(--txt2); font-size: 0.9375rem; line-height: 1.5; }
+.cu-meter { position: relative; margin-top: 2.5rem; }
+.cu-track { position: relative; display: flex; align-items: stretch; height: 1.5rem; }
+.cu-ram { position: relative; display: flex; gap: 2px; flex: none; height: 100%; overflow: hidden; border-radius: 0.5rem; background: rgba(255, 244, 230, 0.06); box-shadow: inset 0 0 0 1px rgba(255, 244, 230, 0.06); }
+.cu-seg { position: relative; flex: none; height: 100%; transition: width 0.6s var(--cu-spring); }
+.cu-seg.orb { background: linear-gradient(180deg, var(--accent-soft), var(--accent)); box-shadow: inset 0 1px 0 rgba(255, 240, 210, 0.45); }
+.cu-seg.oth { background: color-mix(in srgb, var(--txt3) 62%, transparent); }
+.cu-seg.sys { background: color-mix(in srgb, var(--dim) 55%, transparent); }
+/* the part the ticks would free: lighter stripes over the orange, from its right end */
+.cu-pick { position: absolute; top: 0; bottom: 0; right: 0; background: repeating-linear-gradient(135deg, rgba(255, 248, 240, 0.55) 0 0.25rem, rgba(255, 248, 240, 0.16) 0.25rem 0.5rem); box-shadow: inset 0 0 0 1.5px var(--hi); transition: width 0.22s ease-out; }
+.cu-picktag { position: absolute; bottom: calc(100% + 0.4rem); transform: translateX(-50%); padding: 0.125rem 0.5rem; border-radius: 999px; background: var(--hi); color: var(--ink); font: 700 0.75rem var(--font-mono); font-variant-numeric: tabular-nums; white-space: nowrap; transition: left 0.22s ease-out; }
+.cu-picktag::after { content: ""; position: absolute; left: 50%; top: 100%; border: 0.25rem solid transparent; border-top-color: var(--hi); transform: translateX(-50%); }
+/* where memory ends: a wall, and what didn't fit, on the disk, past it */
+.cu-wall { position: relative; flex: none; width: 2px; margin: -0.5rem 0.375rem; border-radius: 1px; background: var(--txt2); }
+.cu-wall::before { content: attr(data-l); position: absolute; right: 0.375rem; bottom: calc(100% + 0.2rem); color: var(--txt3); font: 600 0.6875rem var(--font-sans); white-space: nowrap; }
+.cu-disk { position: relative; flex: none; height: 100%; border-radius: 0 0.5rem 0.5rem 0; background: repeating-linear-gradient(135deg, rgba(var(--cu-k), 0.55) 0 0.3rem, rgba(var(--cu-k), 0.16) 0.3rem 0.6rem); box-shadow: inset 0 0 0 1px rgba(var(--cu-k), 0.55); }
+.cu-disk::before { content: attr(data-l); position: absolute; left: 0; bottom: calc(100% + 0.7rem); color: rgb(var(--cu-k)); font: 600 0.6875rem var(--font-sans); white-space: nowrap; }
+.cu-legend { display: flex; flex-wrap: wrap; gap: 0.5rem 1.375rem; margin: 0.875rem 0 0; padding: 0; list-style: none; color: var(--txt2); font-size: 0.8125rem; }
+.cu-legend li { display: inline-flex; align-items: center; gap: 0.4rem; }
+.cu-legend i { flex: none; width: 0.625rem; height: 0.625rem; border-radius: 0.2rem; }
+.cu-legend i.orb { background: var(--accent); } .cu-legend i.oth { background: color-mix(in srgb, var(--txt3) 62%, transparent); } .cu-legend i.sys { background: color-mix(in srgb, var(--dim) 55%, transparent); }
+.cu-legend i.free { box-shadow: inset 0 0 0 1px rgba(255, 244, 230, 0.3); }
+.cu-legend i.disk { background: repeating-linear-gradient(135deg, rgba(var(--cu-k), 0.8) 0 2px, rgba(var(--cu-k), 0.25) 2px 4px); }
+.cu-legend b { color: var(--hi); font: 600 0.8125rem var(--font-mono); font-variant-numeric: tabular-nums; }
+.cu-others { margin: 0.75rem 0 0; color: var(--txt3); font-size: 0.8125rem; line-height: 1.5; }
+.cu-others b { color: var(--txt2); font-weight: 600; }
+
+/* the groups */
+.cu-group { margin-top: 1.25rem; overflow: hidden; border-radius: 1rem; background: var(--cu-raise); box-shadow: var(--cu-edge), inset 0 0 0 1px var(--cu-hair); }
+.cu-gh { display: grid; grid-template-columns: 1.125rem 2.25rem minmax(0, 1fr) auto; gap: 0.875rem; align-items: center; padding: 1rem 1.25rem 0.875rem; }
+.cu-gh .wt-ico { width: 2.25rem; height: 2.25rem; }
+.cu-gh h3 { margin: 0; color: var(--hi); font-size: 0.9375rem; font-weight: 650; }
+.cu-gh p { margin: 0.125rem 0 0; color: var(--txt3); font-size: 0.8125rem; line-height: 1.4; }
+.cu-gsum { text-align: right; color: var(--txt3); font-size: 0.75rem; white-space: nowrap; }
+.cu-gsum b { display: block; color: var(--accent-soft); font: 600 1rem var(--font-mono); font-variant-numeric: tabular-nums; }
+.cu-rows { border-top: 1px solid var(--cu-hair); }
+.cu-row { display: grid; grid-template-columns: 1.125rem 2rem minmax(0, 1fr) auto 5.25rem; gap: 0.875rem; align-items: center; min-height: 3.5rem; padding: 0.625rem 1.25rem; cursor: pointer; transition: background 0.12s; }
+.cu-row + .cu-row { border-top: 1px solid rgba(var(--accent-rgb), 0.08); }
+.cu-row:hover { background: rgba(var(--accent-rgb), 0.05); }
+.cu-row.on { background: rgba(var(--accent-rgb), 0.075); }
+.cu-row.off { cursor: default; }
+.cu-row.off:hover { background: none; }
+.cu-row.off .cu-tile, .cu-row.off .cu-t, .cu-row.off .cu-size { opacity: 0.55; }
+.cu-row.gone .cu-tile, .cu-row.gone .cu-t, .cu-row.gone .cu-size { opacity: 0.5; transition: opacity 0.3s; }
+.cu-tile { display: grid; place-items: center; width: 2rem; height: 2rem; border-radius: 0.6rem; background: rgba(255, 244, 230, 0.05); box-shadow: inset 0 0 0 1px rgba(var(--accent-rgb), 0.22); color: var(--accent-soft); }
+.cu-tile svg { width: 1.05rem; height: 1.05rem; }
+.cu-tile.codex { color: var(--txt); } .cu-tile.agy { color: var(--amber); } .cu-tile.cursor { color: var(--cyan); } .cu-tile.burn { color: var(--red-soft); box-shadow: inset 0 0 0 1px rgba(var(--red-rgb), 0.4); }
+.cu-t { min-width: 0; }
+.cu-t b { display: block; overflow: hidden; color: var(--txt); font-size: 0.875rem; font-weight: 600; white-space: nowrap; text-overflow: ellipsis; }
+.cu-t .d { display: block; overflow: hidden; margin-top: 0.125rem; color: var(--txt3); font-size: 0.75rem; white-space: nowrap; text-overflow: ellipsis; }
+.cu-t .d em { color: var(--txt2); font-style: normal; }
+/* worktree.css's .wt is the summary card's positioned box; here it is only the branch's name inside a line. */
+.cu-t .d .wt { position: static; width: auto; transform: none; opacity: 1; pointer-events: auto; transition: none; color: var(--accent-soft); }
+.cu-t .d.k { color: var(--txt3); }
+.cu-t .d.k span + span::before { content: " · "; }
+.cu-t .d.k i { color: var(--txt2); font: 0.92em var(--font-mono); font-style: normal; }
+.cu-st { display: flex; justify-content: flex-end; align-items: center; gap: 0.375rem; min-width: 0; color: var(--txt3); font-size: 0.75rem; white-space: nowrap; }
+.cu-st svg { flex: none; width: 0.875rem; height: 0.875rem; }
+.cu-st.ok { color: var(--accent-soft); }
+.cu-st.warn { color: var(--amber); }
+.cu-st.with { color: var(--dim); font-style: italic; }
+.cu-st .pill { margin: 0; font-family: var(--font); font-size: 0.6875rem; line-height: 1.4; }
+.cu-port { padding: 0 0.375rem; border: 1px solid rgba(var(--accent-soft-rgb), 0.45); border-radius: 0.3rem; color: var(--accent-soft); font: 600 0.6875rem/1.25rem var(--font-mono); }
+.cu-size { color: var(--hi); font: 600 0.875rem var(--font-mono); font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+.cu-size small { color: var(--txt3); font-size: 0.75rem; font-weight: 500; }
+.cu-skel { display: inline-block; width: 3.5rem; height: 0.75rem; border-radius: 0.25rem; background: linear-gradient(90deg, rgba(255, 244, 230, 0.04), rgba(255, 244, 230, 0.12), rgba(255, 244, 230, 0.04)); background-size: 200% 100%; animation: cu-shim 1.2s linear infinite; }
+@keyframes cu-shim { from { background-position: 100% 0; } to { background-position: -100% 0; } }
+/* the tick box (as the worktree sheets' .wt-box) */
+.cu-cb { appearance: none; -webkit-appearance: none; display: grid; place-items: center; width: 1.125rem; height: 1.125rem; margin: 0; border: 1.5px solid var(--txt3); border-radius: 0.3rem; background: rgba(0, 0, 0, 0.34); cursor: pointer; }
+.cu-cb:checked, .cu-cb:indeterminate, .cu-cb.mixed { border-color: var(--accent); background: var(--accent); }
+.cu-cb:checked::after { content: ""; width: 0.5rem; height: 0.28rem; border: solid var(--ink); border-width: 0 0 2px 2px; transform: translateY(-0.06rem) rotate(-45deg); }
+.cu-cb:indeterminate::after, .cu-cb.mixed::after { content: ""; width: 0.5rem; height: 2px; border-radius: 1px; background: var(--ink); }
+.cu-cb:disabled { border-style: dashed; border-color: var(--dim2); background: none; cursor: default; }
+.cu-cb:disabled:checked { border-style: solid; border-color: rgba(var(--accent-rgb), 0.45); background: rgba(var(--accent-rgb), 0.35); }
+.cu-cb:focus-visible { outline: 2px solid var(--accent-soft); outline-offset: 2px; }
+/* a row's step while it runs, and after */
+.cu-step { display: inline-flex; align-items: center; gap: 0.4rem; font-size: 0.75rem; font-weight: 600; white-space: nowrap; }
+.cu-step .dot { flex: none; display: grid; place-items: center; width: 1rem; height: 1rem; border-radius: 50%; border: 1.5px solid var(--dim2); }
+.cu-step.now { color: var(--hi); }
+.cu-step.now .dot { border-color: rgba(var(--accent-rgb), 0.3); border-top-color: var(--accent); animation: wt-spin 0.8s linear infinite; }
+.cu-step.done { color: var(--accent-soft); }
+.cu-step.done .dot { border-color: var(--accent-soft); background: var(--accent-soft); color: var(--ink); animation: cu-tick 0.24s var(--cu-pop) both; }
+.cu-step.done .dot::after { content: "\2713"; font: 700 0.6rem var(--font-sans); }
+.cu-step.bad { color: var(--red-soft); }
+.cu-step.bad .dot { border-color: var(--red); color: var(--red); }
+.cu-step.bad .dot::after { content: "\2715"; font: 800 0.55rem var(--font-sans); }
+.cu-step .wt-link { margin-left: 0.25rem; font-weight: 600; }
+@keyframes cu-tick { from { transform: scale(0.6); } }
+
+/* the action bar: floats over the list's end (glass, with the list fading under it) */
+.cu-bar { position: relative; flex: none; display: flex; align-items: center; gap: 1rem; min-height: 4rem; padding: 0.75rem max(2.25rem, calc((100% - 68rem) / 2 + 2.25rem)); border-top: 1px solid var(--cu-hair); background: rgba(var(--panel-rgb), 0.72); -webkit-backdrop-filter: blur(14px) saturate(1.4); backdrop-filter: blur(14px) saturate(1.4); }
+.cu-bar::before { content: ""; position: absolute; left: 0; right: 0; bottom: 100%; height: 1.5rem; background: linear-gradient(rgba(var(--panel-rgb), 0), rgba(var(--panel-rgb), 0.7)); pointer-events: none; }
+.cu-sum { min-width: 0; margin: 0; color: var(--txt2); font-size: 0.875rem; line-height: 1.4; }
+.cu-sum b { color: var(--hi); font-weight: 650; }
+.cu-sum .cu-num { --cu-k: var(--accent-soft-rgb); }
+.cu-acts { display: flex; flex: none; gap: 0.5rem; margin-left: auto; }
+.cu-acts .wt-btn { height: 2.25rem; padding: 0 1.125rem; border-radius: 0.625rem; font-size: 0.875rem; }
+.cu-prog { position: absolute; left: 0; top: -1px; height: 2px; width: var(--p, 0%); background: linear-gradient(90deg, var(--accent-soft), var(--accent)); box-shadow: 0 0 0.5rem rgba(var(--accent-rgb), 0.6); transition: width 0.3s ease-out; }
+
+/* done: the reward beat (as the worktree sheets' .wt-done, bigger), in the hero's place */
+.cu-done { display: grid; grid-template-columns: 3.25rem minmax(0, 1fr); gap: 1.125rem; align-items: center; }
+.cu-done .ring { display: grid; place-items: center; width: 3.25rem; height: 3.25rem; border-radius: 50%; color: var(--ink); background: radial-gradient(circle at 35% 30%, var(--accent-pale), var(--accent-soft) 45%, var(--accent)); animation: wt-glow 0.9s var(--cu-ease) 0.1s both; }
+.cu-done .ring svg { width: 1.5rem; height: 1.5rem; stroke-dasharray: 20; stroke-dashoffset: 20; animation: wt-draw 0.32s var(--cu-ease) 0.18s forwards; }
+.cu-done h2 { margin: 0; }
+.cu-done .cu-lead + .cu-lead { margin-top: 0.25rem; color: var(--txt3); font-size: 0.8125rem; }
+
+/* nothing to clean up */
+.cu-empty { display: grid; justify-items: center; gap: 0.5rem; margin-top: 1.25rem; padding: 2.5rem 1rem 3rem; border-radius: 1rem; background: var(--cu-raise); box-shadow: var(--cu-edge), inset 0 0 0 1px var(--cu-hair); text-align: center; }
+.cu-empty svg { width: 12rem; height: 7.5rem; }
+.cu-empty h3 { margin: 0.5rem 0 0; color: var(--hi); font-size: 1.375rem; font-weight: 750; }
+.cu-empty p { margin: 0; max-width: 30rem; color: var(--txt2); font-size: 0.9375rem; }
+.cu-ember { offset-path: path("M 96 60 m -78 0 a 78 26 0 1 0 156 0 a 78 26 0 1 0 -156 0"); animation: cu-orbit 9s linear infinite; }
+@keyframes cu-orbit { to { offset-distance: 100%; } }
+
+/* the view opening: the hero and the groups rise in */
+#cleanup-view.on .cu-in > * { animation: cu-rise 0.26s var(--cu-ease) both; }
+#cleanup-view.on .cu-in > :nth-child(2) { animation-delay: 0.04s; }
+#cleanup-view.on .cu-in > :nth-child(3) { animation-delay: 0.08s; }
+#cleanup-view.on .cu-in > :nth-child(4) { animation-delay: 0.12s; }
+@keyframes cu-rise { from { opacity: 0; transform: translateY(0.5rem); } }
+
+/* ---------- the summary sheet (worktree sheets' .wt-alone + .wt-card) ---------- */
+/* (worktree.css gives the ship sheets 31rem; the summary is wider, as its lines are.) */
+.wt-alone.cu-sheet .wt.ship { width: min(34rem, calc(100% - 3rem)); max-height: calc(100% - 4rem); display: flex; }
+.cu-sheet .wt-card { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.cu-sheet .cu-list { flex: 1; min-height: 0; overflow-y: auto; margin: 0 -1.25rem; padding: 0 1.25rem; }
+.cu-sec + .cu-sec { margin-top: 0.875rem; }
+.cu-sec h4 { display: flex; align-items: baseline; gap: 0.5rem; margin: 0 0 0.375rem; color: var(--txt2); font: 700 0.6875rem/1.2 var(--font-mono); letter-spacing: 0.12em; text-transform: uppercase; }
+.cu-sec h4 span { margin-left: auto; color: var(--accent-soft); font-weight: 600; letter-spacing: 0; text-transform: none; }
+.cu-sec ul { margin: 0; padding: 0.375rem 0.75rem; border: 1px solid var(--wt-hair); border-radius: 0.5rem; background: rgba(0, 0, 0, 0.22); list-style: none; display: grid; gap: 0.1875rem; }
+.cu-sec li { display: flex; align-items: baseline; gap: 0.5rem; min-width: 0; font-size: 0.8125rem; line-height: 1.55; }
+.cu-sec li b { overflow: hidden; color: var(--txt); font-weight: 600; white-space: nowrap; text-overflow: ellipsis; }
+.cu-sec li span { flex: none; color: var(--txt3); font-size: 0.75rem; }
+.cu-sec li code { flex: none; margin-left: auto; color: var(--txt3); font: 0.75rem var(--font-mono); font-variant-numeric: tabular-nums; }
+.cu-sec li.warn span { color: var(--amber); }
+
+/* ---------- narrow (the view's own width) ---------- */
+@container cu (max-width: 46rem) {
+  .cu-in { padding: 1.25rem 1rem 2rem; }
+  .cu-hero { padding: 1.125rem 1.125rem 1rem; }
+  .cu-hero h2 { font-size: 1.375rem; }
+  .cu-wall::before { content: attr(data-s); }
+  .cu-row { grid-template-columns: 1.125rem 2rem minmax(0, 1fr) 4.75rem; grid-template-areas: "cb tile t size" "cb tile st size"; row-gap: 0.25rem; padding: 0.625rem 1rem; }
+  .cu-row > .cu-cb { grid-area: cb; } .cu-row > .cu-tile { grid-area: tile; } .cu-row > .cu-t { grid-area: t; } .cu-row > .cu-st { grid-area: st; justify-content: flex-start; } .cu-row > .cu-size { grid-area: size; }
+  .cu-gh { grid-template-columns: 1.125rem 2.25rem minmax(0, 1fr); padding: 0.875rem 1rem; }
+  .cu-gsum { grid-column: 3; text-align: left; }
+  .cu-gsum b { display: inline; margin-right: 0.375rem; }
+  .cu-bar { flex-wrap: wrap; padding: 0.75rem 1rem; gap: 0.5rem; }
+  .cu-acts { width: 100%; justify-content: flex-end; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cu-strip, #cleanup-view *, #cleanup-view *::before, #cleanup-view *::after, .cu-sheet * { animation-duration: 0.01ms !important; animation-delay: 0ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
+  .cu-ember { animation: none; offset-distance: 30%; }
+}
+
+/* Settings: the threshold row goes while the suggestion is off (a row's own display would beat [hidden]). */
+.cu-swaprow[hidden] { display: none; }

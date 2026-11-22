@@ -36,6 +36,7 @@ final class Social {
     /// The network came back or the Mac woke up: a line opened before may be dead without anyone noticing (no
     /// error comes until something is sent), so start a fresh one now instead of waiting out a backoff.
     func kick() {
+        MainWindowController.shared?.notesNetBack()
         delay = 2
         if let t = task {
             task = nil
@@ -53,7 +54,7 @@ final class Social {
         Task {
             defer { opening = false }
             guard let ticket = await Cloud.shared.liveTicket() else { return later() }
-            let t = URLSession.shared.webSocketTask(with: Cloud.shared.liveURL(ticket: ticket))
+            let t = URLSession.shared.webSocketTask(with: AccessKey.request(Cloud.shared.liveURL(ticket: ticket)))
             task = t
             t.resume()
             receive(t)

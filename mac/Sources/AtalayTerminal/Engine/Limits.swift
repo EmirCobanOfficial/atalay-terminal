@@ -90,6 +90,10 @@ enum Limits {
         try? data.write(to: dir.appendingPathComponent("limits-\(tool).json"), options: .atomic)
     }
 
+    static func remove(_ tool: String) {
+        try? FileManager.default.removeItem(at: dir.appendingPathComponent("limits-\(tool).json"))
+    }
+
     static func load(_ tool: String) -> [String: Any]? {
         guard let data = FileManager.default.contents(atPath: dir.appendingPathComponent("limits-\(tool).json").path) else { return nil }
         return try? JSONSerialization.jsonObject(with: data) as? [String: Any]

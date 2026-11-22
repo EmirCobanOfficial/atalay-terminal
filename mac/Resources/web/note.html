@@ -7,6 +7,8 @@
 <link rel="stylesheet" href="style.css">
 <link rel="stylesheet" href="notes.css">
 <link rel="stylesheet" href="themes/mur47.css">
+<link rel="stylesheet" href="themes/hk416.css">
+<link rel="stylesheet" href="themes/emir.css">
 <style>
   /* A note in an app window of its own (NoteWindow.swift): only the note's box, on a see-through window. The icon font
      the dashboard has from git.css. */
@@ -18,11 +20,13 @@
 <body>
 <section class="np-win np-native" id="p-notes" role="dialog" aria-label="Note">
   <div class="npw-bar"><span class="tag npw-name"></span><span class="npw-meta"></span>
+    <button type="button" class="npw-ai" hidden data-tip="AI can read this note · Click to hide it from AI" aria-label="AI can read this note · Click to hide it from AI"><i class="np-glyph" aria-hidden="true">&#xEA70;</i></button>
     <button type="button" class="npw-top" title="Keep on top" aria-label="Keep on top" aria-pressed="false"><i class="np-glyph" aria-hidden="true">&#xEB2B;</i></button>
     <button type="button" class="npw-del" title="Delete note" aria-label="Delete note"><i class="np-glyph" aria-hidden="true">&#xEA81;</i></button>
     <button type="button" class="npw-x" title="Close: back to its place in the dashboard" aria-label="Close the window">×</button></div>
   <div class="npw-body" id="notes"></div>
 </section>
+<script src="notesync.js"></script>
 <script src="notes.js"></script>
 </body>
 </html>

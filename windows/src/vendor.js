@@ -3,7 +3,8 @@
 // (main.js noteToolsAtWork), as the Mac's Vendor.swift. The native Claude Code, Codex and Antigravity for Windows are
 // signed by their makers (Authenticode, the publisher below), so another program renamed after one of them doesn't pass
 // for it. A tool run as a script (Node, Bun, Deno, Python: an npm install) can't be told apart this way and passes; Gemini
-// CLI has no signed program of its own, so it isn't checked. A program is read once, in the background (PowerShell's
+// CLI has no signed program of its own, so it isn't checked; Cursor's CLI is known by its program's folder. A program is
+// read once, in the background (PowerShell's
 // Get-AuthenticodeSignature), and again only when its file changes; until then the tool counts.
 const { execFile } = require('child_process');
 const fs = require('fs');
@@ -95,10 +96,10 @@ function check(maker, file, key) {
   });
 }
 
-/** Whether the time of `tool` ("claude", "codex", "gemini", "antigravity"), run by process `pid`, counts for its badge. */
+/** Whether the time of `tool` ("claude", "codex", "gemini", "antigravity", "cursor"), run by process `pid`, counts for its badge. */
 function genuine(tool, pid) {
   const maker = MAKERS[tool];
-  if (!maker || process.platform !== 'win32') return true;
+  if ((!maker && tool !== 'cursor') || process.platform !== 'win32') return true;
   if (!Number.isInteger(pid) || pid <= 0) return false;
   // Old pids forgotten now and then (a long day of chats coming and going).
   if (byPid.size > 200) for (const [p, k] of byPid) if (Date.now() - k.at > PID_TTL) byPid.delete(p);
@@ -106,6 +107,9 @@ function genuine(tool, pid) {
   if (!known || Date.now() - known.at > PID_TTL) lookUp(pid);
   if (!known) return true;
   if (!known.file) return false;
+  // Cursor's CLI runs its own bundled Node (cursor-agent\versions\<version>\node.exe), signed by no one: its program's
+  // folder is what it is, as the Mac's Vendor.swift has it.
+  if (tool === 'cursor') return /[\\/]cursor-agent[\\/]/i.test(known.file);
   if (INTERPRETER.test(path.basename(known.file))) return true;
   let st;
   try {

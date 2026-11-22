@@ -101,8 +101,23 @@ export function hexGlowTexture() {
   return texture(c);
 }
 
-// Subagent hexagons (small, violet): running and finished variants.
+// Subagent hexagons (small, violet): running, finished and parked (no writes for a while, nothing open) variants.
 export function droneTextures() {
+  const parked = () => {
+    const c = document.createElement('canvas');
+    c.width = c.height = 128;
+    const x = c.getContext('2d'), m = 64, r = 40;
+    hexPath(x, m, m, r);
+    x.fillStyle = 'rgba(12,8,22,0.55)';
+    x.fill();
+    x.lineWidth = 5;
+    x.strokeStyle = 'rgba(157,107,255,0.7)';
+    x.stroke();
+    x.fillStyle = 'rgba(157,107,255,0.8)';
+    x.fillRect(m - 12, m - 13, 8, 26);
+    x.fillRect(m + 4, m - 13, 8, 26);
+    return texture(c);
+  };
   const make = (running) => {
     const c = document.createElement('canvas');
     c.width = c.height = 128;
@@ -126,5 +141,5 @@ export function droneTextures() {
     }
     return texture(c);
   };
-  return { running: make(true), done: make(false) };
+  return { running: make(true), done: make(false), parked: parked() };
 }

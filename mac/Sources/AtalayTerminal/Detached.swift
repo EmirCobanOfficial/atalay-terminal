@@ -1,8 +1,10 @@
 import AppKit
 
-/// Every chat and terminal runs in a detached GNU screen session (`/usr/bin/screen`, ships with macOS) named
-/// `atl-<id>`; its window is only a display attached to it. So the app can freeze, quit or crash and Claude
-/// keeps working: on the next launch the windows attach again (MainWindowController.restoreSessions).
+/// New chats and terminals run in a pty the app opens itself (PtySession, named `atl-<id>`) and end with the app; an
+/// update's restart or a crash brings their windows back and resumes the AI in them (SessionSnapshot). This file is the
+/// other half: the sessions an older build left running in a detached GNU screen session (`/usr/bin/screen`, ships with
+/// macOS), whose windows are only displays attached to them. They keep their old path here until they end, and nothing
+/// new ever starts in screen. Every function takes a session's name and goes to the pty when `Sessions.live` has it.
 enum Detached {
     static let screen = "/usr/bin/screen"
     /// Each build keeps its own sessions, so it never attaches to or ends another's chats while both are open: the
@@ -12,8 +14,10 @@ enum Detached {
         guard let id = Bundle.main.bundleIdentifier else { return "atld-" }
         guard id.hasSuffix(".staging") else { return "atl-" }
         // Staging only: a demo recording runs a second set of sessions apart from the usual ones
-        // (ATALAY_SESSION_PREFIX=atdm-, with CLAUDE_CONFIG_DIR pointing at demo data).
-        if let p = ProcessInfo.processInfo.environment["ATALAY_SESSION_PREFIX"], p.count > 1, p.hasSuffix("-") { return p }
+        // (ATALAY_SESSION_PREFIX=atdm-, with CLAUDE_CONFIG_DIR pointing at demo data). Never one that matches another
+        // build's sessions ("atl-", "atl-x-"): quitting ends every session of this prefix.
+        if let p = ProcessInfo.processInfo.environment["ATALAY_SESSION_PREFIX"], p.count > 1, p.hasSuffix("-"),
+           !allPrefixes.contains(where: { p.hasPrefix($0) || $0.hasPrefix(p) }) { return p }
         return "atls-"
     }()
 
@@ -42,41 +46,13 @@ enum Detached {
         defflow off
         vbell off
         msgwait 0
+        # Esc waits only 10 ms (default 300) for the rest of a key sequence: an Esc typed right before text must not merge with it.
+        maptimeout 10
 
         """
         try? rc.write(to: url, atomically: true, encoding: .utf8)
         return url.path
     }()
-
-    /// Starts a chat's shell (running Claude when `claudeArgs` is given) in a new detached session off the
-    /// main thread; `done` gets false when screen couldn't start it.
-    static func start(name: String, cwd: String, claudeArgs: [String]?, done: @escaping @MainActor (Bool) -> Void) {
-        let shell = TerminalFactory.userShell()
-        let shellArgs = TerminalFactory.shellArgs(shell, cwd: cwd, claudeArgs: claudeArgs)
-        // screen 4.0 can't pass 24-bit colour through (it misreads those codes as reverse/dim), so let
-        // Claude fall back to the 256 colours of TERM=screen-256color.
-        var env = TerminalFactory.childEnvironmentDict()
-        env.removeValue(forKey: "COLORTERM")
-        let rc = rcPath
-        DispatchQueue.global(qos: .userInitiated).async {
-            let p = Process()
-            p.executableURL = URL(fileURLWithPath: screen)
-            // The shell starts once the session has its window's size, at the top. screen starts a session at 80×24,
-            // and growing it to the window's size moves the cursor down by the rows it adds, so a shell started there
-            // drew its prompt mid-window: wait for the resize, then home the cursor.
-            let waitForSize = "i=0; while [ \"$(stty size 2>/dev/null)\" = '24 80' ] && [ $i -lt 30 ]; do sleep 0.05; i=$((i+1)); done; "
-                + "printf '\\033[H\\033[2J'; exec \"$@\""
-            p.arguments = ["-c", rc, "-U", "-dmS", name, "/bin/sh", "-c", waitForSize, "sh", shell] + shellArgs
-            p.currentDirectoryURL = URL(fileURLWithPath: cwd)
-            p.environment = env
-            var ok = false
-            if (try? p.run()) != nil {
-                p.waitUntilExit()
-                ok = p.terminationStatus == 0
-            }
-            DispatchQueue.main.async { done(ok) }
-        }
-    }
 
     /// Arguments for a display attached to the session. `-A` fits the session to that display.
     static func attachArgs(_ name: String, fit: Bool = true) -> [String] {
@@ -86,7 +62,8 @@ enum Detached {
     /// How many screens show the session now (its attached clients, `screen … -x name`): two while the other build of
     /// the app mirrors it.
     static func displays(_ name: String) -> Int {
-        Proc.all().filter { pid in
+        if Sessions.shell(named: name) != nil { return 1 }
+        return Proc.all().filter { pid in
             guard Proc.name(pid) == "screen", let args = Proc.arguments(pid), let i = args.firstIndex(of: "-x") else { return false }
             return args.indices.contains(i + 1) && args[i + 1] == name
         }.count
@@ -99,11 +76,36 @@ enum Detached {
         return "Orbiterm"
     }
 
+    private static var tuned = Set<String>()
+    private static let tunedLock = NSLock()
+
+    /// This build's session that has the short Esc wait (see tune): only there Esc and `/rewind` stay apart.
+    static func isTuned(_ name: String) -> Bool {
+        tunedLock.lock(); defer { tunedLock.unlock() }
+        return name.hasPrefix(prefix) && tuned.contains(name)
+    }
+
+    /// Gives one of this build's sessions that started under an older screenrc the Esc timing of the current one
+    /// (`maptimeout` in rcPath). Once per session per run; another build's sessions (a mirror) are left alone.
+    static func tune(_ name: String) {
+        guard name.hasPrefix(prefix) else { return }
+        tunedLock.lock()
+        let first = tuned.insert(name).inserted
+        tunedLock.unlock()
+        guard first else { return }
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: screen)
+        p.arguments = ["-S", name, "-X", "maptimeout", "10"]
+        try? p.run()
+    }
+
     /// Makes the session take its display's size. A window that attached while hidden (without `-A`, so
     /// the session kept its size) calls this once it is shown. With two displays (a mirror) this fits the session to
     /// the one that attached last, whichever window asks: there the window types the command into its own display
     /// (ChatWindowController.fitSession).
     static func fit(_ name: String) {
+        // A pty takes its view's size by itself.
+        if Sessions.shell(named: name) != nil { return }
         let p = Process()
         p.executableURL = URL(fileURLWithPath: screen)
         p.arguments = ["-S", name, "-X", "fit"]
@@ -151,7 +153,11 @@ enum Detached {
     /// hangup. screen alone left the shell running (login started it), an orphan holding a pty after every ended chat.
     /// What shrugs off the hangup (a dev server run through npm kept its port for hours) gets TERM three seconds later
     /// and KILL two after that: an ended session leaves nothing behind.
+    @MainActor
     static func quit(_ name: String) {
+        if let pty = Sessions.live[name] { return pty.end() }
+        // A pty session that ended already (End Session runs twice for a window's panes): nothing in screen by that name.
+        if Sessions.ended.contains(name) { return }
         forgetHistory(name)
         let shell = shellPid(name)
         var tree: [(pid: Int32, started: UInt64)] = []
@@ -171,6 +177,45 @@ enum Detached {
         }
     }
 
+    /// A pty session's shell ends as a screen session's did (quit): a hangup to everything under it, deepest first, TERM
+    /// three seconds later and KILL two after that.
+    nonisolated static func endTree(_ shell: Int32) {
+        var tree: [(pid: Int32, started: UInt64)] = []
+        collect(shell, into: &tree)
+        hangUp(shell)
+        let alive = { tree.filter { t in Proc.info(t.pid)?.started == t.started } }
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 3) {
+            for t in alive() { kill(t.pid, SIGTERM) }
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 2) {
+                for t in alive() { kill(t.pid, SIGKILL) }
+            }
+        }
+    }
+
+    /// The app quits or restarts: every pty session's whole tree (each root and what is under it, by pid and start time)
+    /// gets a hangup and TERM, deepest first (an interactive shell ignores TERM but leaves on the hangup); what is still
+    /// there after 3 s, with what it started meanwhile, gets KILL. Blocks (call it off the main thread). As in quitAll, only
+    /// processes seen as descendants of a root get a signal, never a process group.
+    nonisolated static func killTrees(_ roots: [Int32]) {
+        let me = getuid()
+        typealias P = (pid: Int32, started: UInt64)
+        var all: [P] = []
+        for root in roots { collectOwned(root, uid: me, into: &all) }
+        guard !all.isEmpty else { return }
+        let alive = { (list: [P]) in list.filter { t in Proc.info(t.pid)?.started == t.started } }
+        for t in alive(all) { kill(t.pid, SIGHUP) }
+        for t in alive(all) { kill(t.pid, SIGTERM) }
+        let deadline = Date().addingTimeInterval(3)
+        while !alive(all).isEmpty, Date() < deadline { Thread.sleep(forTimeInterval: 0.1) }
+        var left = alive(all)
+        let known = Set(left.map(\.pid))
+        var spawned: [P] = []
+        for t in left { for child in Proc.children(of: t.pid) where !known.contains(child) { collectOwned(child, uid: me, into: &spawned) } }
+        left += spawned
+        for t in alive(left) { kill(t.pid, SIGKILL) }
+        NSLog("Orbiterm: ended %d terminal sessions, %d processes, %d needed KILL", roots.count, all.count + spawned.count, left.count)
+    }
+
     /// A process and everything under it, deepest first, with when each started (a later process with the same pid is
     /// never touched).
     private static func collect(_ pid: Int32, into tree: inout [(pid: Int32, started: UInt64)]) {
@@ -182,6 +227,91 @@ enum Detached {
     private static func hangUp(_ pid: Int32) {
         for child in Proc.children(of: pid) { hangUp(child) }
         kill(pid, SIGHUP)
+    }
+
+    // MARK: quit closes everything
+
+    /// Screen daemons of this build's sessions (`prefix`), current user's only.
+    static func ownedDaemons(prefix: String = Detached.prefix, pids: [Int32]? = nil) -> [(pid: Int32, name: String)] {
+        let me = getuid()
+        return (pids ?? Proc.all()).compactMap { pid in
+            guard Proc.name(pid) == "screen", Proc.info(pid)?.uid == me, let args = Proc.arguments(pid),
+                  let i = args.firstIndex(of: "-dmS"), i + 1 < args.count, args[i + 1].hasPrefix(prefix) else { return nil }
+            return (pid, args[i + 1])
+        }
+    }
+
+    /// This build's sessions, each with the process that is the root of what runs in it and when that root started (Clean Up
+    /// and MemoryWatch measure and list what runs below a root): a pty session's shell (the app's own child), and the screen
+    /// daemon of a session an older build left. Another build's sessions are never in it. `pids` (a snapshot's) limits both.
+    static func sessionRoots(pids: [Int32]? = nil) -> [(name: String, root: Int32, started: UInt64)] {
+        let alive = pids.map(Set.init)
+        let ptys: [(name: String, root: Int32, started: UInt64)] = Sessions.allShells().compactMap { s in
+            guard alive?.contains(s.pid) ?? true, let info = Proc.info(s.pid) else { return nil }
+            return (s.name, s.pid, info.started)
+        }
+        return ptys + ownedDaemons(pids: pids).compactMap { d in Proc.info(d.pid).map { (d.name, d.pid, $0.started) } }
+    }
+
+    /// The app quits for good: every session of this build ends with everything running in it. Each session's whole
+    /// process tree gets TERM, after about 3 s in all what is left gets KILL (with whatever the tree started meanwhile),
+    /// then screen closes the session and this build's dead sockets are wiped. Blocks (call it off the main thread).
+    /// Only processes seen as descendants of a session's screen get a signal, each by pid and start time: never a
+    /// process group (a group can hold processes that left the tree, e.g. `nohup … &` from a subshell, now under
+    /// launchd, and a dead leader's group id can be taken by an unrelated process), nor another build's sessions.
+    static func quitAll(prefix: String = Detached.prefix) {
+        let me = getuid()
+        typealias P = (pid: Int32, started: UInt64)
+        var sessions: [(name: String, tree: [P])] = []
+        for d in ownedDaemons(prefix: prefix) {
+            var tree: [P] = []
+            collectOwned(d.pid, uid: me, into: &tree)
+            sessions.append((d.name, tree))
+        }
+        guard !sessions.isEmpty else { return }
+        var all = sessions.flatMap { $0.tree }
+        let alive = { (list: [P]) in list.filter { t in Proc.info(t.pid)?.started == t.started } }
+        for t in alive(all) { kill(t.pid, SIGTERM) }
+        let deadline = Date().addingTimeInterval(3)
+        while !alive(all).isEmpty, Date() < deadline { Thread.sleep(forTimeInterval: 0.1) }
+        // What a process that is still alive (so still the one seen) started during the wait is in the tree too.
+        var left = alive(all)
+        let known = Set(left.map(\.pid))
+        var spawned: [P] = []
+        for t in left { for child in Proc.children(of: t.pid) where !known.contains(child) { collectOwned(child, uid: me, into: &spawned) } }
+        left += spawned
+        all += spawned
+        for t in alive(left) { kill(t.pid, SIGKILL) }
+        for s in sessions {
+            runScreen(["-S", s.name, "-X", "quit"])
+            // The session is gone, so its kept scrollback has nothing to attach to.
+            forgetHistory(s.name)
+        }
+        // Only this build's: a match makes screen take an unreachable session of that name as dead, and leaves the rest.
+        runScreen(["-wipe", prefix])
+        NSLog("Orbiterm: quit closed %d sessions (%@), %d processes, %d needed KILL", sessions.count,
+              sessions.map { "\($0.name):\($0.tree.count)" }.joined(separator: " "), all.count, left.count)
+    }
+
+    /// Runs screen with `args`, waiting at most `timeout` seconds for it (a session that doesn't answer never holds up
+    /// the quit).
+    private static func runScreen(_ args: [String], timeout: TimeInterval = 2) {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: screen)
+        p.arguments = args
+        p.standardOutput = FileHandle.nullDevice
+        p.standardError = FileHandle.nullDevice
+        guard (try? p.run()) != nil else { return }
+        let deadline = Date().addingTimeInterval(timeout)
+        while p.isRunning, Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
+        if p.isRunning { p.terminate() }
+    }
+
+    /// A process and its descendants owned by `uid`, deepest first (login(1) runs as root and is skipped, its children
+    /// are still walked).
+    private static func collectOwned(_ pid: Int32, uid: uid_t, into tree: inout [(pid: Int32, started: UInt64)]) {
+        for child in Proc.children(of: pid) { collectOwned(child, uid: uid, into: &tree) }
+        if let info = Proc.info(pid), info.uid == uid { tree.append((pid, info.started)) }
     }
 
     // MARK: processes (libproc, no `ps`)
@@ -216,9 +346,18 @@ enum Detached {
         return nil
     }
 
-    /// The shell of a named session (maps live sessions to their window), a mirrored one's too.
-    static func shellPid(_ name: String) -> Int32? {
-        Proc.all().first(where: { daemonName($0, anyBuild: true) == name }).flatMap(shellProcess(under:))
+    /// The shell of a named session (maps live sessions to their window), a mirrored one's too. Callable from any thread.
+    nonisolated static func shellPid(_ name: String) -> Int32? {
+        if let pid = Sessions.shell(named: name) { return pid }
+        return Proc.all().first(where: { daemonName($0, anyBuild: true) == name }).flatMap(shellProcess(under:))
+    }
+
+    /// The folder each live session's shell is in now (the notes offer these as the projects to link a note to): the app's
+    /// own pty sessions and the screen sessions an older build left.
+    static func liveFolders() -> [String] {
+        Sessions.allShells().compactMap { Proc.cwd($0.pid) } + Proc.all().compactMap { daemon in
+            daemonName(daemon) == nil ? nil : shellProcess(under: daemon).flatMap { Proc.cwd($0) }
+        }
     }
 
     struct RunningSession {
@@ -252,19 +391,51 @@ enum Detached {
         return out
     }
 
-    /// Name of the session that hosts this process, if any (`anyBuild`: a session of another build too).
-    static func sessionName(hosting pid: Int32, anyBuild: Bool = false) -> String? {
+    /// Name of the session that hosts this process, if any (`anyBuild`: a session of another build too). Callable from any
+    /// thread. A pty session of this app: the shell is its direct child, found by pid. A screen session: its daemon is
+    /// above. Another build's pty session: a shell that is a child of another Orbiterm app, which says its session's name in
+    /// the environment it started the shell with. macOS hides the environment of its own binaries (/bin/zsh, /bin/sleep)
+    /// from other processes, so it is read from the first process of the way up that shows one (Claude, Codex's node…: they
+    /// inherited it), the shell first.
+    nonisolated static func sessionName(hosting pid: Int32, anyBuild: Bool = false) -> String? {
         var cur = pid
+        var below: [Int32] = []
         for _ in 0..<8 {
+            if let n = Sessions.name(ofShell: cur) { return n }
             if let n = daemonName(cur, anyBuild: anyBuild) { return n }
             guard let parent = Proc.parent(cur), parent > 1 else { return nil }
+            if anyBuild, parent != getpid(), Proc.name(parent) == appProcessName {
+                for p in [cur] + below.reversed() {
+                    if let n = Proc.environmentVariable(p, "ORBITERM_SESSION"), allPrefixes.contains(where: n.hasPrefix) { return n }
+                }
+            }
+            below.append(cur)
+            cur = parent
+        }
+        return nil
+    }
+
+    /// The app's own process name (the binary, `atalay-terminal`).
+    private static let appProcessName = "atalay-terminal"
+
+    /// Whether a screen daemon of any build runs a session by this name: one the other build can be shown here as a mirror.
+    nonisolated static func isScreenSession(_ name: String) -> Bool {
+        Proc.all().contains { daemonName($0, anyBuild: true) == name }
+    }
+
+    /// The other Orbiterm app a process runs under (a session that app owns), to bring it forward.
+    nonisolated static func hostApp(ofSession pid: Int32) -> pid_t? {
+        var cur = pid
+        for _ in 0..<8 {
+            guard let parent = Proc.parent(cur), parent > 1 else { return nil }
+            if parent != getpid(), Proc.name(parent) == appProcessName { return parent }
             cur = parent
         }
         return nil
     }
 }
 
-/// A chat window's link to its detached session.
+/// A chat window's link to its session: a pty of the app (PtySession) or, from an older build, a detached screen session.
 @MainActor
 final class DetachedLink {
     let name: String
@@ -272,7 +443,12 @@ final class DetachedLink {
 
     init(name: String) { self.name = name }
 
+    /// The pty session this is, while it lives.
+    var pty: PtySession? { Sessions.live[name] }
+
     var shellPid: Int32? {
+        if let pty { return pty.shellPid }
+        if Sessions.ended.contains(name) { return nil }
         if let cachedShell, kill(cachedShell, 0) == 0 { return cachedShell }
         cachedShell = Detached.shellPid(name)
         return cachedShell

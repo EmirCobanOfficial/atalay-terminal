@@ -49,7 +49,7 @@ final class UpdateWatch {
         guard Cloud.shared.build > 0 else { return }
 
         let url = Cloud.shared.apiBaseURL.appendingPathComponent("v1/releases/latest")
-        let req = URLRequest(url: url, timeoutInterval: 20)
+        let req = AccessKey.request(url, timeout: 20)
 
         let data: Data
         let response: URLResponse

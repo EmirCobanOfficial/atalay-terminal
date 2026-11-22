@@ -7,7 +7,8 @@
 //   latest.yml                          what the installed copies read (the version, the installer's SHA-512, the notes)
 //   Atalays-Terminal-Setup-<v>.exe      what they download, with its .blockmap (the next update downloads only the
 //                                       parts that changed); the version before stays for that, older ones go
-//   Atalays-Terminal-Setup.exe          the same installer under a name that's always the newest, for new users' links
+//   Orbiterm-Setup.exe                  the same installer under a name that's always the newest, for new users' links
+//   Atalays-Terminal-Setup.exe          the same again under the old name, so links shared before the rename keep working
 //
 //   npm run release -- "what changed" ["what else"]     notes: one line per change
 //   npm run release -- --dry-run                        builds, then only shows what would go up
@@ -31,7 +32,8 @@ const args = process.argv.slice(2);
 const dry = args.includes('--dry-run');
 const only = args.includes('--build-only');
 const notes = args.filter((a) => a !== '--dry-run' && a !== '--build-only').map((a) => a.trim()).filter(Boolean).join('\n');
-const STABLE = 'Atalays-Terminal-Setup.exe';
+const STABLE = 'Orbiterm-Setup.exe';
+const STABLE_OLD = 'Atalays-Terminal-Setup.exe';
 
 function fail(msg) {
   console.error(`release: ${msg}`);
@@ -193,10 +195,18 @@ async function freshKey(keyFile, token) {
   // guard. The build in three steps: the app's folder (dist/win-unpacked); its guard, built over that finished
   // Orbiterm.exe and app.asar (scripts/guard.js), so it can't be inside them; the installer from the folder.
   fs.rmSync(path.join(root, 'src', 'clientkey.js'), { force: true });
+  // Nor the staging access key (scripts/staging.js): a release has none.
+  fs.rmSync(path.join(root, 'src', 'accesskey.js'), { force: true });
   const builder = require('electron-builder');
   const config = notes ? { releaseInfo: { releaseNotes: notes } } : undefined;
   await builder.build({ targets: builder.Platform.WINDOWS.createTarget('dir'), publish: 'never', config });
   const unpacked = path.join(dist, 'win-unpacked');
+  // The finished app.asar is checked too, not only src/ before the build: a staging package built in this same folder
+  // meanwhile (scripts/staging.js --packaged) puts its access key back into src/ for a few minutes.
+  const packed = require('@electron/asar').listPackage(path.join(unpacked, 'resources', 'app.asar')).map((f) => f.split('\\').join('/'));
+  for (const f of ['/src/accesskey.js', '/src/clientkey.js']) {
+    if (packed.includes(f)) fail(`app.asar has ${f} (a staging build ran in this folder at the same time?): build again`);
+  }
   // Where an installed copy looks for its updates (electron-updater reads it): electron-builder writes it only when it
   // packs an installer, never for the folder alone, so it's written here as it would be. Without it a release never
   // hears of the next one (0.22.0 and 0.22.1 went out so).
@@ -215,6 +225,7 @@ async function freshKey(keyFile, token) {
     [exe, exe],
     [`${exe}.blockmap`, `${exe}.blockmap`],
     [exe, STABLE],
+    [exe, STABLE_OLD],
     ['latest.yml', 'latest.yml'],
   ];
 

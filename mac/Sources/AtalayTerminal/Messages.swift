@@ -12,6 +12,8 @@ import WebKit
 /// The notices also say when a new version of the app is out; a click on that one shows the dashboard's "what's new".
 /// And when a chat needs the user (an approval) while the app is behind other windows (WaitNotifier): that notice
 /// stays until the chat moves on, and a click on it opens the chat.
+/// And 5 minutes before a forced update restarts the app over running chats (Cloud.maybeRestart): when, with a way to
+/// restart now.
 /// A level-up takes the notices panel over the whole screen, keys locked for its first moments and then any key ending
 /// it, only while the app is in front (the page waits for that).
 /// The page decides the size and asks for it, and asks to be moved while the header is dragged.
@@ -35,6 +37,8 @@ final class MessagePanel: NSObject, WKScriptMessageHandler, WKNavigationDelegate
     static var onOpenWhatsNew: (() -> Void)?
     /// The daily bonus notice was clicked (the main window shows your profile).
     static var onOpenProfile: (() -> Void)?
+    /// A shared note's invite was accepted from a notice: the dashboard opens that note.
+    static var onOpenShared: ((String) -> Void)?
     /// A friend's picture or name was clicked in the chat (the main window shows their card, by their id).
     static var onOpenFriend: ((String) -> Void)?
     /// A notification from the developer was clicked.
@@ -231,6 +235,36 @@ final class MessagePanel: NSObject, WKScriptMessageHandler, WKNavigationDelegate
 
     func clashOver(_ key: String) {
         run("window.__messages && __messages.clashOver && __messages.clashOver(\(Self.literal(key)))")
+    }
+
+    /// A forced update restarts the app at `at` even though chats run outside their detached sessions, which close then
+    /// (Cloud.maybeRestart): the notice says when, and stays until it's put away or the restart comes. Its "restart now"
+    /// installs at once, through the quit's own question about running chats.
+    func restart(version: String, at: Date) {
+        let notice: [String: Any] = ["version": version, "at": at.timeIntervalSince1970 * 1000]
+        guard let data = try? JSONSerialization.data(withJSONObject: notice), let json = String(data: data, encoding: .utf8) else { return }
+        run("window.__messages && __messages.restart && __messages.restart(\(json))")
+    }
+
+    /// That restart isn't coming any more (the build is no longer forced, or a newer one took its place): its notice goes.
+    func restartOver() {
+        run("window.__messages && __messages.restartOver && __messages.restartOver()")
+    }
+
+    /// A friend's spaceship attack (attack.js): the dashboard says which banner (`kind`: lock, lost, hit or danger; a lock names nobody) and, for DANGER, who fired, when it shows (ms from now,
+    /// after the ship's flight on the map) and whether it sounds the alarm itself (the map wasn't in sight). It shows here,
+    /// over whatever is in front, every click passing through.
+    func attack(_ msg: [String: Any]) {
+        let banner: [String: Any] = ["name": String((msg["name"] as? String ?? "").prefix(40)),
+                                     "kind": ["lock", "lost", "hit"].contains(msg["kind"] as? String ?? "") ? (msg["kind"] as? String ?? "danger") : "danger",
+                                     "delay": min(max((msg["delay"] as? NSNumber)?.doubleValue ?? 0, 0), 5000),
+                                     "sound": msg["sound"] as? Bool == true,
+                                     // The ✕ HIT plate's picture (attack.js only uses an http(s) URL).
+                                     "avatar": String((msg["avatar"] as? String ?? "").prefix(2048)),
+                                     // DANGER with the ship's taunt under it (its words are attack.js's own, never sent).
+                                     "taunt": msg["taunt"] as? Bool == true]
+        guard let data = try? JSONSerialization.data(withJSONObject: banner), let json = String(data: data, encoding: .utf8) else { return }
+        run("window.Attack && Attack.banner && Attack.banner(\(json))")
     }
 
     /// Your XP as the last heartbeat or live event had it: a new level plays the fanfare (once, the page keeps count).
@@ -453,6 +487,9 @@ final class MessagePanel: NSObject, WKScriptMessageHandler, WKNavigationDelegate
             Self.onOpenWhatsNew?()
         case "openProfile":
             Self.onOpenProfile?()
+        case "openShared":
+            guard let id = body["id"] as? String, !id.isEmpty, id.count <= 64 else { return }
+            Self.onOpenShared?(id)
         case "openNotifications":
             Self.onOpenNotifications?()
         case "openDanger":
@@ -464,6 +501,10 @@ final class MessagePanel: NSObject, WKScriptMessageHandler, WKNavigationDelegate
             Self.onOpenWait?(sid)
         case "openClash":
             Self.onOpenClash?()
+        case "restartNow":
+            // The forced update's notice: "restart now" is "update now" (the quit still asks about running chats).
+            guard role == .notices else { return }
+            Cloud.shared.installUpdate()
         case "lock":
             // Never longer than 4 s, whatever the page asks.
             Self.keysLockedUntil = ProcessInfo.processInfo.systemUptime + min(max(number("ms"), 0), 4000) / 1000

@@ -23,7 +23,35 @@
   root.id = 'picker';
   document.body.appendChild(root);
 
-  let st = null; // { cwd, list, sel, back, fwd, onPick, places, showHidden, filter, around, slots, assign }
+  let st = null; // { cwd, list, sel, back, fwd, onPick, places, showHidden, filter, around, slots, assign, mode, wtOk }
+
+  // What the native side says of a folder (gitInfo: { repo, worktree, branch }), by path, for the bottom bar and the
+  // ⎇ New worktree… button. Asked 80 ms after the selection stops moving. Where the app doesn't answer, or answers with
+  // `noWorktree` (the Windows one: it reads the branch and who works there, but makes no worktrees yet), the button never
+  // shows. The Mac never sends `noWorktree`.
+  const gitCache = new Map();
+  let gitTimer = 0;
+  function gitOf(p) {
+    if (gitCache.has(p)) return gitCache.get(p);
+    clearTimeout(gitTimer);
+    gitTimer = setTimeout(async () => {
+      let r = null;
+      try {
+        r = await API.gitInfo(p);
+      } catch (e) {
+        r = null;
+      }
+      if (!st) return;
+      if (!r || typeof r !== 'object') st.wtOk = false;
+      else {
+        st.wtOk = !r.noWorktree;
+        if (gitCache.size > 300) gitCache.clear();
+        gitCache.set(p, r);
+      }
+      updateFoot();
+    }, 80);
+    return undefined;
+  }
 
   const rel = (t) => {
     const s = Math.max(0, (Date.now() - t) / 1000);
@@ -35,9 +63,11 @@
   };
   const tild = (p) => (st && st.home && p.startsWith(st.home) ? '~' + p.slice(st.home.length) : p);
 
-  async function open({ title = 'CHOOSE A FOLDER', forLabel = '', start = '~/Documents/Repos', around = null, onPick, onCancel } = {}) {
+  async function open({ title = 'CHOOSE A FOLDER', forLabel = '', start = '~/Documents/Repos', around = null, mode = 'term', onPick, onCancel } = {}) {
     st = { cwd: null, list: null, sel: -1, back: [], fwd: [], onPick, onCancel, places: null, showHidden: false, filter: '', home: '',
-      forLabel, around, slots: [], assign: -1 };
+      forLabel, around, slots: [], assign: -1, mode, wtOk: null };
+    gitCache.clear();
+    window.Worktree?.close();
     root.classList.remove('closing', 'assigning');
     root.classList.toggle('around', !!around);
     root.innerHTML = (around ? SIDES.map(([side]) => `<div class="pk-around ${side}"></div>`).join('') : '') + `
@@ -54,13 +84,16 @@
           <aside class="pk-side"><div class="pk-h">FAVORITES</div><div class="pk-skel"></div><div class="pk-skel"></div></aside>
           <div class="pk-list"><div class="pk-skel"></div><div class="pk-skel"></div><div class="pk-skel"></div></div>
         </div>
-        <div class="pk-foot"><span class="pk-sel"></span><button class="pk-cancel">Cancel</button><button class="pk-ok">Use this folder</button></div>
+        <div class="pk-foot"><span class="pk-sel"></span><button class="pk-cancel">Cancel</button>
+          <button class="pk-wt" hidden title="A separate copy of the repo, on a branch of its own (${WIN ? 'Alt+↩' : '⌥↩'})"><svg class="i-br" viewBox="0 0 16 16"><circle cx="4.5" cy="3" r="1.6"/><circle cx="4.5" cy="13" r="1.6"/><circle cx="11.5" cy="5" r="1.6"/><path d="M4.5 4.6v6.8M11.5 6.6c0 3.2-7 2.4-7 4.8"/></svg>New worktree…</button>
+          <button class="pk-use pk-ok">Use this folder</button></div>
       </div>`;
     root.classList.add('on');
     const q = (s) => root.querySelector(s);
-    q('.l-close').onclick = () => cancel(true);
+    q('.l-close').onclick = () => { if (!window.Worktree?.isOpen()) cancel(true); };
     q('.pk-cancel').onclick = cancel;
-    q('.pk-ok').onclick = choose;
+    q('.pk-use').onclick = choose;
+    q('.pk-wt').onclick = () => openWorktree();
     q('.pk-back').onclick = () => go(st.back.pop(), 'back');
     q('.pk-fwd').onclick = () => go(st.fwd.pop(), 'fwd');
     q('.pk-up').onclick = up;
@@ -80,7 +113,7 @@
         menu.remove();
         if (e.target === root) return;
       }
-      if (e.target === root) cancel();
+      if (e.target === root && !window.Worktree?.isOpen()) cancel();
     };
     setTimeout(() => q('.pk')?.classList.remove('crt-on'), 700);
     if (around) {
@@ -184,7 +217,7 @@
       .map((e, i) => `<div class="pk-row${i === st.sel ? ' sel' : ''}${e.hidden ? ' hidden-dir' : ''}" data-i="${i}" style="animation-delay:${Math.min(i, 18) * 14}ms">
         <svg viewBox="0 0 24 24"><path class="fd-fill" d="${FOLDER}"/><path class="fd" d="${FOLDER}"/></svg>
         <span class="nm">${esc(e.name)}</span>
-        <span class="badges">${e.git ? '<span class="badge git">⎇ git</span>' : ''}${e.claude ? '<span class="badge claude">✻ claude</span>' : ''}</span>
+        <span class="badges">${e.worktree ? '<span class="badge wtb">⎇ worktree</span>' : e.git ? '<span class="badge git">⎇ git</span>' : ''}${e.claude ? '<span class="badge claude">✻ claude</span>' : ''}</span>
         <span class="dt">${e.modified ? rel(e.modified) : ''}</span></div>`)
       .join('');
     box.querySelectorAll('.pk-row').forEach((n) => {
@@ -205,19 +238,56 @@
 
   function updateFoot() {
     if (!st?.cwd) return;
-    const label = st.assign >= 0 ? `shortcut ${st.assign + 1} → ` : 'terminal opens in ';
-    root.querySelector('.pk-sel').innerHTML = `<b>${label}</b>${esc(tild(target()))}`;
+    const t = target();
+    const label = st.assign >= 0 ? `shortcut ${st.assign + 1} →` : st.mode === 'wt' ? 'worktree of' : 'terminal opens in';
+    // The path is cut from its left (the folder's own name always shows); then the branch it's on, or that it isn't a repo.
+    const g = st.assign >= 0 ? undefined : gitOf(t);
+    // Who already works in that folder's working tree (gitInfo's `ais`): a fact, nothing to click. Ring and menus don't say it.
+    const ais = g && g.repo && Array.isArray(g.ais) ? g.ais : [];
+    const who = ais.length === 1 ? ais[0] : ais.length === 2 ? `${ais[0]} and ${ais[1]}` : `${ais.length} AI chats`;
+    const working = ais.length ? `<span class="ai">· <i></i>${esc(who)} ${ais.length > 2 ? 'are' : ais.length === 2 ? 'are' : 'is'} working here</span>` : '';
+    const tail = g ? (g.repo ? `<span class="br">⎇ ${esc(g.branch)}</span>${working}` : '<span class="nogit">· not a git repo</span>') : '';
+    root.querySelector('.pk-sel').innerHTML = `<b>${label}</b><span class="p"><bdi>${esc(tild(t))}</bdi></span>${tail}`;
+    // ⎇ New worktree…: only where the app can make one; live in a git repo, faint (and the line says why) when not.
+    const wt = root.querySelector('.pk-wt'), use = root.querySelector('.pk-use');
+    wt.hidden = !st.wtOk || st.assign >= 0 || !window.Worktree;
+    const repo = !!(g && g.repo);
+    wt.disabled = !repo;
+    wt.title = repo ? `A separate copy of the repo, on a branch of its own (${WIN ? 'Alt+↩' : '⌥↩'})` : 'Only for folders in a git repo';
+    // Opened with ⌥⇧⌘N, the two buttons swap weight.
+    wt.classList.toggle('pk-ok', st.mode === 'wt' && !wt.hidden);
+    use.classList.toggle('pk-ok', st.mode !== 'wt' || wt.hidden);
+  }
+
+  // ⎇ New worktree… (or ⌥↩): the name sheet drops from the title bar over the picker; when the worktree is there, the
+  // picker closes as it does for a folder and the app opens the AI in it.
+  async function openWorktree(dir) {
+    if (!st?.cwd || !window.Worktree || st.assign >= 0 || window.Worktree.isOpen()) return;
+    const from = dir || target();
+    const g = dir ? { repo: true } : gitCache.get(from);
+    if (!st.wtOk || !g?.repo) return;
+    const btn = root.querySelector('.pk-wt');
+    btn.classList.add('loading');
+    await window.Worktree.open({
+      dir: from,
+      host: root.querySelector('.pk'),
+      onDone: (r) => close(() => API.worktreeOpen(r.open, r.ai)),
+      onCancel: () => root.querySelector('.pk-wt')?.focus(),
+    });
+    btn.classList.remove('loading');
   }
 
   function choose() {
     if (!st?.cwd) return;
     if (st.assign >= 0) return saveAssign();
-    pickDir(target());
+    // told: the bottom bar said who works here, so the new chat doesn't say it again.
+    const t = target(), g = gitCache.get(t);
+    pickDir(t, { told: !!(g && g.repo && g.ais && g.ais.length) });
   }
 
-  function pickDir(dir) {
+  function pickDir(dir, meta) {
     const cb = st.onPick;
-    close(() => cb && cb(dir));
+    close(() => cb && cb(dir, meta));
   }
 
   // force: the window's close light, which leaves even while a shortcut is being filled.
@@ -280,6 +350,7 @@
   }
 
   function tileClick(i) {
+    if (window.Worktree?.isOpen()) return;
     const s = st.slots[i];
     if (s) return pickDir(s.dir);
     if (st.assign === i) return endAssign();
@@ -294,7 +365,7 @@
     paint(i);
     root.classList.add('assigning');
     root.querySelector('.pk-title .for').textContent = `pick a folder for shortcut ${i + 1}`;
-    root.querySelector('.pk-ok').textContent = `Save as shortcut ${i + 1}`;
+    root.querySelector('.pk-use').textContent = `Save as shortcut ${i + 1}`;
     root.querySelector('.pk-cancel').textContent = 'Back';
     if (dir) go(dir, null);
     else updateFoot();
@@ -306,7 +377,7 @@
     if (i >= 0) paint(i);
     root.classList.remove('assigning');
     root.querySelector('.pk-title .for').textContent = st.forLabel;
-    root.querySelector('.pk-ok').textContent = 'Use this folder';
+    root.querySelector('.pk-use').textContent = 'Use this folder';
     root.querySelector('.pk-cancel').textContent = 'Cancel';
     updateFoot();
   }
@@ -335,19 +406,22 @@
   }
 
   function tileMenu(i, x, y) {
+    if (window.Worktree?.isOpen()) return;
     root.querySelector('.pk-ctx')?.remove();
     const s = st.slots[i];
     const m = document.createElement('div');
     m.className = 'pk-ctx';
     m.style.left = Math.min(x, innerWidth - 230) + 'px';
     m.style.top = Math.min(y, innerHeight - 130) + 'px';
-    m.innerHTML = `<div class="t">${esc(s.display || tild(s.dir))}</div><button data-a="open">New terminal here</button><button data-a="change">Change folder…</button><button data-a="remove">Remove shortcut ${i + 1}</button>`;
+    const wt = s.git && !s.missing && st.wtOk ? '<button data-a="worktree">New worktree here…</button>' : '';
+    m.innerHTML = `<div class="t">${esc(s.display || tild(s.dir))}</div><button data-a="open">New terminal here</button>${wt}<button data-a="change">Change folder…</button><button data-a="remove">Remove shortcut ${i + 1}</button>`;
     m.onmousedown = (e) => e.stopPropagation();
     m.onclick = async (e) => {
       const a = e.target.dataset.a;
       if (!a) return;
       m.remove();
       if (a === 'open') pickDir(s.dir);
+      else if (a === 'worktree') openWorktree(s.dir);
       else if (a === 'change') startAssign(i, s.dir);
       else if (a === 'remove' && (await saveSlot(i, null))) paint(i);
     };
@@ -356,7 +430,8 @@
 
   function close(done) {
     const pk = root.querySelector('.pk');
-    if (!pk) return;
+    if (!pk || root.classList.contains('closing')) return;
+    window.Worktree?.close();
     pk.classList.remove('crt-on');
     void pk.offsetWidth;
     pk.classList.add('crt-off');
@@ -371,7 +446,8 @@
   }
 
   addEventListener('keydown', (e) => {
-    if (!st || !root.classList.contains('on')) return;
+    // The name sheet has its own keys while it's open (worktree.js), and a closing picker has none.
+    if (!st || !root.classList.contains('on') || window.Worktree?.isOpen() || root.classList.contains('closing')) return;
     const n = visible().length;
     if (e.key === 'Escape') {
       e.stopPropagation();
@@ -393,9 +469,19 @@
       up();
     } else if (e.key === 'Enter') {
       e.preventDefault();
-      choose();
+      // ⌥↩ is ⎇ New worktree…; opened for a worktree (⌥⇧⌘N), ↩ is too. Not in a git repo: nothing.
+      if (e.altKey || (st.mode === 'wt' && st.assign < 0)) openWorktree();
+      else choose();
     }
   }, true);
 
-  window.Picker = { open, isOpen: () => !!st };
+  // Gone at once, no closing animation: the overlay is being hidden by the app (Show in Finder).
+  function dismiss() {
+    if (!st) return;
+    root.classList.remove('on', 'around', 'assigning', 'closing');
+    root.innerHTML = '';
+    st = null;
+  }
+
+  window.Picker = { open, isOpen: () => !!st, dismiss };
 })();

@@ -75,15 +75,21 @@ async function zig() {
   fs.mkdirSync(dir, { recursive: true });
   const zip = path.join(os.tmpdir(), `zig-${ZIG.version}-${process.pid}.zip`);
   console.log(`guard: fetching zig ${ZIG.version} (about 100 MB, once)`);
-  await download(ZIG.url, zip);
-  const got = await sha256(zip);
-  if (got !== ZIG.sha256) {
+  try {
+    await download(ZIG.url, zip);
+    const got = await sha256(zip);
+    if (got !== ZIG.sha256) {
+      fs.rmSync(zip, { force: true });
+      fail(`zig's download doesn't match its checksum (${got})`);
+    }
+    // Windows 10 and 11 have bsdtar, which reads zips. By its full path: from Git Bash, GNU tar comes first on the PATH,
+    // takes "C:" in the zip's path for a remote host and fails.
+    const tar = process.platform === 'win32' ? path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe') : 'tar';
+    cp.execFileSync(tar, ['-xf', zip, '-C', dir, '--strip-components', '1'], { stdio: 'inherit' });
+  } finally {
+    // A failed download or unpacking leaves no 100 MB zip behind in the temp folder.
     fs.rmSync(zip, { force: true });
-    fail(`zig's download doesn't match its checksum (${got})`);
   }
-  // Windows 10 and 11 have bsdtar, which reads zips.
-  cp.execFileSync('tar', ['-xf', zip, '-C', dir, '--strip-components', '1'], { stdio: 'inherit' });
-  fs.rmSync(zip, { force: true });
   if (!fs.existsSync(bin)) fail(`zig.exe isn't in ${dir}`);
   return bin;
 }

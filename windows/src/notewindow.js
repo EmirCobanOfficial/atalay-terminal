@@ -5,13 +5,20 @@
 // one that writes the notes: this window's page sends its note here and it goes on to the dashboard's `Notes.fromWindow`,
 // so a note window never gets the `notes` or `cloud` handlers (main.js refuses them). Each note's place and pin are kept
 // (`noteWindows` in the settings), and the notes still out when the app quits come back at the next launch.
+// A shared note's own parts go through its window's handler too (the Mac's NoteWindow handle): its socket's ticket, its
+// document file, its files and the secrets check (notessync.js), for this window's note only; the friends' and shared notes'
+// calls (share, invite, remove, leave, stop) and the sign-in a share asks for (cloud.js), from a short list.
 const path = require('path');
 
 const KEY = 'noteWindows';
 const NAME = /^[A-Za-z0-9-]{1,100}$/;
 const FLUSH = 'return window.Notes && Notes.flush ? await Notes.flush() : true';
+// What AI may do with the notes, as notesai.js keeps it in the settings (its KEY and MODES): each window's page shows it
+// (the eye only while AI has access), as the Mac's NoteWindow reads NotesAI.mode.
+const AI_KEY = 'notesAI';
+const AI_MODES = ['off', 'read', 'write'];
 
-function createNoteWindows({ BrowserWindow, screen, dialog, WEB, settings, webPrefs, bootFor, checkPages, ownerView, getDash, pin, uiScale, streamerOn, quitting, bg, opacity }) {
+function createNoteWindows({ BrowserWindow, screen, dialog, WEB, settings, webPrefs, bootFor, checkPages, ownerView, getDash, pin, uiScale, streamerOn, quitting, bg, opacity, editMenu, notesSync, social, openSignIn }) {
   const open = new Map(); // note id -> its window's record
   let restored = false;
   let watching = false;
@@ -24,6 +31,7 @@ function createNoteWindows({ BrowserWindow, screen, dialog, WEB, settings, webPr
     const d = getDash();
     return d && !d.isDestroyed() ? d : null;
   };
+  const aiMode = () => (AI_MODES.includes(settings.get(AI_KEY)) ? settings.get(AI_KEY) : 'off');
 
   // The dashboard's page runs `body` (an async function body) with the named args; its JSON result, null on any failure.
   async function callNotes(body, args = {}) {
@@ -103,7 +111,11 @@ function createNoteWindows({ BrowserWindow, screen, dialog, WEB, settings, webPr
     const saved = entries()[id] || {};
     const n = {
       id, onTop: saved.onTop === true, steppedAside: false, closing: false, finished: false, loaded: false,
-      pendingFocus: null, reopen: false, dragFrom: null, win: null,
+      // reopen: asked to open again while it was closing, null when not; true takes the keyboard then (the Mac's reopen).
+      pendingFocus: null, reopen: null, dragFrom: null, win: null, boot: null,
+      // The server's id of this window's note when it is shared (read from its note as it is loaded and saved): the only note
+      // this window may ask a socket ticket for, or upload a file into.
+      sharedID: null,
     };
     const frame = startFrame(saved.frame);
     const win = new BrowserWindow({
@@ -115,9 +127,15 @@ function createNoteWindows({ BrowserWindow, screen, dialog, WEB, settings, webPr
       fullscreenable: false, skipTaskbar: false, webPreferences: webPrefs(),
     });
     n.win = win;
-    bootFor(win.webContents, { noteWindow: { id, onTop: n.onTop, streamer: streamerOn() } });
+    // The AI level too (the Mac's boot `aiMode`), so its eye shows only while AI has access. The page asks for this object
+    // at each load (main.js's atl:boot hands over the one kept here), so aiModeChanged keeps its level current for a page
+    // loaded again.
+    n.boot = { id, onTop: n.onTop, streamer: streamerOn(), aiMode: aiMode() };
+    bootFor(win.webContents, { noteWindow: n.boot });
     win.setMenuBarVisibility(false);
     win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+    // A right click on its text: Cut, Copy, Paste, Select All (main.js's editMenu).
+    if (editMenu) editMenu(win.webContents, win);
     win.webContents.on('did-finish-load', () => !win.isDestroyed() && win.webContents.setZoomFactor(uiScale()));
     // Its page's process died: loaded again, it asks the dashboard for its note anew.
     win.webContents.on('render-process-gone', () => setTimeout(() => !n.finished && !win.isDestroyed() && win.webContents.reload(), 500));
@@ -206,7 +224,7 @@ function createNoteWindows({ BrowserWindow, screen, dialog, WEB, settings, webPr
     }
     if (open.get(n.id) === n) open.delete(n.id);
     callNotes('window.Notes && Notes.windowClosed && Notes.windowClosed(id)', { id: n.id });
-    if (n.reopen) show(n.id);
+    if (n.reopen !== null) show(n.id, n.reopen);
   }
 
   // ---------- the dashboard asks ----------
@@ -215,7 +233,8 @@ function createNoteWindows({ BrowserWindow, screen, dialog, WEB, settings, webPr
     if (typeof id !== 'string' || !NAME.test(id)) return;
     const n = open.get(id);
     if (n) {
-      if (n.closing) n.reopen = true;
+      // Opened again once it has closed: taking the keyboard if any of the asks did (an AI's note_show never does).
+      if (n.closing) n.reopen = n.reopen === true || focus;
       else if (n.loaded) present(n, focus);
       else n.pendingFocus = n.pendingFocus === true || focus;
       return;
@@ -228,6 +247,30 @@ function createNoteWindows({ BrowserWindow, screen, dialog, WEB, settings, webPr
     if (n) close(n, flush);
     if (deleted) forget(id);
   }
+
+  // For the AI tools (note_show, the Mac's NoteWindow.present): the note in its window without taking the keyboard from what the
+  // user is doing, and, when asked, kept on top (or not). The place is set before the window is made, so it opens as asked.
+  function presentFor(id, keepOnTop) {
+    if (typeof id !== 'string' || !NAME.test(id)) return;
+    if (typeof keepOnTop === 'boolean') {
+      const n = open.get(id);
+      if (n && !n.finished && !n.win.isDestroyed()) {
+        if (n.onTop !== keepOnTop) {
+          n.onTop = keepOnTop;
+          update(id, (e) => { e.onTop = keepOnTop; });
+          applyOnTop(n);
+          // Its page's pin button follows.
+          if (n.loaded) n.win.webContents.executeJavaScript(`window.Notes && Notes.setTop && Notes.setTop(${keepOnTop}); true`).catch(() => {});
+        }
+      } else {
+        update(id, (e) => { e.onTop = keepOnTop; });
+      }
+    }
+    show(id, false);
+  }
+
+  // For note_hide (the Mac's NoteWindow.close(id:flush:)): closed as its × does, what was typed kept.
+  const closeById = (id) => closeNote(id, true, false);
 
   // The dashboard's notes are loaded: the notes left out at the last quit come back once, and the page learns which
   // notes are out (a reloaded page has forgotten).
@@ -272,6 +315,35 @@ function createNoteWindows({ BrowserWindow, screen, dialog, WEB, settings, webPr
     }
   }
 
+  // A note hidden from AI or shown again somewhere else: its window's eye follows (the Mac's NoteWindow.setAiHidden).
+  function setAiHidden(id, on) {
+    const n = open.get(id);
+    if (!n || !n.loaded || n.finished || n.win.isDestroyed()) return;
+    n.win.webContents.executeJavaScript(`window.Notes && Notes.aiHiddenSet && Notes.aiHiddenSet(${on === true}); true`).catch(() => {});
+  }
+
+  // What AI may do with the notes changed (notesai.js setMode, the Mac's NoteWindow.aiModeChanged): each note's window and
+  // the dashboard's page learn it, for the eye (shown only while AI has access) and the board's chip. Each window's boot
+  // value follows, so a page loaded again (its process died) starts at the level as it is now.
+  function aiModeChanged() {
+    const mode = aiMode();
+    const js = `window.Notes && Notes.aiMode && Notes.aiMode(${JSON.stringify(mode)}); true`;
+    for (const n of open.values()) {
+      if (n.boot) n.boot.aiMode = mode;
+      if (n.finished || n.win.isDestroyed()) continue;
+      n.win.webContents.executeJavaScript(js).catch(() => {});
+    }
+    callNotes('window.Notes && Notes.aiMode && Notes.aiMode(mode); return true', { mode });
+  }
+
+  // The network came back or the PC woke up: every window's shared note tries its line again (the Mac's NoteWindow.netBack).
+  function netBack() {
+    for (const n of open.values()) {
+      if (!n.loaded || n.finished || n.win.isDestroyed()) continue;
+      n.win.webContents.executeJavaScript('window.Notes && Notes.netBack && Notes.netBack(); true').catch(() => {});
+    }
+  }
+
   function setStreamer(on) {
     for (const n of open.values()) {
       if (n.win.isDestroyed()) continue;
@@ -295,6 +367,61 @@ function createNoteWindows({ BrowserWindow, screen, dialog, WEB, settings, webPr
 
   const has = (webContents) => [...open.values()].some((n) => !n.win.isDestroyed() && n.win.webContents === webContents);
 
+  // ---------- for the AI tools (notestools.js, the Mac's NoteWindow.liveView and places) ----------
+  // The page that holds a note's live text: its own window's when the note is out (that page knows what is being typed, so
+  // an AI's change goes to it and never over the user's typing), else null (the dashboard's page has it).
+  function liveView(id) {
+    const n = typeof id === 'string' ? open.get(id) : null;
+    if (!n || !n.loaded || n.finished || n.closing || n.win.isDestroyed()) return null;
+    const wc = n.win.webContents;
+    return wc && !wc.isDestroyed() ? wc : null;
+  }
+
+  // Where the notes out in windows are: whether the window floats above every app (Keep on top) or rides above the
+  // dashboard, and whether it is on screen now.
+  function places() {
+    const out = {};
+    for (const [id, n] of open) out[id] = { onTop: n.onTop, visible: n.loaded && !n.finished && !n.win.isDestroyed() && n.win.isVisible() };
+    return out;
+  }
+
+  // The dashboard on screen (not closed, hidden or minimized): the note its panel shows is then in sight too (the Mac's
+  // NoteWindow.dashboard isVisible and not miniaturized).
+  function dashboardShown() {
+    const d = dashWin();
+    return !!d && d.isVisible() && !d.isMinimized();
+  }
+
+  // An AI tool's call into the page that has the note live: `owner`'s window when that note is out, else the dashboard's
+  // (the Mac's NotesTools.page). `body` is an async function body that has `N` (window.Notes) and the named args; the args
+  // reach it through JSON.parse, never as code, whatever text an AI sent. Answers the page's object (an array as { list }),
+  // { error: 'no_page' } when there's no page to ask (the dashboard is closed: Windows destroys its page then), or null
+  // when the call failed or took longer than `timeout` ms (what the page started may still land, as on the Mac).
+  async function agentCall(owner, body, args = {}, timeout = 20000) {
+    const wc = (owner && liveView(owner)) || dashPage();
+    if (!wc) return { error: 'no_page' };
+    const names = Object.keys(args).filter((k) => /^[A-Za-z_]\w*$/.test(k));
+    const js =
+      `(async () => { const { ${names.join(', ')} } = JSON.parse(${JSON.stringify(JSON.stringify(args))}); ` +
+      `const N = window.Notes; if (!N || !N.agentList) return { error: 'loading' }; ${body} })()`;
+    let timer = null;
+    try {
+      const r = await Promise.race([
+        wc.executeJavaScript(js),
+        new Promise((resolve) => {
+          timer = setTimeout(() => resolve(undefined), timeout);
+        }),
+      ]);
+      if (Array.isArray(r)) return { list: r };
+      return r && typeof r === 'object' ? r : null;
+    } catch (e) {
+      console.error('notes page: AI tool call failed:', e.message);
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   // The dashboard page's messages for the note windows ("radar" handler).
   function radar(msg) {
     switch (msg.type) {
@@ -306,6 +433,10 @@ function createNoteWindows({ BrowserWindow, screen, dialog, WEB, settings, webPr
         return true;
       case 'notesReady':
         notesReady();
+        return true;
+      // A note hidden from AI or shown again (the board, the panel or the note's own eye): its window's eye follows.
+      case 'noteAiHidden':
+        if (typeof msg.id === 'string') setAiHidden(msg.id, msg.on === true);
         return true;
       default:
         return null;
@@ -352,6 +483,15 @@ function createNoteWindows({ BrowserWindow, screen, dialog, WEB, settings, webPr
         }
         return { onTop: n.onTop };
       }
+      // The eye on the note's own window (the Mac's aadd95b): the dashboard's page keeps the flag (it writes every note)
+      // and answers { hidden }. Without an answer the page puts the eye back as it was.
+      case 'aiHide': {
+        const r = await callNotes(
+          "const N = window.Notes; return N && N.setAiHidden ? await N.setAiHidden(id, on) : { error: 'the dashboard is loading' };",
+          { id: n.id, on: body.on === true },
+        );
+        return r && typeof r === 'object' ? r : { error: "the dashboard didn't answer" };
+      }
       case 'close':
         setImmediate(() => close(n, true));
         return null;
@@ -374,9 +514,55 @@ function createNoteWindows({ BrowserWindow, screen, dialog, WEB, settings, webPr
       case 'title':
         win.setTitle(String(typeof body.name === 'string' ? body.name : 'Note').slice(0, 80));
         return null;
+      // The friends and the shared notes' calls (share, invite, remove, leave, stop) for this window's page, which has no `cloud`.
+      case 'notesApi': {
+        const p = typeof body.path === 'string' ? body.path : '';
+        const method = (typeof body.method === 'string' ? body.method : 'GET').toUpperCase();
+        if (!social || !mayCall(p, method)) return { error: 'bad_path' };
+        return social(method, p, body.body);
+      }
+      // Signing in with GitHub happens in the browser: only GitHub's own sign-in page opens (as the dashboard's `cloud` does).
+      case 'openSignIn':
+        return openSignIn ? openSignIn(body.url) === true : false;
+      // Not a member any more (or the sharing ended): the window closes and the dashboard's page drops the note.
+      case 'sharedGone': {
+        const why = typeof body.why === 'string' ? body.why : 'removed';
+        setImmediate(() => {
+          close(n, false);
+          forget(n.id);
+          callNotes('window.Notes && Notes.dropSharedNow && Notes.dropSharedNow(id, why)', { id: n.id, why });
+        });
+        return null;
+      }
       default:
+        // A shared note's own parts, for this window's note only: its socket's ticket, its document file, its files, the secrets
+        // check. A shared note's id is the server's (a uuid), not the window's note id: a ticket or an upload is for that one.
+        if (notesSync && notesSync.handles(body.type)) {
+          const ticket = body.type === 'syncTicket' || body.type === 'attUpload';
+          const allow = (x) => (ticket ? !!n.sharedID && String(x).toLowerCase() === n.sharedID.toLowerCase() : x === n.id || x === '');
+          return notesSync.handle(body, { allow, sender: webContents });
+        }
         return { error: 'unknown request' };
     }
+  }
+
+  // This window's note's server id, from a one-note pad (its load, or what it saves).
+  function learnShared(n, json) {
+    try {
+      const pad = JSON.parse(String(json));
+      const note = pad && Array.isArray(pad.notes) ? pad.notes[0] : null;
+      n.sharedID = note && note.shared && typeof note.shared.id === 'string' ? note.shared.id : null;
+    } catch {}
+  }
+
+  // What a note window's page may ask the API for (the Mac's NoteWindow.mayCall): the friends (to pick who to share with), the
+  // shared notes, and the sign-in a shared note asks for (reading the account; starting GitHub; sending and checking an
+  // e-mailed code), nothing else of v1/account or v1/auth. cloud.js's allow-list is checked on top of this.
+  function mayCall(p, method) {
+    if (/[#;]/.test(p) || p.includes('..')) return false;
+    if (p === 'v1/account') return method === 'GET';
+    if (p.startsWith('v1/auth')) return method === 'POST' && ['v1/auth/github', 'v1/auth/email', 'v1/auth/email/verify'].includes(p);
+    return p === 'v1/social' || p === 'v1/notes' || p.startsWith('v1/notes/');
   }
 
   // The note, from the dashboard's page: `{ json }`, `{ gone }` (deleted: the window closes) or `{ wait }` (loading).
@@ -385,6 +571,7 @@ function createNoteWindows({ BrowserWindow, screen, dialog, WEB, settings, webPr
     const answer = await callNotes(js, { id: n.id });
     if (n.finished) return { gone: true };
     if (answer && typeof answer.json === 'string') {
+      learnShared(n, answer.json);
       if (!n.loaded) {
         n.loaded = true;
         // Shown after the reply goes out, so the page has its note when it appears.
@@ -409,12 +596,17 @@ function createNoteWindows({ BrowserWindow, screen, dialog, WEB, settings, webPr
       if (pad && Array.isArray(pad.notes) && pad.notes.length === 1) note = pad.notes[0];
     } catch {}
     if (!note || note.id !== n.id) return { error: 'bad request' };
+    learnShared(n, json);
     if (!dashPage()) return { error: "the dashboard isn't open" };
     const r = await callNotes("const N = window.Notes; return N && N.fromWindow ? await N.fromWindow(note) : { error: 'the dashboard is loading' };", { note });
     return r && typeof r === 'object' ? r : { error: "the dashboard didn't answer" };
   }
 
-  return { radar, handle, has, pinAll, stepAside, setStreamer, flushAll, closeKey, setBackground };
+  return {
+    radar, handle, has, pinAll, stepAside, setStreamer, flushAll, closeKey, setBackground, liveView, places, dashboardShown, agentCall, netBack, present: presentFor, closeById,
+    // For the notes' AI switch (notesai.js setMode).
+    aiModeChanged,
+  };
 }
 
 module.exports = { createNoteWindows };

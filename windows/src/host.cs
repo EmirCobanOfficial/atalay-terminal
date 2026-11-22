@@ -234,6 +234,12 @@ sealed class Session
     IntPtr pc, process, job;
     FileStream input, output;
     Thread reader;
+    // What's typed into it waits in a queue of its own, written by a thread of its own: a pseudo console slow to take
+    // its input (a big paste, a console that has stopped reading) holds up only this session. Written from the app's
+    // line, it held up that line too: every other terminal's typing, resizes, and the end or kill that would stop it.
+    readonly BlockingCollection<byte[]> inbox = new BlockingCollection<byte[]>();
+    long inboxBytes;
+    const long MaxInbox = 32L << 20;
     // The pseudo console and the job are closed once: a resize or an end that comes as the shell exits must not use a
     // handle that's gone. Not under Gate: closing the pseudo console can wait for its last output, which the reader
     // hands over under Gate.
@@ -306,6 +312,7 @@ sealed class Session
             };
             s.reader = new Thread(s.ReadOutput) { IsBackground = true };
             s.reader.Start();
+            new Thread(s.WriteInput) { IsBackground = true }.Start();
             new Thread(s.WaitForExit) { IsBackground = true }.Start();
             return s;
         }
@@ -412,6 +419,8 @@ sealed class Session
         // Closing the pseudo console lets the rest of the output through and ends the reader.
         ClosePc();
         reader.Join(5000);
+        // The input thread ends with the queue (one in the middle of a write is let go by the pseudo console's end).
+        inbox.CompleteAdding();
         try { input.Dispose(); } catch { }
         try { output.Dispose(); } catch { }
         Native.CloseHandle(process);
@@ -449,12 +458,30 @@ sealed class Session
         }
     }
 
+    // Never waits: the input goes in the session's queue (WriteInput). One that has stopped taking it for good doesn't
+    // keep it all: past 32 MB waiting, more is dropped.
     public void Write(string data)
+    {
+        if (string.IsNullOrEmpty(data)) return;
+        var bytes = new UTF8Encoding(false).GetBytes(data);
+        if (Interlocked.Add(ref inboxBytes, bytes.Length) > MaxInbox)
+        {
+            Interlocked.Add(ref inboxBytes, -bytes.Length);
+            return;
+        }
+        try { inbox.Add(bytes); } catch (InvalidOperationException) { }
+    }
+
+    void WriteInput()
     {
         try
         {
-            var bytes = new UTF8Encoding(false).GetBytes(data);
-            lock (input) { input.Write(bytes, 0, bytes.Length); input.Flush(); }
+            foreach (var bytes in inbox.GetConsumingEnumerable())
+            {
+                Interlocked.Add(ref inboxBytes, -bytes.Length);
+                input.Write(bytes, 0, bytes.Length);
+                input.Flush();
+            }
         }
         catch { }
     }

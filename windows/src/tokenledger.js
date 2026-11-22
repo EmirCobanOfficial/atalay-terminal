@@ -1,6 +1,7 @@
 'use strict';
 // The token ledger, as the Mac app's TokenLedger.swift keeps it: tokens burned on this PC for the leaderboard's Tokens view
-// (the API's src/usage.ts): every reply of Claude Code, Codex and Antigravity, read from their own records, by local day
+// (the API's src/usage.ts): every reply of Claude Code, Codex, Antigravity and Cursor, read from their own records (Cursor's
+// from the turns its hooks handed the app, cursorhooks.js), by local day
 // (the day the API counts active time on), tool, model and effort: new input, output, cache reads, cache writes, the part
 // of the output spent reasoning, and the replies. Each file is read on from where it was left, a few minutes apart; the
 // first time, everything the tools still keep, so the API gets the history once. A reply counts once however many lines or
@@ -31,7 +32,7 @@ const EVERY = 3 * 60_000;
 // more and more of it.
 const LINE_MAX = 64 << 20;
 const CHUNK = 4 << 20;
-const TOOLS = new Set(['claude', 'codex', 'antigravity']);
+const TOOLS = new Set(['claude', 'codex', 'antigravity', 'cursor']);
 const EFFORTS = new Set(['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
 const nextTurn = () => new Promise((r) => setImmediate(r));
 
@@ -56,6 +57,11 @@ function addCounts(a, b) {
 // ledger.js's dayKeys.
 const pad = (n, w = 2) => String(n).padStart(w, '0');
 const keyOf = (d) => `${pad(d.getFullYear(), 4)}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+// The local day after today: the first one that may go out once "share my token counts" is turned back on (cloud.js).
+function dayAfterToday() {
+  const now = new Date();
+  return keyOf(new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1));
+}
 function dayKeys() {
   let lo = 0, hi = -1, last = '';
   return (ms) => {
@@ -182,6 +188,7 @@ function generations(file) {
 const ASSISTANT = Buffer.from('"type":"assistant"');
 const USAGE = Buffer.from('"usage"');
 const PLANNER = Buffer.from('"PLANNER_RESPONSE"');
+const STOP = Buffer.from('"e":"stop"');
 const CODEX_KEYS = ['"token_usage_record"', '"token_count"', '"turn_context"', '"thread_settings_applied"', '"session_meta"'].map((k) => Buffer.from(k));
 
 // A folder itself, not a link to one: inside the tools' folders the reader follows no links (one could lead it over the
@@ -258,6 +265,16 @@ async function agyFiles(agy) {
   return out;
 }
 
+// Cursor keeps no token counts on disk, but its hooks hand every turn's to the app's hook program (cursorhooks.js): the
+// `stop` events in its event files, from when the hooks were put in.
+async function cursorFiles(events) {
+  try {
+    return (await fsp.readdir(events, { withFileTypes: true })).filter((d) => d.isFile() && d.name.endsWith('.jsonl')).map((d) => path.join(events, d.name));
+  } catch {
+    return [];
+  }
+}
+
 // Each line of `data` (without its newline), empty ones left out.
 function eachLine(data, end, body) {
   for (let off = 0; off < end; ) {
@@ -278,14 +295,15 @@ const parse = (line) => {
 };
 
 /**
- * `dir`: the app's data folder (where ledger.json is kept); `staging`: a staging build, which keeps its own book as it keeps
- * its own spend ledger (it sends to its own API). The folders the tools keep are found as the engine finds them; `claudeDir`,
- * `codexDir` and `agyDir` are for tests.
+ * `dir`: the app's data folder (where ledger.json is kept, and Cursor's hook events in cursor-events); `staging`: a staging
+ * build, which keeps its own book as it keeps its own spend ledger (it sends to its own API). The folders the tools keep are
+ * found as the engine finds them; `claudeDir`, `codexDir`, `agyDir` and `cursorEvents` are for tests.
  */
-function createTokenLedger({ dir, staging = false, claudeDir, codexDir, agyDir } = {}) {
+function createTokenLedger({ dir, staging = false, claudeDir, codexDir, agyDir, cursorEvents } = {}) {
   const projects = path.join(claudeDir || process.env.CLAUDE_CONFIG_DIR || path.join(HOME, '.claude'), 'projects');
   const codex = codexDir || process.env.CODEX_HOME || path.join(HOME, '.codex');
   const agy = agyDir || path.join(HOME, '.gemini', 'antigravity-cli');
+  const cursor = cursorEvents || path.join(dir, 'cursor-events');
   const name = staging ? 'tokens-staging' : 'tokens';
   const file = path.join(dir, `${name}.json`);
   const seenFile = path.join(dir, `${name}.seen`);
@@ -487,6 +505,24 @@ function createTokenLedger({ dir, staging = false, claudeDir, codexDir, agyDir }
     add(keys(ts), keyName('antigravity', model(m), e), c);
   }
 
+  // Cursor: a turn's `stop` event, its input (cache writes apart), output and cache reads; once per generation (the Mac's
+  // cursorLine). Its time is in ms already.
+  function cursorLine(line, keys) {
+    if (line.indexOf(STOP) < 0) return;
+    const j = parse(line);
+    if (!j || j.e !== 'stop' || !isObj(j.p) || !(typeof j.t === 'number' && j.t > 0)) return;
+    const p = j.p;
+    // Its input counts the cache reads and writes too (its own price list takes them off): the rest is what was new.
+    const cr = int(p.cache_read_tokens), cw = int(p.cache_write_tokens);
+    const c = counts(Math.max(0, int(p.input_tokens) - cr - cw), int(p.output_tokens), cr, cw, 0, 1);
+    if (isEmpty(c)) return;
+    const id = (typeof p.generation_id === 'string' && p.generation_id) || `${str(p.conversation_id) ?? ''}:${Math.trunc(j.t)}`;
+    const h = hash(`u:${id}`);
+    if (seen.has(h)) return;
+    remember(h);
+    add(keys(j.t), keyName('cursor', model(p.model === 'default' ? 'auto' : str(p.model)), ''), c);
+  }
+
   // Reads a file on from its mark, whole lines only (a line being written waits for the next pass). True when its mark
   // moved. A file only, not a link to one.
   async function pump(file, tool, keys) {
@@ -525,6 +561,7 @@ function createTokenLedger({ dir, staging = false, claudeDir, codexDir, agyDir }
         eachLine(data, nl, (line) => {
           if (tool === 'claude') claudeLine(line, mark, keys);
           else if (tool === 'codex') codexLine(line, mark, file, keys);
+          else if (tool === 'cursor') cursorLine(line, keys);
           else agyLine(line, mark, file, keys);
         });
         rest = Buffer.from(data.subarray(nl + 1));
@@ -539,14 +576,14 @@ function createTokenLedger({ dir, staging = false, claudeDir, codexDir, agyDir }
     return true;
   }
 
-  // Every file of the three tools, read on; the book saved when anything changed.
+  // Every file of the four tools, read on; the book saved when anything changed.
   async function read() {
     const t0 = Date.now();
     let changed = false;
     const present = new Set();
     const keys = dayKeys();
     labels = new Map();
-    const lists = [['claude', claudeFiles(projects)], ['codex', codexFiles(codex)], ['agy', agyFiles(agy)]];
+    const lists = [['claude', claudeFiles(projects)], ['codex', codexFiles(codex)], ['agy', agyFiles(agy)], ['cursor', cursorFiles(cursor)]];
     for (const [tool, pending] of lists) {
       let paths = [];
       try {
@@ -592,7 +629,18 @@ function createTokenLedger({ dir, staging = false, claudeDir, codexDir, agyDir }
     });
   }
 
-  function makeBatch(max) {
+  function makeBatch(max, from) {
+    // Days before `from` stay on this PC: "share my token counts" was off on them, or on part of them. Done here, as a
+    // sent day is, so they never go out, even if they change again.
+    let held = false;
+    if (typeof from === 'string' && from) {
+      for (const day of dirty) {
+        if (day < from) {
+          dirty.delete(day);
+          held = true;
+        }
+      }
+    }
     const rows = [], days = {};
     for (const day of [...dirty].sort().reverse()) {
       const kinds = book.days[day] || {};
@@ -615,11 +663,12 @@ function createTokenLedger({ dir, staging = false, claudeDir, codexDir, agyDir }
     // Days with nothing to send (all their kinds empty) are done at once.
     if (!rows.length) {
       const names = Object.keys(days);
-      if (!names.length) return null;
+      if (!names.length) return held ? save().then(() => null) : null;
       for (const day of names) dirty.delete(day);
       return save().then(() => null);
     }
-    return { source: book.source, rows, days };
+    const batch = { source: book.source, rows, days };
+    return held ? save().then(() => batch) : batch;
   }
 
   const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
@@ -639,9 +688,10 @@ function createTokenLedger({ dir, staging = false, claudeDir, codexDir, agyDir }
     read: () => pass(),
 
     /** The days that changed since they last went out, newest first, as the API takes them: at most `max` rows. Null when
-     *  nothing changed. Waits for a pass in progress. */
-    batch(max = 500) {
-      return enqueue(() => makeBatch(max)).catch((e) => {
+     *  nothing changed. Waits for a pass in progress. `from`: the first day that may go out (cloud.js, after "share my
+     *  token counts" was off); the days before it are done at once, as if sent, and never go out. */
+    batch(max = 500, from = null) {
+      return enqueue(() => makeBatch(max, from)).catch((e) => {
         console.error('tokens:', e && e.message);
         return null;
       });
@@ -661,4 +711,4 @@ function createTokenLedger({ dir, staging = false, claudeDir, codexDir, agyDir }
   };
 }
 
-module.exports = { createTokenLedger, hash, model, effort, splitEffort, fromLabel, generations };
+module.exports = { createTokenLedger, hash, model, effort, splitEffort, fromLabel, generations, dayAfterToday };

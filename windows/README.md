@@ -44,7 +44,7 @@ Installed copies look for updates every minute (and on waking or unlocking the P
 electron-updater only when it names a newer version, so a release shows within a minute of going out. It's a pre-release, so it never becomes the repo's latest, the Mac's `.dmg` link keeps working, and a newer
 Mac release can't hide the Windows files. An update downloads by itself and goes in when the app quits, or right away
 when nothing would be stopped by a restart and the PC has been left alone for 10 minutes (or "right away" is on in
-Settings). New users download `Atalays-Terminal-Setup.exe` from that release; it's always the newest.
+Settings). New users download `Orbiterm-Setup.exe` from that release (also there under the old name, `Atalays-Terminal-Setup.exe`); it's always the newest.
 
 A release, on the Windows PC:
 
@@ -70,12 +70,15 @@ in `src/main.js` and pushes to them with `window.__radar.*`, `window.__messages.
 |------|--------------|------------------|
 | `src/main.js` | windows, IPC between pages and the parts below, keys | MainWindowController, AppDelegate |
 | `src/preload.js` | `window.webkit.messageHandlers` over IPC, the values the Mac injects into pages | RadarView, Messages, Overlay |
-| `src/engine.js` | Claude Code's sessions and transcripts (`%USERPROFILE%\.claude`) into the dashboard's state, and what the other AI tools do from their own records (Codex's logs, Antigravity's databases through `node:sqlite`), counted with Claude's; while a Codex runs, its account limits from `codex app-server` | Engine/*.swift |
+| `src/engine.js` | Claude Code's sessions and transcripts (`%USERPROFILE%\.claude`) into the dashboard's state, and what the other AI tools do from their own records (Codex's logs, Antigravity's databases through `node:sqlite`, Cursor's hook events and transcripts), counted with Claude's; while a Codex runs, its account limits from `codex app-server` | Engine/*.swift |
 | `src/ledger.js` | spend.ledger's history: each past day's spend by project and model, read once from the transcripts and kept in `%LOCALAPPDATA%\atalay-terminal\ledger.json` (Claude Code deletes transcripts after 30 days) | Ledger.swift |
-| `src/tokenledger.js` | the leaderboard's Tokens view: tokens burned by Claude Code, Codex and Antigravity, read from their own records by day, tool, model and effort, kept in `tokens.json` (+ `.seen` hashes) beside the spend ledger and sent to the API a day at a time (`node:sqlite` for Antigravity's older generations) | TokenLedger.swift |
+| `src/tokenledger.js` | the leaderboard's Tokens view: tokens burned by Claude Code, Codex, Antigravity and Cursor, read from their own records (Cursor's from its hook events) by day, tool, model and effort, kept in `tokens.json` (+ `.seen` hashes) beside the spend ledger and sent to the API a day at a time (`node:sqlite` for Antigravity's older generations) | TokenLedger.swift |
 | `src/terminals.js` | shells and Claude in ConPTY, one per chat or terminal window, in the session host | ChatTerminal, Detached |
 | `src/host.cs`, `src/sessionhost.js` | the session host, which keeps them running without the app, and the app's line to it | Detached (screen) |
+| `src/mcp.js`, `src/mcpbridge.cs`, `src/mcpshared.js` | Settings › Claude, the local MCP server: Claude Desktop and Claude Code on this PC list and read the AI sessions in the app's terminals and, if allowed, type a prompt into one. `mcpbridge.cs`, compiled like the session host into `%LOCALAPPDATA%\atalay-terminal-mcp`, is both the bridge Claude runs (`orbiterm-mcp.exe`, `orbiterm-mcp-notes.exe`, `-s` for staging) and the owner-only named pipe's server the app starts; the token and `audit.log` are in `%APPDATA%\Atalay's Terminal\mcp` | Mcp.swift, Support.swift redactMore, LastReply |
 | `src/git.js` | Source Control's requests: the repos, diffs, history, commit, push | Git.swift |
+| `src/gitship.js` | a linked worktree's git side: what a folder is (from its `.git` file), the worktree's status (branch, base, counts, upstream), its pull request through GitHub CLI when it's there and signed in, the sheets' data, and Create PR (commit, push, then gh or the host's form in the browser), Merge (locally, or the PR on GitHub) and Delete (the folder to the Recycle Bin, git's record, the branch) | GitShip.swift, Worktrees.swift |
+| `src/worktreeship.js` | a worktree's next step: its status kept while a window of it or the chats list shows, the header button's face and ▾ menu, the sheets' data (web/worktree-ship.js in the overlay) and what they do, nothing done without a sheet's own button; chats a delete ends keep their windows, ended | WorktreeShip.swift, WorktreeChip.swift |
 | `src/cloud.js` | the API: hacker name, heartbeat (XP, the AI tools at work for their badges), friends and messages, the Roadmap, the account (signing out and deleting it keep the token here), the live socket, notifications | Cloud, Social, ClientKey |
 | `src/unseal.js` | the messages sealed end to end before it was retired: with the keys this PC still has (the vault file, sealed by Windows), it hands the server each old message's own key, read only | Unseal |
 | `src/files.js` | Source Control's editor's files: a text file Ctrl-clicked in a terminal opens there (the path worked out from the shell's folder, a path Claude wrapped joined again), read and written only once opened; anything else in its app, a program only shown in its folder | FileEditor.swift, ChatTerminal |
@@ -83,14 +86,25 @@ in `src/main.js` and pushes to them with `window.__radar.*`, `window.__messages.
 | `src/termfont.js` | the terminals' font family picked in Settings: the monospaced families of this PC (one PowerShell call, kept for the session), the pick kept and checked | TerminalFont.swift |
 | `src/themes.js` | the themes: every colour token from a palette, into each page; Settings' interface font and text size | Themes.swift |
 | `src/aicolors.js` | the AI tools in the theme's colours: Claude Code, Codex and Antigravity on their themes that use the terminal's 16 colours, each one's own given back when it's turned off | AIColors.swift |
-| `src/runaways.js` | the process list: what burns a core where nobody sees it (DANGER), what closed terminals left running (amber cars), what runs in the app's terminals (their cars), the AI tools besides Claude running in a terminal (Codex, Gemini…: planets) | Runaways, MainWindowController, RadarEngine |
+| `src/runaways.js` | the process list: what burns a core where nobody sees it (DANGER), what closed terminals left running (amber cars), what runs in the app's terminals (their cars), the AI tools besides Claude running in a terminal (Codex, Gemini…: planets); each process's memory, the PC's, the ports listened on, and Clean Up's stop of a program's tree (by pid and creation time) | Runaways, MainWindowController, RadarEngine, Proc |
+| `src/cleanup.js` | Clean Up: the PC's memory (the map's line, the view's picture), the idle chats and heavy programs of the app's terminals and what closed ones left running, ticked on the page and ended only after its summary; the cards' `mem`; its log, `%LOCALAPPDATA%\Orbiterm\Logs\cleanup.log`. No worktrees yet | Cleanup.swift, MemoryWatch.swift |
 | `src/savers.js` | the token savers, rtk and caveman, on for Claude Code, Codex and Antigravity (`scripts/fetch-rtk.js` gets rtk for the build) | TokenSavers |
 | `src/limits.js` | Claude's 5-hour and weekly limits for the top bar: a script of the app's as Claude Code's status line, a status line of the user's own run through it | Limits |
-| `src/overlay.js` | the shortcut wheel's and the folder picker's folders (overlay.html) | Overlay.swift |
+| `src/cursorhooks.js`, `src/cursorhooks.cs` | Cursor's CLI (cursor-agent): a small program of the app's (compiled at first use, as the session host is) on its hooks in `%USERPROFILE%\.cursor\hooks.json`, beside the user's own, that keeps each conversation's events in `%LOCALAPPDATA%\atalay-terminal\cursor-events` for the engine and the token ledger; only the usual profile installs it | Engine/CursorHooks.swift |
+| `src/cursorusage.js` | Cursor's monthly usage limit for the top bar, asked of Cursor's server with the CLI's own token from `%APPDATA%\Cursor\auth.json` (read for the request, never kept) | Engine/CursorUsage.swift |
+| `src/overlay.js` | the Ring's and the folder picker's folders (overlay.html) | Overlay.swift |
 | `src/chatlist.js`, `pages/chats.*` | the chats list beside the dashboard (a view of its own in the dashboard window): every saved chat by project, each folder a card with the app's terminals in it, folders opened from the list, favourites, the archive (Settings lists it) | Sidebar.swift |
 | `src/notewindow.js` | a note out of the dashboard in a window of its own (web/note.html): above the dashboard, or pinned above every app; its place and pin kept, the notes left out at the last quit reopened; the dashboard's page stays the notes' one writer | NoteWindow.swift |
+| `src/notesstore.js` | the notes on this PC, encrypted (AES-256-GCM, the key sealed by Windows): a file for each note, a shared note's Yjs document beside it (`<id>.ydoc`), the files the notes hold (`files\<sha256>`), a copy of the folder before the notes become v4 (`Notes backups`) | NotesStore.swift, Attachments.swift (the files folder) |
+| `src/notessync.js` | the shared notes' side of the notes bridges: a note's socket ticket (the page opens the socket), its document file, the secrets check before a share, the file messages | NotesStore.swift (NotesSync) |
+| `src/attachments.js` | files in notes: added (20 MB, no programs), read, saved to Downloads with the mark of the web; a shared note's uploaded to the storage address the API signs and downloaded as the API streams it, checked by size and SHA-256 | Attachments.swift |
+| `src/notesprojects.js` | the notes' projects: a folder's project (a repo's main folder, worktrees included; no git process), broad folders, the board's "move to project" list | NotesTools.swift (NotesProjects), Git.swift (projectDir, broad, covers) |
+| `src/notestools.js`, `src/notesai.js` | the notes as AI tools on the local MCP server (list, read, add, edit, rewrite, create, pin, show; an AI's own project first) and Settings' switch that lets the AIs have them | NotesTools.swift, NotesAI.swift |
 | `src/feedpanel.js` | the community feed's lines (web/feed.html) in a see-through, click-through window at the top left of the screen | FeedPanel.swift |
-| `pages/terminal.*` | a chat or terminal window: xterm.js and its header | ChatWindow |
+| `src/shortcuts.js` | Settings › Shortcuts: the menu's keys as the user set them (`settings.json` `shortcuts`), recording new ones, the Ring's middle click (with Ctrl, alone or off) and its keys, Esc and the close keys swapped | Shortcuts.swift, EscClose.swift |
+| `src/envfiles.js`, `src/envbridge.js`, `pages/env.*` | the strip's env button (Ctrl+Shift+E): the .env, .env.*, *.env and .envrc files under the terminal's folder (4 folders down, 100 files, hidden and heavy folders skipped), a list, then one file's lines with the values masked until opened; Copy all, Save (a copy renamed over it, CRLF/LF, BOM and untouched lines kept), the file changing on disk; every read and write checks the path again (inside the folder, no link out, an env name, at most 1 MB) | EnvFiles.swift, EnvView.swift |
+| `src/sharecard.js` | the share card's picture to the clipboard or Downloads, shown in Explorer, and its badges and avatars fetched for it (an allow-list, every redirect checked) | Cloud.swift (CloudBridge share part) |
+| `pages/terminal.*` | a chat or terminal window: xterm.js and its header (the model and effort, the cost, the tool at work, the subagents running, what it waits for), its right-click menu (Copy, Paste, Select All, Find, Clear), Find, a dropped file's path, Copy Claude's last reply, pinned above every app, End's "End this chat?" | ChatWindow, ChatTerminal |
 
 ### The session host
 
@@ -98,7 +112,8 @@ Windows has no `screen`, so the app brings its own: `src/host.cs`, compiled at f
 with Windows (.NET Framework's `csc.exe`) into `%LOCALAPPDATA%\atalay-terminal-host`. Every chat and terminal runs in a
 pseudo console it holds, so the app can quit, update or crash and Claude keeps working; at the next launch the windows
 attach again (hidden, as on the Mac: a click on the dashboard opens one), starting from the end of the output the host
-kept. It runs outside the app's folder because an update's installer ends everything that runs from there; it ends by
+kept. What's typed into a session waits in a queue of its own, written by a thread of its own, so a big paste into one
+never holds up the others' typing, resizing or End. It runs outside the app's folder because an update's installer ends everything that runs from there; it ends by
 itself once its last session has and no app is connected, and uninstalling ends it (`build/installer.nsh`). The
 installed app and a development run (`npm start`) each have their own. Without it (it couldn't be built or started) the
 chats run in the app, through node-pty, and end with it.
@@ -107,15 +122,20 @@ chats run in the app, through node-pty, and end with it.
 
 - Closing the dashboard keeps the app going while a chat or terminal runs (starting the app again brings it back, as
   the Dock does on the Mac); with none, it quits.
-- No tabs or split panes: every terminal is a window of its own. Ctrl+W ends the terminal in front and all it runs, as
-  ⌘W does on the Mac (and as Ctrl+W closes a tab in Chrome); closing its window (Ctrl+Shift+W, its ×) keeps it running
-  as a car on the orbit, as ⇧⌘W does on the Mac; a click opens it again.
-- No four-finger click (Mac trackpads only): Ctrl and the middle mouse button (or Ctrl+K) open the shortcut wheel,
-  Ctrl+N a new file in Source Control's editor, Ctrl+Shift+N a new terminal, Ctrl+W ends the terminal in front and
-  Ctrl+Shift+W closes the window, in the terminal windows too (where they'd otherwise go to the shell); Ctrl++ and Ctrl+- there are the terminals' text size,
+- No tabs or split panes: every terminal is a window of its own. Closing its window (Ctrl+W, Ctrl+Shift+W, its ×)
+  keeps what runs in it going as a planet or car on the orbit, as ⌘W and ⇧⌘W do on the Mac; a click opens it again.
+  Its End button (or Window > End This Terminal) ends it.
+- No four-finger click (Mac trackpads only): Ctrl and the middle mouse button (or Ctrl+K) open the Ring,
+  Ctrl+N a new file in Source Control's editor, Ctrl+Shift+N a new terminal, Ctrl+W and Ctrl+Shift+W close the
+  window, in the terminal windows too (where they'd otherwise go to the shell); Ctrl++ and Ctrl+- there are the terminals' text size,
   as ⌘+ and ⌘− on the Mac. While Antigravity runs in one, its Ctrl+K is Antigravity's, which approves its subagents'
   steps with it.
   Ctrl+B (⌘B) opens and closes the chats list in the dashboard window only: in a terminal it stays the shell's (and
   Claude's, which runs a command in the background with it).
 - No iTerm2: a chat started in another terminal shows on the dashboard and can be opened as a copy.
+- No New Worktree… or Open in a Worktree… yet: a worktree made by `claude -w` or `git worktree add` gets the header's
+  Create PR / Merge / Delete worktree button and the chats list's items all the same. The worktree items are in the File
+  menu (there's no Chat menu), and Delete sends the folder to the Recycle Bin.
 - Updates come from the releases repo's `windows` release (above), not from the API's offer, which is the Mac app's.
+- No What's New after an update (`web/whatsnew.js` leaves Windows out).
+- The folder picker's favourites are a fixed list (home, Desktop, Documents, Downloads…), not Explorer's Quick Access.

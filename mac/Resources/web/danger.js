@@ -92,7 +92,7 @@ window.Danger = (() => {
           `<div class="dp-l2" title="${esc(r.cmd)}">PID ${r.pid} · for ${dur(now - r.since)} · ${esc(r.cmd)}</div></div>`
         );
       }).join('') +
-      '</div>';
+      '<button type="button" class="dp-more">Open Clean Up ›</button></div>';
   }
 
   function renderLeft() {
@@ -102,11 +102,16 @@ window.Danger = (() => {
       '<p class="dp-sub">Its terminal closed, but this kept running.</p>' +
       `<div class="dp-row" data-key="${esc(k)}"><div class="dp-l1"><b>${esc(t.cmd)}</b>${endButton(k)}</div>` +
       `<div class="dp-l2" title="${esc(t.cwd)}">PID ${t.pid} · for ${dur(Date.now() - t.started)} · ${esc(t.cwd)}</div></div>` +
-      '</div>';
+      '<button type="button" class="dp-more">Open Clean Up ›</button></div>';
   }
 
   function onClick(e) {
     if (e.target.closest('.dp-x')) return close();
+    // The card goes and the Clean Up view opens: the same two runaways and leftovers are rows there (Programs).
+    if (e.target.closest('.dp-more')) {
+      close();
+      return send({ type: 'cleanupOpen' });
+    }
     if (left) return onLeftClick(e);
     const row = e.target.closest('.dp-row');
     const r = row && list.find((x) => key(x) === row.dataset.key);

@@ -1,0 +1,87 @@
+/* Emir (themes.json): a profiler's timeline. Graphite and bone, colour only where it means something; a time ruler
+   under the top bar, panels as numbered tracks, a playhead that crosses once when the theme is kept; flat, without the
+   scanlines, the vignette, the headers' sweep and the logo's pulse. Every rule applies only while Emir is the theme,
+   so the other themes look as they did.
+   The rules sit under a container named on the root, and only while Emir is on (hooks.js sets data-theme), so they
+   reach the map's tag too and WebKit resolves the ::before/::after again on a switch (docs/theme-hooks.md); the map
+   itself keeps its own look. The note and feed pages have no hooks.js: they take the colours and the font only.
+   Font: Geist Mono, its regular and semibold cuts, static (WebKit drew the variable font at a cost), under the SIL
+   Open Font License (fonts/OFL-GeistMono.txt). */
+
+@font-face { font-family: "Geist Mono"; src: url("fonts/GeistMono-Regular.woff2") format("woff2"); font-weight: 400; font-display: swap; }
+@font-face { font-family: "Geist Mono"; src: url("fonts/GeistMono-SemiBold.woff2") format("woff2"); font-weight: 600; font-display: swap; }
+
+@keyframes emir-playhead { from { transform: translateX(0); opacity: 1; } to { transform: translateX(100vw); opacity: 0.4; } }
+@keyframes emir-bump { from { color: var(--hi); } }
+
+:root[data-theme="emir"] { container-name: emir; }
+
+@container emir style(--theme-id: emir) {
+  body { background: var(--bg); }
+  body::before, body::after, .brand .mark-glow, .panel::after, #activity::after, #git .vs-card::after { display: none; }
+
+  /* top bar: flat, with a ruler along its lower edge (a tick every 8px, a long one every 64px). Small gradient tiles,
+     not a repeating-linear-gradient: WebKit paints those across the whole bar on every repaint of it. */
+  #top { position: relative; border-color: var(--line-soft); overflow: hidden; }
+  #top::after {
+    --tick: rgba(var(--accent-rgb), 0.5);
+    content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 6px; pointer-events: none;
+    background:
+      linear-gradient(90deg, var(--tick) 0 1px, transparent 1px) 0 100% / 64px 6px repeat-x,
+      linear-gradient(90deg, var(--tick) 0 1px, transparent 1px) 0 100% / 8px 3px repeat-x;
+    opacity: 0.55;
+  }
+  /* a session needs you: the ruler goes red, as a frame over budget does */
+  :root[data-waiting] #top::after { --tick: rgba(var(--warn-rgb), 0.9); opacity: 0.8; }
+  /* the theme kept: the playhead crosses the bar once */
+  #top::before {
+    content: ""; position: absolute; top: 0; bottom: 0; left: 0; width: 1px; pointer-events: none;
+    background: var(--accent); opacity: 0;
+  }
+  :root[data-theme-kept] #top::before { animation: emir-playhead 0.9s cubic-bezier(0.3, 0, 0.2, 1) both; }
+
+  .brand .stack b { font-weight: 400; letter-spacing: 0.24em; text-shadow: none; }
+  .brand .live { padding: 0 4px; outline: 1px solid currentColor; outline-offset: -1px; background: transparent; color: var(--accent); }
+  .brand .live.off { background: transparent; color: var(--red); }
+  .clock { color: var(--txt2); font-variant-numeric: tabular-nums; }
+  /* a hairline between the numbers, in the gap they already have: the bar wraps where it did */
+  .kpi + .kpi { position: relative; }
+  .kpi + .kpi::before { content: ""; position: absolute; left: -8px; top: 2px; bottom: 2px; border-left: 1px solid var(--line-soft); }
+  .kpi label { font-size: 0.66em; letter-spacing: 0.12em; text-transform: uppercase; }
+  .kpi b { font-weight: 600; font-variant-numeric: tabular-nums; }
+  /* a number that changed steps up to white without the glow (a blurred shadow repainted every frame while it fades) */
+  .kpi b.bump { animation-name: emir-bump; }
+  .kpi.hot b { color: var(--accent); text-shadow: none; }
+  .topbtn { border-color: var(--line-soft); }
+  .topbtn:hover { border-color: var(--accent); background: rgba(var(--accent-rgb), 0.08); box-shadow: none; }
+  .topbtn.primary { font-weight: 600; }
+
+  /* panels: tracks, numbered in order, a short marker where each begins (the map is track 00) */
+  #app { counter-reset: lane; }
+  .panel, .card, #ticker { border-color: var(--line-soft); }
+  .panel::before, #activity::before, #git .vs-card::before { top: -1px; left: -1px; width: 2px; height: 20px; border: 0; background: var(--accent); }
+  .panel > header { border-bottom-color: var(--line-soft); }
+  .panel > header::after { animation: none; display: none; }
+  .tag, .maptag span {
+    padding: 0 10px; background: transparent; color: var(--hi);
+    font-size: 0.86em; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase;
+  }
+  /* a note's name is its writer's own text: as written, and not a track */
+  .tag.np-name, .tag.npw-name { letter-spacing: normal; text-transform: none; }
+  .panel > header .tag:not(.np-name)::before, .maptag span::before { margin-right: 9px; color: var(--dim); font-weight: 400; }
+  .panel > header .tag:not(.np-name)::before { counter-increment: lane; content: counter(lane, decimal-leading-zero); }
+  .maptag span::before { content: "00"; }
+  /* narrow windows: the map's header already runs under its switches; the tag takes no more room than the default's */
+  @media (max-width: 1250px) {
+    .maptag span::before { content: none; }
+    .maptag span { padding: 0 8px; letter-spacing: 0.04em; }
+  }
+
+  /* session cards: the state colour as a plain bar, without the glow */
+  .card::before { width: 2px; box-shadow: none; }
+
+  /* the last 200 tool calls: slices on a track */
+  #ticker .lbl { letter-spacing: 0.1em; text-transform: uppercase; font-size: 0.72em; }
+  .sq { width: 4px; height: 12px; opacity: 1; }
+  .sq.err { box-shadow: none; }
+}

@@ -95,11 +95,13 @@ function gitEnvironment(locks) {
 
 // Runs git in `dir`: { status, out, err } (out and err as bytes), or null if it couldn't start. A run longer than
 // `timeout` ms is stopped, as is one printing more than `max` bytes; either ends with status -1.
+// Never the folder's own fsmonitor: a repo's config can name any command as core.fsmonitor, and every status would
+// run it, so a folder from a zip or a download would run it as soon as a terminal is in it.
 function exec(dir, args, { timeout, locks, max = Infinity }) {
   return new Promise((resolve) => {
     let p;
     try {
-      p = spawn(gitExecutable(), ['-C', dir, ...args], {
+      p = spawn(gitExecutable(), ['-C', dir, '-c', 'core.fsmonitor=false', ...args], {
         env: gitEnvironment(locks),
         stdio: ['ignore', 'pipe', 'pipe'],
         // A console program started from a window app gets a console window of its own, unless it's hidden.
@@ -154,9 +156,32 @@ function exec(dir, args, { timeout, locks, max = Infinity }) {
   });
 }
 
+// Folder -> the settings its reads run with (readGuards), asked again after ten seconds.
+const guards = new Map();
+
+// Reads run none of the commands a repo's own config (or a file it includes) names for a filter driver: the
+// background status and diffs would run a filter's clean on every changed file, unasked. Each such driver of the
+// repo's own config gets an empty clean, smudge and process, so its files are compared as they are; the user's
+// global and system drivers (Git LFS) stay, as do changes (stage, commit), which the user asked for. Reads show no
+// signatures either (gpg.program is the repo's to name), and a diff or blame is shown without textconv (--no-textconv:
+// a diff driver's textconv is a command too).
+async function readGuards(dir) {
+  const hit = guards.get(dir);
+  if (hit && Date.now() - hit.at < 10_000) return hit.args;
+  const args = ['-c', 'log.showSignature=false'];
+  const r = await exec(dir, ['config', '--show-scope', '--includes', '--name-only', '--get-regexp', '^filter\\..+\\.(clean|smudge|process)$'], { timeout: 6000, locks: false });
+  for (const line of r && r.status === 0 ? r.out.toString('utf8').split('\n') : []) {
+    const [scope, key] = line.trim().split('\t');
+    if (key && (scope === 'local' || scope === 'worktree')) args.push('-c', `${key}=`);
+  }
+  if (guards.size > 500) guards.clear();
+  guards.set(dir, { args, at: Date.now() });
+  return args;
+}
+
 // What git printed, or null when it failed (or printed more than `max`).
 async function read(dir, args, max = 8 << 20) {
-  const r = await exec(dir, args, { timeout: 6000, locks: false, max });
+  const r = await exec(dir, [...(await readGuards(dir)), ...args], { timeout: 6000, locks: false, max });
   return r && r.status === 0 ? r.out.toString('utf8') : null;
 }
 
@@ -402,10 +427,10 @@ async function diff(root, file, staged, commit) {
   if (!abs) return { error: 'outside the repo' };
   if (commit) {
     if (!isHash(commit)) return { error: 'bad commit' };
-    const shown = await read(root, ['show', '--first-parent', '-m', '--no-color', '--no-ext-diff', '-U1000000', '--pretty=format:', commit, '--', file], 32 << 20);
+    const shown = await read(root, ['show', '--first-parent', '-m', '--no-color', '--no-ext-diff', '--no-textconv', '-U1000000', '--pretty=format:', commit, '--', file], 32 << 20);
     return shown ? { diff: shown, abs } : { abs, note: 'no differences' };
   }
-  const out = await read(root, ['diff', ...(staged ? ['--cached'] : []), '--no-color', '--no-ext-diff', '-U1000000', '--', file], 32 << 20);
+  const out = await read(root, ['diff', ...(staged ? ['--cached'] : []), '--no-color', '--no-ext-diff', '--no-textconv', '-U1000000', '--', file], 32 << 20);
   if (out) return { diff: out, abs };
   // Untracked: the whole file is new.
   const st = await fsp.lstat(abs).catch(() => null);
@@ -470,7 +495,7 @@ async function log(root, n, all) {
 // Who last changed a line, and when and why (GitLens's line blame): in the working tree, or as of a commit.
 async function blame(root, file, line, commit) {
   if (!inside(root, file) || !(line > 0)) return { error: 'bad line' };
-  const out = (await read(root, ['blame', '--porcelain', '-L', `${line},${line}`, ...(commit ? [commit] : []), '--', file])) ?? '';
+  const out = (await read(root, ['blame', '--no-textconv', '--porcelain', '-L', `${line},${line}`, ...(commit ? [commit] : []), '--', file])) ?? '';
   const info = {};
   out.split('\n').forEach((raw, i) => {
     const l = raw.endsWith('\r') ? raw.slice(0, -1) : raw;
@@ -705,4 +730,5 @@ function createGit({ folders = () => [], written = null, confirm = async () => -
   return { handle, listed };
 }
 
-module.exports = { createGit };
+// The worktree's next step (gitship.js) runs git the same way: the same git, and the same guards on its reads.
+module.exports = { createGit, gitExecutable, readGuards };

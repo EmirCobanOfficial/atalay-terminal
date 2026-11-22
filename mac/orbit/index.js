@@ -15,6 +15,7 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { GlowPoints, LineBatch, RING_BAND, ringMaterial, setRing } from './batch.js';
 import { droneTextures, hexGlowTexture, ICON, SessionIcon } from './icons.js';
 import { buildCore } from './core.js';
+import { makeRaid } from './raid.js';
 import { buildBlueBox, buildRoadster, buildStation, CAR_LENGTH, carStudio } from './models.js';
 import { buildBackdrop } from './space.js';
 import { glowTexture } from './textures.js';
@@ -50,6 +51,8 @@ const host = document.getElementById('space');
 const glowTex = glowTexture();
 const hexGlow = hexGlowTexture();
 const DRONE_TEX = droneTextures();
+// Subagents the viewer dismissed ("sid:agentId" -> its last write then): hidden until it writes again.
+const DISMISSED = new Map();
 
 // No MSAA: the scene renders into the composer's targets, so antialias only cost memory. The resolution follows
 // QUALITY (set by resize()).
@@ -133,12 +136,15 @@ const bloom = new UnrealBloomPass(new THREE.Vector2(512, 512), 0.62, 0.45, 0.6);
 composer.addPass(bloom);
 composer.addPass(new OutputPass());
 
-// Frame rate and resolution by where the map is. In front: 60 fps at full Retina resolution, since below either the
-// thin lines and names of the moving session hexagons flicker in the glow. Behind a chat window (or another app) the
-// map is in the corner of your eye, so it draws fewer and smaller frames. In power save (power(), from the app: the
-// switch on the map, a low battery or Low Power Mode on the Mac; on battery on Windows) it never goes past `saver`, in
-// front either, and the cinematic camera doesn't start on its own.
-// Dragging the view, or the camera flying somewhere, gets the front rate anywhere.
+// Frame rate and resolution by where the map is. In front: 60 fps at the front resolution (`front.dpr`, 1.5 on a Retina
+// display, see below), since below either the thin lines and names of the moving session hexagons flicker in the glow.
+// Behind another app (activity(): the app isn't the active one, on the Mac and on Windows; one of its own chat windows
+// in front still counts as in front) it keeps that resolution and the front rate for a moment after something happens
+// on it (a tool call, its reply, a session's status: poke), so what moves stays smooth; with nothing happening it's in
+// the corner of your eye and draws the behind rate. In power save (power(), from the app: the switch on the map, a low
+// battery or Low Power Mode on the Mac; on battery on Windows) it never goes past `saver`, in front either, draws
+// smaller frames behind, and the cinematic camera doesn't start on its own. Dragging the view, or the camera flying
+// somewhere, gets the front rate anywhere.
 // At Retina the renderer and the bloom pipeline run at pixelRatio × canvas pixels; DPR 2 is 4× the fragment work of
 // DPR 1, and bloom's five-level mip chain pays that cost every frame. 1.5 keeps stylised low-poly looking the same
 // (fine rings and text barely soften) while cutting compositor and GPU load on macOS WindowServer.
@@ -147,10 +153,13 @@ const QUALITY = {
   behind: { fps: 20, dpr: 1.25 },
   saver: { fps: 30, dpr: 1.25 },
 };
-// What the app reports through activity() and power(); a hidden page also stops on its own.
-const ACT = { visible: true, focused: true, saver: false, until: 0 };
+// What the app reports through activity() and power(); a hidden page also stops on its own, and so does a map whose box
+// is gone (shown: Source Control's view, git-mode, and the activity bar's views, cloud-mode, put #mapwrap out of the
+// layout; Settings is a window over the dashboard and leaves it there).
+// `covered`: a chat window over the dashboard hides the map, see-through or not, so the map has no use for 60 fps then.
+const ACT = { visible: true, focused: true, saver: false, covered: false, until: 0, shown: true };
 function wantDpr() {
-  const d = !ACT.saver || ACT.focused ? QUALITY.front.dpr : QUALITY.behind.dpr;
+  const d = (!ACT.saver || ACT.focused) && !ACT.covered ? QUALITY.front.dpr : QUALITY.behind.dpr;
   return Math.min(d, ACT.saver ? QUALITY.saver.dpr : d, window.devicePixelRatio || 1);
 }
 // Sharper at once; less sharp only once it has stayed that way a moment, so a menu or a click through a chat window
@@ -168,6 +177,7 @@ const CAM = { right: new THREE.Vector3(), up: new THREE.Vector3(), fwd: new THRE
 let viewReady = false;
 
 function resize() {
+  if (!ACT.shown) return; // sized again once it's back in the layout
   const w = Math.max(200, host.clientWidth), h = Math.max(160, host.clientHeight), dpr = wantDpr();
   if (w === SIZE.w && h === SIZE.h && dpr === SIZE.dpr) return;
   SIZE.w = w;
@@ -188,7 +198,13 @@ function resize() {
     intro();
   }
 }
-new ResizeObserver(resize).observe(host);
+new ResizeObserver(() => {
+  // Out of the layout: no frames until it's back, at the size it had (no render targets reallocated twice).
+  ACT.shown = host.clientWidth > 0 && host.clientHeight > 0;
+  if (!ACT.shown) return;
+  resize();
+  wake();
+}).observe(host);
 
 function fitDistance() {
   const vf = THREE.MathUtils.degToRad(camera.fov / 2);
@@ -431,8 +447,18 @@ class Session {
     poke(1600);
   }
 
-  syncDrones(agents, now) {
+  syncDrones(all, now) {
     const seen = new Set();
+    // A subagent that has finished (handback, task-notification, stopped, ...) leaves the map at once; one the viewer
+    // dismissed stays away until it writes again.
+    const agents = all.filter((a) => !a.ended && !(DISMISSED.get(`${this.sid}:${a.id}`) >= a.lastTs));
+    for (const a of all) {
+      const d = this.drones.get(a.id);
+      if (d && a.ended && !d.dying) {
+        d.dying = now;
+        sparks(d.pos, VIOLET, 10, 40);
+      }
+    }
     agents.forEach((a, j) => {
       let d = this.drones.get(a.id);
       if (!d) {
@@ -567,7 +593,8 @@ class Session {
     const s = this.s;
     this.icon.draw(R, s, this.hueCss);
     this.label.classList.toggle('ended', s.status === 'ended');
-    setText(this.label, R.clipT(s.title || s.lastPrompt || s.cwd || '', 32));
+    // A worktree's session: a leading ⎇ (the label is all the map shows until the planet is hovered).
+    setText(this.label, (s.wt ? '⎇ ' : '') + R.clipT(s.title || s.lastPrompt || s.cwd || '', 32));
   }
 
   die(now) {
@@ -598,6 +625,9 @@ class Drone {
     this.idx = 0;
     this.count = 1;
     this.running = null;
+    this.parked = null;
+    this.phase = 0;
+    this.lastNow = 0;
     this.pos = owner.pos.clone();
     this.sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: DRONE_TEX.running, transparent: true, depthWrite: false }));
     this.sprite.scale.setScalar((128 / 40) * DRONE_HEX);
@@ -616,13 +646,19 @@ class Drone {
   update(dt, now) {
     const o = this.owner, s = o.scale;
     const ring = this.count > 7 ? (this.idx % 2) * 14 : 0;
-    const ang = (this.idx / Math.max(1, this.count)) * TAU + now / 9000;
+    const parked = !!this.ag.parked && !this.ag.running;
+    // The orbit angle is accumulated, so a parked drone stands where it was and goes on from there when it wakes.
+    if (this.lastNow === 0) this.phase = now;
+    else if (!parked) this.phase += now - this.lastNow;
+    this.lastNow = now;
+    const ang = (this.idx / Math.max(1, this.count)) * TAU + this.phase / 9000;
     const rx = (K.HEX + 46 + ring) * s, ry = (K.HEX + 24 + ring * 0.6) * s;
     this.pos
       .copy(o.pos)
       .addScaledVector(CAM.right, Math.cos(ang) * rx)
       .addScaledVector(CAM.up, Math.sin(ang) * ry)
       .addScaledVector(CAM.fwd, Math.sin(ang) * 16 * s);
+    if (parked) this.pos.addScaledVector(CAM.up, Math.sin(now / 760 + this.idx * 1.7) * 1.2 * s);
     let sc = easeOut(clamp((now - this.born) / 500, 0, 1));
     if (this.dying) {
       const u = clamp((now - this.dying) / 600, 0, 1);
@@ -633,24 +669,26 @@ class Drone {
       }
     }
     const running = !!this.ag.running;
-    if (running !== this.running) {
+    if (running !== this.running || parked !== this.parked) {
       this.running = running;
-      this.sprite.material.map = running ? DRONE_TEX.running : DRONE_TEX.done;
+      this.parked = parked;
+      this.sprite.material.map = running ? DRONE_TEX.running : parked ? DRONE_TEX.parked : DRONE_TEX.done;
     }
     this.root.visible = o.root.visible;
     this.root.position.copy(this.pos);
     this.root.scale.setScalar(Math.max(0.001, s * sc));
-    this.sprite.material.opacity = running ? 1 : 0.7;
+    this.sprite.material.opacity = running ? 1 : parked ? 0.55 : 0.7;
     this.spin.quaternion.copy(camera.quaternion);
     const u = this.spin.material.uniforms;
     u.color.value.copy(VIOLET).multiplyScalar(1.6);
     u.opacity.value = running ? 0.85 : 0;
     u.time.value = now / 1000;
     const hovered = hover && hover.kind === 'drone' && hover.drone === this;
-    const show = this.root.visible && !this.dying && hovered;
+    const show = this.root.visible && !this.dying && (hovered || parked);
     this.labelObj.visible = show;
     if (show) {
-      setText(this.labelEl, R.clipT(this.ag.desc || this.ag.type || 'subagent', 18));
+      const idle = `idle · ${Math.max(1, Math.floor((Date.now() - this.ag.lastTs) / 60000))}m`;
+      setText(this.labelEl, parked ? (hovered ? `${R.clipT(this.ag.desc || this.ag.type || 'subagent', 14)} · ${idle}` : idle) : R.clipT(this.ag.desc || this.ag.type || 'subagent', 18));
       this.labelObj.position.copy(this.pos).addScaledVector(CAM.up, -DRONE_HEX * 1.2 * s);
     }
     return true;
@@ -1239,7 +1277,8 @@ function startCinematic() {
 }
 function stepCinematic(dt, now) {
   if (!cine) {
-    if (now - lastInput > CINE.IDLE_MS && !ACT.saver) startCinematic();
+    // Not during a friend's raid: its stage is the default view.
+    if (now - lastInput > CINE.IDLE_MS && !ACT.saver && !raid.active()) startCinematic();
     return;
   }
   if (now > cine.until || (cine.alarm && !subjectPos(cine))) {
@@ -1352,6 +1391,7 @@ function wireHit(ev, t) {
 
 function onEvent(ev) {
   const now = performance.now();
+  poke(1600); // a bolt's flight: up to 1.55 s
   const node = nodeOf(ev);
   switch (ev.k) {
     case 'tool': {
@@ -1654,6 +1694,38 @@ host.addEventListener('pointerleave', () => {
   mouse = null;
   if (!press) setHover(null);
 });
+// Right-click a subagent: "Dismiss" takes it off the map (only the picture; nothing is stopped).
+host.addEventListener(
+  'contextmenu',
+  (e) => {
+    document.querySelector('.pn-ctx')?.remove();
+    const m = localXY(e);
+    const h = pick(m.x, m.y, e.target);
+    if (!h || h.kind !== 'drone') return;
+    e.preventDefault();
+    e.stopPropagation();
+    const menu = el('div', 'pn-ctx');
+    const b = el('button');
+    b.type = 'button';
+    b.textContent = 'Dismiss';
+    menu.appendChild(b);
+    document.body.appendChild(menu);
+    menu.style.left = `${Math.max(4, Math.min(e.clientX, innerWidth - menu.offsetWidth - 4))}px`;
+    menu.style.top = `${Math.max(4, Math.min(e.clientY, innerHeight - menu.offsetHeight - 4))}px`;
+    b.onclick = () => {
+      menu.remove();
+      const d = h.drone;
+      DISMISSED.set(`${h.owner.sid}:${d.ag.id}`, d.ag.lastTs || Date.now());
+      if (!d.dying) {
+        d.dying = performance.now();
+        sparks(d.pos, VIOLET, 10, 40);
+      }
+      setHover(null);
+      poke();
+    };
+  },
+  true,
+);
 host.addEventListener('dblclick', (e) => {
   const m = localXY(e);
   if (!pick(m.x, m.y, e.target)) resetView();
@@ -1806,6 +1878,7 @@ function onState(st) {
 function onStatus(sid, status) {
   const n = NODES.get(sid);
   if (!n) return;
+  poke(2000); // the three ripples of "waiting" end 1.92 s on
   if (status === 'waiting') for (let i = 0; i < 3; i++) ripple(n, STATUS.waiting.color, 90, 1400, i * 260);
   else if (status === 'idle') ripple(n, STATUS.idle.color, 80, 1500);
 }
@@ -1820,10 +1893,58 @@ function refreshCore() {
   setText(coreEl, STATE.sessions.length ? '' : 'no Claude Code session in the last 30 min');
 }
 
+// ---------- a friend's spaceship attack (raid.js) ----------
+// Its stage: all of it has to be in the picture, so the idle camera's tour ends and, unless the core and the whole of
+// the ship's orbit (its radius) are in view already, the camera goes home. Not while you hold the view, and not out of
+// an alarm's shot. True when the camera goes home: the raid then lays its orbit out for that view.
+const _stage = { x: 0, y: 0, z: 0 };
+function raidStage(radius) {
+  if (press || cine?.alarm) return false;
+  const toured = !!cine;
+  if (cine) {
+    cine = null;
+    cineTag.classList.remove('on');
+  }
+  toScreen(tmp.p.set(0, 0, 0), _stage);
+  const r = radius * pxPerUnit(tmp.p), least = Math.min(SIZE.w, SIZE.h);
+  const seen = _stage.z < 1 && r > least * 0.14 && Math.abs(_stage.x - SIZE.w / 2) + r < SIZE.w / 2 && Math.abs(_stage.y - SIZE.h / 2) + r * 0.75 < SIZE.h / 2;
+  if (seen && !toured && !camAnim) return false;
+  resetView();
+  return true;
+}
+// Where the core is on the map, in px of the map's box, and its radius (attack.js draws the lock-on reticle onto it); null
+// when the map isn't drawn or the core is behind the eye.
+function corePoint() {
+  if (!SIZE.w || !ACT.visible) return null;
+  toScreen(tmp.p.set(0, 0, 0), _stage);
+  if (_stage.z >= 1) return null;
+  return { x: _stage.x, y: _stage.y, r: K.CORE_R * pxPerUnit(tmp.p) };
+}
+// Where a friend's raiding ship is on the map, in px of the map's box, and half its length there (attack.js keeps its
+// taunt over it); null when there's none drawn or it's behind the eye.
+function shipPoint() {
+  const s = raid.ship();
+  if (!s || !SIZE.w || !ACT.visible) return null;
+  toScreen(tmp.p.copy(s.at), _stage);
+  if (_stage.z >= 1) return null;
+  return { x: _stage.x, y: _stage.y, r: 0.5 * s.length * pxPerUnit(tmp.p) };
+}
+// The blast of the core blowing up reaches the rest of the map, harmlessly: the stations flash and the sessions hurry
+// on a moment.
+function raidJolt() {
+  const now = performance.now();
+  for (const k of CATS) STATIONS[k].hitAt = now;
+  for (const n of NODES.values()) n.kick = Math.min(1.5, n.kick + 1);
+}
+const raid = makeRaid({
+  scene, camera, CAM, VIEW0, SIZE, ACT, glow, lines, glowTex, poke, reflections, core, coreR: K.CORE_R,
+  sun: sunLight, shake: shakeCamera, stage: raidStage, jolt: raidJolt,
+});
+
 // ---------- loop ----------
 // Frames are drawn only as often as they're needed (QUALITY): the front rate while the dashboard is in front and
-// for a moment after you zoom or something happens on the map, less behind a chat window, and none at all when it
-// can't be seen.
+// for a moment after you zoom or something happens on the map, less behind another app, and none at all when it can't
+// be seen or a full view took it out of the layout (ACT.shown).
 let rafId = 0, lastFrame = performance.now(), lastMinimap = 0;
 function poke(ms = 1500) {
   ACT.until = performance.now() + ms;
@@ -1833,7 +1954,8 @@ function poke(ms = 1500) {
 let frameTimer = 0;
 function nextFrame() {
   frameTimer = 0;
-  if (!rafId && ACT.visible && !document.hidden) rafId = requestAnimationFrame(frame);
+  // A full view took the map out of the layout while it slept: the loop stops here, and the ResizeObserver wakes it.
+  if (!rafId && ACT.visible && ACT.shown && !document.hidden) rafId = requestAnimationFrame(frame);
 }
 function wake() {
   // A sleeping loop (an interaction raised the rate): its frame comes now. lastFrame stays, or the frame would wait again.
@@ -1841,20 +1963,20 @@ function wake() {
     clearTimeout(frameTimer);
     return nextFrame();
   }
-  if (rafId || !ACT.visible || document.hidden) return;
+  if (rafId || !ACT.visible || !ACT.shown || document.hidden) return;
   lastFrame = performance.now();
   rafId = requestAnimationFrame(frame);
 }
 function targetFps(now) {
-  if (press || camAnim || !ACT.saver) return QUALITY.front.fps;
-  const fps = ACT.focused || now < ACT.until ? QUALITY.front.fps : QUALITY.behind.fps;
+  if (press || camAnim) return QUALITY.front.fps;
+  const fps = (ACT.focused && !ACT.covered) || now < ACT.until ? QUALITY.front.fps : QUALITY.behind.fps;
   return ACT.saver ? Math.min(fps, QUALITY.saver.fps) : fps;
 }
 document.addEventListener('visibilitychange', wake);
 function frame(now) {
   rafId = 0;
-  if (!ACT.visible || document.hidden) return;
-  // Throttled (behind a chat, power save): an animation frame each display refresh only to skip it kept the main thread
+  if (!ACT.visible || !ACT.shown || document.hidden) return;
+  // Throttled (behind another app with nothing happening, power save): an animation frame each display refresh only to skip it kept the main thread
   // awake at 60–120 Hz. A frame more than ~1.5 refreshes away sleeps on a timer instead. At 60 fps it stays on rAF.
   const target = 1000 / targetFps(now);
   const dueIn = target - (now - lastFrame) - 2;
@@ -1903,6 +2025,7 @@ function frame(now) {
   updateStations(dt, now);
   updateShips(dt, now);
   updateBoxes(dt, now);
+  raid.update(dt, now);
   coreObj.position.set(0, 0, 0).addScaledVector(CAM.up, -K.CORE_R * 1.7);
 
   glow.begin();
@@ -1915,6 +2038,7 @@ function frame(now) {
   drawSparks(dt, now);
   drawShips();
   drawBoxes(now);
+  raid.draw(now);
   glow.end();
   lines.end();
 
@@ -1940,9 +2064,10 @@ function frame(now) {
 wake();
 
 // ---------- API for app.js ----------
-function activity(visible, focused) {
+function activity(visible, focused, covered) {
   ACT.visible = visible;
   ACT.focused = focused;
+  ACT.covered = !!covered;
   if (visible && pendingFollow) followBox(pendingFollow);
   applyQuality();
   wake();
@@ -1965,5 +2090,5 @@ function focusRunaway(pid) {
 }
 setCinematic(cineOn);
 // QUALITY too: the power save switch's tooltip (app.js) gives its numbers.
-window.Orbit = { quality: QUALITY, state: onState, event: onEvent, status: onStatus, seed, activity, power, terminals: syncShips, terminalGone: shipGone, cinematic: startCinematic, idle: systemIdle, runaways: syncBoxes, focusRunaway, blowUp, relabel };
+window.Orbit = { quality: QUALITY, state: onState, event: onEvent, status: onStatus, seed, activity, power, terminals: syncShips, terminalGone: shipGone, cinematic: startCinematic, idle: systemIdle, runaways: syncBoxes, focusRunaway, blowUp, relabel, attack: raid.start, corePoint, shipPoint };
 for (const [fn, args] of R.MAPQ.splice(0)) window.Orbit[fn](...args);

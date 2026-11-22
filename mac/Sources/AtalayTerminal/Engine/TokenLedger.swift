@@ -2,7 +2,7 @@ import Foundation
 import SQLite3
 
 /// Tokens burned on this Mac, for the leaderboard's Tokens view (the API's src/usage.ts): every reply of Claude Code,
-/// Codex and Antigravity, read from their own records, by local day (the day the API counts active time on), tool, model
+/// Codex, Antigravity and Cursor, read from their own records, by local day (the day the API counts active time on), tool, model
 /// and effort: new input, output, cache reads, cache writes, the part of the output spent reasoning, and the replies.
 /// Each file is read on from where it was left, a few minutes apart; the first time, everything the tools still keep, so
 /// the API gets the history once. A reply counts once however many lines or files repeat it (Claude writes one over
@@ -55,7 +55,7 @@ final class TokenLedger: @unchecked Sendable {
     }
 
     private let queue = DispatchQueue(label: "atalay.tokens", qos: .utility)
-    private let projects: String, codex: String, agy: String
+    private let projects: String, codex: String, agy: String, cursor: String
     private let url: URL, seenURL: URL
     private var book = Book()
     private var seen = Set<UInt64>()
@@ -66,10 +66,11 @@ final class TokenLedger: @unchecked Sendable {
 
     init(projects: String = (CLAUDE_DIR as NSString).appendingPathComponent("projects"),
          codex: String = ProcessInfo.processInfo.environment["CODEX_HOME"] ?? HOME + "/.codex",
-         agy: String = HOME + "/.gemini/antigravity-cli", store: URL? = nil) {
+         agy: String = HOME + "/.gemini/antigravity-cli", cursor: String = CursorHooks.dir, store: URL? = nil) {
         self.projects = projects
         self.codex = codex
         self.agy = agy
+        self.cursor = cursor
         let base = (FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: HOME + "/Library/Application Support")).appendingPathComponent("atalay-terminal")
         // Each build keeps its own, as its spend ledger: staging sends to its own API.
@@ -105,9 +106,17 @@ final class TokenLedger: @unchecked Sendable {
     }
 
     /// The days that changed since they last went out, newest first, as the API takes them: at most `max` rows. Nil when
-    /// nothing changed.
-    func batch(max: Int = 500) async -> Batch? {
-        await withCheckedContinuation { c in queue.async { c.resume(returning: self.makeBatch(max)) } }
+    /// nothing changed. `from`: the first day that may go out (Cloud.sendUsage, after "share my token counts" was off);
+    /// the days before it are done at once, as if sent, and never go out.
+    func batch(max: Int = 500, from: String? = nil) async -> Batch? {
+        await withCheckedContinuation { c in queue.async { c.resume(returning: self.makeBatch(max, from)) } }
+    }
+
+    /// The local day after today, as the days are keyed ("2026-11-22"): the first one that may go out once "share my
+    /// token counts" is turned back on.
+    static func dayAfterToday() -> String {
+        let today = Ledger.calendar.startOfDay(for: Date())
+        return Ledger.key(Ledger.calendar.date(byAdding: .day, value: 1, to: today) ?? today.addingTimeInterval(86_400))
     }
 
     /// A batch reached the API: its days are done, unless they changed since.
@@ -125,7 +134,7 @@ final class TokenLedger: @unchecked Sendable {
         let t0 = Date()
         var changed = false, present = Set<String>(), keys = Ledger.DayKeys()
         labels.removeAll()
-        for (tool, paths) in [(Tool.claude, claudeFiles()), (.codex, codexFiles()), (.agy, agyFiles())] {
+        for (tool, paths) in [(Tool.claude, claudeFiles()), (.codex, codexFiles()), (.agy, agyFiles()), (.cursor, cursorFiles())] {
             for p in paths {
                 present.insert(p)
                 if pump(p, tool, &keys) { changed = true }
@@ -145,7 +154,7 @@ final class TokenLedger: @unchecked Sendable {
     /// The days as counted so far (the probe's and a debugger's look).
     func snapshot() -> [String: [String: Counts]] { queue.sync { book.days } }
 
-    private enum Tool { case claude, codex, agy }
+    private enum Tool { case claude, codex, agy, cursor }
 
     /// A folder itself, not a link to one: inside the tools' folders the reader follows no links (one could lead it over
     /// the whole disk, or round in a circle). The tools' own folders may be links (a moved ~/.claude).
@@ -187,6 +196,12 @@ final class TokenLedger: @unchecked Sendable {
             }
             return out
         }
+    }
+
+    /// Cursor keeps no token counts on disk, but its hooks (CursorHooks) hand every turn's to our script: the `stop` events in
+    /// its event files, from when the hooks were put in.
+    private func cursorFiles() -> [String] {
+        ((try? FileManager.default.contentsOfDirectory(atPath: cursor)) ?? []).filter { $0.hasSuffix(".jsonl") }.map { cursor + "/" + $0 }
     }
 
     private func agyFiles() -> [String] {
@@ -240,6 +255,7 @@ final class TokenLedger: @unchecked Sendable {
                 case .claude: claudeLine(line, &mark, &keys)
                 case .codex: codexLine(line, &mark, path, &keys)
                 case .agy: agyLine(line, &mark, path, &keys)
+                case .cursor: cursorLine(line, &mark, &keys)
                 }
             }
             rest = Data(data[(nl + 1)...])
@@ -329,6 +345,23 @@ final class TokenLedger: @unchecked Sendable {
         default:
             break
         }
+    }
+
+    private static let stopKey = Array("\"e\":\"stop\"".utf8)
+
+    /// Cursor: a turn's `stop` event, its input (cache writes apart), output and cache reads; once per generation.
+    private func cursorLine(_ line: Data, _ mark: inout Mark, _ keys: inout Ledger.DayKeys) {
+        guard Self.has(line, Self.stopKey), let j = try? JSONSerialization.jsonObject(with: line) as? [String: Any], j["e"] as? String == "stop",
+              let p = j["p"] as? [String: Any], let at = j["t"] as? Double, at > 0 else { return }
+        // Its input counts the cache reads and writes too (its own price list takes them off): the rest is what was new.
+        let cr = int(p["cache_read_tokens"]), cw = int(p["cache_write_tokens"])
+        let c = Counts(i: max(0, int(p["input_tokens"]) - cr - cw), o: int(p["output_tokens"]), r: cr, w: cw, n: 1)
+        guard !c.isEmpty else { return }
+        let id = (p["generation_id"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "\(p["conversation_id"] as? String ?? ""):\(Int(at))"
+        let h = Self.hash("u:" + id)
+        guard !seen.contains(h) else { return }
+        remember(h)
+        add(keys.key(at), Self.key("cursor", Self.model((p["model"] as? String) == "default" ? "auto" : p["model"] as? String), nil), c)
     }
 
     private static let plannerKey = Array("\"PLANNER_RESPONSE\"".utf8)
@@ -471,7 +504,16 @@ final class TokenLedger: @unchecked Sendable {
         try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
     }
 
-    private func makeBatch(_ max: Int) -> Batch? {
+    private func makeBatch(_ max: Int, _ from: String?) -> Batch? {
+        // Days before `from` stay on this Mac: "share my token counts" was off on them, or on part of them. Done here, as
+        // a sent day is, so they never go out, even if they change again.
+        if let from {
+            let held = book.dirty.filter { $0 < from }
+            if !held.isEmpty {
+                book.dirty.subtract(held)
+                save()
+            }
+        }
         var rows: [[String: Any]] = [], days: [String: [String: Counts]] = [:]
         for day in book.dirty.sorted(by: >) {
             let kinds = book.days[day] ?? [:]
@@ -501,7 +543,7 @@ final class TokenLedger: @unchecked Sendable {
 
     // MARK: helpers
 
-    private static let tools: Set<String> = ["claude", "codex", "antigravity"]
+    private static let tools: Set<String> = ["claude", "codex", "antigravity", "cursor"]
 
     /// A name as the API keeps one: lower-case letters, digits, ".", "_" and "-", a letter or digit first, `max` long at most.
     private static func fits(_ s: String, _ max: Int, empty: Bool) -> Bool {

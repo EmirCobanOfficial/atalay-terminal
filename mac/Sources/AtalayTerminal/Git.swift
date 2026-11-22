@@ -112,6 +112,8 @@ enum Git {
     private static var roots: [String: (root: String?, at: Double)] = [:]
     /// The page asks every few seconds; the repos are looked at again after two.
     private static var cache: (at: Double, repos: [[String: Any]]) = (0, [])
+    /// Folder -> the settings its reads run with (readGuards), asked again after ten seconds.
+    private static var guards: [String: (args: [String], at: Double)] = [:]
 
     /// The repos Source Control last listed: the ones its Open File may open a file in (FileEditor.swift).
     static func listedRoots() -> [String] {
@@ -123,13 +125,15 @@ enum Git {
     /// The user's git (Homebrew's before Apple's, as in their shell).
     private static let executable = ["/opt/homebrew/bin/git", "/usr/local/bin/git", "/usr/bin/git"]
         .first { FileManager.default.isExecutableFile(atPath: $0) } ?? "/usr/bin/git"
-    private static let environment: [String: String] = {
+    static let environment: [String: String] = {
         var env = ProcessInfo.processInfo.environment
         // Opened from the Finder, the app has the system's short PATH; hooks (lint-staged through npx, …) need the
         // user's tools.
         env["PATH"] = "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:" + (env["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin")
         // No terminal to ask for a password on: fail instead of waiting.
         env["GIT_TERMINAL_PROMPT"] = "0"
+        // Git's own sentences in English, whatever the Mac's language: the page looks for "fatal:" and "already registered".
+        env["LC_MESSAGES"] = "C"
         return env
     }()
 
@@ -138,20 +142,33 @@ enum Git {
     private final class Output: @unchecked Sendable { var data = Data() }
 
     /// Runs git in `dir`; nil if it couldn't start. A run longer than `timeout` is stopped.
-    private static func exec(_ dir: String, _ args: [String], timeout: Double, locks: Bool) -> (status: Int32, out: Data, err: Data)? {
+    /// Never the folder's own fsmonitor: a repo's config can name any command as core.fsmonitor, and every status would
+    /// run it, so a folder from a zip or a download would run it as soon as a terminal is in it.
+    static func exec(_ dir: String, _ args: [String], timeout: Double, locks: Bool, input: Data? = nil, ceiling: String? = nil) -> (status: Int32, out: Data, err: Data)? {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: executable)
-        p.arguments = ["-C", dir] + args
+        p.arguments = ["-C", dir, "-c", "core.fsmonitor=false"] + args
         var env = environment
         // Reads don't take the index lock (VS Code's way): the page asking every few seconds mustn't get in the way of
         // a git command Claude or the user runs at the same time.
         if !locks { env["GIT_OPTIONAL_LOCKS"] = "0" }
+        // Git doesn't climb into this folder or above it looking for a repo (a dotfiles repo in the home folder is no project).
+        if let ceiling { env["GIT_CEILING_DIRECTORIES"] = ceiling }
         p.environment = env
-        p.standardInput = FileHandle.nullDevice
+        let stdin = Pipe()
+        p.standardInput = input == nil ? FileHandle.nullDevice : stdin
         let out = Pipe(), err = Pipe()
         p.standardOutput = out
         p.standardError = err
+        // Git may exit before it has read all of its input: a write to the closed pipe is an error, not a SIGPIPE.
+        if input != nil { _ = fcntl(stdin.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1) }
         do { try p.run() } catch { return nil }
+        if let input {
+            DispatchQueue.global().async {
+                try? stdin.fileHandleForWriting.write(contentsOf: input)
+                try? stdin.fileHandleForWriting.close()
+            }
+        }
         let stop = DispatchWorkItem { if p.isRunning { p.terminate() } }
         DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: stop)
         // Both pipes are read at once: git stops when one it writes to is full.
@@ -165,9 +182,36 @@ enum Git {
         return (p.terminationReason == .exit ? p.terminationStatus : -1, data, errors.data)
     }
 
+    /// Reads run none of the commands a repo's own config (or a file it includes) names for a filter driver: the
+    /// background status and diffs would run a filter's clean on every changed file, unasked. Each such driver of the
+    /// repo's own config gets an empty clean, smudge and process, so its files are compared as they are; the user's
+    /// global and system drivers (Git LFS) stay, as do changes (stage, commit), which the user asked for. Reads show no
+    /// signatures either (gpg.program is the repo's to name), and a diff or blame is shown without textconv
+    /// (--no-textconv: a diff driver's textconv is a command too).
+    static func readGuards(_ dir: String) -> [String] {
+        let now = nowMs()
+        lock.lock()
+        let hit = guards[dir]
+        lock.unlock()
+        if let hit, now - hit.at < 10_000 { return hit.args }
+        var args = ["-c", "log.showSignature=false"]
+        if let r = exec(dir, ["config", "--show-scope", "--includes", "--name-only", "--get-regexp", "^filter\\..+\\.(clean|smudge|process)$"],
+                        timeout: 6, locks: false), r.status == 0 {
+            for line in String(decoding: r.out, as: UTF8.self).split(separator: "\n") {
+                let f = line.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: "\t", maxSplits: 1).map(String.init)
+                if f.count == 2, f[0] == "local" || f[0] == "worktree" { args += ["-c", f[1] + "="] }
+            }
+        }
+        lock.lock()
+        if guards.count > 500 { guards.removeAll() }
+        guards[dir] = (args, now)
+        lock.unlock()
+        return args
+    }
+
     /// What git printed, or nil when it failed (or printed more than `max`).
-    private static func read(_ dir: String, _ args: [String], max: Int = 8 << 20) -> String? {
-        guard let r = exec(dir, args, timeout: 6, locks: false), r.status == 0, r.out.count <= max else { return nil }
+    static func read(_ dir: String, _ args: [String], max: Int = 8 << 20, ceiling: String? = nil) -> String? {
+        guard let r = exec(dir, readGuards(dir) + args, timeout: 6, locks: false, ceiling: ceiling), r.status == 0, r.out.count <= max else { return nil }
         return String(decoding: r.out, as: UTF8.self)
     }
 
@@ -180,6 +224,78 @@ enum Git {
             .filter { !$0.isEmpty }
         if let reason = said.first(where: { $0.hasPrefix("fatal: ") || $0.hasPrefix("error: ") }) { return ["error": String(reason.dropFirst(7))] }
         return ["error": said.isEmpty ? "git failed" : said.suffix(3).joined(separator: " ")]
+    }
+
+    // MARK: the project of a folder (notes)
+
+    /// Folder -> its project's folder, asked again after half a minute (an AI lists notes often).
+    private static var projectRoots: [String: (dir: String, at: Double)] = [:]
+
+    /// The project a folder belongs to, for the notes: the repo's main folder (found through git's common dir, so every
+    /// worktree of a repo, and every folder inside one, is the same project); a folder that is no git repo is its own project.
+    static func projectDir(of folder: String) -> String {
+        let dir = URL(fileURLWithPath: folder).standardizedFileURL.path
+        let now = nowMs()
+        lock.lock()
+        let hit = projectRoots[dir]
+        lock.unlock()
+        if let hit, now - hit.at < 30_000 { return hit.dir }
+        var found = dir
+        var isDir: ObjCBool = false
+        if FileManager.default.fileExists(atPath: dir, isDirectory: &isDir), isDir.boolValue,
+           let out = read(dir, ["rev-parse", "--git-common-dir"], ceiling: HOME)?.trimmingCharacters(in: .whitespacesAndNewlines), !out.isEmpty {
+            // Relative to the folder git was run in.
+            let common = URL(fileURLWithPath: out, relativeTo: URL(fileURLWithPath: dir, isDirectory: true)).standardizedFileURL
+            if common.lastPathComponent == ".git" {
+                found = common.deletingLastPathComponent().path
+            } else if common.path.contains("/.git/modules/") {
+                // A submodule's own git dir: the folder git says the work tree is in.
+                if let top = repoRoot(dir) { found = URL(fileURLWithPath: top).standardizedFileURL.path }
+            } else {
+                // A bare repo (repo.git) with worktrees: the bare folder itself, so every worktree is one project.
+                found = common.path
+            }
+        }
+        lock.lock()
+        if projectRoots.count > 300 { projectRoots.removeAll() }
+        projectRoots[dir] = (found, now)
+        lock.unlock()
+        return found
+    }
+
+    /// The home folder as typed and as it really is (a symlinked home: sessions' folders are real paths).
+    private static let homes: [String] = {
+        var l = [URL(fileURLWithPath: HOME).standardizedFileURL.path]
+        if let r = realpath(HOME, nil) { l.append(String(cString: r)); free(r) }
+        return Array(Set(l))
+    }()
+
+    /// A folder too broad to be a project: `/`, the home folder or a folder above it, and a folder straight in the home
+    /// folder (Documents, Desktop…).
+    static func broad(_ folder: String) -> Bool {
+        let dir = URL(fileURLWithPath: folder).standardizedFileURL.path
+        if dir == "/" { return true }
+        return homes.contains { $0 == dir || $0.hasPrefix(dir + "/") || URL(fileURLWithPath: dir).deletingLastPathComponent().path == $0 }
+    }
+
+    /// A project's name: its folder's, or the parent's when that starts with a dot (.bare, a git dir kept elsewhere).
+    static func projectName(_ dir: String) -> String {
+        let url = URL(fileURLWithPath: dir)
+        let n = url.lastPathComponent
+        guard n.hasPrefix(".") else { return n }
+        let up = url.deletingLastPathComponent().lastPathComponent
+        return up.isEmpty || up == "/" ? n : up
+    }
+
+    /// Whether a session in `folder` (and whose project's folder is `root`) is in the project a note was linked to (`project`): the
+    /// project's own folder, or any folder inside it. An umbrella session (a folder holding several repos) also sees the notes of the
+    /// projects inside it, but only when the user tied a note to that very folder (`tied`: every folder notes are linked to), and never
+    /// for a broad folder.
+    static func covers(project: String, folder: String, root: String, tied: Set<String>) -> Bool {
+        func within(_ p: String, _ outer: String) -> Bool { p == outer || p.hasPrefix(outer.hasSuffix("/") ? outer : outer + "/") }
+        let here = URL(fileURLWithPath: folder).standardizedFileURL.path
+        if within(root, project) || within(here, project) { return true }
+        return !broad(root) && tied.contains(root) && within(project, root)
     }
 
     // MARK: the repos
@@ -320,10 +436,10 @@ enum Git {
         guard let abs = inside(root, file) else { return ["error": "outside the repo"] }
         if !commit.isEmpty {
             guard isHash(commit) else { return ["error": "bad commit"] }
-            let shown = read(root, ["show", "--first-parent", "-m", "--no-color", "--no-ext-diff", "-U1000000", "--pretty=format:", commit, "--", file], max: 32 << 20)
+            let shown = read(root, ["show", "--first-parent", "-m", "--no-color", "--no-ext-diff", "--no-textconv", "-U1000000", "--pretty=format:", commit, "--", file], max: 32 << 20)
             return shown.map { $0.isEmpty ? ["abs": abs, "note": "no differences"] : ["diff": $0, "abs": abs] } ?? ["abs": abs, "note": "no differences"]
         }
-        let out = read(root, ["diff"] + (staged ? ["--cached"] : []) + ["--no-color", "--no-ext-diff", "-U1000000", "--", file], max: 32 << 20)
+        let out = read(root, ["diff"] + (staged ? ["--cached"] : []) + ["--no-color", "--no-ext-diff", "--no-textconv", "-U1000000", "--", file], max: 32 << 20)
         if let out, !out.isEmpty { return ["diff": out, "abs": abs] }
         // Untracked: the whole file is new.
         guard let size = (try? FileManager.default.attributesOfItem(atPath: abs))?[.size] as? Int else {
@@ -371,7 +487,7 @@ enum Git {
     /// Who last changed a line, and when and why (GitLens's line blame): in the working tree, or as of a commit.
     private static func blame(_ root: String, _ file: String, line: Int, commit: String) -> [String: Any] {
         guard inside(root, file) != nil, line > 0 else { return ["error": "bad line"] }
-        let out = read(root, ["blame", "--porcelain", "-L", "\(line),\(line)"] + (commit.isEmpty ? [] : [commit]) + ["--", file]) ?? ""
+        let out = read(root, ["blame", "--no-textconv", "--porcelain", "-L", "\(line),\(line)"] + (commit.isEmpty ? [] : [commit]) + ["--", file]) ?? ""
         var info: [String: Any] = [:]
         for (i, l) in out.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
             if i == 0 { info["hash"] = String(l.split(separator: " ").first ?? "") }
@@ -470,5 +586,175 @@ enum Git {
         cache.at = 0
         lock.unlock()
         return r
+    }
+}
+
+// MARK: worktrees
+
+/// "Open in a worktree" (Worktrees.swift, web/worktree.js): what the name sheet needs to know about a repo, and `git worktree
+/// add` into a folder next to it. Every call here takes the same care as the reads above: `readGuards` (no command from
+/// the repo's own filter drivers), no fsmonitor (`exec`), and no hooks: `core.hooksPath` points at nothing for the
+/// checkout, so a repo that came in a zip can't run a post-checkout hook of its own the moment a worktree is made.
+extension Git {
+    /// The AI the sheet offers first (what was picked last).
+    static let worktreeAIKey = "worktreeAI"
+    static let worktreeAIs = ["claude", "codex", "agy", "cursor", "terminal"]
+
+    /// What git said when a run failed: its "fatal: …" or "error: …" line, else its last lines.
+    static func said(_ r: (status: Int32, out: Data, err: Data)?) -> String {
+        guard let r else { return "git didn't start" }
+        let lines = (r.err.isEmpty ? r.out : r.err).split(separator: 10).map { String(decoding: $0, as: UTF8.self).trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        if let reason = lines.first(where: { $0.hasPrefix("fatal: ") || $0.hasPrefix("error: ") }) { return String(reason.dropFirst(7)) }
+        return lines.isEmpty ? "git failed" : lines.suffix(3).joined(separator: " ")
+    }
+
+    /// What the name sheet shows for the folder `dir`: the repo, the branch it's made from, the names already taken, what
+    /// would be copied, how many changes stay behind. `error` ("not-a-repo", "gone") when there's no sheet to show;
+    /// `problem` ("no-commits", "no-permission") when there is one, but nothing can be made yet.
+    static func describe(_ rawDir: String) -> [String: Any] {
+        let dir = FolderLister.expand(rawDir)
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: dir, isDirectory: &isDir), isDir.boolValue else { return ["error": "gone"] }
+        guard let info = Worktrees.info(of: dir) else { return ["error": "not-a-repo"] }
+        let top = info.top
+        let (leaf, parent) = Worktrees.home(info.main)
+        var out: [String: Any] = ["repo": leaf, "main": info.main, "parent": tildify(parent), "sub": info.sub, "linked": info.linked]
+        let fm = FileManager.default
+
+        // The branch it starts from: the one checked out (a detached HEAD: the commit).
+        let branch = read(top, ["symbolic-ref", "--short", "-q", "HEAD"])?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let short = read(top, ["rev-parse", "--verify", "-q", "--short", "HEAD"])?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        out["base"] = branch
+        out["short"] = short
+        let branches = (read(top, ["for-each-ref", "--format=%(refname:short)", "refs/heads"]) ?? "").split(separator: "\n").map(String.init)
+        let prefix = leaf + "-"
+        let folders = ((try? fm.contentsOfDirectory(atPath: parent)) ?? []).filter { $0.hasPrefix(prefix) }.prefix(2000)
+        out["branches"] = branches
+        out["folders"] = Array(folders)
+        out["suggest"] = Worktrees.suggest(branches: Set(branches), folders: Set(folders), main: info.main)
+        let saved = UserDefaults.standard.string(forKey: worktreeAIKey) ?? "claude"
+        out["lastAI"] = worktreeAIs.contains(saved) ? saved : "claude"
+        if short.isEmpty {
+            out["problem"] = "no-commits"
+        } else if !fm.isWritableFile(atPath: parent) {
+            out["problem"] = "no-permission"
+        }
+
+        // Changes that stay in the main folder: the worktree starts from the last commit.
+        var dirty = 0
+        let entries = (read(top, ["status", "--porcelain=v1", "-z", "--untracked-files=normal"]) ?? "").components(separatedBy: "\0")
+        var i = 0
+        while i < entries.count {
+            let e = entries[i]
+            i += 1
+            guard e.count >= 3 else { continue }
+            dirty += 1
+            if e.hasPrefix("R") || e.hasPrefix("C") { i += 1 }
+        }
+        out["dirty"] = dirty
+        let list = copyList(top)
+        out["copy"] = list.files
+        out["includeFile"] = list.includeFile
+        return out
+    }
+
+    /// What a new worktree would get from the folder `top` that git doesn't keep: the files that match `.worktreeinclude`
+    /// (`.env*` when there is none) and that git ignores. Git's own matching both times: `ls-files` lists what the patterns
+    /// match among the files it doesn't track, `check-ignore` keeps those its ignore rules cover. A directory comes as one
+    /// entry, with a "/" at its end.
+    private static func copyList(_ top: String) -> (files: [String], includeFile: Bool) {
+        var st = stat()
+        let includeFile = lstat(top + "/.worktreeinclude", &st) == 0 && (st.st_mode & S_IFMT) == S_IFREG
+        let patterns = includeFile ? ["--exclude-from=.worktreeinclude"] : ["--exclude=.env*"]
+        guard let listed = exec(top, readGuards(top) + ["ls-files", "--others", "--ignored", "--directory", "-z"] + patterns, timeout: 20, locks: false),
+              listed.status == 0, listed.out.count <= 8 << 20 else { return ([], includeFile) }
+        let found = String(decoding: listed.out, as: UTF8.self).components(separatedBy: "\0").filter { !$0.isEmpty }
+        if found.isEmpty { return ([], includeFile) }
+        var input = Data()
+        for f in found { input.append(contentsOf: Array(f.utf8) + [0]) }
+        // Exit 1 is "none of them is ignored".
+        guard let kept = exec(top, readGuards(top) + ["check-ignore", "--stdin", "-z"], timeout: 20, locks: false, input: input),
+              kept.status == 0 else { return ([], includeFile) }
+        let ignored = Set(String(decoding: kept.out, as: UTF8.self).components(separatedBy: "\0").filter { !$0.isEmpty })
+        // Only plain files and directories (a link isn't copied, so it isn't offered).
+        let dirs = found.filter { $0.hasSuffix("/") && ignored.contains($0) }
+        let plain = found.filter { entry in
+            guard ignored.contains(entry) else { return false }
+            // Inside a directory that is listed itself: it comes with the directory.
+            if dirs.contains(where: { $0 != entry && entry.hasPrefix($0) }) { return false }
+            var st = stat()
+            guard lstat(top + "/" + (entry.hasSuffix("/") ? String(entry.dropLast()) : entry), &st) == 0 else { return false }
+            return (st.st_mode & S_IFMT) == S_IFREG || (st.st_mode & S_IFMT) == S_IFDIR
+        }
+        return (plain, includeFile)
+    }
+
+    /// `git worktree add` for the folder `rawDir` is in: a new branch `name` from its HEAD, in the folder next to the repo.
+    /// Answers `ok`, `path` (the worktree), `open` (where the AI starts: the same folder inside it as the one picked), `branch`
+    /// and what to copy (`copy`); or `error` in plain words with a `kind` ("name", "branch", "folder", "permission", "commits",
+    /// "git") for the sheet. When git fails half way, what it made is removed again.
+    static func addWorktree(from rawDir: String, name: String) -> [String: Any] {
+        let dir = FolderLister.expand(rawDir)
+        guard let info = Worktrees.info(of: dir) else { return ["kind": "repo", "error": "This folder isn't in a git repo anymore."] }
+        if name == "HEAD" { return ["kind": "name", "error": "HEAD is a name git keeps for itself. Pick another name."] }
+        if let bad = Worktrees.validate(name) {
+            return ["kind": "name", "error": bad == "empty" ? "Type a name." : bad == "chars" ? "Use only letters, numbers and - _ . /"
+                    : "A name can't start with - . or /, end with / or .lock, or have .. in it."]
+        }
+        let top = info.top
+        let shape = ["kind": "name", "error": "A name can't start with - . or /, end with / or .lock, or have .. in it."]
+        guard let ref = exec(top, ["check-ref-format", "--branch", name], timeout: 10, locks: false), ref.status == 0 else { return shape }
+        if let have = exec(top, ["show-ref", "--verify", "--quiet", "refs/heads/" + name], timeout: 10, locks: false), have.status == 0 {
+            return ["kind": "branch", "error": "There's already a branch called \(name). Pick another name."]
+        }
+        let leaf = Worktrees.home(info.main).leaf
+        let folder = Worktrees.folder(main: info.main, name: name)
+        var there = stat()
+        if lstat(folder, &there) == 0 {
+            return ["kind": "folder", "error": "There's already a folder called \((folder as NSString).lastPathComponent) next to your repo. Pick another name."]
+        }
+        if !FileManager.default.isWritableFile(atPath: Worktrees.home(info.main).parent) {
+            return ["kind": "permission", "error": "Can't make a folder next to \(leaf): no permission."]
+        }
+        guard read(top, ["rev-parse", "--verify", "-q", "HEAD"]) != nil else {
+            return ["kind": "commits", "error": "This repo has no commits yet. Make a first commit, then try again."]
+        }
+        // No hooks (core.hooksPath) in any call below: a repo that came in a zip can't run one of its own. The repo's filters
+        // stay (git-crypt, LFS need them for the checkout). Nothing is pruned: another worktree on a drive that isn't
+        // plugged in must keep its record.
+        let safe = ["-c", "core.hooksPath=/dev/null"]
+        let r = exec(top, safe + ["worktree", "add", "-b", name, "--", folder, "HEAD"], timeout: 120, locks: true)
+        if r?.status != 0 {
+            var why = said(r)
+            // An old record of a worktree at this path (its folder deleted by hand): not overridden, it may be one moved in Finder.
+            let stale = String(decoding: r?.err ?? Data(), as: UTF8.self).contains("already registered")
+            if stale { why = "An old worktree record still uses this name. Pick another name, or run `git worktree prune`." }
+            // What this run made is taken away again; nothing else is touched (the folder didn't exist before it).
+            if lstat(folder, &there) == 0 {
+                _ = exec(top, safe + ["worktree", "remove", "--force", folder], timeout: 60, locks: true)
+                if lstat(folder, &there) == 0 { try? FileManager.default.removeItem(atPath: folder) }
+            }
+            if let had = exec(top, ["show-ref", "--verify", "--quiet", "refs/heads/" + name], timeout: 10, locks: false), had.status == 0 {
+                _ = exec(top, safe + ["branch", "-D", name], timeout: 10, locks: true)
+            }
+            Worktrees.forget()
+            return stale ? ["kind": "folder", "error": why] : ["kind": "git", "error": why]
+        }
+        // Where it was made from, kept as VS Code keeps it (its own key, one line in .git/config; git forgets it with the branch):
+        // the PR, merge and delete pages read it back as the branch this work goes into.
+        let from = (read(top, ["symbolic-ref", "--short", "-q", "HEAD"]) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !from.isEmpty { _ = exec(top, ["config", "branch.\(name).vscode-merge-base", from], timeout: 10, locks: true) }
+        Worktrees.forget()
+        // Anything remembered about a worktree of this name (it was removed outside the app and made again) is old.
+        forgetShip(folder)
+        forgetShip(Worktrees.real(folder))
+        var open = folder
+        var isDir: ObjCBool = false
+        if !info.sub.isEmpty, FileManager.default.fileExists(atPath: folder + "/" + info.sub, isDirectory: &isDir), isDir.boolValue {
+            open = folder + "/" + info.sub
+        }
+        let list = copyList(top)
+        return ["ok": true, "path": folder, "open": open, "branch": name, "copy": list.files, "source": top]
     }
 }

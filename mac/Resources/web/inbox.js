@@ -41,6 +41,9 @@ window.Inbox = (() => {
 
   // ---------- what's kept here ----------
   const levels = () => read('nf.levels', []);
+  // Last week's card, once the API has written the week and you were on its board with an hour or more: one row a week
+  // (week, place, total, seconds, at), the latest 8. nf.weeksSkip: the week looked at that you weren't eligible for.
+  const weeksKept = () => read('nf.weeks', []);
   const accepted = () => read('nf.friends', []);
   // Badges, levels and friends' moments are unread when newer than this (set when the view opens). The first time, now:
   // what you earned before this version doesn't light the bell.
@@ -115,7 +118,7 @@ window.Inbox = (() => {
   const art = (id, tier, size) => (Art() ? Art().svg(id, tier, size) : '');
   const badgeName = (b) => (Art() ? Art().name(b.id) : '') || b.name || 'a badge';
   const tierName = (b) => (Art() ? Art().tierName(b.id, b.tier, b.tiers) : '');
-  const rare = (r) => r != null && r <= 10; // Xbox's and Steam's cut-off
+  const rare = (r) => r != null && r <= 5; // stricter than Xbox's and Steam's 10%: with rarity per tier, 9% made it common
   // A release's line: its topic (before the ":") and the rest.
   function parts(text) {
     const m = /^([^:]{1,40}):\s+([\s\S]*)$/.exec(String(text || ''));
@@ -128,7 +131,7 @@ window.Inbox = (() => {
   // A badge's tiers and what each takes (badges.ts DEFS says the same; the app only gets the next one's).
   const H4 = [[1, 25, 250, 1000], 'h'];
   const STEPS = { week: [[10, 20, 30], 'h'], streak: [[4, 12, 26, 52], 'week'], fire: [[1, 5, 25, 100], 'day'], hours: [[10, 100, 500, 1000], 'h'],
-    claude: H4, codex: H4, gemini: H4, antigravity: H4, squad: [[1, 5, 15], 'friend'], voice: [[1, 10, 30], 'vote'], season: [[50, 150, 300, 450], 'h'] };
+    claude: H4, codex: H4, gemini: H4, antigravity: H4, cursor: H4, squad: [[1, 5, 15], 'friend'], voice: [[1, 10, 30], 'vote'], season: [[50, 150, 300, 450], 'h'] };
   const TIERS = ['Bronze', 'Silver', 'Gold', 'Diamond', 'Legend'];
   const amount = (n, unit) => (unit === 'h' ? `${num(n)}h` : `${num(n)} ${unit}${n === 1 ? '' : 's'}`);
 
@@ -191,6 +194,7 @@ window.Inbox = (() => {
       }
     }
     for (const l of levels()) out.push({ id: `l:${l.level}:${l.at}`, kind: 'level', f: 'badges', at: l.at, unread: l.at > t, lv: l });
+    for (const w of weeksKept()) out.push({ id: `w:${w.week}`, kind: 'week', f: 'badges', at: w.at, unread: w.at > t, w });
     // Friends' moments, while the community feed is on (Settings → Privacy). Two or more badges, or flames, on one day
     // fold into a stack.
     if (feedOn()) {
@@ -218,6 +222,8 @@ window.Inbox = (() => {
       }
       for (const a of accepted()) out.push({ id: `a:${a.id}:${a.at}`, kind: 'friend', f: 'friends', at: a.at, unread: a.at > t, line: { who: a }, what: 'accepted' });
     }
+    // A shared note a friend invited you to: stays here until you answer it.
+    for (const n of window.Social?.noteInvites?.() || []) out.push({ id: `ni:${n.id}`, kind: 'noteInvite', f: 'friends', at: +new Date(n.updatedAt) || Date.now(), unread: true, inv: n });
     out.sort((a, b) => b.at - a.at);
     // An update waiting to go in: pinned above them all, never filtered out.
     if (S.update && window.WhatsNew) out.unshift({ id: 'u', kind: 'update', f: 'news', at: 0, unread: false, rel: S.update, pinned: true });
@@ -242,6 +248,7 @@ window.Inbox = (() => {
       case 'release': case 'update': return 'var(--amber-rgb)';
       case 'badge': return metal(it.b.id, it.b.tier);
       case 'level': return rankOf(it.lv.level).color;
+      case 'week': return 'var(--amber-rgb)';
       case 'friend': return who(it.line.who).rc;
       case 'stack': case 'goal': return WARM;
     }
@@ -308,9 +315,11 @@ window.Inbox = (() => {
         return `You earned ${badgeName(it.b)}${tn ? ` · ${tn}` : ''}`;
       }
       case 'level': return rankChanged(it.lv) ? `Level ${it.lv.level} · you're ${rankOf(it.lv.level).name} now` : `Level ${it.lv.level}`;
+      case 'week': return 'Your week is final';
       case 'friend': return friendTitle(it);
       case 'stack': return stackTitle(it);
       case 'goal': return 'Weekly goal reached together';
+      case 'noteInvite': return `${who(it.inv.owner).name} shared “${it.inv.title || 'a note'}” with you`;
     }
     return '';
   }
@@ -327,9 +336,11 @@ window.Inbox = (() => {
         const nx = nextRank(it.lv.level);
         return nx ? `Next rank: ${nx.name} at level ${nx.from}` : `${rankOf(it.lv.level).name}, the top rank`;
       }
+      case 'week': return `#${num(it.w.place)} of ${num(it.w.total)} ${wkWord(it.w.week)} · your card is ready`;
       case 'friend': return friendPrev(it);
       case 'stack': return stackNames(it);
       case 'goal': return `Everyone together did ${num(it.line.hours)}h this week`;
+      case 'noteInvite': return guest() ? 'Sign in to open it' : 'You can write it together · Accept or decline';
     }
     return '';
   }
@@ -341,7 +352,9 @@ window.Inbox = (() => {
       case 'dev': return '<span class="nf-ic nf-ic-dev" aria-hidden="true"><img src="logo.png" alt=""></span>';
       case 'badge': return `<span class="nf-ic nf-ic-badge" aria-hidden="true">${art(it.b.id, it.b.tier, 46)}</span>`;
       case 'level': return `<span class="nf-ic nf-ic-lvl" aria-hidden="true">${it.lv.level}</span>`;
+      case 'week': return `<span class="nf-ic nf-ic-week${it.w.place <= 3 ? ` m${it.w.place}` : ''}" aria-hidden="true">#${it.w.place}</span>`;
       case 'goal': return '<span class="nf-ic nf-ic-goal" aria-hidden="true">🏆</span>';
+      case 'noteInvite': return `<span class="nf-ic" aria-hidden="true">${av(who(it.inv.owner), '✎')}</span>`;
       case 'stack': {
         const ppl = [];
         for (const k of it.kids) if (!ppl.some((p) => p.id === k.line.who?.id)) ppl.push(who(k.line.who));
@@ -505,14 +518,48 @@ window.Inbox = (() => {
     return eyebrow(it, 'Friends') + `<h2 class="nf-note-title nf-top">${esc(titleOf(it))}</h2>` +
       `<div class="nf-moments">${it.kids.map((k, i) => moment(k, i, true)).join('')}</div>`;
   }
+  // Last week's card (share-card.js): the picture and its three buttons, side by side.
+  function weekSheet(it) {
+    const w = it.w;
+    return eyebrow(it, 'Your week · final') +
+      `<div class="nf-wk"><div class="nf-wk-card wait" data-pre><img alt="" data-img></div><div>` +
+      `<h2 class="nf-big">#${num(w.place)} <span>of ${num(w.total)}</span></h2>` +
+      `<div class="nf-line"><span>${esc(wkWord(w.week, true))} · ${esc(weekRange(w.week))}</span></div>` +
+      `<p class="nf-wk-why"><b>${esc(window.Xp ? Xp.dur(w.seconds) : '')}</b> coded that week. Your card is ready.</p>` +
+      `${window.ShareCard ? ShareCard.actsHTML() : ''}<p class="nf-wk-note">It stays here. Share it whenever you like.</p></div></div>`;
+  }
+  // The row stays 8 weeks: "last week" only while it is, then "the week of 9 Nov" (`cap`: capitalised).
+  const wkWord = (start, cap) => {
+    const age = Date.now() - Date.parse(`${start}T00:00:00Z`);
+    const d = new Date(`${start}T00:00:00Z`);
+    const w = age < 14 * DAY ? 'last week' : `the week of ${d.getUTCDate()} ${['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][d.getUTCMonth()]}`;
+    return cap ? w[0].toUpperCase() + w.slice(1) : w;
+  };
+  const weekRange = (start) => {
+    const M = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const a = new Date(`${start}T00:00:00Z`), b = new Date(a.getTime() + 6 * DAY);
+    return a.getUTCMonth() === b.getUTCMonth() ? `${a.getUTCDate()}–${b.getUTCDate()} ${M[b.getUTCMonth()]}` : `${a.getUTCDate()} ${M[a.getUTCMonth()]} – ${b.getUTCDate()} ${M[b.getUTCMonth()]}`;
+  };
   function goalSheet(it) {
     const h = num(it.line.hours);
     return eyebrow(it, 'Friends') + `<h2 class="nf-note-title nf-top">${esc(titleOf(it))}</h2>` +
       `<div class="nf-next" style="margin-top:1.25rem"><b>${h}h</b> of the ${h}h goal, Monday to Sunday.<div class="nf-bar-xp" style="--m:var(--accent-rgb)"><i style="width:100%"></i></div></div>` +
       `<div class="nf-actions">${button('glass', 'board', 'See the leaderboard')}</div>`;
   }
+  // No account on this computer (only a hacker name): a shared note's invite waits, and opening it asks for the sign-in.
+  const guest = () => window.Account?.state?.()?.signedIn === false;
+  // A shared note's invite: who shared it, who else is in it, and the two answers.
+  function noteInviteSheet(it) {
+    const n = it.inv, people = (n.members || []).filter((m) => !m.owner).map((m) => `${m.name}${m.invited ? ' (invited)' : ''}`);
+    return eyebrow(it, 'Shared note') + `<h2 class="nf-note-title nf-top">${esc(n.title || 'A note')}</h2>` +
+      `<p class="nf-note-body">${esc(who(n.owner).name)} wants to write this note with you. ` +
+      `${people.length ? `Also in it: ${esc(names(people))}. ` : ''}Once you accept it shows in your notes, on every computer you use Orbiterm on.</p>` +
+      '<p class="nf-note-body">It’s saved on Orbiterm’s server, locked, but Orbiterm can read it.</p>' +
+      `<div class="nf-actions">${guest() ? button('glass', 'noteSignIn', 'Sign in to open', ` data-note="${esc(n.id)}"`) : button('glass', 'noteAccept', 'Accept', ` data-note="${esc(n.id)}"`)}${button('glass', 'noteDecline', 'Decline', ` data-note="${esc(n.id)}"`)}</div>`;
+  }
   function sheet(it) {
     switch (it.kind) {
+      case 'noteInvite': return noteInviteSheet(it);
       case 'release': case 'update': return releaseSheet(it);
       case 'dev': return devSheet(it);
       case 'badge': return badgeSheet(it);
@@ -520,6 +567,7 @@ window.Inbox = (() => {
       case 'friend': return friendSheet(it);
       case 'stack': return stackSheet(it);
       case 'goal': return goalSheet(it);
+      case 'week': return weekSheet(it);
     }
     return '';
   }
@@ -705,6 +753,10 @@ window.Inbox = (() => {
     pane.classList.toggle('nf-still', same);
     pane.innerHTML = html;
     pane.scrollTop = same ? top : 0;
+    if (it.kind === 'week' && window.ShareCard) {
+      const box = pane.querySelector('.nf-wk');
+      ShareCard.mount(box, { start: it.w.week }).paint(it.w.week);
+    }
     const c = pane.querySelector('.nf-hero canvas');
     if (c && it.unread && !burned.has(id) && window.Fire && !reduced()) {
       burned.add(id);
@@ -724,6 +776,36 @@ window.Inbox = (() => {
   function act(b) {
     switch (b.dataset.act) {
       case 'back': return reading(false);
+      case 'noteSignIn': {
+        // The sign-in starts here (GitHub or e-mail); once it's done the invite is accepted and the note opens.
+        const id = b.dataset.note, box = b.closest('.nf-actions');
+        if (!box || !window.Notes?.mountSignIn) return;
+        box.innerHTML = '';
+        box.classList.add('si-inline');
+        return void window.Notes.mountSignIn(box, {
+          why: 'open',
+          onDone: () => Social.acceptNote(id).then((r) => {
+            if (r.error) return;
+            window.Notes?.openShared?.(id);
+            st.sel = null;
+            reading(false);
+            render();
+          }),
+        });
+      }
+      case 'noteAccept':
+      case 'noteDecline': {
+        const id = b.dataset.note, me = Social.state()?.me?.id;
+        b.disabled = true;
+        const go = b.dataset.act === 'noteAccept' ? Social.acceptNote(id) : Social.declineNote(id, me);
+        return go.then((r) => {
+          if (r.error) return void (b.disabled = false);
+          if (b.dataset.act === 'noteAccept') window.Notes?.openShared?.(id);
+          st.sel = null;
+          reading(false);
+          render();
+        });
+      }
       case 'roadmap': return window.GitView?.view('roadmap');
       case 'board': return window.GitView?.view('board');
       case 'inventory': return window.GitView?.view('profile');
@@ -881,12 +963,35 @@ window.Inbox = (() => {
   // don't: they light the Friends filter only.
   function unseen() {
     if (isOpen) return 0;
-    let n = levels().filter((l) => l.at > seenAt).length;
+    let n = levels().filter((l) => l.at > seenAt).length + weeksKept().filter((w) => w.at > seenAt).length + (window.Social?.noteInvites?.() || []).length;
     const B = window.Badges?.mine();
     if (B && B.badges) {
       n += B.badges.filter((b) => b.tier && b.earnedAt && +new Date(b.earnedAt) > seenAt && Date.now() - +new Date(b.earnedAt) < BADGE_DAYS * DAY).length;
     }
     return n;
+  }
+
+  // Last week's card is ready once the API has written the week (Monday 15:10 in Istanbul): looked for at start and every
+  // hour until it's found for this week, then not again. One quiet row and the bell's dot, never a pop-up.
+  async function checkWeek() {
+    const S = (C && C.S()) || {};
+    if (!S.registered || !S.hackerName || !S.reachable || !window.Social || !Social.weeks) return;
+    const mon = new Date();
+    mon.setDate(mon.getDate() - ((mon.getDay() + 6) % 7) - 7);
+    const mine = mon.toLocaleDateString('sv');
+    if (weeksKept().some((w) => w.week === mine) || read('nf.weeksSkip', '') === mine) return;
+    const r = await Social.weeks('xp').catch(() => null);
+    if (!r || r.error || !r.current) return;
+    const last = new Date(Date.parse(`${r.current}T00:00:00Z`) - 7 * DAY).toISOString().slice(0, 10);
+    if (weeksKept().some((w) => w.week === last) || read('nf.weeksSkip', '') === last) return;
+    const row = (r.weeks || []).find((w) => w.week === last);
+    if (!row || !row.final) return;
+    if (!row.place || (row.seconds || 0) < 3600) return write('nf.weeksSkip', last);
+    const at = Date.now();
+    write('nf.weeks', [{ week: last, place: row.place, total: row.total, seconds: row.seconds, at }, ...weeksKept()].slice(0, 8));
+    live.add(`w:${last}`);
+    C?.count();
+    if (isOpen) render();
   }
 
   // A new level (cloud.js, the "xp" event): kept, with the level before it, so a new rank shows.
@@ -912,6 +1017,8 @@ window.Inbox = (() => {
     view.appendChild(liveEl);
     host.addEventListener('click', onClick);
     host.addEventListener('keydown', onKey);
+    setTimeout(checkWeek, 30e3);
+    setInterval(checkWeek, 3600e3);
     // Esc in a narrow window goes back to the list first (cloud.js takes it to the dashboard otherwise).
     addEventListener('keydown', (e) => {
       if (e.key !== 'Escape' || !isOpen || !host.classList.contains('nf-reading') || document.getElementById('cloudui')?.classList.contains('on')) return;
@@ -940,6 +1047,10 @@ window.Inbox = (() => {
         const f = ev.friend, at = Date.now();
         write('nf.friends', [{ id: f.id, name: f.name, tag: f.tag, at }, ...accepted()].slice(0, 20));
         live.add(`a:${f.id}:${at}`);
+        if (isOpen) render();
+      }
+      if (['noteInvites', 'note.invite', 'note.invite_gone', 'note.added'].includes(ev.type)) {
+        C?.count();
         if (isOpen) render();
       }
       if (isOpen && ['prefs', 'settings', 'snapshot'].includes(ev.type)) render();

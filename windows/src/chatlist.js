@@ -91,6 +91,9 @@ function createChatList({ settings, trashOps, onErased }) {
   let live = []; // engine.live()
   let open = new Set(); // sessions with a window of the app
   let activeId = null; // session of the focused chat window
+  // The conversation the focused window's AI is in, when it isn't its session id (a Codex or Antigravity started in a
+  // plain terminal: its session is "ai:…", its row the conversation's id), as the Mac's row matches either.
+  let activeAlt = null;
   let terms = []; // the app's terminals with no Claude in them: { id, cwd, title, job, shown }
   let liveKey = '', openKey = '', termsKey = '', version = 0;
 
@@ -102,7 +105,7 @@ function createChatList({ settings, trashOps, onErased }) {
     for (const b of live) {
       if (!b.cwd || known.has(b.sessionId) || (b.convId && known.has(b.convId))) continue;
       known.add(b.sessionId);
-      const tool = b.name === 'Antigravity' ? 'antigravity' : b.name === 'Codex' ? 'codex' : 'claude';
+      const tool = b.name === 'Antigravity' ? 'antigravity' : b.name === 'Codex' ? 'codex' : b.name === 'Cursor' ? 'cursor' : 'claude';
       all.push({ id: b.sessionId, cwd: b.cwd, mtime: Infinity, size: 0, title: b.title || `new chat · ${b.name}`, lastPrompt: '', tool });
     }
     return all.sort((a, b) => (a.mtime === b.mtime ? 0 : a.mtime > b.mtime ? -1 : 1));
@@ -220,10 +223,13 @@ function createChatList({ settings, trashOps, onErased }) {
       openKey = key;
       return true;
     },
-    setActive(id) {
+    /** The focused window's session, and the conversation it is in if that's another id; what the list marks changed: true. */
+    setActive(id, altId) {
       const next = id || null;
-      if (next === activeId) return false;
+      const alt = altId && altId !== next ? altId : null;
+      if (next === activeId && alt === activeAlt) return false;
       activeId = next;
+      activeAlt = alt;
       return true;
     },
     /** The app's terminals with no Claude in them, for their folders; what the list shows of them changed: true. */
@@ -404,10 +410,16 @@ function createChatList({ settings, trashOps, onErased }) {
         const b = status.get(i.id);
         const key = folderKey(i.cwd);
         const fav = favorites.has(i.id);
+        const named = titles.get(i.id);
         rows.push({
-          id: i.id, cwd: i.cwd, key, mtime: i.mtime, size: i.size, title: titles.get(i.id) || i.title, lastPrompt: i.lastPrompt, fav,
+          id: i.id, cwd: i.cwd, key, mtime: i.mtime, size: i.size, title: named || i.title, lastPrompt: i.lastPrompt, fav,
           tool: i.tool || 'claude', status: b ? b.status : null, host: b ? b.host : null,
           open: open.has(i.id) || (b ? open.has(b.sessionId) : false),
+          // A renamed chat is still found by the title its AI gave it, as the Mac's search looks at both (Sidebar.swift).
+          ...(named && i.title && named !== i.title ? { origTitle: i.title } : {}),
+          // The live session it is when that has another id (an AI tool's "ai:…" in its conversation): the page marks the
+          // row of the focused window by either, as the Mac's row does by its brief.
+          ...(b && b.sessionId !== i.id ? { sid: b.sessionId } : {}),
         });
         if (!fav && !shown.has(key)) shown.set(key, i.cwd);
       }
@@ -431,7 +443,7 @@ function createChatList({ settings, trashOps, onErased }) {
       for (const [key, cwd] of shown) where[key] = { label: names.get(cwd) || projectLabel(cwd), path: tildify(cwd), cwd };
       // The saved chats in the list or its archive: not the deleted ones (Settings · deleted chats).
       const saved = items.filter((i) => !trash.has(i.id) && !erasing.has(i.id)).length;
-      return { rows, terms: termRows, pinned: pins, saved, live: live.length, folders: where, active: activeId };
+      return { rows, terms: termRows, pinned: pins, saved, live: live.length, folders: where, active: activeId, activeAlt };
     },
 
     /** For Settings (cloud.js's archived chats): the archived chats by folder, each folder's newest first. */

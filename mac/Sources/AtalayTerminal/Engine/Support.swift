@@ -125,7 +125,7 @@ func externalAISubAgentTool(_ cmd: String) -> String? {
         if part.contains("=") { continue }
         let bin = (String(part) as NSString).lastPathComponent
         switch bin {
-        case "codex", "agy", "antigravity", "gemini": return bin == "antigravity" ? "agy" : bin
+        case "codex", "agy", "antigravity", "gemini", "cursor-agent": return bin == "antigravity" ? "agy" : bin
         default: return nil
         }
     }
@@ -194,6 +194,54 @@ func redact(_ s: String?) -> String {
     }
     out += t[last...]
     return out
+}
+
+// What leaves the Mac for Claude and the other AIs (the local MCP server, Mcp.swift) is masked further: Bearer tokens, PEM keys, addresses
+// with a password in them, secrets named by a key (`db_password:`, `"client_secret": "…"`, `aws_secret_access_key = …`), .env lines
+// wherever they stand on a line (after a prompt too), and more providers' keys.
+private let extraPatterns: [NSRegularExpression] = [
+    #"-----BEGIN [A-Z ]*(?:PRIVATE KEY|CERTIFICATE|PGP PRIVATE KEY BLOCK)-----[\s\S]*?(?:-----END [A-Z ]*-----|$)"#,
+    #"\b[a-zA-Z][a-zA-Z0-9+.-]*://[^\s:/@]+:[^\s@/]+@[^\s"']+"#,
+    #"\b(?:sk|rk|pk)_(?:live|test)_[A-Za-z0-9]{16,}"#,
+    #"\bwhsec_[A-Za-z0-9]{16,}"#,
+    #"\brpa_[A-Za-z0-9]{16,}"#,
+    #"\bAIza[0-9A-Za-z_-]{30,}"#,
+    #"\bGOCSPX-[A-Za-z0-9_-]{16,}"#,
+    #"\b(?:npm|pypi)_[A-Za-z0-9]{30,}"#,
+    #"\bglpat-[A-Za-z0-9_-]{16,}"#,
+    #"\bvercel_[A-Za-z0-9_]{20,}"#,
+    #"\bsbp_[a-f0-9]{30,}"#,
+].map { try! NSRegularExpression(pattern: $0) }
+/// `Authorization: Bearer <token>`: the token, which the generic key-and-value mask would leave behind (it takes "Bearer" for the value).
+private let bearerToken = try! NSRegularExpression(pattern: #"(\b(?:bearer|basic|token)[ \t]+)[A-Za-z0-9._~+/=-]{8,}"#, options: [.caseInsensitive])
+/// A name with a secret word in it (any text around the word, `_` and `-` included: `\b` doesn't stop at `_`), then `:` or `=`, then the value.
+/// At most 64 characters around the word each side: unbounded, a long run of word characters (`token_token_…`) backtracked for seconds.
+private let namedSecret = try! NSRegularExpression(
+    pattern: #"([A-Za-z0-9_.-]{0,64}(?:pass(?:word|wd|phrase)?|secret|token|api[_-]?key|apikey|authorization|private[_-]?key|access[_-]?key|credential|auth)[A-Za-z0-9_.-]{0,64}["']?[ \t]*[:=][ \t]*["']?)([^\s"'&;,]{4,})"#,
+    options: [.caseInsensitive])
+private let envLine = try! NSRegularExpression(
+    pattern: #"(^|[\s❯›>$%#])((?:export[ \t]+)?[A-Z][A-Z0-9_]*(?:KEY|SECRET|TOKEN|PASSWORD|PASSWD|PASS|DSN|URL|URI|CREDENTIALS?|AUTH)[A-Z0-9_]*[ \t]*=[ \t]*)("[^"\n]*"|'[^'\n]*'|\S+)"#,
+    options: [.anchorsMatchLines])
+
+func redactMore(_ s: String?) -> String {
+    let mask = "‹•••›"
+    var t = s ?? ""
+    func range(_ t: String) -> NSRange { NSRange(t.startIndex..., in: t) }
+    t = bearerToken.stringByReplacingMatches(in: t, range: range(t), withTemplate: "$1" + mask)
+    t = redact(t)
+    for rx in extraPatterns { t = rx.stringByReplacingMatches(in: t, range: range(t), withTemplate: mask) }
+    // A named secret's value, unless it is already masked or only a variable's name.
+    var out = ""
+    var last = t.startIndex
+    for m in namedSecret.matches(in: t, range: range(t)) {
+        guard let whole = Range(m.range, in: t), let head = Range(m.range(at: 1), in: t), let value = Range(m.range(at: 2), in: t) else { continue }
+        out += t[last..<whole.lowerBound]
+        out += t[value].hasPrefix("$") || t[value].hasPrefix("‹") ? String(t[whole]) : String(t[head]) + mask
+        last = whole.upperBound
+    }
+    out += t[last...]
+    t = out
+    return envLine.stringByReplacingMatches(in: t, range: range(t), withTemplate: "$1$2" + mask)
 }
 
 let HOME = NSHomeDirectory()
@@ -368,7 +416,7 @@ extension Proc {
         "codex": "Codex", "gemini": "Gemini", "opencode": "OpenCode", "aider": "Aider", "cursor-agent": "Cursor",
         "amp": "Amp", "qwen": "Qwen Code", "crush": "Crush", "droid": "Droid", "copilot": "Copilot", "kiro-cli": "Kiro",
         "grok": "Grok", "auggie": "Auggie", "cline": "Cline", "kimi": "Kimi", "kilocode": "Kilo Code", "plandex": "Plandex",
-        "agy": "Antigravity",
+        "agy": "Antigravity", "cursor-agent-sea": "Cursor",
     ]
     private static let interpreters: Set<String> = ["node", "bun", "deno", "python", "python3", "Python"]
 
@@ -381,6 +429,17 @@ extension Proc {
                   // The script, past the interpreter's options (`node --no-warnings …/bin/gemini`, `python -m aider`).
                   let script = args.dropFirst().first(where: { !$0.hasPrefix("-") }) else { return nil }
             found = otherAIs[((script as NSString).lastPathComponent as NSString).deletingPathExtension]
+            // Cursor's CLI runs as `node …/cursor-agent/versions/<version>/index.js` (its `agent` and `cursor-agent` commands are a
+            // bash launcher that execs its bundled Node): known by that folder, never by the name `agent`.
+            if found == nil, script.contains("/cursor-agent/versions/"), (script as NSString).lastPathComponent == "index.js" { found = "Cursor" }
+        }
+        // Cursor's one-shot commands (`agent status`, `agent ls`, `agent mcp …`, its `-p` runs) are no session.
+        if found == "Cursor", let args = arguments(pid) {
+            let rest = Array(args.drop(while: { !$0.hasSuffix("index.js") }).dropFirst())
+            if rest.contains(where: { $0 == "-p" || $0 == "--print" }) { return nil }
+            if let sub = rest.first(where: { !$0.hasPrefix("-") }),
+               ["status", "whoami", "about", "login", "logout", "ls", "mcp", "update", "upgrade", "install-shell-integration",
+                "uninstall-shell-integration", "worker-server", "create-chat", "generate-rule", "rule", "models", "help", "agent-pool"].contains(sub) { return nil }
         }
         if found == "Antigravity", let args = arguments(pid),
            args.contains(where: { $0 == "-p" || $0 == "--prompt" || $0 == "/usage" }) {

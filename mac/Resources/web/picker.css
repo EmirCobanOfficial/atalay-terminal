@@ -25,7 +25,7 @@
 .pk-border {
   position: absolute;
   inset: 0;
-  z-index: 5;
+  z-index: 9; /* above the new-worktree sheet's veil (worktree.css) */
   padding: 2px;
   border-radius: 12px;
   background: conic-gradient(from var(--ang), var(--accent), var(--amber), var(--cyan), var(--accent));
@@ -54,7 +54,7 @@
 }
 .pk-bar button { width: 26px; padding: 0; }
 .pk-bar button:disabled { opacity: 0.3; cursor: default; }
-.pk-bar button:not(:disabled):hover, .pk-foot button:hover { border-color: var(--accent); box-shadow: 0 0 10px rgba(var(--glow), 0.45); color: var(--hi); }
+.pk-bar button:not(:disabled):hover, .pk-foot button:not(:disabled):hover { border-color: var(--accent); box-shadow: 0 0 10px rgba(var(--glow), 0.45); color: var(--hi); }
 .pk-crumbs { display: flex; align-items: center; flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; }
 .pk-crumbs span { padding: 2px 5px; color: var(--dim); cursor: pointer; }
 .pk-crumbs span:hover { color: var(--hi); background: rgba(var(--glow), 0.12); }
@@ -89,16 +89,36 @@
 .pk-row .badge { padding: 0 5px; border: 1px solid; font-size: 0.82em; white-space: nowrap; }
 .pk-row .badge.git { color: var(--green); border-color: rgba(var(--green-rgb), 0.45); }
 .pk-row .badge.claude { color: var(--accent-soft); border-color: rgba(var(--accent-soft-rgb), 0.5); }
+/* A linked worktree's folder says so (its .git is a file). Not `.wt`: that is the name sheet's own class. */
+.pk-row .badge.wtb { color: var(--amber); border-color: rgba(var(--amber-rgb), 0.5); }
 .pk-row .dt { color: var(--dim); text-align: right; }
 .pk-empty { padding: 30px 10px; color: var(--dim); text-align: center; }
 .pk-empty.err { color: var(--red); }
 .pk-skel { height: 30px; margin: 2px 0; border-radius: 4px; background: linear-gradient(90deg, rgba(var(--glow), 0.05), rgba(var(--glow), 0.14), rgba(var(--glow), 0.05)); background-size: 200% 100%; animation: cw-shim 1.2s linear infinite; }
 
 .pk-foot { display: flex; align-items: center; gap: 8px; height: 44px; flex: none; padding: 0 14px; border-top: 1px solid rgba(var(--glow), 0.3); background: rgba(0, 0, 0, 0.3); }
-.pk-foot .pk-sel { flex: 1; min-width: 0; overflow: hidden; color: var(--accent-soft); white-space: nowrap; text-overflow: ellipsis; }
+.pk-foot .pk-sel { display: flex; flex: 1; gap: 0.45em; min-width: 0; overflow: hidden; color: var(--accent-soft); white-space: nowrap; }
+.pk-foot .pk-sel .p { min-width: 0; overflow: hidden; text-overflow: ellipsis; direction: rtl; text-align: left; }
+.pk-foot .pk-sel .p bdi { unicode-bidi: plaintext; }
+.pk-foot .pk-sel b { flex: none; }
 .pk-foot .pk-sel b { color: var(--dim); font-weight: 400; }
+/* The branch the folder is on, and "not a git repo" when it isn't one. */
+.pk-foot .pk-sel .br { flex: none; color: var(--txt3); }
+.pk-foot .pk-sel .nogit { flex: none; color: var(--dim); }
+.pk-foot .pk-sel .ai { flex: none; display: inline-flex; align-items: center; gap: 0.4em; color: var(--txt2); }
+.pk-foot .pk-sel .ai i { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 6px var(--accent); }
 .pk-foot .pk-ok { border-color: var(--accent); background: var(--accent); color: var(--ink); font-weight: 700; }
 .pk-foot .pk-ok:hover { background: var(--accent-soft); color: var(--ink); }
+/* The picker's worktree button, between Cancel and Use this folder. */
+.pk-foot .pk-wt { display: inline-flex; align-items: center; gap: 6px; border-color: rgba(var(--accent-soft-rgb), 0.6); color: var(--accent-soft); }
+.pk-foot .pk-wt[hidden] { display: none; }
+.pk-foot .pk-wt svg { width: 13px; height: 13px; }
+.pk-foot .pk-wt:disabled { opacity: 0.38; cursor: default; }
+.pk-foot .pk-wt.pk-ok { border-color: var(--accent); color: var(--ink); }
+.pk-foot .pk-wt.loading svg { display: none; }
+.pk-foot .pk-wt.loading::before { content: ""; width: 11px; height: 11px; border-radius: 50%; border: 2px solid rgba(var(--accent-soft-rgb), 0.3); border-top-color: var(--accent-soft); animation: pk-spin 0.8s linear infinite; }
+.pk-foot .pk-wt.pk-ok.loading::before { border-color: rgba(var(--ink-rgb), 0.3); border-top-color: var(--ink); }
+.pk-foot button:focus-visible { outline: 2px solid var(--accent-soft); outline-offset: 2px; }
 
 /* ===== shortcuts around the new-terminal picker: 4 above, 3 right, 4 below, 3 left (picker.js) ===== */
 #picker.around { --tw: 150px; --th: 96px; --gx: 26px; --gy: 22px; }

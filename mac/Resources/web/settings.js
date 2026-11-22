@@ -23,6 +23,9 @@ window.Settings = (() => {
       localStorage.setItem(k, v);
     } catch {}
   };
+  // The computer as this platform names it (the Windows app sets __platform, preload.js).
+  const WIN = window.__platform === 'win32';
+  const MACHINE = WIN ? 'PC' : 'Mac';
 
   // Line icons, drawn like the top bar's gear (16×16, stroked in the text's colour).
   const svg = (d) => `<svg class="st-ico" viewBox="0 0 16 16" aria-hidden="true">${d}</svg>`;
@@ -37,6 +40,7 @@ window.Settings = (() => {
     { id: 'account', name: 'Account', icon: svg('<circle cx="8" cy="5.4" r="2.7"/><path d="M2.6 14c.6-2.8 2.8-4.3 5.4-4.3s4.8 1.5 5.4 4.3"/>') },
     { id: 'appearance', name: 'Appearance', icon: svg('<path d="M8 1.8a6.2 6.2 0 1 0 0 12.4c.9 0 1.3-.6 1.3-1.2 0-.9-.8-1.2-.8-2 0-.7.6-1.2 1.3-1.2h1.6c1.7 0 2.8-1.1 2.8-2.7C14.2 4.1 11.4 1.8 8 1.8z"/><circle cx="4.9" cy="7.4" r=".9"/><circle cx="6.9" cy="4.6" r=".9"/><circle cx="10.2" cy="4.8" r=".9"/>') },
     { id: 'chats', name: 'Chats', icon: svg('<path d="M3 3h10a1.5 1.5 0 0 1 1.5 1.5v5.5A1.5 1.5 0 0 1 13 11.5H8.2L5 14v-2.5H3A1.5 1.5 0 0 1 1.5 10V4.5A1.5 1.5 0 0 1 3 3z"/><path d="M4.6 6.2 6.2 7.4 4.6 8.6M7.6 8.6h3"/>') },
+    { id: 'claude', name: 'Claude', icon: svg('<circle cx="4.2" cy="8" r="2.1"/><circle cx="11.8" cy="8" r="2.1"/><path d="M6.3 8h3.4"/>') },
     // Right after Chats: both are about working in the terminals (Arc's word: the wheel opens with the mouse too).
     { id: 'shortcuts', name: 'Shortcuts', icon: svg('<rect x="1.5" y="4" width="13" height="8.5" rx="1.5"/><path d="M4.2 6.7h.01M6.4 6.7h.01M8.6 6.7h.01M10.8 6.7h.01M4.8 9.8h6.4"/>') },
     { id: 'privacy', name: 'Privacy', icon: svg('<rect x="3" y="7" width="10" height="7.2" rx="1.4"/><path d="M5.2 7V5a2.8 2.8 0 0 1 5.6 0v2"/><path d="M8 10v1.6"/>') },
@@ -112,6 +116,12 @@ window.Settings = (() => {
       (window.__sound
         ? group('sound', row('play a sound when a chat needs you', "a short ping · the top bar's sound button does the same", sw('st-sound', 'Play a sound when a chat needs you', !!window.__sound.on())))
         : '') +
+      // Only where the app answers the switch (the Mac app sets window.__worktreeNudge): Windows has no worktrees yet.
+      (typeof window.__worktreeNudge === 'boolean'
+        ? group('worktrees', row('suggest a worktree for a second AI',
+            'when an AI starts in a folder where another one is working · a note in its window until you send it something',
+            sw('st-wtnudge' + (window.__worktreeNudge !== false ? ' on' : ''), 'Suggest a worktree for a second AI', window.__worktreeNudge !== false)))
+        : '') +
       (c.savers
         ? group('save tokens',
             row('shorter command output <em class="st-tag">rtk</em>', { cls: 'ts-note', attr: ' data-which="rtk"', text: '…' }, sw('ts', 'Turn rtk on or off', false, ' data-which="rtk"'), 'ts-row') +
@@ -131,18 +141,56 @@ window.Settings = (() => {
       '<input type="search" class="ks-find" placeholder="search shortcuts" aria-label="Search shortcuts" spellcheck="false" autocomplete="off" autocapitalize="off"></label>' +
       '<div class="mn-keys"></div>';
 
+    // Claude Desktop and Claude Code on this computer reaching the chats (Mcp.swift, the Windows app's mcp.js, the "mcp" handler):
+    // off until turned on, and the app asks in its own window when it is, so this page can only ask. The sign that it's on is
+    // in the Mac's menu bar, in Windows' system tray.
+    const MCP_MODES = [['off', 'Off'], ['watch', 'Watch only'], ['write', 'Watch and type']];
+    const claude =
+      group('claude can use orbiterm',
+        row('let Claude use my chats', { cls: 'mcp-note', text: '…' },
+          `<span class="lb-seg ui-seg st-mcp-mode">${MCP_MODES.map(([m, n]) => `<button type="button" data-mode="${m}">${n}</button>`).join('')}</span>`)) +
+      `<div class="st-mcp-more" hidden>` +
+      group('connect',
+        row('Claude Desktop', { cls: 'mcp-desktop-note', text: '…' }, '<button type="button" class="st-btn mcp-desktop"></button>') +
+        row('Claude Code', { cls: 'mcp-code-note', text: '…' }, '<button type="button" class="st-btn mcp-code"></button>') +
+        row('as a Claude extension', "if Claude Desktop, or Dispatch on your phone, doesn't show Orbiterm · Claude asks you to confirm", '<button type="button" class="st-btn mcp-ext">install…</button>')) +
+      '</div>' +
+      '<p class="st-note mcp-error" hidden></p>' +
+      // Only where the notes' AI switch is (Settings > Privacy, the "notesai" handler).
+      (c.notesai ? '<p class="st-note">Notes follow your Notes setting, not this one. Set it in <button type="button" class="st-ln st-nai-open">Notes \u203a AI</button>.</p>' : '') +
+      `<p class="st-note">Watch and type lets Claude type into your terminals. Notes follow your Notes setting.</p>` +
+      `<p class="st-note">Claude only sees Claude Code, Codex, Antigravity and Cursor chats, never a plain terminal. Passwords, keys and tokens are masked before anything leaves Orbiterm. It can't answer approvals, and can't type into a chat started with permissions bypassed. While it's on, ${WIN ? 'an icon shows in the system tray' : 'a sign shows in the menu bar'} with a way to turn it off.</p>`;
+
     const privacy =
       group('friends and leaderboard',
         row('show my active time to friends', 'today, this week and in total · your level shows either way', sw('act', 'Show my active time to friends', true)) +
         row('show my name on the leaderboard', 'off: you show as Anonymous, and nobody can add you from there', sw('brd', 'Show my name on the leaderboard', true)) +
+        // Kept by the app on this computer, not by the API (Cloud.swift, the Windows app's cloud.js): off, no token counts
+        // leave it at all. The two under it are about how the counts it sent show on the board.
+        row('share my token counts for the Tokens board', `how many tokens each AI, model and effort used a day, never what was in them · off: none leave this ${MACHINE}, not even later · what was sent stays`, sw('tks', 'Share my token counts for the Tokens board', true)) +
         row('show my name on the Tokens board', 'off: Anonymous on the Tokens board only · your total still counts', sw('tkn', 'Show my name on the Tokens board', true)) +
-        row('let friends see which AI and model I use', 'opening your row on the Tokens board · off: only your total shows, to everyone', sw('tkd', 'Let friends see which AI and model I use', true))) +
+        row('let friends see which AI and model I use', 'opening your row on the Tokens board · off: only your total shows, to everyone', sw('tkd', 'Let friends see which AI and model I use', true)) +
+        // A friend's spaceship attack (attack.js): the switch's clicks and its state are attack.js's; its words too.
+        (window.Attack?.on
+          ? row(window.Attack.text.setting.title, window.Attack.text.setting.hint, sw(`atk-on${window.Attack.on() ? ' on' : ''}`, window.Attack.text.setting.aria, window.Attack.on()))
+          : '')) +
+      (c.notesai
+        ? group('notes and AI',
+            row('what AI can do with my notes', { cls: 'na-note', text: '…' },
+              '<span class="lb-seg ui-seg st-notesai"><button type="button" data-mode="off">Off</button><button type="button" data-mode="read">Read</button><button type="button" data-mode="write">Read and edit</button></span>')) +
+          '<p class="st-note">Shared notes are stored on Orbiterm\u2019s server, encrypted.</p>' +
+          '<p class="st-note">Hide a note from AI or connect Claude Desktop from <button type="button" class="st-ln st-nai-open">Notes \u203a AI</button></p>'
+        : '') +
       (dc
         ? group('discord',
             row("show what I'm doing on Discord", { cls: 'dc-note', text: '…' }, sw('dc-on', "Show what I'm doing on Discord", false)) +
             row("show the project's name", "the folder you're working in, like my-app · off: only how many chats are open", sw('dc-proj', "Show the project's name on Discord", false), 'st-sub') +
             row('show my active time today', 'like 4h 12m today', sw('dc-act', 'Show my active time on Discord', true), 'st-sub'))
-        : '');
+        : '') +
+      // What Orbiterm stores and the rules, in writing (orbiterm.dev; the Privacy Notice and the Terms), and where to ask.
+      '<p class="st-note"><a class="st-ln" href="https://orbiterm.dev/privacy/" target="_blank" rel="noopener noreferrer">Privacy Notice</a> \u00b7 ' +
+      '<a class="st-ln" href="https://orbiterm.dev/terms/" target="_blank" rel="noopener noreferrer">Terms of Use</a> \u00b7 ' +
+      'Data requests: <a class="st-ln" href="mailto:privacy@orbiterm.dev">privacy@orbiterm.dev</a></p>';
 
     const general =
       // The fun layer's announcements (community.js): one switch for what you hear of others, where people look to turn
@@ -154,7 +202,15 @@ window.Settings = (() => {
       group('updates', '<div class="hk-info"></div>') +
       (pw
         ? group('battery', row('power save at low battery', `below ${esc(pw.threshold)}% battery or in ${esc(pw.saver || 'Low Power Mode')}, the map moves less to save battery · the switch on the map turns it off`, sw('pwr-auto', 'Power save on by itself at low battery', true)))
-        : '');
+        : '') +
+      // Clean Up (cleanup.js, Cleanup.swift): what the line on the map does when the Mac runs low on memory, and when a chat counts as idle.
+      // Only where the app answers (it sends its settings first). The Windows app lists no worktrees (yet).
+      (!window.__cleanupPrefs ? '' : group('memory',
+        row('suggest a clean up', `when your ${MACHINE} runs low on memory, a line on the map offers to close what you aren't using · nothing closes by itself`, sw('cu-sug', 'Suggest a clean up', true)) +
+        row('when the disk holds more than', `memory your ${MACHINE} had to move onto the disk`, '<span class="lb-seg ui-seg cu-swap">' + [2, 4, 8].map((g) => `<button type="button" data-v="${g}">${g} GB</button>`).join('') + '</span>', 'st-sub cu-swaprow') +
+        row('tick idle chats after', 'in Clean Up, chats left alone this long are ticked for you', '<span class="lb-seg ui-seg cu-idle">' + [[1, '1 hour'], [12, '12 hours'], [24, '1 day'], [72, '3 days']].map(([h, n]) => `<button type="button" data-v="${h}">${n}</button>`).join('') + '</span>') +
+        row('clean up now', WIN ? 'end idle chats, stop leftover programs' : 'end idle chats, stop leftover programs, remove finished worktrees', '<button type="button" class="st-btn cu-now">Open Clean Up…</button>')));
+
 
     return (
       nav +
@@ -162,6 +218,7 @@ window.Settings = (() => {
       pane('account', 'Account', '', account) +
       pane('appearance', 'Appearance', '', appearance) +
       pane('chats', 'Chats', '', chats) +
+      pane('claude', 'Claude', `let Claude on this ${MACHINE} see your AI chats, and type into them`, claude) +
       (c.keys ? pane('shortcuts', 'Shortcuts', 'click a shortcut, then press the new keys · esc cancels, delete takes them off', shortcuts) : '') +
       pane('privacy', 'Privacy', 'what friends, the leaderboard and Discord can see', privacy) +
       pane('general', 'General', '', general) +
@@ -204,6 +261,49 @@ window.Settings = (() => {
   window.addEventListener('mascotchange', paintMascot);
   window.addEventListener('mascotasset', paintMascot);
 
+  // Claude access: what the app says (window.__mcp), and the buttons that ask it to change.
+  const mcpHandler = () => window.webkit?.messageHandlers?.mcp;
+  function paintMcp() {
+    if (!page) return;
+    const s = window.__mcp;
+    const mode = s ? s.mode : 'off';
+    page.querySelectorAll('.st-mcp-mode button').forEach((b) => {
+      b.classList.toggle('on', b.dataset.mode === mode);
+      b.disabled = !s;
+    });
+    const note = page.querySelector('.mcp-note');
+    if (note) note.textContent = { off: "Claude can't see Orbiterm · off until you turn it on", watch: 'Claude can see your chats and read their answers · it can\'t type', write: "Claude can also send a prompt to a chat that's waiting for one · it can't answer approvals" }[mode];
+    const more = page.querySelector('.st-mcp-more');
+    if (more) more.hidden = mode === 'off';
+    if (!s) return;
+    const d = page.querySelector('.mcp-desktop'), c = page.querySelector('.mcp-code');
+    d.textContent = s.desktop ? 'remove' : 'connect';
+    d.disabled = !s.desktopFound && !s.desktop;
+    d.dataset.on = s.desktop ? '1' : '';
+    c.textContent = s.code ? 'connected' : 'connect';
+    c.disabled = !!s.code;
+    // Windows' Claude Desktop goes on in the tray when its window closes: it reads its settings again only once quit from there.
+    page.querySelector('.mcp-desktop-note').textContent = !s.desktopFound && !s.desktop ? `Claude Desktop isn't on this ${MACHINE}`
+      : s.desktop ? (WIN ? 'connected · quit Claude Desktop from its tray icon and reopen it once if it was open' : 'connected · quit and reopen Claude Desktop once if it was open')
+      : WIN ? 'adds Orbiterm to Claude Desktop · then quit it from its tray icon and reopen it' : 'adds Orbiterm to Claude Desktop · then quit and reopen it';
+    page.querySelector('.mcp-code-note').textContent = s.code ? 'connected · new Claude Code chats can use it' : 'adds Orbiterm to Claude Code in your terminal';
+  }
+  async function mcpAsk(msg) {
+    const err = page && page.querySelector('.mcp-error');
+    if (err) err.hidden = true;
+    const r = await mcpHandler()?.postMessage(msg).catch(() => null);
+    if (!r) return;
+    const state = r.state || r;
+    if (state.mode) window.__mcp = state;
+    if (r.error && err) {
+      err.textContent = r.error;
+      err.hidden = false;
+    }
+    paintMcp();
+    return r;
+  }
+  window.addEventListener('mcpchange', paintMcp);
+
   function paintSound() {
     const b = page && page.querySelector('.st-sound');
     if (!b || !window.__sound) return;
@@ -240,6 +340,14 @@ window.Settings = (() => {
       show(next);
       nav.querySelector(`button[data-pane="${next}"]`)?.focus();
     };
+    const wtn = page.querySelector('.st-wtnudge');
+    if (wtn) wtn.onclick = () => {
+      const on = wtn.getAttribute('aria-checked') !== 'true';
+      window.__worktreeNudge = on;
+      wtn.classList.toggle('on', on);
+      wtn.setAttribute('aria-checked', String(on));
+      window.webkit?.messageHandlers?.radar?.postMessage({ type: 'worktreeNudge', on });
+    };
     const snd = page.querySelector('.st-sound');
     if (snd) snd.onclick = () => {
       window.__sound.set(!window.__sound.on());
@@ -266,6 +374,18 @@ window.Settings = (() => {
       window.dispatchEvent(new Event('mascotchange'));
       window.webkit?.messageHandlers?.radar?.postMessage({ type: 'mascotMischief', level });
     };
+    const mcpMode = page.querySelector('.st-mcp-mode');
+    if (mcpMode) mcpMode.onclick = (e) => {
+      const b = e.target.closest('button[data-mode]');
+      if (b && !b.classList.contains('on')) mcpAsk({ type: 'mode', mode: b.dataset.mode });
+    };
+    const mcpD = page.querySelector('.mcp-desktop');
+    if (mcpD) mcpD.onclick = () => mcpAsk(mcpD.dataset.on ? { type: 'disconnect' } : { type: 'connect', target: 'desktop' });
+    const mcpC = page.querySelector('.mcp-code');
+    if (mcpC) mcpC.onclick = () => mcpAsk({ type: 'connect', target: 'code' });
+    const mcpE = page.querySelector('.mcp-ext');
+    if (mcpE) mcpE.onclick = () => mcpAsk({ type: 'connect', target: 'extension' });
+    mcpAsk({ type: 'state' });
     show(current);
     paintSound();
     paintTheme();
@@ -282,5 +402,5 @@ window.Settings = (() => {
     return page.querySelector('.st-nav button.on');
   }
 
-  return { html, mount, show, focusTarget, current: () => current };
+  return { html, mount, show, focusTarget, mcpAsk, current: () => current };
 })();

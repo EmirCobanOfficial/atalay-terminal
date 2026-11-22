@@ -31,13 +31,16 @@ final class NoteWindow: NSObject, NSWindowDelegate, WKNavigationDelegate {
     /// Out of the way of a dashboard menu.
     private var steppedAside = false
     private var closing = false
+    /// The server's id of this window's note when it is shared (read from its note as it is loaded and saved): the only note this
+    /// window may ask a socket ticket for.
+    private var sharedID: String?
     private var finished = false
     /// Its page has its note (it's shown from then on).
     private var loaded = false
     /// Shown once its page has its note: true takes the keyboard.
     private var pendingFocus: Bool?
-    /// Asked to open again while it was closing.
-    private var reopen = false
+    /// Asked to open again while it was closing: whether it then takes the keyboard.
+    private var reopen: Bool?
     /// Where the pointer and the window were when the header's drag began.
     private var dragFrom: (mouse: NSPoint, origin: NSPoint)?
 
@@ -51,7 +54,7 @@ final class NoteWindow: NSObject, NSWindowDelegate, WKNavigationDelegate {
         let config = WKWebViewConfiguration()
         config.lockInspector()
         let ucc = WKUserContentController()
-        let boot: [String: Any] = ["id": id, "onTop": onTop, "streamer": Streamer.on]
+        let boot: [String: Any] = ["id": id, "onTop": onTop, "streamer": Streamer.on, "aiMode": NotesAI.mode.rawValue]
         let json = (try? JSONSerialization.data(withJSONObject: boot)).flatMap { String(data: $0, encoding: .utf8) } ?? "null"
         ucc.addUserScript(WKUserScript(source: "window.__NOTE_WINDOW__ = \(json);", injectionTime: .atDocumentStart, forMainFrameOnly: true))
         config.userContentController = ucc
@@ -100,7 +103,7 @@ final class NoteWindow: NSObject, NSWindowDelegate, WKNavigationDelegate {
     static func show(id: String, focus: Bool = true) {
         guard NotesStore.validName(id) else { return }
         if let n = open[id] {
-            if n.closing { n.reopen = true }
+            if n.closing { n.reopen = (n.reopen ?? false) || focus }
             else if n.loaded { n.show(focus: focus) }
             else { n.pendingFocus = (n.pendingFocus ?? false) || focus }
             return
@@ -110,10 +113,38 @@ final class NoteWindow: NSObject, NSWindowDelegate, WKNavigationDelegate {
         open[id] = n
     }
 
+    /// The network came back: every window's shared note tries its line again.
+    static func netBack() {
+        for n in open.values where n.loaded { n.webView.evaluateJavaScript("window.Notes && Notes.netBack && Notes.netBack(); true", completionHandler: nil) }
+    }
+
+    /// For the AI tools (note_show): the note in its window without taking the keyboard from what the user is doing, and, when
+    /// asked, kept on top (or not). The place is set before the window is made, so it opens the way it was asked to.
+    static func present(id: String, keepOnTop: Bool?) {
+        guard NotesStore.validName(id) else { return }
+        if let on = keepOnTop {
+            if let n = open[id] { n.setOnTop(on, focus: false) } else { update(id) { $0["onTop"] = on } }
+        }
+        show(id: id, focus: false)
+    }
+
     /// The dashboard closes it: its × ("bring it back"), or the note deleted there (`flush` false, its place forgotten).
     static func close(id: String, flush: Bool, deleted: Bool = false) {
         open[id]?.close(flush: flush)
         if deleted { forget(id) }
+    }
+
+    /// For the AI tools (NotesTools): the page that holds a note's live text. A note out in its window is written there (that
+    /// page knows what's being typed), so the AI's change goes to it; nil when the note isn't out (the dashboard's page has it).
+    static func liveView(id: String) -> WKWebView? {
+        guard let n = open[id], n.loaded, !n.finished, !n.closing else { return nil }
+        return n.webView
+    }
+
+    /// Where the notes out in windows are: whether the window floats above every app (Keep on top) or rides above the
+    /// dashboard, and whether it is on screen now.
+    static func places() -> [String: (onTop: Bool, visible: Bool)] {
+        open.mapValues { ($0.onTop, $0.loaded && !$0.finished && $0.window.isVisible) }
     }
 
     /// ⌘W in a note: it closes as its × does. False when no note is in front.
@@ -152,6 +183,20 @@ final class NoteWindow: NSObject, NSWindowDelegate, WKNavigationDelegate {
                 n.window.orderFront(nil)
             }
         }
+    }
+
+    /// What AI may do with the notes changed (NotesAI.setMode): each note's window and the dashboard's page learn it, for the eye
+    /// (shown only while AI has access) and the board's chip.
+    static func aiModeChanged() {
+        let mode = NotesAI.mode.rawValue
+        let js = "window.Notes && Notes.aiMode && Notes.aiMode(mode); return true"
+        for n in open.values { n.webView.callAsyncJavaScript(js, arguments: ["mode": mode], in: nil, in: .page) { _ in } }
+        radar?.callNotes(js, ["mode": mode])
+    }
+
+    /// A note hidden from AI or shown again somewhere else: its window's eye follows.
+    static func setAiHidden(id: String, on: Bool) {
+        open[id]?.webView.evaluateJavaScript("window.Notes && Notes.aiHiddenSet && Notes.aiHiddenSet(\(on)); true", completionHandler: nil)
     }
 
     /// Streamer mode: the note's name and text blur (style.css).
@@ -229,7 +274,7 @@ final class NoteWindow: NSObject, NSWindowDelegate, WKNavigationDelegate {
         window.close()
         if Self.open[id] === self { Self.open[id] = nil }
         Self.radar?.callNotes("window.Notes && Notes.windowClosed && Notes.windowClosed(id)", ["id": id])
-        if reopen { Self.show(id: id) }
+        if let focus = reopen { Self.show(id: id, focus: focus) }
     }
 
     // MARK: on top, or above the dashboard
@@ -258,10 +303,22 @@ final class NoteWindow: NSObject, NSWindowDelegate, WKNavigationDelegate {
         d.addChildWindow(window, ordered: .above)
     }
 
-    private func setOnTop(_ on: Bool) {
+    private func setOnTop(_ on: Bool, focus: Bool = true) {
         guard on != onTop else { return }
         onTop = on
         Self.update(id) { $0["onTop"] = on }
+        if !focus {
+            // The AI asked: a window not shown yet opens this way once its page has the note (show); one on screen is ordered
+            // in again, its page's button following, without taking the keyboard, nor losing it when the user was in it.
+            guard loaded, !finished, !closing else { return }
+            applyOnTop()
+            webView.callAsyncJavaScript("window.Notes && Notes.setTop && Notes.setTop(on)", arguments: ["on": on], in: nil, in: .page) { _ in }
+            guard on else { return window.orderFront(nil) }
+            let key = window.isKeyWindow
+            window.orderOut(nil)
+            if key { window.makeKeyAndOrderFront(nil) } else { window.orderFrontRegardless() }
+            return
+        }
         applyOnTop()
         // Ordered in again: off a full-screen dashboard's Space and onto every desktop (as a terminal's pin does).
         if on { window.orderOut(nil) }
@@ -329,9 +386,41 @@ final class NoteWindow: NSObject, NSWindowDelegate, WKNavigationDelegate {
         case "onTop":
             setOnTop(body["on"] as? Bool == true)
             reply(["onTop": onTop])
+        case "aiHide":
+            // The eye on the note's own window: the dashboard's page keeps the flag (it writes every note) and answers { hidden }.
+            guard let radar = Self.radar else { return reply(["error": "the dashboard isn't open"]) }
+            let js = "const N = window.Notes; return N && N.setAiHidden ? await N.setAiHidden(id, on) : { error: 'the dashboard is loading' };"
+            radar.callNotes(js, ["id": id, "on": body["on"] as? Bool == true]) { value in
+                reply(value as? [String: Any] ?? ["error": "the dashboard didn't answer"])
+            }
         case "close":
             reply(nil)
             close(flush: true)
+        // A shared note's own parts, for this window's note only: its socket's ticket, its document file, the secrets check.
+        case "syncCaps", "syncTicket", "saveY", "loadY", "secretCheck", "attPick", "attAdd", "attHas", "attRead", "attSave", "attUpload", "attDownload", "attRemove", "attForget", "attAdds":
+            let mine = id, shared = sharedID
+            // A shared note's id is the server's (a uuid), not the window's note id: the ticket is for a note this account is in.
+            let isTicket = body["type"] as? String == "syncTicket" || body["type"] as? String == "attUpload"
+            if !NotesSync.handle(body["type"] as? String, body, store: .shared, allow: { isTicket ? ($0.lowercased() == shared?.lowercased() && shared != nil) : ($0 == mine || $0.isEmpty) }, reply: reply) { reply(["error": "unknown request"]) }
+        // The friends and the shared notes' calls (share, invite, remove, leave, stop) for this window's page, which has no `cloud`.
+        case "notesApi":
+            let path = body["path"] as? String ?? ""
+            let method = (body["method"] as? String ?? "GET").uppercased()
+            guard Self.mayCall(path, method) else { return reply(["error": "bad_path"]) }
+            let payload = body["body"]
+            Task { @MainActor in reply(await Cloud.shared.social(method, path, body: payload)) }
+        // Signing in with GitHub happens in the browser: only GitHub's own sign-in page opens (as the dashboard's `cloud` handler does).
+        case "openSignIn":
+            guard let s = body["url"] as? String, s.hasPrefix("https://github.com/login/oauth/authorize?"), let url = URL(string: s) else { return reply(false) }
+            NSWorkspace.shared.open(url)
+            reply(true)
+        // Not a member any more (or the sharing ended): the window closes and the dashboard's page drops the note.
+        case "sharedGone":
+            let id = self.id, why = body["why"] as? String ?? "removed"
+            reply(nil)
+            close(flush: false)
+            Self.forget(id)
+            Self.radar?.callNotes("window.Notes && Notes.dropSharedNow && Notes.dropSharedNow(id, why)", ["id": id, "why": why])
         case "confirm": confirm(body, reply)
         case "delete":
             reply(nil)
@@ -344,6 +433,22 @@ final class NoteWindow: NSObject, NSWindowDelegate, WKNavigationDelegate {
         }
     }
 
+    private func learnShared(_ json: String) {
+        let pad = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [String: Any]
+        let note = (pad?["notes"] as? [[String: Any]])?.first
+        sharedID = (note?["shared"] as? [String: Any])?["id"] as? String
+    }
+
+    /// What a note window's page may ask the API for: the friends (to pick who to share with) and the shared notes.
+    private static func mayCall(_ path: String, _ method: String) -> Bool {
+        guard CloudBridge.pageMayCall(path) else { return false }
+        // The sign-in a shared note asks for (GitHub or an e-mailed code), and whether this computer has an account: only those calls
+        // (reading the account; starting GitHub; sending and checking an e-mailed code), nothing else of /v1/account or /v1/auth.
+        if path == "v1/account" { return method == "GET" }
+        if path.hasPrefix("v1/auth") { return method == "POST" && ["v1/auth/github", "v1/auth/email", "v1/auth/email/verify"].contains(path) }
+        return path == "v1/social" || path == "v1/notes" || path.hasPrefix("v1/notes/")
+    }
+
     /// The note, from the dashboard's page: `{ json }` (a one-note pad), `{ gone }` (deleted: the window closes) or
     /// `{ wait }` (the dashboard's page is loading; the page asks again).
     private func load(_ reply: @escaping @MainActor (Any?) -> Void) {
@@ -353,6 +458,7 @@ final class NoteWindow: NSObject, NSWindowDelegate, WKNavigationDelegate {
             let answer = value as? [String: Any]
             guard let self, !self.finished else { return reply(["gone": true]) }
             if let json = answer?["json"] as? String {
+                self.learnShared(json)
                 reply(["json": json, "onTop": self.onTop, "streamer": Streamer.on])
                 if !self.loaded {
                     self.loaded = true
@@ -373,6 +479,7 @@ final class NoteWindow: NSObject, NSWindowDelegate, WKNavigationDelegate {
         guard let json, let pad = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [String: Any],
               let list = pad["notes"] as? [[String: Any]], list.count == 1, let note = list.first,
               note["id"] as? String == id else { return reply(["error": "bad request"]) }
+        learnShared(json)
         guard let radar = Self.radar else { return reply(["error": "the dashboard isn't open"]) }
         let js = "const N = window.Notes; return N && N.fromWindow ? await N.fromWindow(note) : { error: 'the dashboard is loading' };"
         radar.callNotes(js, ["note": note]) { value in

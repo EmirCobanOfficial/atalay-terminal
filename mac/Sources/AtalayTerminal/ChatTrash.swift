@@ -1,14 +1,14 @@
 import Foundation
 import SQLite3
 
-/// A chat deleted from the chats list (Sidebar.swift): Claude Code's, Codex's or Antigravity's. It leaves the list at
+/// A chat deleted from the chats list (Sidebar.swift): Claude Code's, Codex's, Antigravity's or Cursor's. It leaves the list at
 /// once and stays in Settings' deleted chats for 30 days, where it can be put back; then it's deleted from the Mac. Until
 /// then nothing of the conversation is touched, so putting it back is only taking it off this list.
 struct TrashedChat: Equatable {
     let id: String
     var title: String
     var cwd: String
-    /// "claude", "codex" or "antigravity" (ChatItem.tool).
+    /// "claude", "codex", "antigravity" or "cursor" (ChatItem.tool).
     var tool: String
     /// Its transcript (Codex's: its log) when it was deleted.
     var path: String
@@ -159,6 +159,31 @@ enum ChatTrash {
         return !(isCodexLog(chat.path, id: chat.id, home: home) && exists(chat.path))
     }
 
+    // MARK: Cursor (~/.cursor)
+
+    static var cursorHome: String { ProcessInfo.processInfo.environment["CURSOR_CONFIG_DIR"] ?? (HOME as NSString).appendingPathComponent(".cursor") }
+
+    /// Cursor files a project's transcripts under its folder's path with every other character a dash.
+    static func cursorProjectSlug(_ cwd: String) -> String {
+        cwd.replacingOccurrences(of: "[^a-zA-Z0-9]", with: "-", options: .regularExpression)
+            .replacingOccurrences(of: "-+", with: "-", options: .regularExpression)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+    }
+
+    /// Whether `path` is the meta.json of Cursor's chat `id`: chats/<md5 of its folder>/<id>/meta.json.
+    static func isCursorChat(_ path: String, id: String, home: String = cursorHome) -> Bool {
+        isSessionId(id) && path.hasSuffix("/\(id)/meta.json") && plain(path, under: (home as NSString).appendingPathComponent("chats"))
+    }
+
+    /// What Cursor keeps of one chat: its folder in chats/ (its store and meta) and its transcript's folder under projects/.
+    /// Cursor has no delete command of its own.
+    static func cursorFiles(of chat: TrashedChat, home: String = cursorHome) -> [String] {
+        guard isCursorChat(chat.path, id: chat.id, home: home) else { return [] }
+        var out = [(chat.path as NSString).deletingLastPathComponent]
+        if !chat.cwd.isEmpty { out.append("\(home)/projects/\(cursorProjectSlug(chat.cwd))/agent-transcripts/\(chat.id)") }
+        return out.filter(exists)
+    }
+
     // MARK: Antigravity (~/.gemini/antigravity-cli)
 
     static var agyRoot: String { (HOME as NSString).appendingPathComponent(".gemini/antigravity-cli") }
@@ -285,6 +310,7 @@ enum ChatTrash {
         switch chat.tool {
         case "codex": return isCodexLog(chat.path, id: chat.id) && exists(chat.path) ? [chat.path] : []
         case "antigravity": return agyFiles([chat.id] + agyChildren(of: chat.id))
+        case "cursor": return cursorFiles(of: chat)
         default: return claudeFiles(of: chat)
         }
     }
@@ -295,6 +321,9 @@ enum ChatTrash {
         switch chat.tool {
         case "codex": return eraseCodex(chat, home: codexHome)
         case "antigravity": return eraseAgy(chat, root: agyRoot)
+        case "cursor":
+            for p in cursorFiles(of: chat) { try? FileManager.default.removeItem(atPath: p) }
+            return cursorFiles(of: chat).isEmpty
         default:
             for p in claudeFiles(of: chat) { try? FileManager.default.removeItem(atPath: p) }
             return !claudeFiles(of: chat).contains { $0.hasSuffix(".jsonl") }
@@ -306,6 +335,8 @@ enum ChatTrash {
         switch chat.tool {
         case "codex":
             return isCodexLog(chat.path, id: chat.id) ? modified(chat.path) : nil
+        case "cursor":
+            return isCursorChat(chat.path, id: chat.id) ? modified(chat.path) : nil
         case "antigravity":
             guard isSessionId(chat.id) else { return nil }
             let root = agyRoot

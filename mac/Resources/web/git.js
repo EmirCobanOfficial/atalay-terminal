@@ -1283,7 +1283,7 @@ window.GitView = (() => {
     }
     if (v === 'git') view.classList.remove('side-off');
     setOpen(v === 'git');
-    if (['notes', 'friends', 'profile', 'board', 'themes', 'notifications', 'roadmap'].includes(v)) {
+    if (['notes', 'friends', 'profile', 'board', 'themes', 'notifications', 'roadmap', 'cleanup'].includes(v)) {
       window.Cloud?.showView(v);
       mark(v);
     } else window.Cloud?.showView(null);

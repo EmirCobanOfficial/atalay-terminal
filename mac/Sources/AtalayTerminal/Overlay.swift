@@ -27,7 +27,10 @@ final class ShortcutStore {
     var json: [Any] {
         slots.map { s -> Any in
             guard let s else { return NSNull() }
-            return ["name": s.name, "dir": s.dir, "display": tildify(s.dir)]
+            var isDir: ObjCBool = false
+            let missing = !(FileManager.default.fileExists(atPath: s.dir, isDirectory: &isDir) && isDir.boolValue)
+            // `git`: a repo's folder (the Ring's right-click offers a worktree there). Absent on Windows: no entry then.
+            return ["name": s.name, "dir": s.dir, "display": tildify(s.dir), "missing": missing, "git": !missing && Worktrees.info(of: s.dir) != nil]
         }
     }
 
@@ -40,6 +43,12 @@ final class ShortcutStore {
                 continue
             }
             let dir = FolderLister.expand(dirRaw)
+            // A slot that is already saved stays as it is, even if its folder was renamed or removed since: only
+            // new folders are checked, so a missing one never blocks changing or clearing the others.
+            if let kept = slots.compactMap({ $0 }).first(where: { $0.dir == dir }) {
+                next.append(kept)
+                continue
+            }
             var isDir: ObjCBool = false
             guard FileManager.default.fileExists(atPath: dir, isDirectory: &isDir), isDir.boolValue else { throw err("not a folder: \(dirRaw)") }
             let name = (d["name"] as? String).flatMap { $0.isEmpty ? nil : String($0.prefix(40)) } ?? (dir as NSString).lastPathComponent
@@ -62,7 +71,12 @@ enum FolderLister {
     }
 
     static func list(_ raw: String, projects: String) -> [String: Any] {
-        let dir = URL(fileURLWithPath: expand(raw.isEmpty ? "~" : raw)).standardizedFileURL.path
+        var dir = URL(fileURLWithPath: expand(raw.isEmpty ? "~" : raw)).standardizedFileURL.path
+        // A folder that is gone (renamed in Finder): open the nearest one that still exists.
+        var isDir: ObjCBool = false
+        while dir != "/", !(FileManager.default.fileExists(atPath: dir, isDirectory: &isDir) && isDir.boolValue) {
+            dir = (dir as NSString).deletingLastPathComponent
+        }
         let parent: Any = dir == "/" ? NSNull() : (dir as NSString).deletingLastPathComponent
         let fm = FileManager.default
         guard let names = try? fm.contentsOfDirectory(atPath: dir) else {
@@ -79,6 +93,8 @@ enum FolderLister {
             entries.append([
                 "name": n, "path": full, "hidden": n.hasPrefix("."), "modified": mtime * 1000,
                 "git": fm.fileExists(atPath: full + "/.git"),
+                // A folder made with `git worktree add` (its .git is a file that points into the main repo's).
+                "worktree": Worktrees.isLinkedRoot(full),
                 "claude": fm.fileExists(atPath: projects + "/" + encoded),
             ])
         }
@@ -147,6 +163,9 @@ final class OverlayController: NSObject, WKScriptMessageHandlerWithReply, WKNavi
     private var ready = false
     private var pending: (() -> Void)?
     private var hideWork: DispatchWorkItem?
+    /// The window a Create PR / Merge / Delete sheet dropped from: the panel sits on its frame while the sheet is open, and the window
+    /// gets the keyboard back when it closes.
+    private weak var anchorWindow: NSWindow?
 
     override init() {
         panel = OverlayPanel(contentRect: NSRect(x: 0, y: 0, width: 800, height: 600), styleMask: [.borderless, .nonactivatingPanel],
@@ -199,28 +218,77 @@ final class OverlayController: NSObject, WKScriptMessageHandlerWithReply, WKNavi
         let screen = NSScreen.screens.first(where: { NSMouseInRect(point, $0.frame, false) }) ?? NSScreen.main ?? NSScreen.screens[0]
         let f = screen.frame
         present(on: screen) { [weak self] in
-            self?.webView.evaluateJavaScript("Overlay.shortcuts(\(point.x - f.minX), \(f.maxY - point.y))")
+            let how = Shortcuts.ringHint.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
+            self?.webView.evaluateJavaScript("Overlay.shortcuts(\(point.x - f.minX), \(f.maxY - point.y), \"\(how)\")")
         }
         // Found it: the dashboard stops offering its tip.
         manager?.wheelOpened()
     }
 
-    /// Folder picker for a new terminal.
-    func showNewTerminal() {
+    /// Folder picker for a new terminal; `worktree`: opened for a new worktree (Chat → New Worktree…), its main button the sheet's.
+    func showNewTerminal(worktree: Bool = false) {
         let screen = NSScreen.main ?? NSScreen.screens[0]
-        present(on: screen) { [weak self] in self?.webView.evaluateJavaScript("Overlay.newTerminal()") }
+        present(on: screen) { [weak self] in self?.webView.evaluateJavaScript("Overlay.newTerminal({ worktree: \(worktree) })") }
     }
 
-    private func present(on screen: NSScreen, _ js: @escaping () -> Void) {
+    /// The name sheet for a new worktree of the repo `dir` is in, on its own (the chats list's ⎇, a menu): no picker.
+    /// `moving`: the chat this was opened from (its window, session, AI's name, folder's name): the sheet offers that chat's AI and
+    /// says it keeps running; when the worktree is there, the new AI opens in the usual place and the old chat's strip says so
+    /// (MainWindowController.finishMove). Nothing of the old chat is closed.
+    func showNewWorktree(from dir: String, ai: String? = nil, moving: (window: String, sid: String, tool: String, folder: String)? = nil) {
+        let screen = NSScreen.main ?? NSScreen.screens[0]
+        var opts: [String: Any] = ["dir": dir]
+        if let ai { opts["ai"] = ai }
+        if let moving { opts["moving"] = ["replacing": moving.window, "sid": moving.sid, "tool": moving.tool, "folder": moving.folder] }
+        let arg = (try? JSONSerialization.data(withJSONObject: [opts], options: [])).flatMap { String(data: $0, encoding: .utf8) } ?? "[{}]"
+        present(on: screen) { [weak self] in self?.webView.evaluateJavaScript("Overlay.newWorktree(\(arg)[0].dir, \(arg)[0])") }
+    }
+
+    /// The Create PR, Merge or Delete sheet of the worktree `top` (web/worktree.js). `window`: the chat window it drops from; the panel
+    /// takes its frame, so only that window is covered (its header, 62 pt, stays bright) and the others stay usable. Without one it
+    /// stands alone in the middle of the screen, as the name sheet does. The panel's blur isn't touched for a window's sheet (0).
+    func showShip(kind: String, top: String, window: NSWindow?) {
+        let screen = window?.screen ?? NSScreen.main ?? NSScreen.screens[0]
+        let anchored = window != nil
+        let opts: [String: Any] = ["kind": kind, "top": top, "anchored": anchored]
+        let arg = (try? JSONSerialization.data(withJSONObject: [opts], options: [])).flatMap { String(data: $0, encoding: .utf8) } ?? "[{}]"
+        // A sheet that is at work (or the name sheet making a worktree) is never replaced: the panel stays where it is.
+        let open = { [weak self] in
+            guard let self else { return }
+            self.anchorWindow = window
+            self.present(on: screen, frame: window?.frame, blurred: !anchored) { [weak self] in self?.webView.evaluateJavaScript("Overlay.ship(\(arg)[0])") }
+        }
+        guard ready, panel.isVisible else { return open() }
+        webView.evaluateJavaScript("!!(window.Worktree && Worktree.isBusy())") { busy, _ in
+            MainActor.assumeIsolated { if busy as? Bool == true { NSSound.beep() } else { open() } }
+        }
+    }
+
+    /// The sheet's progress: the step that has just started ("commit", "push", "pr", "merge", "end", "trash", "branch").
+    func shipStep(_ name: String) {
+        webView.evaluateJavaScript("window.Worktree && Worktree.shipStep('\(name)')")
+    }
+
+    /// The page's progress line: "made" (git is done), "copied" (n files).
+    private func step(_ name: String, _ n: Int) {
+        webView.evaluateJavaScript("window.Worktree && Worktree.step('\(name)', \(n))")
+    }
+
+    private func present(on screen: NSScreen, frame: NSRect? = nil, blurred: Bool = true, _ js: @escaping () -> Void) {
         hideWork?.cancel()
-        panel.setFrame(screen.frame, display: true)
+        panel.setFrame(frame ?? screen.frame, display: true)
         if !panel.isVisible {
             blur.alphaValue = 0
             panel.orderFrontRegardless()
-            NSAnimationContext.runAnimationGroup { ctx in
-                ctx.duration = 0.22
-                blur.animator().alphaValue = 0.85
+            if blurred {
+                NSAnimationContext.runAnimationGroup { ctx in
+                    ctx.duration = 0.22
+                    blur.animator().alphaValue = 0.85
+                }
             }
+        } else if !blurred {
+            // A sheet that sits on a window: no blur of the screen (the panel was showing another page a moment ago).
+            blur.alphaValue = 0
         }
         panel.makeKey()
         if ready { js() } else { pending = js }
@@ -228,6 +296,12 @@ final class OverlayController: NSObject, WKScriptMessageHandlerWithReply, WKNavi
 
     func hide() {
         guard panel.isVisible else { return }
+        WorktreeShip.shared.clearSession()
+        // The window a sheet dropped from has the keyboard again.
+        if let w = anchorWindow {
+            anchorWindow = nil
+            if w.isVisible { w.makeKeyAndOrderFront(nil) }
+        }
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = 0.2
             blur.animator().alphaValue = 0
@@ -241,6 +315,14 @@ final class OverlayController: NSObject, WKScriptMessageHandlerWithReply, WKNavi
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
         ready = false
         webView.reload()
+    }
+
+    /// Whether `top` is a linked worktree the app knows (a sheet's request can't point git at any other folder).
+    private func shipKnows(_ top: String) -> Bool {
+        // Exactly a worktree's own folder (never a folder inside one, never the main repo), the one the app already read or reads now.
+        if WorktreeShip.shared.status[top]?.top == top { return true }
+        guard let info = Worktrees.info(of: top) else { return false }
+        return info.linked && info.top == top && Worktrees.real(top) == top
     }
 
     /// "picker": the places around the new-terminal folder picker; anything else, the pie.
@@ -278,7 +360,109 @@ final class OverlayController: NSObject, WKScriptMessageHandlerWithReply, WKNavi
         case "newTerminal":
             let dir = FolderLister.expand(body["dir"] as? String ?? "")
             hide()
-            if !dir.isEmpty { manager?.newTerminal(in: dir) }
+            if !dir.isEmpty { manager?.newTerminal(in: dir, nudgeTold: body["told"] as? Bool == true) }
+            replyHandler(true, nil)
+        // The new-worktree sheet. Reads of files only (the picker asks as the selection moves)...
+        case "gitInfo":
+            let p = FolderLister.expand(body["path"] as? String ?? "")
+            if let info = Worktrees.info(of: p) {
+                replyHandler(["repo": true, "worktree": info.linked, "branch": info.branch, "ais": manager?.aiTools(inTreeOf: p) ?? []], nil)
+            } else {
+                replyHandler(["repo": false, "worktree": false, "branch": ""], nil)
+            }
+        // ...git, off the main thread: what the sheet shows, and the worktree itself.
+        case "worktreeInfo":
+            let dir = body["dir"] as? String ?? ""
+            Git.queue.async {
+                let answer = Git.describe(dir)
+                DispatchQueue.main.async { MainActor.assumeIsolated { replyHandler(answer, nil) } }
+            }
+        case "worktreeCreate":
+            let dir = body["dir"] as? String ?? "", name = body["name"] as? String ?? ""
+            let ai = Git.worktreeAIs.contains(body["ai"] as? String ?? "") ? body["ai"] as? String ?? "claude" : "claude"
+            UserDefaults.standard.set(ai, forKey: Git.worktreeAIKey)
+            Git.queue.async { [weak self] in
+                var answer = Git.addWorktree(from: dir, name: name)
+                if answer["ok"] != nil {
+                    DispatchQueue.main.async { MainActor.assumeIsolated { self?.step("made", 0) } }
+                    let list = answer["copy"] as? [String] ?? []
+                    let done = Worktrees.copy(list, from: answer["source"] as? String ?? "", to: answer["path"] as? String ?? "")
+                    answer["copied"] = done.copied
+                    answer["warnings"] = done.warnings
+                    DispatchQueue.main.async { MainActor.assumeIsolated { self?.step("copied", done.copied) } }
+                }
+                answer["source"] = nil
+                answer["copy"] = nil
+                DispatchQueue.main.async { MainActor.assumeIsolated { replyHandler(answer, nil) } }
+            }
+        // The worktree is there: the AI starts in it (also "Open … anyway" after a copy warning).
+        case "worktreeOpen":
+            let path = body["path"] as? String ?? ""
+            let ai = body["ai"] as? String ?? "claude"
+            hide()
+            if path.isEmpty {
+            } else if let replacing = body["replacing"] as? String, let sid = body["sid"] as? String {
+                manager?.finishMove(replacing: replacing, sid: sid, path: path, ai: ai)
+            } else {
+                manager?.newChat(in: path, ai: ai)
+            }
+            replyHandler(true, nil)
+        // The Create PR / Merge / Delete sheets (web/worktree.js; WorktreeShip.swift does the work, git off the main thread).
+        case "shipInfo":
+            let top = body["top"] as? String ?? "", kind = body["kind"] as? String ?? ""
+            guard shipKnows(top) else { return replyHandler(["error": "This isn't a worktree."], nil) }
+            WorktreeShip.shared.page(for: kind, top: top) { replyHandler($0, nil) }
+        case "shipCreatePR":
+            let top = body["top"] as? String ?? ""
+            guard shipKnows(top) else { return replyHandler(["kind": "nothing", "title": "This isn't a worktree."], nil) }
+            WorktreeShip.shared.createPR(top: top, title: body["title"] as? String ?? "", body: body["body"] as? String ?? "", into: body["into"] as? String ?? "") { replyHandler($0, nil) }
+        case "shipMerge":
+            let top = body["top"] as? String ?? ""
+            guard shipKnows(top) else { return replyHandler(["kind": "nothing", "title": "This isn't a worktree."], nil) }
+            WorktreeShip.shared.mergeLocal(top: top, message: body["message"] as? String ?? "") { replyHandler($0, nil) }
+        case "shipMergePR":
+            let top = body["top"] as? String ?? ""
+            guard shipKnows(top) else { return replyHandler(["kind": "nothing", "title": "This isn't a worktree."], nil) }
+            WorktreeShip.shared.mergePR(top: top, number: (body["number"] as? NSNumber)?.intValue ?? 0, sha: body["sha"] as? String ?? "",
+                                        method: body["method"] as? String ?? "merge") { replyHandler($0, nil) }
+        case "shipPushBase":
+            let top = body["top"] as? String ?? ""
+            guard shipKnows(top) else { return replyHandler(["kind": "nothing", "title": "This isn't a worktree."], nil) }
+            WorktreeShip.shared.pushBase(top: top) { replyHandler($0, nil) }
+        case "shipDelete":
+            let top = body["top"] as? String ?? ""
+            guard shipKnows(top) else { return replyHandler(["kind": "nothing", "title": "This isn't a worktree."], nil) }
+            WorktreeShip.shared.delete(top: top, deleteBranch: body["deleteBranch"] as? Bool == true, force: body["force"] as? Bool == true,
+                                       ids: body["ids"] as? [String] ?? [], sha: body["sha"] as? String ?? "") { replyHandler($0, nil) }
+        case "shipAsk":
+            WorktreeShip.shared.ask(body["prompt"] as? String ?? "", sid: body["sid"] as? String ?? "") { replyHandler($0, nil) }
+        case "shipCopy":
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(body["text"] as? String ?? "", forType: .string)
+            replyHandler(true, nil)
+        case "shipOpenURL":
+            let top = body["top"] as? String ?? ""
+            let host = WorktreeShip.shared.status[top]?.remote?.host ?? ""
+            replyHandler(WorktreeShip.shared.open(body["url"] as? String ?? "", host: host), nil)
+        case "shipShowChanges":
+            // Any folder of a repo the app shows (the base's folder too): Source Control only opens what it lists.
+            let top = body["top"] as? String ?? ""
+            hide()
+            if !top.isEmpty { manager?.showSourceControl(root: top) }
+            replyHandler(true, nil)
+        case "shipShowChat":
+            let sid = body["sid"] as? String ?? ""
+            hide()
+            manager?.showChat(sessionId: sid)
+            replyHandler(true, nil)
+        case "revealFolder":
+            let path = body["path"] as? String ?? ""
+            var isDir: ObjCBool = false
+            if FileManager.default.fileExists(atPath: path, isDirectory: &isDir), isDir.boolValue {
+                // The overlay floats above every window, Finder's included: it goes first.
+                hide()
+                NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+            }
             replyHandler(true, nil)
         case "done":
             hide()

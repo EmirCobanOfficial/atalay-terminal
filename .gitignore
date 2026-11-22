@@ -1,11 +1,13 @@
 .DS_Store
 /mac/orbit/node_modules/
+/mac/notesync/node_modules/
 /mac/editor/node_modules/
 # The Windows app: its packages, its builds, and the key its API calls are signed with (made at build time)
 /windows/node_modules/
 /windows/dist/
 /windows/dist-staging/
 /windows/src/clientkey.js
+/windows/src/accesskey.js
 /mac/vendor/
 /windows/vendor/
 # Claude Code's own files (skills for the release PCs) stay on those machines, never in this public repo

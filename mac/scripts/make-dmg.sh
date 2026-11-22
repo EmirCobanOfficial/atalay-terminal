@@ -2,15 +2,35 @@
 # Makes the installer to share: build/Orbiterm <version>.dmg, holding the app (Apple Silicon + Intel) and an
 # Applications shortcut to drag it onto. The app isn't notarized yet, so the image also says how to open it the
 # first time.
+# DEVELOPER_ID=1 (scripts/release.sh passes it on): the app is signed with Apple's Developer ID and notarized, its
+# ticket stapled before it goes into the image (and into publish.sh's update zip), then the image is signed and
+# notarized too, and the "Open Anyway" steps go.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 UNIVERSAL=1 OUT=build/release ./build-app.sh
+[ "${DEVELOPER_ID:-}" != 1 ] || scripts/notarize.sh build/release/Orbiterm.app
 VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Resources/Info.plist)
 STAGE=build/dmg
 rm -rf "$STAGE" && mkdir -p "$STAGE"
 cp -R "build/release/Orbiterm.app" "$STAGE/"
 ln -s /Applications "$STAGE/Applications"
+if [ "${DEVELOPER_ID:-}" = 1 ]; then
+  cat > "$STAGE/Nasil kurulur - How to install.txt" <<'TXT'
+Orbiterm - kurulum
+
+1. Orbiterm'i yanindaki Applications klasorune surukle.
+2. Applications'tan ac.
+3. macOS 13 veya ustu ve Claude Code (claude komutu) gerekir. Guncellemeler uygulamanin icinden tek tikla gelir.
+
+
+Orbiterm - install
+
+1. Drag Orbiterm onto the Applications folder next to it.
+2. Open it from Applications.
+3. Needs macOS 13 or later and Claude Code (the claude command). Updates arrive inside the app with one click.
+TXT
+else
 cat > "$STAGE/Nasil acilir - How to open.txt" <<'TXT'
 Orbiterm - kurulum
 
@@ -29,8 +49,10 @@ Orbiterm - install
    Or in Terminal:  xattr -dr com.apple.quarantine "/Applications/Orbiterm.app"
 3. Needs macOS 13 or later and Claude Code (the claude command). Updates arrive inside the app with one click.
 TXT
+fi
 DMG="build/Orbiterm $VERSION.dmg"
 rm -f "$DMG"
 hdiutil create -volname "Orbiterm" -srcfolder "$STAGE" -ov -format UDZO "$DMG" >/dev/null
 rm -rf "$STAGE"
+[ "${DEVELOPER_ID:-}" != 1 ] || scripts/notarize.sh "$DMG"
 echo "made $DMG"

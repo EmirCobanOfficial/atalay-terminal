@@ -8,6 +8,9 @@ final class ChatTerminalView: LocalProcessTerminalView {
     var chatId = ""
     /// The shell inside this chat's detached session (0 when it has none), to tell which program is in front.
     var sessionShell: () -> Int32 = { 0 }
+    /// The screen session this terminal shows (set by `attach`, a session an older build left); there AgyRewind works only in
+    /// this build's tuned ones. Empty for a pty session of the app's own.
+    var screenName = ""
     /// The selected text after every change (nil when nothing is selected), and what ⌘C copied.
     var onSelection: ((String?) -> Void)?
     var onCopy: ((String) -> Void)?
@@ -20,6 +23,10 @@ final class ChatTerminalView: LocalProcessTerminalView {
     var onOpenFile: ((URL, Int?, Int?) -> Bool)?
     /// The cursor's shape is the theme's (TerminalFactory.paint).
     var themedCursor = false
+    /// Shows a screen session an older build left (TerminalFactory.attach) rather than a pty of the app's own. Only then
+    /// does the terminal make up what screen drops of the program's requests (bracketed paste, SGR mouse reports); a pty
+    /// passes the program's own.
+    var legacyScreen = false
 
     /// A click or a drag goes to Claude when its full-screen view is in front and follows the mouse, as in iTerm2: Claude
     /// selects across its whole history, the selection staying on the text as it scrolls (when the drag reaches the
@@ -42,7 +49,7 @@ final class ChatTerminalView: LocalProcessTerminalView {
         mouseToProgram = event.modifierFlags.intersection([.command, .option]).isEmpty && claudeInFront && (engine.map { $0.mouseMode != .off } ?? false)
         if mouseToProgram {
             // screen doesn't pass Claude's request for SGR reports (1006) on: without it the clicks reach Claude garbled.
-            feed(text: "\u{1b}[?1006h")
+            if legacyScreen { feed(text: "\u{1b}[?1006h") }
             allowMouseReporting = true
         }
         super.mouseDown(with: event)
@@ -290,10 +297,22 @@ final class ChatTerminalView: LocalProcessTerminalView {
     override init(frame: CGRect) {
         super.init(frame: frame)
         registerForDraggedTypes([.fileURL])
+        // Everything the terminal asks of its host goes through a proxy that denies one thing (ClipboardGuard).
+        let proxy = ClipboardGuard(self)
+        clipboardGuard = proxy
+        terminalDelegate = proxy
     }
 
+    /// Holds the proxy (the terminal's delegate is weak).
+    private var clipboardGuard: ClipboardGuard?
+
     /// Everything typed or pasted goes out through here: typing in a chat or terminal is work (Activity, for XP).
+    /// When something was last typed or pasted here (not the terminal's own replies, nor a lone arrow key or Esc), in ms:
+    /// the second-AI note is not offered to a chat that was typed into since its AI started (WorktreeNudge.swift).
+    var typedAt = 0.0
+
     override func send(source: TerminalView, data: ArraySlice<UInt8>) {
+        if let f = data.first, f != 0x1b || data.starts(with: [0x1b, 0x5b, 0x32, 0x30, 0x30, 0x7e]) { typedAt = nowMs() }
         Activity.work()
         // Real keystrokes only (the terminal's own replies to the program come through here too): the mascot may notice.
         if let ev = NSApp.currentEvent, ev.type == .keyDown, ev.window === window { Mascot.shared.onTyping(chatId) }
@@ -322,12 +341,49 @@ final class ChatTerminalView: LocalProcessTerminalView {
         Proc.isClaude(pid) || Proc.otherAI(pid) != nil
     }
 
+    /// Antigravity is in front, idle (and not just sent a prompt), and its prompt is really empty: a second Esc may become
+    /// `/rewind` (AgyRewind.swift). Anything unclear is a no. Its own check, not McpTools.inputState's: that one takes
+    /// typed text that starts like a placeholder ("Find and fix the login bug") for an empty prompt.
+    func agyRewindReady() -> Bool {
+        // A pty session of the app's own passes every key straight on: nothing merges the Esc with /rewind. A screen session
+        // (one an older build left) holds an Esc for its maptimeout: only this build's, tuned to 10 ms, can; a mirror window
+        // shows another build's session, which keeps screen's 300 ms. Anything else (another view) is no.
+        guard legacyScreen ? Detached.isTuned(screenName) : isOwnPty,
+              let group = foregroundGroup(), Proc.otherAI(group) == "Antigravity",
+              MainWindowController.aiStatus[group] == "idle", let terminal = engine else { return false }
+        // The status stays "idle" a moment after a prompt is sent: Esc Esc to stop that turn must not open the panel too.
+        guard nowMs() - typedAt > 1500 else { return false }
+        let (rows, cursor): ([String], (x: Int, y: Int)) = terminal.terminalLock.withLock {
+            ((0..<terminal.rows).map { terminal.getLine(row: $0)?.translateToString(trimRight: true) ?? "" }, terminal.getCursorLocation())
+        }
+        let box: Set<Character> = ["│", "┃", "|"]
+        for (y, raw) in rows.enumerated().reversed().prefix(30) {
+            let chars = Array(raw)
+            var lead = 0
+            while lead < chars.count, chars[lead] == " " || box.contains(chars[lead]) { lead += 1 }
+            guard lead < chars.count, ">❯›!→".contains(chars[lead]) else { continue }
+            // The bottom-most prompt line decides. Anything but ">" (bash mode ! …) is no.
+            guard chars[lead] == ">" else { return false }
+            var rest = String(chars[(lead + 1)...]).trimmingCharacters(in: .whitespaces)
+            while let e = rest.last, box.contains(e) { rest = String(rest.dropLast()).trimmingCharacters(in: .whitespaces) }
+            // The cursor sits right after the mark, where the placeholder starts: typed text would have moved it.
+            guard cursor.y == y, cursor.x <= lead + 2 else { return false }
+            if rest.isEmpty { return true }
+            // Its own placeholder, whole: "Accept-edits mode: file edits auto-approved (shift+tab to cycle)".
+            return rest.range(of: #"^[A-Za-z][A-Za-z0-9 \-]* mode: .*\(shift\+tab to cycle\)$"#, options: .regularExpression) != nil
+        }
+        return false
+    }
+
+    /// This view is a live pty session of this app's own (PtySession), not a screen display or a view with no session.
+    private var isOwnPty: Bool { Sessions.live.values.contains { $0.terminal === self } }
+
     private var claudeInFront: Bool { foregroundGroup().map(Self.isInteractiveAI) ?? false }
 
-    /// Sets the emulator's bracketed-paste mode to what the program in front takes (only for detached sessions; a
-    /// direct shell sends its own mode 2004).
+    /// Sets the emulator's bracketed-paste mode to what the program in front takes (only for screen sessions; a
+    /// pty passes the program's own mode 2004).
     private func matchPasteMode() {
-        guard let group = foregroundGroup(), let program = Proc.name(group) else { return }
+        guard legacyScreen, let group = foregroundGroup(), let program = Proc.name(group) else { return }
         feed(text: Self.bracketing.contains(program) || Self.isInteractiveAI(group) ? "\u{1b}[?2004h" : "\u{1b}[?2004l")
     }
 
@@ -354,7 +410,7 @@ final class ChatTerminalView: LocalProcessTerminalView {
     /// isn't following the mouse, the wheel scrolls the scrollback as usual.
     func wheelGoesToProgram() -> Bool {
         guard claudeInFront else { return false }
-        feed(text: "\u{1b}[?1006h")
+        if legacyScreen { feed(text: "\u{1b}[?1006h") }
         return true
     }
 
@@ -390,6 +446,42 @@ final class ChatTerminalView: LocalProcessTerminalView {
     }
 }
 
+/// The terminal's delegate: forwards every request to the view itself (so its overrides still run) except an OSC 52 read of
+/// the clipboard, which is always denied. screen used to drop OSC 52; without that, any text a program prints (a file
+/// cat'd, ssh, curl, an AI's output) could read what the user copied and have it typed back into the program. Writing the
+/// clipboard stays allowed. SwiftTerm's own view answers a read with the pasteboard and can't be overridden, hence the proxy.
+@MainActor
+private final class ClipboardGuard: TerminalViewDelegate {
+    private weak var view: ChatTerminalView?
+    init(_ view: ChatTerminalView) { self.view = view }
+
+    func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) { view?.sizeChanged(source: source, newCols: newCols, newRows: newRows) }
+    func setTerminalTitle(source: TerminalView, title: String) { view?.setTerminalTitle(source: source, title: title) }
+    func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) { view?.hostCurrentDirectoryUpdate(source: source, directory: directory) }
+    func send(source: TerminalView, data: ArraySlice<UInt8>) { view?.send(source: source, data: data) }
+    func scrolled(source: TerminalView, position: Double) { view?.scrolled(source: source, position: position) }
+    func requestOpenLink(source: TerminalView, link: String, params: [String: String]) { view?.requestOpenLink(source: source, link: link, params: params) }
+    func bell(source: TerminalView) { view?.bell(source: source) }
+    func clipboardCopy(source: TerminalView, content: Data) { view?.clipboardCopy(source: source, content: content) }
+    func clipboardRead(source: TerminalView) -> Data? { nil }
+    func kittyClipboardCapabilities(source: TerminalView) -> KittyClipboardCapabilities { view?.kittyClipboardCapabilities(source: source) ?? [] }
+    func kittyClipboardAvailableMimeTypes(source: TerminalView, location: KittyClipboardLocation) -> [String]? {
+        view?.kittyClipboardAvailableMimeTypes(source: source, location: location)
+    }
+    func kittyClipboardRead(source: TerminalView, location: KittyClipboardLocation, mimeType: String) -> KittyClipboardReadResult? {
+        view?.kittyClipboardRead(source: source, location: location, mimeType: mimeType)
+    }
+    func kittyClipboardWrite(source: TerminalView, location: KittyClipboardLocation, content: KittyClipboardWriteContent) -> KittyClipboardWriteResult {
+        view?.kittyClipboardWrite(source: source, location: location, content: content) ?? .unsupported
+    }
+    func kittyClipboardRequestPermission(source: TerminalView, request: KittyClipboardPermissionRequest) -> KittyClipboardPermissionResult {
+        view?.kittyClipboardRequestPermission(source: source, request: request) ?? .deny
+    }
+    func iTermContent(source: TerminalView, content: ArraySlice<UInt8>) { view?.iTermContent(source: source, content: content) }
+    func rangeChanged(source: TerminalView, startY: Int, endY: Int) { view?.rangeChanged(source: source, startY: startY, endY: endY) }
+    func programStatusChanged(source: TerminalView, records: [TerminalProgramStatus]) { view?.programStatusChanged(source: source, records: records) }
+}
+
 @MainActor
 enum TerminalFactory {
     static func make(chatId: String, cwd: String, claudeArgs: [String]?, fontSize: CGFloat,
@@ -401,6 +493,7 @@ enum TerminalFactory {
 
     static func start(_ tv: ChatTerminalView, cwd: String, claudeArgs: [String]?) {
         let shell = userShell()
+        Sessions.closeOnExec()
         tv.startProcess(executable: shell, args: shellArgs(shell, cwd: cwd, claudeArgs: claudeArgs), environment: childEnvironment(),
                         execName: nil, currentDirectory: cwd)
     }
@@ -409,8 +502,8 @@ enum TerminalFactory {
     /// without, it is a plain terminal (where Claude can be started or resumed by hand).
     nonisolated static func shellArgs(_ shell: String, cwd: String, claudeArgs: [String]?) -> [String] {
         guard let claudeArgs else { return ["-il"] }
-        // Antigravity's and Codex's own command lines (a saved conversation opened from the chats list), else Claude's.
-        let cmd = (["agy", "codex"].contains(claudeArgs.first) ? claudeArgs : ["claude"] + claudeArgs).map(shellQuote).joined(separator: " ")
+        // Antigravity's, Codex's and Cursor's own command lines (a saved conversation opened from the chats list), else Claude's.
+        let cmd = (["agy", "codex", "cursor-agent"].contains(claudeArgs.first) ? claudeArgs : ["claude"] + claudeArgs).map(shellQuote).joined(separator: " ")
         return ["-ilc", "cd -- \(shellQuote(cwd)) && \(cmd); exec \(shellQuote(shell)) -il"]
     }
 
@@ -507,6 +600,10 @@ enum TerminalFactory {
     /// behind the app's own relay, which gives Claude's frames back the marks screen drops (SyncRelay).
     static func attach(_ tv: ChatTerminalView, screenName: String, cwd: String, fit: Bool) {
         let relay = Bundle.main.executablePath ?? CommandLine.arguments[0]
+        Detached.tune(screenName)
+        tv.screenName = screenName
+        tv.legacyScreen = true
+        Sessions.closeOnExec()
         tv.startProcess(executable: relay, args: ["--sync-relay", Detached.screen] + Detached.attachArgs(screenName, fit: fit),
                         environment: childEnvironment(), execName: nil, currentDirectory: cwd)
     }
@@ -528,7 +625,7 @@ enum TerminalFactory {
         for key in env.keys where key.hasPrefix("ITERM_") || key.hasPrefix("CLAUDECODE") || key.hasPrefix("CLAUDE_CODE_")
             || key.hasPrefix("CODEX_")
             || ["TERM_SESSION_ID", "LC_TERMINAL", "LC_TERMINAL_VERSION", "TERM_PROGRAM_VERSION", "OLDPWD",
-                "NO_COLOR", "LC_ALL", "LC_CTYPE", "GIT_PAGER", "GH_PAGER"].contains(key) {
+                "NO_COLOR", "LC_ALL", "LC_CTYPE", "GIT_PAGER", "GH_PAGER", "ORBITERM_SESSION"].contains(key) {
             env.removeValue(forKey: key)
         }
         // Claude's full-screen renderer keeps the whole conversation scrollable inside Claude (the wheel goes there,

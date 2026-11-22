@@ -23,22 +23,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         controller.showWindow(nil)
         // The token savers this build ships go on by themselves the first time (Settings turns them off).
         TokenSavers.autoStart()
+        // The notes' tools on Orbiterm's MCP server, for the AIs inside Orbiterm and, when the Claude access is on, Claude Desktop / Dispatch, each checked against the notes' own mode at every call;
+        // they reach the AIs through the notes-only launcher, which offers no session tool.
+        McpConnect.writeLauncher()
+        NotesAI.launcher = McpConnect.notesLauncher
+        for t in NotesTools.all {
+            McpRegistry.register(McpTool(name: t.name, title: t.title, description: t.description, props: t.props, required: t.required,
+                                         readOnly: t.readOnly, audience: t.audience, enabled: { NotesAI.mode != .off },
+                                         handler: { a, c in t.handler(a, NotesCaller(peer: c.peer, insideScreen: c.insideScreen, hubMode: c.mode)) }))
+        }
+        NotesAI.autoStart()
         AIColors.autoStart()
         controller.window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         installMonitors()
-        if !Trackpad.start() { NSLog("Orbiterm: trackpad finger tracking unavailable; ⌃ and the middle mouse button open the shortcut wheel") }
+        if !Trackpad.start() { NSLog("Orbiterm: trackpad finger tracking unavailable; ⌃ and the middle mouse button open the Ring") }
         NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { _ in
             Trackpad.start()
             // Sleep kills the live line to the API without a word; open a fresh one.
             MainActor.assumeIsolated { Social.shared.kick() }
         }
         engine.start()
+        McpHub.shared.onChange = { [weak self] in self?.controller.pushMcp() }
+        McpHub.shared.start()
         controller.restoreSessions()
         HangWatchdog.shared.start()
         Cloud.shared.installUpdatesRightAway = CommandLine.arguments.contains("--update")
-        // An update restarts the app only when that stops nothing: no chat runs outside its detached session.
-        Cloud.shared.canRestart = { [weak self] in (self?.controller?.runningChatCount ?? 0) == 0 }
+        // An update restarts the app only when that stops nothing: no AI is working or waiting for the user in a terminal,
+        // no job runs in a plain shell (the restart ends the shells; idle AI chats resume), no worktree job is under way and no
+        // env file holds unsaved changes.
+        Cloud.shared.canRestart = { [weak self] in (self?.controller?.restartInterrupts().isEmpty ?? true) && !ShipJobs.running && !(self?.controller?.hasUnsavedEnv ?? false) }
         Cloud.shared.start()
         UpdateWatch.shared.start()
         // Load the notices' page now, so a message can pop up at any time; the chat window follows a little later,
@@ -63,7 +77,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // A downloaded update waiting for the user to step away goes in now: the next launch is the new build.
     func applicationWillTerminate(_ notification: Notification) {
+        McpHub.shared.stop()
         Cloud.shared.installOnQuit()
+    }
+
+    private var finishingWindow: NSPanel?
+
+    /// "Finishing Creating PR…": a small panel over the screen while a quit waits for a job.
+    private func finishingPanel(_ what: String) {
+        let label = NSTextField(labelWithString: "\(what) Orbiterm quits right after.")
+        label.font = .systemFont(ofSize: 13, weight: .medium)
+        label.sizeToFit()
+        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: label.frame.width + 40, height: 44), styleMask: [.titled, .hudWindow, .utilityWindow], backing: .buffered, defer: false)
+        panel.title = "Orbiterm"
+        label.frame.origin = NSPoint(x: 20, y: 10)
+        panel.contentView?.addSubview(label)
+        panel.level = .floating
+        panel.center()
+        panel.makeKeyAndOrderFront(nil)
+        finishingWindow = panel
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -71,22 +103,92 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return true
     }
 
+    /// A quit waiting for a worktree job (push, merge, delete): while it waits a second quit asks nothing more, and when it ends the
+    /// ordinary quit runs inside this same answer (never a "no" followed by a new quit: that would skip its question and its cleanup).
+    private var quitWaiting = false
+    private var quitWaited = false
+
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        let running = controller?.runningChatCount ?? 0
-        if running > 0, !Cloud.shared.overdueForcedUpdate {
-            let a = NSAlert()
-            a.messageText = running == 1 ? "1 chat is still running" : "\(running) chats are still running"
-            a.informativeText = "Quitting stops Claude in those windows, including hidden ones. The conversations stay saved and can be resumed."
-            a.alertStyle = .warning
-            a.addButton(withTitle: "Quit")
-            a.addButton(withTitle: "Cancel")
-            if a.runModal() != .alertFirstButtonReturn { return .terminateCancel }
+        // Only a call that reaches this delegate while waiting; a quit from code (an update restart) is stopped by Cloud.quitPending.
+        if quitWaiting { return .terminateLater }
+        // Env changes not saved are asked about first, before any job or quit question; Cancel keeps the app.
+        if !(controller?.confirmEnvBeforeQuit() ?? true) { return .terminateCancel }
+        // A push, merge or delete under way (a worktree's sheet, its chat-ending phase included) finishes first: no half-done job. A small
+        // panel says what is being finished; then the usual quit goes on, or after three minutes whatever still runs.
+        if !quitWaited, ShipJobs.running {
+            quitWaiting = true
+            Cloud.shared.quitPending = true
+            finishingPanel(WorktreeShip.shared.busy.values.first ?? "A worktree job is finishing.")
+            let started = Date()
+            // In the common modes: the quit waits in the modal run loop, where a default-mode timer never fires.
+            let timer = Timer(timeInterval: 0.3, repeats: true) { t in
+                MainActor.assumeIsolated {
+                    guard !ShipJobs.running || Date().timeIntervalSince(started) > 180 else { return }
+                    t.invalidate()
+                    self.finishingWindow?.orderOut(nil)
+                    self.finishingWindow = nil
+                    self.quitWaiting = false
+                    self.quitWaited = true
+                    switch self.quitFlow() {
+                    case .terminateNow: NSApp.reply(toApplicationShouldTerminate: true)
+                    case .terminateCancel:
+                        self.quitWaited = false
+                        Cloud.shared.quitPending = false
+                        NSApp.reply(toApplicationShouldTerminate: false)
+                    default: break   // the flow answers itself, later
+                    }
+                }
+            }
+            RunLoop.main.add(timer, forMode: .common)
+            return .terminateLater
+        }
+        quitWaited = false
+        return quitFlow()
+    }
+
+    private func quitFlow() -> NSApplication.TerminateReply {
+        // An update's restart ends the terminals too, but they come back with the new build (the snapshot): it only asks when
+        // that would cut something off. Any other quit closes all of them for good.
+        let relaunch = Updater.relaunching
+        let forced = Cloud.shared.overdueForcedUpdate
+        if relaunch {
+            let lost = controller?.restartInterrupts() ?? []
+            if !lost.isEmpty, !forced {
+                let a = NSAlert()
+                a.messageText = "Restart to update?"
+                let shown = lost.prefix(3).joined(separator: ", ") + (lost.count > 3 ? " and \(lost.count - 3) more" : "")
+                a.informativeText = "Orbiterm restarts to update. What runs in its terminals stops: \(shown). Claude, Codex, Antigravity and Cursor chats come back after the restart and continue where they were."
+                a.alertStyle = .warning
+                a.addButton(withTitle: "Restart")
+                a.addButton(withTitle: "Cancel")
+                if a.runModal() != .alertFirstButtonReturn { return .terminateCancel }
+            }
+        } else {
+            let total = Sessions.live.count + (Detached.available ? Detached.ownedDaemons().count : 0)
+            if total > 0, !forced {
+                let a = NSAlert()
+                a.messageText = total == 1 ? "1 terminal is still running" : "\(total) terminals are still running"
+                a.informativeText = "Quitting closes every terminal and everything running in it: chats, panes, plain terminals and their programs, including hidden ones. Conversations stay saved and can be resumed."
+                a.alertStyle = .warning
+                a.addButton(withTitle: "Quit")
+                a.addButton(withTitle: "Cancel")
+                if a.runModal() != .alertFirstButtonReturn { return .terminateCancel }
+            }
         }
         // A file edited in the last second is saved first (Source Control's editor saves a second after a change).
         guard let controller else { return .terminateNow }
         controller.flushFiles {
-            controller.terminateAll()
-            NSApp.reply(toApplicationShouldTerminate: true)
+            let shells = controller.terminateAll(relaunching: relaunch)
+            // The reply goes through the run loop, like flushFiles' `done`: a quit asked for from a main-queue job waits
+            // in a run loop nested in that job, where the main queue runs nothing. A block queued from another thread
+            // waits for the run loop's next wake-up, so it is woken.
+            DispatchQueue.global(qos: .userInitiated).async {
+                Detached.killTrees(shells)
+                // Screen sessions an older build left: a real quit closes them (the quit-all), an update keeps them.
+                if !relaunch, Detached.available { Detached.quitAll() }
+                RunLoop.main.perform(inModes: [.common]) { MainActor.assumeIsolated { NSApp.reply(toApplicationShouldTerminate: true) } }
+                CFRunLoopWakeUp(CFRunLoopGetMain())
+            }
         }
         return .terminateLater
     }
@@ -117,11 +219,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return event
         }) { monitors.append(m) }
 
-        // Four-finger click anywhere in the app opens the shortcut pie at the pointer (three fingers are taken: many
+        // Four-finger click anywhere in the app opens the shortcut pie at the pointer (a three-finger click is Settings' choice: many
         // people drag or scroll with them, and each such drag opened the pie). With two-finger
         // secondary click on, macOS delivers it as a right click, so that is caught before any context menu.
         if let m = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown], handler: { [weak self] event in
-            guard Trackpad.fourFingersDown, let self else { return event }
+            guard Shortcuts.fingersOpen, let self else { return event }
             self.controller.overlay.showShortcuts(at: NSEvent.mouseLocation)
             return nil
         }) { monitors.append(m) }
@@ -176,6 +278,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             tv.send(data: bytes[...])
             return nil
         }) { monitors.append(m) }
+        // The one monitor for Esc (monitors run in no fixed order, so each Esc feature is a step of this chain): the key lock,
+        // then Esc closes the terminal in front as ⌘W does, when Settings › Shortcuts swaps Esc and ⌘W, whatever runs in it (EscClose).
+        if let m = NSEvent.addLocalMonitorForEvents(matching: .keyDown, handler: { event in
+            if MessagePanel.holds(event) { return nil }
+            return EscClose.handle(event) || AgyRewind.handle(event) ? nil : event
+        }) { monitors.append(m) }
     }
 
     // MARK: menu
@@ -213,6 +321,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // (web/cloud.js). No key: it's clicked, like the gear (Atalay, 2026-11-15); ⌘, stays out of the user's keys
         // (Shortcuts.reserved).
         add(app, "Settings…", #selector(showSettings), "", target: self)
+        // Clean Up: what slows the Mac down, ticked and ended on one page (Cleanup.swift). No key unless the user sets one.
+        keyed(app, "cleanUp", "Clean Up…", #selector(showCleanup), target: self)
         app.addItem(.separator())
         add(app, "Hide Orbiterm", #selector(NSApplication.hide(_:)), "h")
         add(app, "Hide Others", #selector(NSApplication.hideOtherApplications(_:)), "h", [.command, .option])
@@ -223,13 +333,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // window in front (Panes.swift).
         let file = submenu("Chat")
         keyed(file, "newTerminal", "New Terminal…", #selector(newTerminal), target: self)
+        keyed(file, "newWorktree", "New Worktree…", #selector(newWorktree), target: self)
+        keyed(file, "moveToWorktree", "Open in a Worktree…", #selector(moveToWorktree), target: self)
+        // The window in front, when it is in a worktree: send its work as a pull request, merge it here, or delete the worktree
+        // (WorktreeShip.swift). Merge and Delete have no key: rare, and Delete can't be undone by a slip of the finger.
+        file.addItem(.separator())
+        keyed(file, "createPR", "Create Pull Request…", #selector(createPR), target: self)
+        add(file, "Merge into Base Branch…", #selector(mergeWorktree), "", target: self)
+        add(file, "Delete Worktree…", #selector(deleteWorktree), "", target: self)
+        file.addItem(.separator())
         // VS Code's: a new file in Source Control's editor.
         keyed(file, "newFile", "New File", #selector(newFile), target: self)
         keyed(file, "newTab", "New Tab", #selector(newTab), target: self)
         keyed(file, "newTabNext", "New Tab Next to Current Tab", #selector(newTab), target: self)
         keyed(file, "splitVertically", "Split Vertically", #selector(splitVertically), target: self)
         keyed(file, "splitHorizontally", "Split Horizontally", #selector(splitHorizontally), target: self)
-        keyed(file, "shortcutsWheel", "Shortcut Wheel", #selector(showShortcuts), target: self)
+        keyed(file, "shortcutsWheel", "Ring", #selector(showShortcuts), target: self)
         file.addItem(.separator())
         keyed(file, "closePane", "Close", #selector(closePane), target: self)
         keyed(file, "closeWindow", "Close Terminal Window", #selector(NSWindow.performClose(_:)))
@@ -239,6 +358,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // The file editor's (a web page cuts only through the menu); a terminal has nothing to cut.
         add(edit, "Cut", #selector(NSText.cut(_:)), "x")
         add(edit, "Copy", #selector(NSText.copy(_:)), "c")
+        keyed(edit, "envFiles", "Env Files", #selector(envFiles), target: self)
         keyed(edit, "copyReply", "Copy Claude's Last Reply", #selector(copyReply), target: self)
         add(edit, "Paste", #selector(NSText.paste(_:)), "v")
         add(edit, "Select All", #selector(NSText.selectAll(_:)), "a")
@@ -321,9 +441,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             item.title = ready ? "Show Viktoria" : "Get Viktoria…"
             item.state = ready && Mascot.isEnabled ? .on : .off
         }
+        // Open in a Worktree…: for the AI chat in front (live, in a git folder), whatever the note's setting says; else shown, not usable.
+        if item.action == #selector(moveToWorktree) { return controller.movableChat() != nil }
+        // The pull request, merge and delete items: usable when the window in front is a worktree's and its status allows it.
+        let shipIds: [Selector: String] = [#selector(createPR): "create", #selector(mergeWorktree): "merge", #selector(deleteWorktree): "delete"]
+        if let id = item.action.flatMap({ shipIds[$0] }) {
+            guard let c = controller.shipFront(), let top = c.hud.wtTop else { return false }
+            let ship = WorktreeShip.shared
+            let st = ship.status[top]
+            if id == "merge" { item.title = "Merge into \(st.map { Streamer.on ? Streamer.fake("branch", $0.base) : $0.base } ?? "Base Branch")…" }
+            return !ship.deleted.contains(top) && ship.busy[top] == nil && WorktreeShip.items(st).first { $0.id == id }?.enabled == true
+        }
         return true
     }
+    private func shipMenu(_ id: String) {
+        guard let c = controller.shipFront(), let top = c.hud.wtTop else { return NSSound.beep() }
+        WorktreeShip.shared.handle(id, top: top, from: c)
+    }
+    @objc private func createPR() { shipMenu("create") }
+    @objc private func mergeWorktree() { shipMenu("merge") }
+    @objc private func deleteWorktree() { shipMenu("delete") }
     @objc private func newTerminal() { controller.overlay.showNewTerminal() }
+    @objc private func moveToWorktree() { controller.moveToWorktree() }
+    @objc private func newWorktree() { controller.overlay.showNewTerminal(worktree: true) }
     @objc private func newFile() { controller.newFile() }
     @objc private func newTab() { controller.newTab() }
     @objc private func splitVertically() { controller.split(vertical: true) }
@@ -356,6 +496,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func scrollTop() { frontTerminal?.scrollBuffer(.top) }
     @objc private func scrollBottom() { frontTerminal?.scrollBuffer(.bottom) }
     /// The chat window in front: Claude's last reply onto the clipboard, all of it.
+    /// The chat window in front: its env files, over the terminal (or back).
+    @objc private func envFiles() { (NSApp.keyWindow?.delegate as? ChatWindowController)?.toggleEnv() }
     @objc private func copyReply() { (NSApp.keyWindow?.delegate as? ChatWindowController)?.copyLastReply() }
     @objc private func showShortcuts() { controller.overlay.showShortcuts(at: NSEvent.mouseLocation) }
     @objc private func showDashboard() { controller.showDashboard() }
@@ -364,6 +506,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func showWhatsNew() { controller.openWhatsNew("notes") }
     @objc private func showTips() { controller.openWhatsNew("tips") }
     @objc private func showSettings() { controller.openSettings() }
+    @objc private func showCleanup() { controller.showCleanup() }
     @objc private func showShortcutList() { controller.openShortcutList() }
     @objc private func fontBigger() { controller.changeFont(by: 1) }
     @objc private func fontSmaller() { controller.changeFont(by: -1) }
