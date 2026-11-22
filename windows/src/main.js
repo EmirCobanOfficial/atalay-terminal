@@ -116,6 +116,7 @@ const { createFeedPanel } = require('./feedpanel');
 const { createChatTrash } = require('./chattrash');
 const { createTermFont } = require('./termfont');
 const { createMascot } = require('./mascot');
+const { createDesk } = require('./deskhelper');
 const { createMascotAsset } = require('./mascotasset');
 const { createShareCard } = require('./sharecard');
 const { createShortcuts } = require('./shortcuts');
@@ -1823,9 +1824,49 @@ function newFile() {
 // dashboard's page only, as on the Mac, where only RadarView's web view has the radar handler. The pages that send them
 // (cleanup.js, danger.js, cloud.js) are in index.html alone; a terminal's page, the chats list or the notices can't.
 const DASHBOARD_RADAR = new Set(['cleanupOpen', 'cleanupView', 'cleanupList', 'cleanupRun', 'cleanupRetry', 'cleanupHalt', 'cleanupDismiss',
-  'cleanupLog', 'cleanupPrefs', 'openActivityMonitor']);
+  'cleanupLog', 'cleanupPrefs', 'openActivityMonitor', 'attackSeen']);
+
+// A spaceship attack (attack.js) while no window of the app has the keys: Windows can't tell the dashboard beside another
+// app's windows from one under them with the focus alone, so the window list (deskhelper.js, front to back) is read:
+// true when the dashboard is shown, not minimized, and under 60% covered by windows in front of it: another app's, always
+// on top or not, and the app's own chats, terminals and notes; the app's own always-on-top ones (the notices, Viktoria,
+// the feed, a note kept on top) never count. Nothing here shows, raises or focuses a window. No helper (or no answer in
+// time): false, the banner alone, as before.
+const attackDesk = createDesk();
+async function dashExposed() {
+  if (!dash || dash.isDestroyed() || !dash.isVisible() || dash.isMinimized()) return false;
+  if (BaseWindow.getFocusedWindow()) return true; // one of the app's own windows is in front: the page's `behind` is off then
+  const list = await attackDesk.windows();
+  if (!list) return false;
+  let me = 0;
+  try {
+    const b = dash.getNativeWindowHandle();
+    me = b.length >= 8 ? Number(b.readBigUInt64LE(0)) : b.readUInt32LE(0);
+  } catch {}
+  const at = list.findIndex((w) => w.hwnd === me);
+  if (at < 0) return false; // on another virtual desktop, cloaked
+  let box;
+  try {
+    box = screen.dipToScreenRect(dash, dash.getBounds());
+  } catch {
+    return false;
+  }
+  const over = list.slice(0, at).filter((w) => !(w.pid === process.pid && w.topmost));
+  const N = 24;
+  let seen = 0;
+  for (let i = 0; i < N; i++) {
+    for (let j = 0; j < N; j++) {
+      const x = box.x + ((i + 0.5) / N) * box.width, y = box.y + ((j + 0.5) / N) * box.height;
+      if (!over.some((w) => x >= w.l && x < w.r && y >= w.t && y < w.b)) seen++;
+    }
+  }
+  return seen / (N * N) > 0.4;
+}
+
 function handleRadar(msg) {
   switch (msg.type) {
+    case 'attackSeen':
+      return dashExposed();
     case 'ready':
       // A reloaded page has no menu open, and starts its feed over: lines from the old one would never dissolve.
       stepAside(false);
@@ -2817,6 +2858,9 @@ function panelWindow(role, friend) {
 // The level-up waits for the app to be in front (the notices' "focus"), as on the Mac.
 function tellFocus() {
   const focused = !!BaseWindow.getFocusedWindow();
+  // No window of the app in front (from the dashboard or from a terminal, a chat, a note): an attack now reads the window
+  // list (dashExposed), so its helper starts here, up by the time one comes (its first compile takes a few seconds).
+  if (!focused && process.platform === 'win32') attackDesk.start();
   toNotices(`focus(${focused})`);
   if (dash && !dash.isDestroyed()) toDash(`visibility(${dash.isVisible() && !dash.isMinimized()}, ${focused})`);
 }

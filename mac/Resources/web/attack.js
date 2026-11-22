@@ -221,9 +221,23 @@ window.Attack = (() => {
   // while the warning showed. Windows can't tell a dashboard beside another app from one under it (it reports only shown
   // and not minimized, main.js), so there `behind` still counts, or the ship would fly unseen.
   const BEHIND_HIDES = window.__platform === 'win32';
+  // Windows only: the app is not the one in front (`behind`), but the app has looked at the desktop (main.js 'attackSeen',
+  // the window list in front to back) and says the dashboard lies beside the other windows, not under them: that counts as
+  // seen, as it does on the Mac. Asked at each attack's start (not once for good: where the windows are changes). The
+  // answer takes a moment; none within a second (the helper still compiling, an error): not seen, the banner alone.
+  let exposed = false;
+  const hiddenBehind = () => BEHIND_HIDES && html.classList.contains('behind') && !exposed;
+  async function expose() {
+    exposed = false;
+    if (!html.classList.contains('behind')) return;
+    exposed = await Promise.race([
+      h.radar.postMessage({ type: 'attackSeen' }).then((r) => r === true, () => false),
+      sleep(1000).then(() => false),
+    ]);
+  }
   // The dashboard window itself can be seen (the same conditions, apart from a view of the app lying over the map).
   function dashboardSeen() {
-    return !html.classList.contains('paused') && !html.classList.contains('covered') && !(BEHIND_HIDES && html.classList.contains('behind')) &&
+    return !html.classList.contains('paused') && !html.classList.contains('covered') && !hiddenBehind() &&
       document.visibilityState === 'visible';
   }
   function mapInSight() {
@@ -323,6 +337,14 @@ window.Attack = (() => {
     // The warning first, wherever the app is on screen (the notices panel shows it over whatever is in front), then the
     // ship. Its sender stays unnamed until the blast.
     banner('', 'lock');
+    // Windows: whether the dashboard can be seen is asked inside the lock's own time (it comes off the wait below), so
+    // the ship still comes when the warning says, as on the Mac.
+    let spent = 0;
+    if (BEHIND_HIDES) {
+      const asked = Date.now();
+      await expose();
+      spent = Date.now() - asked;
+    }
     // A view of the app over the map: the dashboard first, so the ship's arrival is seen (once the layout has settled).
     // Already there for the one before: you stay. Gone your own way meanwhile: from where you are now.
     if (away && away.took) away = null;
@@ -331,7 +353,7 @@ window.Attack = (() => {
       await sleep(120);
     }
     reticle(true);
-    await Promise.race([sleep(LOCK_MS + HOLD_MS), woken]);
+    await Promise.race([sleep(Math.max(0, LOCK_MS + HOLD_MS - spent)), woken]);
     playing = null;
     if (lock.cancelled) {
       reticle(false);
