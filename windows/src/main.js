@@ -181,6 +181,11 @@ const shortcuts = createShortcuts({ settings, onChange: () => shortcutsChanged()
 function shortcutsChanged() {
   if (app.isReady()) buildMenu();
   const keys = shortcuts.forTerminal();
+  // A page loaded again (a reload, its renderer gone) reads what its window was made with: that is kept current too.
+  for (const b of boots.values()) {
+    b.ringMouse = shortcuts.ringMouse();
+    if (b.keys) b.keys = keys;
+  }
   for (const c of chats.values()) send(c.win, 'term:keys', keys);
   for (const wc of webContents.getAllWebContents()) if (!wc.isDestroyed()) wc.send('atl:ringMouse', shortcuts.ringMouse());
 }
@@ -1646,7 +1651,8 @@ function chatInfo(id, c) {
   const fav = favoriteIds(s, tool).some((x) => chatlist.isFavorite(x));
   return {
     title: on ? streamer.name(title) : title, status: status === 'shell' ? 'idle' : status, cwd: on ? streamer.folder(c.cwd) : tildify(c.cwd),
-    tool: tool ? tool.name : null, streamer: on, chat: !!ai, fav,
+    // The tool's own status (idle, busy, waiting): Antigravity's Esc Esc rewind acts only while it waits for you.
+    tool: tool ? tool.name : null, toolStatus: tool ? tool.status : null, streamer: on, chat: !!ai, fav,
     stats: ai ? { ctx: ai.ctx || 0, ctxMax: ai.ctxMax || 0, tools: ai.tools || 0, web: ai.web || 0, errors: ai.errors || 0 } : null,
   };
 }

@@ -75,7 +75,8 @@ function inputState(text) {
     if (!mark || !'❯›>!'.includes(mark)) continue;
     if (mark === '!') return { kind: 'bash' };
     const rest = l.slice(1).trim();
-    if (!rest || PLACEHOLDERS.some((p) => rest.startsWith(p))) return { kind: 'empty' };
+    // Antigravity's own placeholder names its mode: "Accept-edits mode: file edits auto-approved (shift+tab to cycle)".
+    if (!rest || PLACEHOLDERS.some((p) => rest.startsWith(p)) || rest.endsWith('(shift+tab to cycle)')) return { kind: 'empty' };
     return { kind: 'typed', text: rest };
   }
   return { kind: 'unknown' };

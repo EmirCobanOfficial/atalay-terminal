@@ -139,9 +139,57 @@
     refit();
   });
   term.onResize(({ cols, rows }) => atl.send('term:resize', { cols, rows }));
-  term.onData((data) => atl.send('term:input', data));
-  // The AI tool running in this window, as the app tells it (term:info), for the keys it needs.
+  // When something was last typed (not an Esc, a focus report or a key's escape sequence; a paste counts): agy's rewind
+  // waits for a prompt sent a moment ago to start its turn.
+  let typedAt = 0;
+  term.onData((data) => {
+    if (data[0] !== '\x1b' || data.startsWith('\x1b[200~')) typedAt = performance.now();
+    atl.send('term:input', data);
+  });
+  // The AI tool running in this window, as the app tells it (term:info), for the keys it needs, and its own status.
   let tool = null;
+  let toolStatus = null;
+  // Antigravity's rewind (the Mac's AgyRewind.swift): agy has /rewind but no key for it, and its own Esc Esc only clears
+  // the prompt. Esc Esc while it waits for you with an empty prompt types /rewind instead: the second Esc is swallowed,
+  // a third never rewinds, and anything unclear lets Esc go to agy as usual. Swapped (Settings › Shortcuts), the Esc
+  // the close keys send counts: Ctrl+W Ctrl+W.
+  const PROMPT_BOX = ['│', '┃', '|'];
+  const agyReady = () => {
+    if (tool !== 'Antigravity' || toolStatus !== 'idle' || performance.now() - typedAt <= 1500) return false;
+    const b = term.buffer.active;
+    const bottom = b.baseY + term.rows - 1;
+    for (let y = bottom; y >= Math.max(b.baseY, bottom - 29); y--) {
+      const line = b.getLine(y);
+      const chars = [...(line ? line.translateToString(true) : '')];
+      let lead = 0;
+      while (lead < chars.length && (chars[lead] === ' ' || PROMPT_BOX.includes(chars[lead]))) lead++;
+      if (lead >= chars.length || !'>❯›!→'.includes(chars[lead])) continue;
+      // The bottom-most prompt line decides; anything but ">" (bash mode ! …) is no.
+      if (chars[lead] !== '>') return false;
+      let rest = chars.slice(lead + 1).join('').trim();
+      while (rest && PROMPT_BOX.includes(rest[rest.length - 1])) rest = rest.slice(0, -1).trim();
+      // The cursor sits right after the mark, where the placeholder starts: typed text would have moved it.
+      if (b.baseY + b.cursorY !== y || b.cursorX > lead + 2) return false;
+      return !rest || /^[A-Za-z][A-Za-z0-9 -]* mode: .*\(shift\+tab to cycle\)$/.test(rest);
+    }
+    return false;
+  };
+  let lastEsc = -1;
+  /** An Esc about to reach the terminal: true when it was the second and /rewind went instead (the Esc is dropped). */
+  const agyRewind = () => {
+    if (!agyReady()) {
+      lastEsc = -1;
+      return false;
+    }
+    const now = performance.now();
+    const first = lastEsc;
+    const second = first >= 0 && now - first <= 500;
+    lastEsc = second ? -1 : now;
+    if (!second) return false;
+    // At least 150 ms after the Esc that went: closer, a console reads Esc and "/" as Alt+/.
+    setTimeout(() => atl.send('term:input', '/rewind\r'), Math.max(0, 150 - (now - first)));
+    return true;
+  };
   // Copy-on-select, as on the Mac: dragging or double-clicking a selection copies it to the clipboard on mouse release,
   // shows the "COPIED N CHARS" badge in the HUD, and keeps the selection highlighted.
   let mouseDown = false, pendingCopy = false, copyTimer = 0;
@@ -195,12 +243,24 @@
     if (k && Array.isArray(k.app)) keys = k;
   });
   // A key press as a combo, the app's way (shortcuts.js comboOf): the key where it is on the keyboard, whatever the
-  // layout makes of it; null without Ctrl or Alt (but the F keys), or with the Windows key.
+  // layout makes of it, or what it types when it comes without a place (SendKeys, Remote Desktop, the on-screen
+  // keyboard give no scan code); null without Ctrl or Alt (but the F keys), or with the Windows key.
   const NAMED = {
     ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right', PageUp: 'pageup', PageDown: 'pagedown',
     Home: 'home', End: 'end', Enter: 'return', NumpadEnter: 'return', Tab: 'tab', Space: 'space', Insert: 'insert', Delete: 'delete',
     Minus: '-', Equal: '=', BracketLeft: '[', BracketRight: ']', Backslash: '\\', Semicolon: ';', Quote: "'", Comma: ',',
     Period: '.', Slash: '/', Backquote: '`', NumpadAdd: 'plus', NumpadSubtract: 'numsub', Escape: 'esc',
+  };
+  const SHIFTED = { '+': '=', _: '-', '{': '[', '}': ']', '|': '\\', ':': ';', '"': "'", '<': ',', '>': '.', '?': '/', '~': '`',
+    '!': '1', '@': '2', '#': '3', $: '4', '%': '5', '^': '6', '&': '7', '*': '8', '(': '9', ')': '0' };
+  const typedKey = (k) => {
+    if (!k) return null;
+    if (k.length === 1) {
+      const c = SHIFTED[k] || k.toLowerCase();
+      return /^[a-z0-9]$/.test(c) || Object.values(NAMED).includes(c) ? c : null;
+    }
+    const m = /^F([1-9]|1[0-9]|2[0-4])$/.exec(k);
+    return m ? `f${m[1]}` : k === ' ' ? 'space' : NAMED[k] || null;
   };
   const comboOf = (e) => {
     if (e.metaKey) return null;
@@ -208,7 +268,7 @@
     let m;
     const key = (m = /^Key([A-Z])$/.exec(c)) ? m[1].toLowerCase()
       : (m = /^(?:Digit|Numpad)([0-9])$/.exec(c)) ? m[1]
-        : (m = /^F([1-9]|1[0-9]|2[0-4])$/.exec(c)) ? `f${m[1]}` : NAMED[c];
+        : (m = /^F([1-9]|1[0-9]|2[0-4])$/.exec(c)) ? `f${m[1]}` : NAMED[c] || typedKey(e.key);
     if (!key || (!e.ctrlKey && !e.altKey && !/^f\d+$/.test(key))) return null;
     return [e.ctrlKey && 'ctrl', e.altKey && 'alt', e.shiftKey && 'shift', key].filter(Boolean).join('+');
   };
@@ -227,17 +287,22 @@
     // terminal itself has the keys, which is when the swap acts. A plain Esc hides the window as the close keys do,
     // whatever runs here (held, it only hides once); the close keys type a real Esc instead, as the Esc key would. An
     // IME's Esc comes as "Process", never as Escape.
+    const plainEsc = e.key === 'Escape' && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey;
     if (keys.escClose) {
-      if (e.key === 'Escape' && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey) {
+      if (plainEsc) {
         e.preventDefault();
+        lastEsc = -1;
         if (!e.repeat) atl.send('term:escClose');
         return false;
       }
       if (combo && combo === keys.closePane) {
         e.preventDefault();
-        term.input('\x1b', true);
+        if (!agyRewind()) term.input('\x1b', true);
         return false;
       }
+    } else if (plainEsc && !e.repeat && agyRewind()) {
+      e.preventDefault();
+      return false;
     }
     // Left unhandled, the app's keys reach its menu instead of the shell. Antigravity approves its subagents' steps with
     // Ctrl+K, so while it runs here that key is its own (the Ring is still the middle mouse button away).
@@ -273,6 +338,7 @@
   const STATUS = { busy: ['WORKING', '--accent'], idle: ['YOUR TURN', '--cyan'], waiting: ['NEEDS YOU', '--warn'], terminal: ['TERMINAL', '--cyan'], ended: ['ENDED', '--ended'] };
   atl.on('term:info', (i) => {
     tool = i.tool || null;
+    toolStatus = i.toolStatus || null;
     document.getElementById('title').textContent = i.title || 'terminal';
     document.title = `${i.title || 'terminal'} · Orbiterm`;
     const [label, color] = STATUS[i.status] || ['', '--dim'];

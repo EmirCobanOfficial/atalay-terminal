@@ -64,13 +64,32 @@ function keyOfCode(code) {
   return NAMED[code] || null;
 }
 
+// The key by what it types, for a press without a `code`: keys sent by a program (SendKeys, AutoHotkey), Remote Desktop,
+// the on-screen keyboard come with no scan code, so Chromium can't say where the key is. A shifted symbol is read as
+// its key on a US keyboard (Ctrl+Shift+] types "}").
+const SHIFTED = { '+': '=', _: '-', '{': '[', '}': ']', '|': '\\', ':': ';', '"': "'", '<': ',', '>': '.', '?': '/', '~': '`',
+  '!': '1', '@': '2', '#': '3', $: '4', '%': '5', '^': '6', '&': '7', '*': '8', '(': '9', ')': '0' };
+const NAMED_KEYS = { ' ': 'space', Spacebar: 'space', Esc: 'esc' };
+/** The key a KeyboardEvent / before-input-event `key` names, or null. */
+function keyOfKey(key) {
+  if (typeof key !== 'string' || !key) return null;
+  if (key.length === 1) {
+    const c = SHIFTED[key] || key.toLowerCase();
+    return /^[a-z0-9]$/.test(c) || Object.values(NAMED).includes(c) ? c : null;
+  }
+  const m = /^F([1-9]|1[0-9]|2[0-4])$/.exec(key);
+  if (m) return `f${m[1]}`;
+  return NAMED_KEYS[key] || NAMED[key] || null;
+}
+
 /**
- * The combo a key press makes ({ code, control, alt, shift, meta } as before-input-event gives them), or null when it
- * can't be a shortcut: none with the Windows key, and none without Ctrl or Alt except the F keys.
+ * The combo a key press makes ({ code, key, control, alt, shift, meta } as before-input-event gives them), or null when
+ * it can't be a shortcut: none with the Windows key, and none without Ctrl or Alt except the F keys. The key where it
+ * is (`code`), else what it types (`key`).
  */
-function comboOf({ code, control, alt, shift, meta }) {
+function comboOf({ code, key: typed, control, alt, shift, meta }) {
   if (meta) return null;
-  const key = keyOfCode(code);
+  const key = keyOfCode(code) || keyOfKey(typed);
   if (!key) return null;
   if (!control && !alt && !/^f\d+$/.test(key)) return null;
   return [control && 'ctrl', alt && 'alt', shift && 'shift', key].filter(Boolean).join('+');
@@ -256,4 +275,4 @@ function createShortcuts({ settings, onChange }) {
   };
 }
 
-module.exports = { createShortcuts, comboOf, keyOfCode, label, accelerator };
+module.exports = { createShortcuts, comboOf, keyOfCode, keyOfKey, label, accelerator };
