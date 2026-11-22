@@ -886,11 +886,22 @@ function guardSession(ses) {
   // The pages load the API's own pictures (avatars) by address, which can't carry a header: the API signs those
   // addresses itself (`ak`), and the header is added on the way out too, to the staging API's pictures only (never to
   // anything else a page asks that API for).
-  if (ACCESS_KEY) {
-    ses.webRequest.onBeforeSendHeaders({ urls: [`${new URL(API_BASE).origin}/v1/avatars/*`] }, (details, callback) => {
-      callback({ requestHeaders: { ...details.requestHeaders, 'x-orbiterm-access': ACCESS_KEY } });
-    });
-  }
+  // A shared note's live line (web/notesync.js's socket, …/v1/notes/<id>/sync) is taken by the API only with `Origin:
+  // null`, what the Mac's file pages send; Electron's file pages send "file://", so the socket never opened. The app's
+  // own pages' socket says null there too; any other origin (a website's) is left for the API to refuse. One listener:
+  // a session keeps only the last one set.
+  const api = new URL(API_BASE);
+  const urls = [`${api.protocol === 'https:' ? 'wss:' : 'ws:'}//${api.host}/v1/notes/*`];
+  if (ACCESS_KEY) urls.push(`${api.origin}/v1/avatars/*`);
+  ses.webRequest.onBeforeSendHeaders({ urls }, (details, callback) => {
+    const h = { ...details.requestHeaders };
+    if (/\/v1\/avatars\//.test(new URL(details.url).pathname)) {
+      if (ACCESS_KEY) h['x-orbiterm-access'] = ACCESS_KEY;
+    } else if (/^\/v1\/notes\/[^/]+\/sync$/.test(new URL(details.url).pathname)) {
+      for (const k of Object.keys(h)) if (k.toLowerCase() === 'origin' && h[k] === 'file://') h[k] = 'null';
+    }
+    callback({ requestHeaders: h });
+  });
 }
 app.on('session-created', guardSession);
 
