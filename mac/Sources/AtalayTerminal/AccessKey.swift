@@ -24,8 +24,17 @@ enum AccessKey {
 
     private static func isAPI(_ url: URL?) -> Bool {
         guard let url, let host = url.host?.lowercased() else { return false }
-        func port(_ u: URL) -> Int { u.port ?? (u.scheme?.lowercased() == "https" ? 443 : 80) }
-        return url.scheme?.lowercased() == api.scheme?.lowercased() && host == api.host?.lowercased() && port(url) == port(api)
+        // The live line is the API's own address as a websocket (wss for https, ws for http): the same server.
+        func secure(_ u: URL) -> Bool? {
+            switch u.scheme?.lowercased() {
+            case "https", "wss": return true
+            case "http", "ws": return false
+            default: return nil
+            }
+        }
+        guard let s = secure(url), s == secure(api) else { return false }
+        func port(_ u: URL) -> Int { u.port ?? (secure(u) == true ? 443 : 80) }
+        return host == api.host?.lowercased() && port(url) == port(api)
     }
 
     /// Adds the header to a request for the API's own address, never to another server's (a release's zip on GitHub, a
