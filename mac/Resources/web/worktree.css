@@ -1,0 +1,226 @@
+/* ===== New worktree: the name sheet (worktree.js). Dropped from the folder picker's title bar, or alone in the middle. ===== */
+/* The sheet's own tokens, all derived from the theme: on .wt, not :root, so a theme written to :root resolves them. */
+.wt {
+  --wt-glass: linear-gradient(170deg, rgba(var(--glass-top-rgb), 0.97) 0%, rgba(var(--surface-rgb), 0.98) 55%, rgba(var(--bg-rgb), 0.98) 100%);
+  --wt-field: rgba(0, 0, 0, 0.34);
+  --wt-hair: rgba(var(--accent-rgb), 0.18);
+  --wt-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --wt-ok: var(--accent-soft);
+}
+.i-br { fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; }
+.wt button:focus-visible, .wt-seg button:focus-visible { outline: 2px solid var(--accent-soft); outline-offset: 2px; }
+
+.wt-veil { position: absolute; inset: 34px 0 0; z-index: 6; background: rgba(var(--deep-rgb), 0.55); -webkit-backdrop-filter: blur(2px) saturate(0.8); backdrop-filter: blur(2px) saturate(0.8); opacity: 0; pointer-events: none; transition: opacity 0.2s ease-out; }
+.pk.sheeted .wt-veil { opacity: 1; pointer-events: auto; }
+.wt {
+  position: absolute; z-index: 7; top: 34px; left: 50%;
+  width: min(29rem, calc(100% - 3rem));
+  transform: translate(-50%, -0.75rem); opacity: 0; pointer-events: none;
+  transition: transform 0.26s var(--wt-ease), opacity 0.16s ease-out;
+}
+.pk.sheeted .wt { transform: translate(-50%, 0); opacity: 1; pointer-events: auto; }
+.wt-card {
+  position: relative; overflow: hidden;
+  padding: 1.125rem 1.25rem 1rem;
+  border: 1px solid rgba(var(--accent-rgb), 0.42); border-top: 0; border-radius: 0 0 14px 14px;
+  background: var(--wt-glass);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 26px 60px rgba(0, 0, 0, 0.62), 0 0 32px rgba(var(--accent-rgb), 0.2);
+  font: 13px/1.45 var(--font-sans);
+}
+/* Opened from the chats list or the Ring: no picker behind, the sheet floats alone with the picker's spinning border */
+.wt-alone { position: fixed; inset: 0; z-index: 2700; display: none; align-items: center; justify-content: center; background: rgba(0, 0, 0, 0.32); -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px); }
+.wt-alone.on { display: flex; }
+.wt-alone .wt { position: relative; top: auto; left: auto; transform: translateY(-0.5rem) scale(0.98); opacity: 1; pointer-events: auto; animation: wt-pop 0.28s var(--wt-ease) both; }
+.wt-alone .wt-card { border-top: 1px solid rgba(var(--accent-rgb), 0.42); border-radius: 14px; }
+.wt-alone .wt .pk-border { border-radius: 14px; z-index: 3; }
+@keyframes wt-pop { from { opacity: 0; transform: translateY(-0.75rem) scale(0.97); } to { opacity: 1; transform: none; } }
+
+.wt-head { display: grid; grid-template-columns: 2.25rem minmax(0, 1fr); gap: 0.75rem; align-items: center; margin-bottom: 1rem; }
+.wt-ico { display: grid; place-items: center; width: 2.25rem; height: 2.25rem; border-radius: 0.7rem; color: var(--ink);
+  background: linear-gradient(155deg, var(--accent-pale), var(--accent-soft) 32%, var(--accent) 68%, color-mix(in srgb, var(--accent) 62%, #000));
+  box-shadow: 0 0.25rem 1rem rgba(var(--accent-rgb), 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.35); }
+.wt-ico svg { width: 1.2rem; height: 1.2rem; stroke-width: 1.8; }
+.wt-t { margin: 0; color: var(--hi); font-size: 0.9375rem; font-weight: 650; letter-spacing: -0.005em; }
+.wt-sub { margin: 0.1rem 0 0; overflow: hidden; color: var(--txt3); font-size: 0.8125rem; white-space: nowrap; text-overflow: ellipsis; }
+.wt-sub code, .wt-hint code, .wt-note code, .wt-err code, .wt-steps code, .wt-call code { font: 0.92em var(--font); color: var(--txt2); }
+.wt-sub .base { color: var(--accent-soft); }
+
+.wt-lab { display: block; margin: 0 0 0.375rem; color: var(--txt2); font-size: 0.75rem; font-weight: 600; letter-spacing: 0.02em; }
+.wt-field { position: relative; }
+.wt-in {
+  width: 100%; height: 2.25rem; padding: 0 2.25rem 0 0.75rem;
+  border: 1px solid rgba(var(--accent-rgb), 0.38); border-radius: 0.5rem; outline: none;
+  background: var(--wt-field); color: var(--hi); font: 0.9375rem var(--font); caret-color: var(--accent);
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.wt-in::selection { background: rgba(var(--accent-rgb), 0.45); color: var(--hi); }
+.wt-in:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.24); }
+.wt-in[aria-invalid="true"] { border-color: var(--red); box-shadow: 0 0 0 3px rgba(var(--red-rgb), 0.2); }
+.wt-in:disabled { opacity: 0.7; }
+.wt-mark { position: absolute; right: 0.625rem; top: 50%; width: 1rem; height: 1rem; transform: translateY(-50%); }
+.wt-mark path { fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.wt-mark.ok path { stroke: var(--wt-ok); }
+.wt-mark.bad path { stroke: var(--red); }
+.wt-hint { margin: 0.4rem 0 0; color: var(--txt3); font-size: 0.75rem; line-height: 1.5; }
+.wt-hint b { color: var(--txt2); font-weight: 600; }
+.wt-hint .path { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; direction: rtl; text-align: left; }
+.wt-hint .path code { unicode-bidi: plaintext; }
+.wt-err { display: flex; gap: 0.375rem; align-items: flex-start; margin: 0.4rem 0 0; color: var(--red-soft); font-size: 0.75rem; line-height: 1.45; }
+.wt-err b { color: var(--hi); font: 600 0.92em var(--font); }
+.wt-err svg, .wt-note svg, .wt-call svg { flex: none; width: 0.875rem; height: 0.875rem; margin-top: 0.1rem; }
+
+.wt-group { margin-top: 1rem; }
+.wt-seg { position: relative; display: grid; grid-template-columns: repeat(4, 1fr); height: 2rem; padding: 2px; border: 1px solid var(--wt-hair); border-radius: 0.5rem; background: rgba(0, 0, 0, 0.3); }
+.wt-thumb { position: absolute; top: 2px; bottom: 2px; left: 2px; width: calc((100% - 4px) / 4); border: 1px solid rgba(var(--accent-rgb), 0.85); border-radius: 0.375rem;
+  background: linear-gradient(180deg, rgba(var(--accent-rgb), 0.34), rgba(var(--accent-rgb), 0.18));
+  box-shadow: 0 0 0.75rem rgba(var(--accent-rgb), 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.14);
+  transform: translateX(calc(var(--i, 0) * 100%)); transition: transform 0.22s var(--wt-ease); }
+.wt-seg button { position: relative; z-index: 1; border: 0; background: none; color: var(--txt2); font: 500 0.8125rem var(--font-sans); cursor: pointer; border-radius: 0.375rem; }
+.wt-seg button[aria-checked="true"] { color: var(--hi); font-weight: 650; }
+.wt-seg button:not([aria-checked="true"]):hover { color: var(--hi); background: rgba(var(--accent-rgb), 0.07); }
+.wt-seg[aria-disabled="true"] { opacity: 0.55; pointer-events: none; }
+
+.wt-notes { margin-top: 1rem; padding-top: 0.75rem; border-top: 1px solid var(--wt-hair); display: grid; gap: 0.375rem; }
+.wt-note { display: flex; gap: 0.5rem; align-items: flex-start; margin: 0; color: var(--txt3); font-size: 0.75rem; line-height: 1.45; }
+.wt-note b { color: var(--txt2); font-weight: 600; }
+.wt-note svg { color: var(--accent-soft); }
+.wt-note .sm { color: var(--dim); }
+
+.wt-steps { margin: 1rem 0 0; padding: 0.75rem 0 0; border-top: 1px solid var(--wt-hair); list-style: none; display: grid; gap: 0.375rem; font-size: 0.8125rem; }
+.wt-steps li { display: flex; align-items: center; gap: 0.5rem; color: var(--dim); }
+.wt-steps li .dot { flex: none; display: grid; place-items: center; width: 1rem; height: 1rem; border-radius: 50%; border: 1.5px solid var(--dim2); }
+.wt-steps li.done { color: var(--txt2); }
+.wt-steps li.done .dot { border-color: var(--accent-soft); background: var(--accent-soft); color: var(--ink); }
+.wt-steps li.done .dot::after { content: "✓"; font: 700 0.6rem var(--font-sans); }
+.wt-steps li.now { color: var(--hi); font-weight: 600; }
+.wt-steps li.now .dot { border-color: rgba(var(--accent-rgb), 0.3); border-top-color: var(--accent); animation: wt-spin 0.8s linear infinite; }
+.wt-steps li.warn { color: var(--amber); }
+.wt-steps li.warn .dot { border-color: var(--amber); color: var(--amber); }
+.wt-steps li.warn .dot::after { content: "!"; font: 800 0.6rem var(--font-sans); }
+@keyframes wt-spin { to { transform: rotate(360deg); } }
+.wt-bar { position: absolute; top: 0; left: 0; right: 0; height: 2px; overflow: hidden; opacity: 0; }
+.wt.busy .wt-bar { opacity: 1; }
+.wt-bar::after { content: ""; position: absolute; top: 0; bottom: 0; width: 40%; background: linear-gradient(90deg, transparent, var(--accent-soft), transparent); animation: wt-scan 1.1s var(--wt-ease) infinite; }
+@keyframes wt-scan { from { left: -40%; } to { left: 100%; } }
+
+.wt-call { display: flex; gap: 0.5rem; margin: 0.75rem 0 0; padding: 0.625rem 0.75rem; border-radius: 0.5rem; font-size: 0.75rem; line-height: 1.5; }
+.wt-call.bad { border: 1px solid rgba(var(--red-rgb), 0.4); background: rgba(var(--red-rgb), 0.08); color: var(--red-soft); }
+.wt-call.warn { border: 1px solid rgba(var(--amber-rgb), 0.45); background: rgba(var(--amber-rgb), 0.08); color: var(--amber); }
+.wt-call b { color: var(--hi); font-weight: 600; }
+.wt-call .git { display: block; margin-top: 0.25rem; color: var(--txt3); font: 0.6875rem/1.4 var(--font); white-space: pre-wrap; word-break: break-word; }
+
+.wt-act { display: flex; justify-content: flex-end; align-items: center; gap: 0.5rem; margin-top: 1.125rem; }
+.wt-act .keys { margin-right: auto; color: var(--dim); font-size: 0.6875rem; }
+.wt-act .keys kbd { padding: 0 0.25rem; border: 1px solid var(--dim2); border-radius: 0.2rem; font: 0.625rem var(--font); color: var(--txt3); }
+/* the sheet opened from the second-AI note: its first line says the empty chat closes */
+.wt-note.move svg { color: var(--accent); }
+.wt-btn:disabled { opacity: 0.42; cursor: default; }
+.wt-btn { white-space: nowrap; display: inline-flex; align-items: center; gap: 0.45rem; height: 2rem; padding: 0 0.875rem; border-radius: 0.5rem; font: 600 0.8125rem var(--font-sans); cursor: pointer; transition: background 0.15s, border-color 0.15s, box-shadow 0.15s, opacity 0.15s; }
+.wt-btn.glass { border: 1px solid rgba(var(--accent-rgb), 0.32); background: rgba(255, 255, 255, 0.04); color: var(--txt); }
+.wt-btn.glass:hover { border-color: var(--accent-soft); color: var(--hi); }
+.wt-btn.go { border: 1px solid var(--accent); background: linear-gradient(180deg, var(--accent-soft), var(--accent)); color: var(--ink); box-shadow: 0 0.25rem 1rem rgba(var(--accent-rgb), 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.35); }
+.wt-btn.go:hover { box-shadow: 0 0.25rem 1.25rem rgba(var(--accent-rgb), 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.35); }
+.wt-btn.go:disabled { opacity: 0.42; box-shadow: none; cursor: default; }
+.wt-btn .k { font: 0.75rem var(--font); opacity: 0.7; }
+.wt-btn .spin { width: 0.8rem; height: 0.8rem; border-radius: 50%; border: 2px solid rgba(var(--ink-rgb), 0.3); border-top-color: var(--ink); animation: wt-spin 0.8s linear infinite; }
+
+@media (prefers-reduced-motion: reduce) { .wt, .wt *, .wt-veil, .wt::before, .wt-alone .wt { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important; } }
+
+/* ===== Create PR, Merge and Delete worktree: the sheets of worktree-ship.js ===== */
+/* ===== NEW: the PR, merge and delete sheets (worktree.css, after the name sheet's rules) ===== */
+/* anchored to the chat window that asked: drops from under its header (62 pt), the terminal behind it veiled */
+.wt-veil2 { position: absolute; inset: 62px 0 0; z-index: 6; background: rgba(var(--deep-rgb), 0.55); -webkit-backdrop-filter: blur(2px) saturate(0.8); backdrop-filter: blur(2px) saturate(0.8); animation: wt-fade 0.2s ease-out both; }
+.wt-anchor { position: absolute; z-index: 7; top: 62px; left: 50%; width: min(31rem, calc(100% - 3rem)); transform: translateX(-50%); animation: wt-drop 0.26s var(--wt-ease) both; }
+/* never taller than the window under its header: the card scrolls, its buttons stay in view (sticky) */
+.wt-anchor { display: flex; max-height: calc(100% - 62px - 1rem); }
+.wt-anchor > .wt-card { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.wt-anchor .wt-act { position: sticky; bottom: -1rem; margin-bottom: -1rem; padding: 0.75rem 0 1rem; background: linear-gradient(180deg, rgba(var(--bg-rgb), 0), rgba(var(--bg-rgb), 0.97) 35%); }
+@keyframes wt-drop { from { opacity: 0; transform: translate(-50%, -0.75rem); } to { opacity: 1; transform: translate(-50%, 0); } }
+@keyframes wt-fade { from { opacity: 0; } to { opacity: 1; } }
+.wt-area {
+  display: block; width: 100%; min-height: 5.25rem; max-height: 10rem; resize: vertical; padding: 0.5rem 0.75rem;
+  border: 1px solid rgba(var(--accent-rgb), 0.38); border-radius: 0.5rem; outline: none;
+  background: var(--wt-field); color: var(--hi); font: 0.8125rem/1.5 var(--font); caret-color: var(--accent);
+}
+.wt-area:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.24); }
+.wt-line { display: flex; align-items: center; gap: 0.625rem; margin-top: 1rem; min-width: 0; }
+.wt-line .wt-lab { margin: 0; }
+.wt-pop { display: inline-flex; align-items: center; gap: 0.4rem; height: 1.75rem; padding: 0 0.5rem 0 0.625rem; border: 1px solid rgba(var(--accent-rgb), 0.38); border-radius: 0.4rem; background: var(--wt-field); color: var(--hi); font: 0.8125rem var(--font); cursor: pointer; }
+.wt-pop:hover { border-color: var(--accent-soft); }
+.wt-pop .br { color: var(--accent-soft); }
+.wt-pop svg { width: 0.625rem; height: 0.625rem; color: var(--txt3); }
+.wt-stat { margin-left: auto; overflow: hidden; color: var(--txt3); font-size: 0.75rem; white-space: nowrap; text-overflow: ellipsis; }
+.wt-stat .add { color: var(--accent-soft); font: 0.92em var(--font); }
+.wt-stat .del { color: var(--red-soft); font: 0.92em var(--font); }
+.wt-link { padding: 0; border: 0; background: none; color: var(--accent-soft); font: inherit; text-decoration: underline; text-decoration-color: rgba(var(--accent-soft-rgb), 0.45); text-underline-offset: 2px; cursor: pointer; }
+.wt-link:hover { color: var(--hi); text-decoration-color: currentColor; }
+.wt-commits { margin: 0.5rem 0 0; padding: 0.5rem 0.75rem; border: 1px solid var(--wt-hair); border-radius: 0.5rem; background: rgba(0, 0, 0, 0.22); list-style: none; display: grid; gap: 0.25rem; font-size: 0.8125rem; }
+.wt-commits li { display: flex; align-items: baseline; gap: 0.5rem; min-width: 0; color: var(--txt); }
+.wt-commits li > span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.wt-commits li::before { content: ""; flex: none; width: 0.4rem; height: 0.4rem; border-radius: 50%; border: 1.5px solid var(--accent-soft); transform: translateY(-0.05rem); }
+.wt-commits code { flex: none; margin-left: auto; color: var(--dim); font: 0.6875rem var(--font); }
+.wt-commits li.new { color: var(--txt3); font-style: italic; }
+.wt-commits li.new::before { border-style: dashed; }
+.wt-commits li.more { color: var(--dim); }
+.wt-commits li.more::before { visibility: hidden; }
+.wt-rows { display: grid; grid-template-columns: 5.25rem minmax(0, 1fr); gap: 0.5rem 0.75rem; margin: 0; padding: 0.75rem 0.875rem; border: 1px solid var(--wt-hair); border-radius: 0.5rem; background: rgba(0, 0, 0, 0.22); font-size: 0.8125rem; }
+.wt-rows dt { color: var(--txt3); font-size: 0.75rem; font-weight: 600; line-height: 1.55rem; }
+.wt-rows dd { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.5rem; margin: 0; color: var(--txt); line-height: 1.55rem; }
+.wt-rows dd .sm { color: var(--txt3); font-size: 0.75rem; }
+.mark { display: inline-grid; place-items: center; flex: none; width: 1rem; height: 1rem; border-radius: 50%; }
+.mark svg { width: 0.625rem; height: 0.625rem; stroke-width: 2.2; }
+.mark.ok { background: rgba(var(--accent-soft-rgb), 0.18); color: var(--accent-soft); box-shadow: inset 0 0 0 1px rgba(var(--accent-soft-rgb), 0.6); }
+.mark.bad { background: rgba(var(--red-rgb), 0.16); color: var(--red); box-shadow: inset 0 0 0 1px rgba(var(--red-rgb), 0.6); }
+.mark.run { border: 1.5px solid rgba(var(--amber-rgb), 0.3); border-top-color: var(--amber); animation: wt-spin 0.8s linear infinite; }
+.mark.none { box-shadow: inset 0 0 0 1.5px var(--dim2); }
+.wt-files { display: flex; flex-wrap: wrap; gap: 0.25rem; margin-top: 0.375rem; }
+.wt-files code { padding: 0 0.375rem; border: 1px solid rgba(var(--red-rgb), 0.35); border-radius: 0.25rem; color: var(--hi) !important; font: 0.6875rem/1.25rem var(--font); }
+.wt-box { display: flex; align-items: flex-start; gap: 0.5rem; margin: 0; color: var(--txt2); font-size: 0.75rem; line-height: 1.45; cursor: pointer; }
+.wt-box input { appearance: none; flex: none; display: grid; place-items: center; width: 0.95rem; height: 0.95rem; margin: 0.05rem 0 0; border: 1.5px solid var(--txt3); border-radius: 0.25rem; background: var(--wt-field); cursor: pointer; }
+.wt-box input:checked { border-color: var(--accent); background: var(--accent); }
+.wt-box input:checked::after { content: ""; width: 0.45rem; height: 0.25rem; border: solid var(--ink); border-width: 0 0 2px 2px; transform: translateY(-0.05rem) rotate(-45deg); }
+.wt-box input:focus-visible { outline: 2px solid var(--accent-soft); outline-offset: 2px; }
+.wt-box b { color: var(--hi); font-weight: 600; }
+.wt-box .sm { display: block; color: var(--txt3); }
+.wt-btn.danger { border: 1px solid var(--red); background: rgba(var(--red-rgb), 0.12); color: var(--red-soft); }
+.wt-btn.danger:not(:disabled):hover { background: rgba(var(--red-rgb), 0.22); color: var(--hi); }
+/* the moment it worked: a short, game-like beat (the app is a game), then plain text */
+.wt-done { display: grid; grid-template-columns: 2.25rem minmax(0, 1fr); gap: 0.75rem; align-items: center; margin-top: 1rem; padding: 0.875rem; border: 1px solid rgba(var(--accent-soft-rgb), 0.45); border-radius: 0.625rem; background: radial-gradient(circle at 1.1rem 50%, rgba(var(--accent-rgb), 0.22), transparent 70%), rgba(0, 0, 0, 0.22); }
+.wt-done .ring { display: grid; place-items: center; width: 2.25rem; height: 2.25rem; border-radius: 50%; color: var(--ink); background: radial-gradient(circle at 35% 30%, var(--accent-pale), var(--accent-soft) 45%, var(--accent)); box-shadow: 0 0 0 0 rgba(var(--accent-rgb), 0.6); animation: wt-glow 0.9s var(--wt-ease) 0.1s both; }
+.wt-done .ring svg { width: 1.1rem; height: 1.1rem; stroke-width: 2.4; stroke-dasharray: 20; stroke-dashoffset: 20; animation: wt-draw 0.32s var(--wt-ease) 0.18s forwards; }
+@keyframes wt-draw { to { stroke-dashoffset: 0; } }
+@keyframes wt-glow { 0% { transform: scale(0.6); box-shadow: 0 0 0 0 rgba(var(--accent-rgb), 0.7); } 55% { transform: scale(1.06); } 100% { transform: scale(1); box-shadow: 0 0 0 0.75rem rgba(var(--accent-rgb), 0); } }
+.wt-done h3 { margin: 0; color: var(--hi); font-size: 0.9375rem; font-weight: 650; }
+.wt-done p { margin: 0.1rem 0 0; color: var(--txt3); font-size: 0.75rem; line-height: 1.45; }
+.wt-done p code { color: var(--accent-soft); font: 0.6875rem var(--font); }
+
+/* the rest of the sheets' pieces the name sheet didn't need */
+.wt-note.warn, .wt-note.warn b { color: var(--amber); }
+.wt-note.warn svg { color: var(--amber); }
+.wt-steps li.bad { color: var(--red-soft); }
+.wt-steps li.bad .dot { border-color: var(--red); color: var(--red); }
+.wt-steps li.bad .dot::after { content: "\2715"; font: 800 0.55rem var(--font-sans); }
+.wt-act .left { margin-right: auto; }
+.wt-card:focus-visible { outline: none; }
+
+/* the sheet's host: on the asking window's frame (the overlay panel sits there), or alone in the middle (.wt-alone) */
+.wt-host { position: fixed; inset: 0; z-index: 2700; }
+.wt.wt-anchor { opacity: 1; pointer-events: auto; }
+.wt-alone .wt.ship { width: min(31rem, calc(100% - 3rem)); }
+/* "Into": a pop-up of the remote's branches, on the sheet's own surface */
+.wt-popwrap { position: relative; display: inline-block; }
+.wt-menu { position: absolute; z-index: 3; left: 0; top: calc(100% + 0.25rem); min-width: 12rem; max-height: 12rem; overflow-y: auto; padding: 0.25rem; border: 1px solid rgba(var(--accent-rgb), 0.42); border-radius: 0.5rem; background: var(--wt-glass); box-shadow: 0 0.75rem 2rem rgba(0, 0, 0, 0.5); }
+.wt-menu button { display: flex; align-items: center; gap: 0.5rem; width: 100%; height: 1.75rem; padding: 0 0.5rem; border: 0; border-radius: 0.3rem; background: none; color: var(--txt); font: 0.8125rem var(--font); text-align: left; cursor: pointer; }
+.wt-menu button:hover, .wt-menu button:focus-visible { background: rgba(var(--accent-rgb), 0.16); color: var(--hi); outline: none; }
+.wt-menu button.on { color: var(--hi); font-weight: 600; }
+.wt-menu .br { flex: none; width: 0.75rem; height: 0.75rem; color: var(--accent-soft); }
+.wt-line .wt-pop:disabled { opacity: 0.7; cursor: default; }
+.wt-area:disabled, .wt-in:disabled { opacity: 0.7; }
+.wt.ship .wt-in { padding: 0 0.75rem; font: 0.875rem var(--font-sans); }
+.wt-area::selection { background: rgba(var(--accent-rgb), 0.45); color: var(--hi); }
+.wt-btn svg { width: 0.8rem; height: 0.8rem; }
+.wt.ship .i-br, .wt-done .i-br { stroke-linejoin: round; }
+.wt-lfiles { display: flex; flex-wrap: wrap; gap: 0.25rem; margin-top: 0.25rem; }
+.wt-lfiles code { padding: 0 0.375rem; border: 1px solid var(--wt-hair); border-radius: 0.25rem; color: var(--txt2) !important; font: 0.6875rem/1.25rem var(--font); }
+.wt-note.warn .wt-lfiles code { border-color: rgba(var(--amber-rgb), 0.45); color: var(--amber) !important; }
+@media (prefers-reduced-motion: reduce) { .wt-veil2, .wt-anchor, .wt-done .ring, .wt-done .ring svg, .mark.run { animation-duration: 0.001ms !important; animation-delay: 0s !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important; } }

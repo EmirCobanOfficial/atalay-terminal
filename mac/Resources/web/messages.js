@@ -135,7 +135,7 @@ window.Messages = (() => {
     const head = (tag, person, at, expand) =>
       `<div class="mb-head"><span class="mb-tag">${tag}</span><span class="mb-who">${who(person)}</span>` +
       `<span class="mb-time">${at ? time(at) : ''}</span>` +
-      `${expand ? '<button class="mb-x mb-expand" data-act="open" title="Open the chat">⤢</button>' : ''}` +
+      `${expand ? '<button class="mb-x mb-expand" data-act="open" aria-label="Open the chat" title="Open the chat"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9.5 2.75h3.75v3.75M13.25 2.75 9 7M6.5 13.25H2.75V9.5M2.75 13.25 7 9"/></svg></button>' : ''}` +
       `<button class="mb-x" data-act="close" title="Close">×</button></div>`;
     let body;
     if (p.kind === 'message') {
@@ -145,6 +145,13 @@ window.Messages = (() => {
         head('FRIEND REQUEST', p.request.from, p.request.at) +
         `<div class="mb-text"><em>${esc(Social.handle(p.request.from))}</em> wants to be your friend</div>` +
         `<div class="mb-actions"><button class="go" data-act="accept">accept</button><button data-act="decline">decline</button></div>`;
+    } else if (p.kind === 'noteInvite') {
+      // A friend shared a note with you: open it (this accepts) or decline.
+      const n = p.note;
+      body =
+        head('SHARED NOTE', n.owner, p.at) +
+        `<div class="mb-text"><em>${esc(Social.handle(n.owner))}</em> wants to write “${esc(n.title || 'a note')}” with you</div>` +
+        `<div class="mb-actions"><button class="go" data-act="noteOpen">accept</button><button data-act="noteDecline">decline</button></div>`;
     } else if (p.kind === 'update') {
       return (
         `<div class="mb peek update in" data-act="update" title="See what's new"><div class="mb-border"></div>` +
@@ -311,6 +318,18 @@ window.Messages = (() => {
         return id && Social.openChat(id);
       }
       if (act === 'send') return replyFromPeek(notes.querySelector('textarea'));
+      if (act === 'noteOpen' || act === 'noteDecline') {
+        const note = peek.note;
+        el.disabled = true;
+        const me = Social.state()?.me?.id;
+        const r = act === 'noteOpen' ? await Social.acceptNote(note.id) : await Social.declineNote(note.id, me);
+        if (r.error) return void (el.disabled = false);
+        Sfx.play(act === 'noteOpen' ? 'accept' : 'decline');
+        hidePeek();
+        // The dashboard opens it in a window of its own (it has the note once its live event arrives).
+        if (act === 'noteOpen') post({ type: 'openShared', id: note.id });
+        return;
+      }
       if (act === 'accept' || act === 'decline') {
         const id = peek.request.id;
         el.disabled = true;
@@ -1051,6 +1070,14 @@ window.Messages = (() => {
         return;
       case 'request_gone':
         if (peek && peek.kind === 'request' && peek.request.id === ev.id) hidePeek();
+        return;
+      case 'note.invite':
+        if (!Social.sharing || !ev.note || !ev.note.pending) return;
+        Sfx.play('request');
+        if (!Social.dnd()) showPeek({ kind: 'noteInvite', note: ev.note, at: Date.now() });
+        return;
+      case 'note.invite_gone':
+        if (peek && peek.kind === 'noteInvite' && peek.note.id === ev.id) hidePeek();
         return;
       case 'xp':
         return progress(ev);

@@ -15,6 +15,8 @@ enum Vendor {
     private static var checking: Set<String> = []
 
     static func genuine(_ tool: String, pid: Int32?) -> Bool {
+        // Cursor's CLI runs its own bundled Node (cursor-agent/versions/<version>/node): its program's folder is what it is.
+        if tool == "cursor" { return pid.flatMap { Proc.path($0) }?.contains("/cursor-agent") == true }
         guard let team = teams[tool] else { return true }
         guard let pid, let path = Proc.path(pid) else { return false }
         let name = (path as NSString).lastPathComponent

@@ -5,7 +5,7 @@
 #notes { padding: 0; }
 
 /* ---------- the page ---------- */
-.np-ed { box-sizing: border-box; height: 100%; overflow-y: auto; scrollbar-width: thin; padding: 8px 12px 28px; line-height: 1.6; cursor: text; }
+.np-ed { box-sizing: border-box; height: 100%; overflow-y: auto; scrollbar-width: thin; padding: 8px 12px 28px 28px; line-height: 1.6; cursor: text; }
 /* Blocks selected (Ctrl+A twice, or a drag from one block into another): they light up, as Notion shows them, instead
    of the text. */
 .nb.sel { background: rgba(var(--accent-rgb), 0.16); }
@@ -47,6 +47,18 @@
 .nb-code .nb-text { padding: 7px 10px; border: 1px solid var(--line-soft); border-radius: 4px; background: var(--code-bg); color: var(--code-fg); line-height: 1.5; tab-size: 2; }
 .nb-divider { padding: 9px 0; cursor: default; }
 .nb-divider hr { flex: 1; margin: 0; border: 0; border-top: 1px solid var(--line); }
+/* A block from a newer Orbiterm: kept as it is, shown as a grey line with nothing to write in. */
+.nb-newer { padding: 3px 0; cursor: default; user-select: none; }
+.nb-newer-note { flex: 1; padding: 3px 8px; border: 1px dashed var(--line); border-radius: 4px; color: var(--dim); font-size: 0.9em; }
+
+/* ---------- moving a block: the grip beside it, the line where it lands ---------- */
+.np-grip { position: fixed; z-index: 2450; display: flex; align-items: center; justify-content: center; box-sizing: border-box; width: 18px; height: 22px; border-radius: 5px; color: var(--dim); cursor: grab; user-select: none; -webkit-user-select: none; }
+.np-grip[hidden] { display: none; }
+.np-grip:hover, .np-moving .np-grip { background: rgba(var(--accent-rgb), 0.16); color: var(--accent); }
+.np-drop { position: fixed; z-index: 2450; height: 2px; border-radius: 1px; background: var(--accent); box-shadow: 0 0 6px rgba(var(--accent-rgb), 0.6); pointer-events: none; }
+.np-drop[hidden] { display: none; }
+.nb.moving { opacity: 0.4; }
+.np-moving, .np-moving * { cursor: grabbing !important; }
 
 /* ---------- the "/" menu ---------- */
 .np-menu {
@@ -110,7 +122,7 @@
 .npw-x { flex: none; width: 22px; height: 22px; margin-left: auto; padding: 0; border: 0; border-radius: 4px; background: none; color: var(--dim); font: 16px/22px var(--font); cursor: pointer; }
 .npw-x:hover { background: rgba(var(--accent-rgb), 0.18); color: var(--hi); }
 .npw-body { flex: 1; min-height: 0; }
-.np-win .np-ed { padding: 12px 18px 32px; }
+.np-win .np-ed { padding: 12px 18px 32px 32px; }
 
 /* one column (a narrow window): the panel takes what it holds, so the page gets a height of its own */
 @media (max-width: 920px) {
@@ -378,3 +390,158 @@ html.np-dragging, html.np-dragging * { cursor: grabbing !important; }
 }
 /* The eye is gone while AI has no access (unless the note is hidden): the next button takes its place at the right. */
 .npw-ai[hidden] + .npw-top, .npw-ai[hidden] + .npw-del { margin-left: auto; }
+
+/* ---------- shared notes: written with friends ---------- */
+#notes { position: relative; }
+#notes.sh-on { display: flex; flex-direction: column; }
+#notes.sh-on > .np-ed { flex: 1; min-height: 0; height: auto; }
+/* the share button: on the panel's header and the window's strip, a quiet icon until the note is shared */
+.np-share { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 5px; background: none; color: var(--dim); cursor: pointer; }
+.np-share[hidden] { display: none; }
+.np-share:hover, .np-share[aria-expanded="true"] { background: rgba(var(--accent-rgb), 0.16); color: var(--hi); }
+.np-share.on { color: var(--accent); }
+.np-share:focus-visible, .sh-sheet button:focus-visible, .sh-strip:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
+.npw-bar .np-share { margin-left: auto; }
+.npw-bar .np-share:not([hidden]) ~ button { margin-left: 2px; }
+#p-notes > header .np-share { margin-left: auto; }
+/* the connection strip: who's in, and whether the line is up */
+.sh-strip { flex: none; display: flex; align-items: center; gap: 8px; min-height: 26px; padding: 0 12px; border-bottom: 1px solid var(--line-soft); font-size: 11px; color: var(--dim); cursor: pointer; user-select: none; }
+.sh-strip[hidden] { display: none; }
+.sh-faces { display: inline-flex; }
+.sh-faces i { box-sizing: border-box; display: inline-grid; place-items: center; width: 18px; height: 18px; margin-left: -5px; border: 1.5px solid rgb(var(--surface-rgb)); border-radius: 50%; color: #1a1209; font: 700 9.5px/1 var(--font-sans, sans-serif); font-style: normal; }
+.sh-faces i:first-child { margin-left: 0; }
+.sh-faces i.more { background: var(--line); color: var(--txt2); }
+.sh-state { display: inline-flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.sh-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--dim2); }
+.sh-state.live .sh-dot { background: #6fdc8c; box-shadow: 0 0 6px rgba(111, 220, 140, 0.7); }
+.sh-state.wait .sh-dot { background: var(--accent); }
+.sh-state.off .sh-dot { background: var(--dim2); }
+.sh-state.ai { color: var(--accent); }
+.sh-state.ai .sh-dot { background: var(--accent); }
+.sh-ai { margin-left: auto; padding: 1px 7px; border-radius: 9px; background: rgba(var(--accent-rgb), 0.16); color: var(--accent); font-size: 11px; white-space: nowrap; }
+/* a block an AI of a friend just changed */
+.nb.sh-glow { animation: sh-glow 2s ease-out; }
+@keyframes sh-glow { 0% { background: rgba(var(--accent-rgb), 0.28); } 100% { background: transparent; } }
+@media (prefers-reduced-motion: reduce) { .nb.sh-glow { animation: none; background: rgba(var(--accent-rgb), 0.12); } }
+/* the others' cursors and selections: a layer over the editor that takes no clicks */
+.rc-layer { position: absolute; z-index: 5; overflow: hidden; pointer-events: none; }
+.rc-sel { position: absolute; background: var(--c); opacity: 0.25; border-radius: 2px; }
+.rc-caret { position: absolute; width: 2px; margin-left: -1px; background: var(--c); border-radius: 1px; }
+.rc-caret b { position: absolute; left: -1px; bottom: 100%; max-width: 120px; padding: 1px 5px; overflow: hidden; border-radius: 4px 4px 4px 0; background: var(--c); color: #1a1209; font: 600 10px/14px var(--font-sans, sans-serif); white-space: nowrap; text-overflow: ellipsis; }
+/* the sheet: share, who's in, leave */
+.sh-sheet { position: absolute; z-index: 20; top: 34px; right: 8px; box-sizing: border-box; width: min(330px, calc(100% - 16px)); max-height: calc(100% - 44px); overflow-y: auto; padding: 12px 14px 12px; border-radius: 10px; background: rgb(var(--surface-rgb)); box-shadow: 0 0 0 1px rgba(var(--accent-rgb), 0.4), 0 18px 48px rgba(0, 0, 0, 0.55); color: var(--txt); font: 12px/1.45 var(--font-sans, sans-serif); user-select: none; scrollbar-width: thin; }
+.sh-sheet h3 { margin: 0 0 6px; font-size: 13px; font-weight: 600; color: var(--hi); }
+.sh-text { margin: 0 0 10px; color: var(--txt2); font-size: 12px; }
+.sh-warn { margin: 0 0 10px; padding: 7px 9px; border-radius: 6px; background: rgba(var(--accent-rgb), 0.14); color: var(--hi); font-size: 11.5px; }
+.sh-err { margin: 6px 0; color: var(--red); font-size: 11.5px; }
+.sh-find input { box-sizing: border-box; width: 100%; height: 28px; margin-bottom: 4px; padding: 0 8px; border: 1px solid var(--line); border-radius: 6px; background: rgba(var(--bg-rgb), 0.5); color: var(--txt); font: inherit; outline: none; user-select: text; }
+.sh-find input:focus { border-color: var(--accent); }
+.sh-friends { max-height: 150px; overflow-y: auto; margin-bottom: 8px; scrollbar-width: thin; }
+.sh-row { display: flex; align-items: center; gap: 8px; min-height: 30px; padding: 2px 4px; border-radius: 6px; cursor: default; }
+label.sh-row { cursor: pointer; }
+label.sh-row:hover { background: rgba(var(--accent-rgb), 0.1); }
+.sh-row input { accent-color: var(--accent); }
+.sh-row span { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.sh-row small { margin-left: 4px; color: var(--txt2); font-size: 11px; }
+.sh-row em { color: var(--txt2); font-size: 11px; font-style: normal; }
+.sh-av { flex: none; display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; color: #1a1209; font: 700 11px/1 var(--font-sans, sans-serif); font-style: normal; }
+.sh-link { flex: none; min-height: 28px; padding: 0 8px; border: 0; border-radius: 5px; background: none; color: var(--txt2); font: inherit; cursor: pointer; }
+.sh-link:hover { background: rgba(var(--accent-rgb), 0.18); color: var(--hi); }
+.sh-empty { margin: 6px 4px; color: var(--dim); }
+.sh-members { margin-bottom: 8px; }
+.sh-add { margin: 0 0 10px; }
+.sh-add summary { cursor: pointer; color: var(--accent); }
+.sh-switch { display: flex; gap: 9px; align-items: flex-start; margin: 4px 0 10px; cursor: pointer; }
+.sh-switch input { margin-top: 2px; accent-color: var(--accent); }
+.sh-switch span b { display: block; font-weight: 600; color: var(--hi); }
+.sh-switch small { display: block; color: var(--txt2); font-size: 11px; }
+.sh-acts { display: flex; gap: 8px; justify-content: flex-end; margin-top: 6px; }
+.sh-sheet .sh-acts button { height: 28px; padding: 0 12px; border: 1px solid var(--line); border-radius: 6px; background: none; color: var(--txt); font: inherit; cursor: pointer; }
+.sh-sheet .sh-acts button:hover { border-color: var(--accent); color: var(--hi); }
+.sh-sheet .sh-go { border-color: var(--accent); background: rgba(var(--accent-rgb), 0.22); color: var(--hi); }
+.sh-sheet .sh-go[disabled] { opacity: 0.45; cursor: default; }
+.sh-sheet .sh-quiet { color: var(--dim); }
+.sh-sheet .sh-danger { border-color: var(--red); color: var(--red); }
+.sh-ask { margin-top: 6px; padding-top: 8px; border-top: 1px solid var(--line-soft); }
+.sh-ask p { margin: 0 0 8px; }
+.sh-toast { position: absolute; z-index: 30; left: 50%; bottom: 14px; transform: translateX(-50%); max-width: calc(100% - 24px); padding: 6px 12px; border-radius: 8px; background: rgb(var(--surface-rgb)); box-shadow: 0 0 0 1px rgba(var(--accent-rgb), 0.4), 0 8px 24px rgba(0, 0, 0, 0.5); color: var(--txt); font-size: 11.5px; }
+.sh-toast[hidden] { display: none; }
+/* the board: the shared badge, who's here, and the invites waiting */
+.sh-badge { display: inline-flex; align-items: center; gap: 3px; margin-left: 6px; color: var(--accent); font-size: 11px; }
+.sh-here { margin-left: 6px; color: #6fdc8c; font-size: 11px; white-space: nowrap; }
+.np-invite { box-sizing: border-box; display: flex; flex-direction: column; justify-content: center; gap: 10px; padding: 12px; border: 1px dashed var(--accent); border-radius: 8px; background: rgba(var(--accent-rgb), 0.05); color: var(--txt); font-size: 12px; }
+.np-invite > span { display: flex; gap: 6px; }
+.sh-board-toast { margin: 0 0 10px; padding: 7px 10px; border-radius: 6px; background: rgba(var(--accent-rgb), 0.12); color: var(--hi); font-size: 11.5px; }
+
+/* ---- project notes: the board's project row, a note's project label, "move to project" in its menu ----
+   Only tokens of style.css, and the surfaces the app already has: nothing here sets a background, blur or opacity of its own
+   beyond the right-click menu's (same as .pn-ctx), so the window's transparency is left as it is. */
+.np-scope { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 10px 0 0; }
+.np-scope[hidden] { display: none; }
+.np-sc { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 9px; border: 1px solid var(--line); background: transparent; color: var(--txt3); font: inherit; white-space: nowrap; cursor: pointer; transition: color 0.2s, border-color 0.2s, background-color 0.2s; }
+.np-sc svg { flex: none; width: 12px; height: 12px; }
+.np-sc span { max-width: 18ch; overflow: hidden; text-overflow: ellipsis; }
+.np-sc small { font-size: 0.9em; font-variant-numeric: tabular-nums; opacity: 0.8; }
+.np-sc:hover { color: var(--hi); border-color: var(--accent); box-shadow: 0 0 10px rgba(var(--accent-rgb), 0.35); }
+/* The one picked is filled (shape and weight, not colour alone). */
+.np-sc[aria-pressed="true"] { border-color: var(--accent); background: var(--accent); color: var(--ink); font-weight: 700; box-shadow: none; }
+.np-sc:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
+.np-sc.gone span, .np-proj.gone span { color: var(--dim); text-decoration: line-through; text-decoration-color: var(--dim2); }
+.np-more .np-glyph { font-size: 12px; vertical-align: -1px; }
+/* A note's project, bottom left over the part of the note that fades out. */
+.np-proj { position: absolute; left: 8px; bottom: 7px; z-index: 1; display: inline-flex; align-items: center; gap: 5px; box-sizing: border-box; max-width: calc(100% - 16px); height: 18px; padding: 0 7px 0 6px; border: 1px solid var(--line); background: var(--panel); color: var(--txt2); font-size: 0.9em; white-space: nowrap; }
+.np-proj svg { flex: none; width: 11px; height: 11px; color: var(--accent-soft); }
+.np-proj span { overflow: hidden; text-overflow: ellipsis; }
+.np-newt small { color: var(--accent-soft); font-size: 0.9em; }
+.np-mc { margin-left: auto; padding-left: 14px; color: var(--dim); font-variant-numeric: tabular-nums; }
+.pn-ctx .np-ci svg { width: 13px; height: 13px; vertical-align: -2px; }
+.pn-has { position: relative; display: flex; flex-direction: column; }
+.pn-has > button { display: flex; align-items: center; }
+.pn-has > button .pn-chev { margin-left: auto; padding-left: 14px; color: var(--dim); font: normal normal normal 12px/1 codicon; }
+/* The list unfolds beside the menu, as the menu itself is made (same glass, same border). */
+.pn-sub { position: absolute; top: -6px; left: calc(100% - 3px); z-index: 1; display: none; flex-direction: column; min-width: 190px; padding: 5px; border: 1px solid var(--line); border-radius: 7px; background: rgba(var(--surface-rgb), 0.92); -webkit-backdrop-filter: blur(16px) saturate(1.4); backdrop-filter: blur(16px) saturate(1.4); box-shadow: 0 14px 36px rgba(0, 0, 0, 0.6), 0 0 18px rgba(var(--accent-rgb), 0.2); }
+.pn-has.left > .pn-sub { left: auto; right: calc(100% - 3px); }
+.pn-has:hover > .pn-sub, .pn-has:focus-within > .pn-sub, .pn-has.open > .pn-sub { display: flex; }
+.pn-sub button, .pn-ctx > button:has(.np-mc) { display: flex; align-items: center; gap: 7px; white-space: nowrap; }
+.pn-sub button svg { flex: none; width: 12px; height: 12px; color: var(--accent-soft); }
+.pn-sub button .pn-tick { margin-left: auto; padding-left: 14px; color: var(--accent); font: normal normal normal 13px/1 codicon; }
+.pn-sub small { max-width: 220px; padding: 2px 9px 5px; color: var(--txt3); font-size: 11px; line-height: 1.4; }
+@media (prefers-reduced-motion: reduce) { .np-sc { transition: none; } }
+
+/* ---------- files in a note (notes.js: file blocks) ----------
+   A card on the notes' own surface (a faint tint of the accent over whatever is behind: nothing here is opaque or changes the
+   window's glass). A picture is drawn in place with its name and Save under it. Remove shows on hover and on keyboard focus. */
+.nb-file { padding: 4px 0; cursor: default; user-select: none; -webkit-user-select: none; }
+.nb-file .nf { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; box-sizing: border-box; min-height: 44px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: rgba(var(--accent-rgb), 0.05); }
+.nb-file .nf:hover, .nb-file .nf:focus-within { border-color: rgba(var(--accent-rgb), 0.45); }
+.nf-icon { flex: none; display: grid; place-items: center; width: 28px; height: 28px; border-radius: 6px; background: rgba(var(--accent-rgb), 0.16); color: var(--accent); }
+.nf-icon .np-glyph { font-size: 16px; vertical-align: 0; }
+.nf-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.nf-name { color: var(--hi); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nf-meta { color: var(--dim); font-size: 0.85em; line-height: 1.35; }
+.nf-note.warn { color: var(--red); }
+.nf-acts { flex: none; display: flex; align-items: center; gap: 6px; }
+.nf-btn { display: inline-flex; align-items: center; justify-content: center; gap: 5px; box-sizing: border-box; min-width: 28px; min-height: 28px; padding: 0 10px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--txt); font: inherit; font-size: 0.9em; cursor: pointer; }
+.nf-btn:hover { border-color: rgba(var(--accent-rgb), 0.6); color: var(--hi); }
+.nf-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.nf-btn .np-glyph { font-size: 13px; vertical-align: 0; }
+.nf-x { padding: 0 6px; opacity: 0; }
+.nb-file .nf:hover .nf-x, .nb-file .nf:focus-within .nf-x { opacity: 1; }
+.nb-file.nf-pic .nf { padding: 6px; }
+.nf-picwrap { flex: 0 0 100%; display: block; }
+.nf-img { display: block; max-width: 100%; max-height: 320px; border-radius: 6px; }
+.nb-file.nf-pic .nf-icon { display: none; }
+
+/* ---------- signing in, where a shared note asks for it (notes.js mountSignIn): the share sheet, an invite ---------- */
+.si-card, .si-inline { display: flex; flex-direction: column; gap: 10px; }
+.si-why { margin: 0; }
+.si-btns { display: flex; flex-wrap: wrap; gap: 8px; }
+.si-btn { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 36px; }
+.si-btn svg { flex: none; }
+.si-btn.alt { background: transparent; color: var(--txt); border: 1px solid var(--line); }
+.si-btn.alt:hover { border-color: rgba(var(--accent-rgb), 0.6); color: var(--hi); }
+.si-form { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.si-input { flex: 1 1 180px; min-width: 0; box-sizing: border-box; min-height: 36px; padding: 0 10px; border: 1px solid var(--line); border-radius: 8px; background: rgba(var(--accent-rgb), 0.05); color: var(--txt); font: inherit; outline: none; }
+.si-input:focus-visible { border-color: rgba(var(--accent-rgb), 0.7); }
+.si-msg { margin: 0; color: var(--dim); font-size: 0.9em; }
+.sh-wait { display: block; margin-top: 1px; color: var(--dim); }

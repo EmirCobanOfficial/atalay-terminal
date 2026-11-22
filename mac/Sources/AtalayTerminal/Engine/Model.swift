@@ -94,6 +94,8 @@ final class OtherAI: Track {
     /// When a command it started (not a helper it keeps from its start, such as an MCP server) last used the CPU: a
     /// background task still at work though it writes nothing (RadarEngine.agyPendingWork).
     var childCpuAt = 0.0
+    /// When a Cursor, with everything below it, last used 8 % of the CPU or more.
+    var cursorWorkAt = 0.0
     var title = ""
     /// Its subagents (Antigravity's child conversations), as Claude's are shown: the dashboard's workers, its drones. One
     /// of them waiting for the user's permission makes the session wait.
@@ -103,6 +105,22 @@ final class OtherAI: Track {
     var agentLogs: [String: AgyLog] = [:]
     var agentRoles: [String: (role: String, prompt: String)] = [:]
     var prompt = "", effort = "", ctx = 0, ctxMax = 0.0
+    /// Cursor's: its subagents by id (from its hooks' events), the title file (meta.json) as last read, and when its last
+    /// reply's tokens were counted.
+    var cursorSubs: [String: CursorSub] = [:]
+    var cursorMetaMark = 0.0
+    /// Event files of the same cursor-agent that are no conversation of it (a subagent's), and those found not to be
+    /// theirs: by path.
+    var cursorSubFiles: [String: Double] = [:], cursorSkip = Set<String>()
+    /// Cursor's own transcript of the chat (agent-transcripts/<id>/<id>.jsonl, a subagent's under subagents/): how far it was
+    /// read (bytes, and lines: a line's number names its call), and the web calls it showed that no hook told (Cursor fires
+    /// none for WebSearch and WebFetch) still without an end: key to when it began and the subagent it's from.
+    var cursorTrOffset: [String: UInt64] = [:], cursorTrLines: [String: Int] = [:]
+    var cursorWebOpen: [String: (start: Double, aid: String?)] = [:]
+    /// The file each Read call named (by call key), for the read that turns out to be the first half of an edit.
+    var cursorFiles: [String: String] = [:]
+    /// The MCP server each MCP call (by its id) went to, from its beforeMCPExecution event.
+    var cursorMcpServer: [String: String] = [:]
     /// Codex's turns in its log so far (each turn's prompt is named by its turn), and Antigravity's cli.log as it was when
     /// its model was last read (size and mtime).
     var codexTokenTotal: [String: Int]?
@@ -127,6 +145,17 @@ final class OtherAI: Track {
 /// after it), when.
 struct AgyPlan {
     var idx: Int, calls: [[String: Any]], ts: Double
+}
+
+/// A Cursor subagent: one call of its Task tool (preToolUse to postToolUse in the parent's events). Its own tool events
+/// are in an event file of its own, `conv` (known for sure when the Task's result says its agentId; before that, an
+/// event file of the same cursor-agent process that no conversation of it owns). Keyed by a short hash of the call's id.
+struct CursorSub {
+    var id: String, callId = "", conv = "", type = "", desc = "", model = ""
+    var start = 0.0, last = 0.0, ended = false, background = false
+    var tools = 0, errors = 0, web = 0, tokIn = 0, tokOut = 0, tokCache = 0
+    var call: (id: String, p: Pending)?
+    var offset: UInt64 = 0
 }
 
 /// What an Antigravity subagent's transcript says, read again when it changes; and each of its calls (the file it reads or
@@ -231,6 +260,8 @@ struct SessionBrief: Equatable {
     var convId: String?
     var model = ""
     var effort = ""
+    /// No prompt sent yet (the chat is still empty): only then can it be moved to a worktree for nothing (WorktreeNudge.swift).
+    var fresh = false
     var ctx = 0
     var ctxMax = 0.0
     var cost = 0.0

@@ -50,6 +50,9 @@
 
 /* a setting that only matters while the one above it is on shows under it, a step in; Discord's two */
 .st-sub .st-l { padding-left: 14px; border-left: 2px solid rgba(var(--accent-rgb), 0.3); }
+/* Esc closes too: a switch a step in under "Close the tab or pane" (cloud.js renderKeys) */
+.mn-settings .ks-esc-row .st-l { display: flex; flex-direction: column; gap: 3px; }
+.mn-settings .ks-esc-row .st-l small { display: block; color: var(--txt3); font-size: 0.78rem; line-height: 1.4; }
 .st-box:has(.dc-on:not([aria-checked="true"])) .st-sub { display: none; }
 
 /* advanced: closed, and saying what's in it */
@@ -145,6 +148,9 @@
 .mn-settings .ks-row > span { color: var(--txt); font-size: 0.875rem; }
 .mn-settings .st-box > .ks-row:not([hidden]) ~ .ks-row { border-top: 1px solid rgba(var(--accent-rgb), 0.11); }
 /* a key cap and its ↺, at least 28 pt to click (Apple HIG) */
+.mn-settings .ksw-seg { width: 11rem; height: 1.875rem; border-radius: 7px; }
+.mn-settings .ksw-opt { height: auto; border-radius: 5px; font: 500 0.78rem/1 var(--font-sans); }
+.mn-settings .ksw-txt .ksw-help { color: var(--txt3); font-size: 0.75rem; }
 .mn-settings .ks-key { min-width: 5.5rem; height: 1.875rem; padding: 0 12px; border-radius: 7px; font: 500 0.8125rem/1 var(--font); }
 .mn-settings .ks-undo { display: flex; align-items: center; justify-content: center; width: 1.875rem; height: 1.875rem; padding: 0; border-radius: 7px; font-size: 1rem; }
 .mn-settings .ks-undo:hover { background: rgba(var(--accent-rgb), 0.12); }

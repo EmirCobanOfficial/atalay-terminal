@@ -40,6 +40,9 @@ final class NotesStore {
     /// The file of the notes' order and the pinned one: a name no note has (theirs are letters, digits and dashes).
     static let indexName = "_index"
 
+    /// False for a run with no app bundle (`./dev.sh`).
+    static var runsAsApp = Bundle.main.bundleIdentifier != nil
+
     let dir: URL
     /// Reads and writes, one at a time.
     let queue = DispatchQueue(label: "notes.store", qos: .userInitiated)
@@ -65,7 +68,7 @@ final class NotesStore {
     }
 
     /// The key, made the first time only while there's no note it would have to read.
-    private func theKey(create: Bool) throws -> SymmetricKey {
+    func theKey(create: Bool) throws -> SymmetricKey {
         if let key { return key }
         let made = try makeKey(create && stored().isEmpty)
         key = made
@@ -105,10 +108,46 @@ final class NotesStore {
         let order = (index["order"] as? [String] ?? []).filter { notes[$0] != nil }
         let changed = { (id: String) in (notes[id]?["at"] as? Double) ?? 0 }
         let rest = notes.keys.filter { !order.contains($0) }.sorted { changed($0) > changed($1) }
-        var pad: [String: Any] = ["v": 3, "ordered": index["ordered"] as? Bool ?? false, "notes": (order + rest).compactMap { notes[$0] }]
+        // The layout the files are in: 4 gives every block an id of its own (the page makes the notes that, once). Before the first
+        // note is changed to it, the folder is copied as it is (backUpV3); if that can't be done the page is told, and changes nothing.
+        let version = index["v"] as? Int ?? 3
+        var pad: [String: Any] = ["v": version, "ordered": index["ordered"] as? Bool ?? false, "notes": (order + rest).compactMap { notes[$0] }]
+        // `backedUp`: the page may change the notes to v4 only when this says the folder was copied first. Not from a run with
+        // no app bundle (`./dev.sh`): it reads the real notes, and changes nothing.
+        pad["backedUp"] = version >= 4 || (Self.runsAsApp && backUpV3())
         if let pinned = index["pinned"] as? String { pad["pinned"] = pinned }
         if let current = index["current"] as? String { pad["current"] = current }
         return String(data: try JSONSerialization.data(withJSONObject: pad), encoding: .utf8)
+    }
+
+    /// Where the backups of the notes go: next to their folder, "Notes backups" (the staging build's: "Notes (staging) backups").
+    var backups: URL { dir.deletingLastPathComponent().appendingPathComponent(dir.lastPathComponent + " backups") }
+
+    /// The folder of notes copied as it is, files still encrypted and opened by the same key, to "<backups>/<date time> v3": putting
+    /// it back in place is all it takes to go back. Done again whenever the notes are still v3 and one changed since the last
+    /// copy (a downgrade and a new upgrade, say); nothing is written to the notes themselves. False when no copy is there.
+    private func backUpV3() -> Bool {
+        let fm = FileManager.default
+        let newest = stored().compactMap { try? fm.attributesOfItem(atPath: url($0).path)[.modificationDate] as? Date }.max() ?? .distantPast
+        if let have = try? fm.contentsOfDirectory(atPath: backups.path) {
+            let last = have.filter { $0.hasSuffix(" v3") }.compactMap { try? fm.attributesOfItem(atPath: backups.appendingPathComponent($0).path)[.modificationDate] as? Date }.max()
+            if let last, newest <= last { return true }
+        }
+        let partial = backups.appendingPathComponent(".partial-" + UUID().uuidString)
+        do {
+            try fm.createDirectory(at: backups, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            let day = DateFormatter()
+            day.locale = Locale(identifier: "en_US_POSIX")
+            day.dateFormat = "yyyy-MM-dd HH-mm-ss"
+            // Copied under another name and renamed when whole: a copy cut short isn't taken for the backup.
+            try fm.copyItem(at: dir, to: partial)
+            try fm.setAttributes([.modificationDate: Date()], ofItemAtPath: partial.path)
+            try fm.moveItem(at: partial, to: backups.appendingPathComponent("\(day.string(from: Date())) v3"))
+            return true
+        } catch {
+            try? fm.removeItem(at: partial)
+            return false
+        }
     }
 
     /// The notes as the page has them now (JSON): each that changed written again, each no longer there deleted.
@@ -127,6 +166,9 @@ final class NotesStore {
         if let pinned = pad["pinned"] as? String { index["pinned"] = pinned }
         if let current = pad["current"] as? String { index["current"] = current }
         try write(index, as: Self.indexName, with: key)
+        sweepY(keeping: Set(order))
+        // The files the notes hold (Attachments.swift): the ones no note names any more go (after a grace, for a block not yet saved).
+        if !order.isEmpty { sweepFiles(keeping: Attachments.referenced(in: list)) }
         let keep = Set(order + [Self.indexName])
         for name in known.keys where !keep.contains(name) {
             try? FileManager.default.removeItem(at: url(name))
@@ -134,16 +176,53 @@ final class NotesStore {
         }
     }
 
-    /// The notes the user hid from AI, from the files' own content as read or written here (what the page last saved): the
-    /// native side asks this on every tool call and doesn't take the page's word for it.
+    /// The notes AI may not see, from the files' own content as read or written here (what the page last saved): the native
+    /// side asks this on every tool call and doesn't take the page's word for it. Two kinds: a note the user hid (the eye),
+    /// and a shared note whose owner hasn't let AI read it (`shared.ai` isn't true: the default, whoever's computer this is).
     func hiddenIDs() -> Set<String> {
         queue.sync {
             var out = Set<String>()
-            let mark = Data("\"aiHidden\":true".utf8)
-            for (name, plain) in known where name != Self.indexName && plain.range(of: mark) != nil {
-                if let o = (try? JSONSerialization.jsonObject(with: plain)) as? [String: Any], o["aiHidden"] as? Bool == true { out.insert(name) }
+            let mark = Data("\"aiHidden\":true".utf8), shared = Data("\"shared\":".utf8)
+            for (name, plain) in known where name != Self.indexName && (plain.range(of: mark) != nil || plain.range(of: shared) != nil) {
+                guard let o = (try? JSONSerialization.jsonObject(with: plain)) as? [String: Any] else { continue }
+                if o["aiHidden"] as? Bool == true { out.insert(name) }
+                else if let s = o["shared"] as? [String: Any], s["ai"] as? Bool != true { out.insert(name) }
             }
             return out
+        }
+    }
+
+    // MARK: a shared note's document
+
+    /// A shared note's Yjs document (what makes edits made offline merge when the line is back) is kept beside its note, "<id>.ydoc",
+    /// encrypted with the same key and bound to its name. Only the page that holds the note live writes it; no private note has one.
+    static let yHeader = Data("ydoc".utf8) + Data([1])
+    private func yURL(_ id: String) -> URL { dir.appendingPathComponent(id + ".ydoc") }
+
+    func loadY(_ id: String) throws -> Data? {
+        guard Self.validName(id), let file = try? Data(contentsOf: yURL(id)) else { return nil }
+        let key = try theKey(create: false)
+        guard file.count >= Self.yHeader.count + 28, file.prefix(Self.yHeader.count) == Self.yHeader else { return nil }
+        let box = try AES.GCM.SealedBox(combined: Data(file.dropFirst(Self.yHeader.count)))
+        return try? AES.GCM.open(box, using: key, authenticating: Self.yHeader + Data((id + ".ydoc").utf8))
+    }
+
+    /// nil deletes it.
+    func saveY(_ id: String, _ data: Data?) throws {
+        guard Self.validName(id) else { throw Failure.badRequest }
+        guard let data else { try? FileManager.default.removeItem(at: yURL(id)); return }
+        let key = try theKey(create: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let box = try AES.GCM.seal(data, using: key, authenticating: Self.yHeader + Data((id + ".ydoc").utf8))
+        guard let combined = box.combined else { throw Failure.badRequest }
+        try (Self.yHeader + combined).write(to: yURL(id), options: [.atomic])
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: yURL(id).path)
+    }
+
+    /// The documents of notes that are gone (removed from the shared note, deleted): nothing of them stays.
+    private func sweepY(keeping ids: Set<String>) {
+        for f in (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? [] where f.hasSuffix(".ydoc") {
+            if !ids.contains(String(f.dropLast(5))) { try? FileManager.default.removeItem(at: dir.appendingPathComponent(f)) }
         }
     }
 
@@ -190,6 +269,17 @@ final class NotesBridge: NSObject, WKScriptMessageHandlerWithReply {
         let body = message.body as? [String: Any] ?? [:]
         let type = body["type"] as? String, json = body["json"] as? String
         let store = self.store
+        if NotesSync.handle(type, body, store: store, allow: { _ in true }, reply: { answer in replyHandler(answer, nil) }) { return }
+        // The projects the board's "move to project" offers: the folders the live sessions are in, and which of the folders the
+        // notes are linked to (`dirs`) are gone. Git is asked off the main thread.
+        if type == "projects" {
+            let known = (body["dirs"] as? [String] ?? []).filter { $0.count < 1024 }.prefix(200)
+            DispatchQueue.global(qos: .userInitiated).async {
+                let found = NotesProjects.choices(known: Array(known))
+                DispatchQueue.main.async { MainActor.assumeIsolated { replyHandler(["list": found.list, "gone": found.gone], nil) } }
+            }
+            return
+        }
         store.queue.async {
             var answer: [String: Any]
             do {
@@ -207,5 +297,52 @@ final class NotesBridge: NSObject, WKScriptMessageHandlerWithReply {
             let reply = answer
             DispatchQueue.main.async { MainActor.assumeIsolated { replyHandler(reply, nil) } }
         }
+    }
+}
+
+/// The shared notes' side of the notes bridges (the dashboard's `notes` and a note window's `noteWindow`): a ticket for a note's
+/// live socket (the page opens it; this side only makes the ticket and the address), its document file, and whether a note holds
+/// a password or key before it's shared. Answers true when `type` is one of these.
+enum NotesSync {
+    static func handle(_ type: String?, _ body: [String: Any], store: NotesStore, allow: @escaping (String) -> Bool,
+                       reply: @escaping @MainActor (Any?) -> Void) -> Bool {
+        let id = (body["id"] as? String) ?? ""
+        switch type {
+        case "syncCaps":
+            DispatchQueue.main.async { MainActor.assumeIsolated { reply(["share": true, "files": true]) } }
+        case "syncTicket":
+            guard allow(id) else { DispatchQueue.main.async { MainActor.assumeIsolated { reply(["error": "refused"]) } }; return true }
+            Task { @MainActor in reply(await Cloud.shared.notesTicket(id: id)) }
+        case "saveY", "loadY":
+            guard allow(id), NotesStore.validName(id) else { DispatchQueue.main.async { MainActor.assumeIsolated { reply(["error": "refused"]) } }; return true }
+            let b64 = body["b64"] as? String
+            store.queue.async {
+                var answer: [String: Any] = [:]
+                do {
+                    if type == "loadY" {
+                        if let d = try store.loadY(id) { answer["b64"] = d.base64EncodedString() }
+                    } else {
+                        if let b64 { guard let d = Data(base64Encoded: b64), d.count <= 4_000_000 else { throw NotesStore.Failure.badRequest }; try store.saveY(id, d) }
+                        else { try store.saveY(id, nil) }
+                        answer["ok"] = true
+                    }
+                } catch { answer = ["error": String(describing: error)] }
+                let out = answer
+                DispatchQueue.main.async { MainActor.assumeIsolated { reply(out) } }
+            }
+        case "attPick", "attAdd", "attHas", "attRead", "attSave", "attUpload", "attDownload", "attRemove", "attForget", "attAdds":
+            // Files in notes (Attachments.swift): only the page's own notes' files, kept on this Mac (what goes to the server goes from here).
+            let note = (body["note"] as? String) ?? ""
+            if type == "attUpload" && !allow(note) { DispatchQueue.main.async { MainActor.assumeIsolated { reply(["error": "refused"]) } }; return true }
+            Attachments.handle(type ?? "", body, store: store, reply: reply)
+        case "secretCheck":
+            // Only yes or no goes back: the same patterns that mask what AI is shown (redactMore).
+            let text = (body["text"] as? String) ?? ""
+            let risky = redactMore(text) != text
+            DispatchQueue.main.async { MainActor.assumeIsolated { reply(["risky": risky]) } }
+        default:
+            return false
+        }
+        return true
     }
 }

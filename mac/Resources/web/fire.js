@@ -183,5 +183,33 @@ void main() {
     return stop;
   }
 
-  return { burn };
+
+  // The share card (share-card.js): one frame of a fire that has fully caught, on a new w×h canvas (1 canvas px = 1 card px), for a
+  // picture. Same shader, same looks, same shared context; nothing keeps running. null without WebGL.
+  function still(w, h, { reach, scale, look = 'orange', t = 7 + Math.random() * 40 }) {
+    const g = shared();
+    if (!g) return null;
+    const { gl } = g;
+    const L = LOOKS[look] || LOOKS.orange;
+    if (g.canvas.width < w || g.canvas.height < h) { g.canvas.width = Math.max(g.canvas.width, w); g.canvas.height = Math.max(g.canvas.height, h); }
+    gl.viewport(0, 0, w, h);
+    gl.clearColor(0, 0, 0, 0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.uniform2f(g.uRes, w, h);
+    gl.uniform3f(g.uReach, reach[0] * L.tall, reach[1] * L.tall, reach[2] * L.tall);
+    gl.uniform1f(g.uT, t);
+    gl.uniform1f(g.uK, 1);
+    gl.uniform1f(g.uScale, scale);
+    gl.uniform3fv(g.uPal, new Float32Array(L.pal.flat()));
+    gl.uniform1f(g.uEmbers, L.embers);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    const out = document.createElement('canvas');
+    out.width = w;
+    out.height = h;
+    out.getContext('2d').drawImage(g.canvas, 0, g.canvas.height - h, w, h, 0, 0, w, h);
+    if (!live) g.canvas.width = g.canvas.height = 1;
+    return out;
+  }
+
+  return { burn, still };
 })();

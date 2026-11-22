@@ -27,6 +27,12 @@ window.Cloud = (() => {
   // A speech bubble: the feedback window's title.
   const BUBBLE = '<svg viewBox="0 0 24 24"><path d="M5 4.5h14a2 2 0 0 1 2 2V15a2 2 0 0 1-2 2h-7.5L6.5 21v-4H5a2 2 0 0 1-2-2V6.5a2 2 0 0 1 2-2z"/><circle cx="8.2" cy="10.8" r="1.1"/><circle cx="12" cy="10.8" r="1.1"/><circle cx="15.8" cy="10.8" r="1.1"/></svg>';
   const ARROW = '<svg viewBox="0 0 16 16"><path class="ar" d="M8 2.5v7.5M4.6 6.8 8 10.2l3.4-3.4"/><path d="M3 13.5h10"/></svg>';
+  // Friends list: standard person and speech-bubble icons (SF Symbols person.crop.circle / bubble.left), stroked in currentColor.
+  const FR_SVG = (d) => `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
+  const FR_IC = {
+    person: FR_SVG('<circle cx="8" cy="8" r="6.25"/><circle cx="8" cy="6.3" r="2.1"/><path d="M3.7 12.7c.9-2 2.4-2.9 4.3-2.9s3.4.9 4.3 2.9"/>'),
+    bubble: FR_SVG('<path d="M3.5 2.75h9a1.75 1.75 0 0 1 1.75 1.75v5a1.75 1.75 0 0 1-1.75 1.75H7.2L4.4 13.75v-2.5h-.9A1.75 1.75 0 0 1 1.75 9.5v-5A1.75 1.75 0 0 1 3.5 2.75z"/>'),
+  };
 
   let S = null; // latest state
   let modal = null; // 'first' | 'menu' | 'update' | 'feedback'
@@ -47,6 +53,7 @@ window.Cloud = (() => {
   function render(s) {
     if (!s) return;
     S = s;
+    liveSeen(s);
     // Long names get tighter letters so the top bar still fits. Over the name: your rank and level once the API told
     // them; under it, how far into the level you are.
     const long = s.hackerName && s.hackerName.length > 11 ? ' class="long"' : '';
@@ -645,6 +652,14 @@ window.Cloud = (() => {
     window.Account?.mount(q('.acct-host'));
     window.Account?.mountDanger?.(q('.danger-host'));
     window.Profile?.mount(q('.prof-host'));
+    // Clean Up's settings (Cleanup.swift keeps them): the line on the map, its threshold, when a chat counts as idle, and the way in.
+    const cuPost = (m) => window.webkit.messageHandlers.radar.postMessage({ type: 'cleanupPrefs', ...m });
+    const cuSug = q('.hk-sw.cu-sug');
+    if (cuSug) cuSug.onclick = () => cuPost({ suggest: window.__cleanupPrefs ? !window.__cleanupPrefs.suggest : false });
+    const cuSwap = q('.cu-swap'), cuIdle = q('.cu-idle'), cuNow = q('.cu-now');
+    if (cuSwap) cuSwap.onclick = (e) => { const b = e.target.closest('button[data-v]'); if (b) cuPost({ swapGB: Number(b.dataset.v) }); };
+    if (cuIdle) cuIdle.onclick = (e) => { const b = e.target.closest('button[data-v]'); if (b) cuPost({ idleHours: Number(b.dataset.v) }); };
+    if (cuNow) cuNow.onclick = () => { close(); window.GitView?.view('cleanup'); };
     const pwr = q('.hk-sw.pwr-auto');
     if (pwr) pwr.onclick = () => window.webkit.messageHandlers.radar.postMessage({ type: 'powerSaveAuto', on: !window.__powerSave?.auto });
     const dcOn = q('.hk-sw.dc-on'), dcProj = q('.hk-sw.dc-proj'), dcAct = q('.hk-sw.dc-act');
@@ -672,6 +687,7 @@ window.Cloud = (() => {
     renderInfo();
     renderActivity();
     renderPower();
+    renderCleanup();
     renderDiscord();
     renderSocial();
     // Whatever changed while you weren't looking (a missed live event, another device) shows when the menu opens.
@@ -856,7 +872,7 @@ window.Cloud = (() => {
         folders.map((f) =>
           `<div class="arc-folder"><div class="arc-f"><span title="${esc(f.cwd)}">${esc(f.label)}<i>${f.chats.length}</i></span></div>` +
           f.chats.map((c) => `<div class="arc-c"><span title="${esc(c.title || '')}">${esc(c.title || 'untitled')}</span>` +
-            (c.tool === 'codex' || c.tool === 'antigravity' ? `<i class="arc-tool">${c.tool === 'codex' ? 'codex' : 'agy'}</i>` : '') +
+            (c.tool === 'codex' || c.tool === 'antigravity' || c.tool === 'cursor' ? `<i class="arc-tool">${c.tool === 'antigravity' ? 'agy' : c.tool}</i>` : '') +
             `<i class="arc-left">${left(c.days)}</i>` +
             `<button type="button" class="arc-btn" data-act="back" data-id="${esc(c.id)}">put back</button>` +
             `<button type="button" class="arc-btn arc-del" data-act="erase" data-id="${esc(c.id)}">delete now</button></div>`).join('') +
@@ -994,15 +1010,24 @@ window.Cloud = (() => {
   // How the shortcut wheel opens, on top of the page, as VS Code shows a command's keys: the primary way, the trackpad's
   // four-finger click, and a secondary one you set: keys, or a mouse button with modifiers held (⌃ and the middle
   // button to begin with, as on Windows).
-  function wheelCard(k) {
+  const RING_HELP = {
+    4: 'Click with four fingers anywhere in the app.',
+    3: 'Click with three fingers. If Look up or three-finger drag is on in System Settings › Trackpad, they can clash: use 4 fingers then.',
+    0: "The trackpad won't open the Ring.",
+  };
+  function wheelCard(k, fingers = 4) {
     const label = k?.label || '';
+    const seg = [[4, '4 fingers'], [3, '3 fingers'], [0, 'Off']].map(([n, t]) =>
+      `<button type="button" class="ksw-opt${n === fingers ? ' on' : ''}" data-fingers="${n}" aria-pressed="${n === fingers}">${t}</button>`).join('');
     return (
-      `<div class="ks-wheel">${WHEEL_ICON}<div class="ksw-txt"><b>Ring</b><span>Your folders around the pointer: pick one and a chat opens there.</span></div>` +
+      `<div class="ks-wheel">${WHEEL_ICON}<div class="ksw-txt"><b>Ring</b><span>Your folders around the pointer: pick one and a chat opens there.</span><span class="ksw-help">${esc(fingers === 0 && !label ? 'Open it from File › Ring, or set keys below.' : RING_HELP[fingers] || RING_HELP[4])}</span></div>` +
       '<div class="ksw-how">' +
-      '<div><small>primary</small><span class="ks-key fixed">4-finger click</span></div>' +
-      '<div><small>secondary</small>' +
+      '<div><small>trackpad click</small>' +
+      (fingers !== 4 ? '<button type="button" class="ks-undo" data-fingers="4" title="Back to how it came" aria-label="Trackpad click: back to 4 fingers">↺</button>' : '') +
+      `<span class="ksw-seg" role="group" aria-label="Trackpad click">${seg}</span></div>` +
+      '<div><small>keys or mouse</small>' +
       (k?.changed ? '<button type="button" class="ks-undo" data-id="shortcutsWheel" title="Back to how it came">↺</button>' : '') +
-      `<button type="button" class="ks-key${label ? '' : ' none'}" data-id="shortcutsWheel" data-mouse="1" title="Click, then press keys or a mouse button (hold ⌃ ⌥ ⇧ ⌘ with it if you like). Delete: none">${label ? esc(label) : '—'}</button></div>` +
+      `<button type="button" class="ks-key${label ? '' : ' none'}" data-id="shortcutsWheel" data-mouse="1" title="Click, then press keys or a mouse button (a plain middle click works). Delete: none">${label ? esc(label) : '—'}</button></div>` +
       '</div></div>'
     );
   }
@@ -1032,12 +1057,21 @@ window.Cloud = (() => {
   // Settings › Shortcuts (settings.js gives the page and its search, filterKeys): the shortcut wheel's card, then an
   // action per row in the groups Shortcuts.swift names, its keys on a key cap to click; why a change didn't take shows
   // under the row it was for (keysMsg), not out of sight at the top of the list.
+  // Esc and the close shortcut swap places (EscClose.swift): a switch a step in under "Close the tab or pane", off until
+  // turned on and confirmed (escAsk). Only where the app answers it (the Mac app's keys handler sends escClose).
+  const escRow = (on, keys) => {
+    const cmd = keys || 'Close';
+    return '<div class="ks-row ks-esc-row st-sub" data-find="swap esc and close escape the tab or pane chats" data-keys="esc escape">' +
+      `<span class="st-l"><b>Swap Esc and ${esc(cmd)}</b><small>${keys ? `Esc hides the terminal, ${esc(keys)} sends Esc to Claude, Codex or agy` : 'Close has no keys, so nothing sends Esc to the terminal.'}</small></span>` +
+      `<button type="button" class="hk-sw ks-esc${on ? ' on' : ''}" role="switch" aria-checked="${on}" aria-label="Swap Esc and ${esc(cmd)}" title="Swap Esc and ${esc(cmd)}"><i></i></button></div>`;
+  };
   async function renderKeys(st) {
     const page = q('.mn-keys');
     if (!page) return;
     if (!st) st = (await keysCall({ type: 'list' }).catch(() => null)) || {};
     if (!page.isConnected) return;
     const all = st.shortcuts || [];
+    const hasEsc = typeof st.escClose === 'boolean';
     const list = all.filter((k) => k.id !== 'shortcutsWheel');
     const groups = [];
     for (const k of list) (groups.find((g) => g.name === k.group) || (groups.push({ name: k.group, items: [] }), groups[groups.length - 1])).items.push(k);
@@ -1046,20 +1080,20 @@ window.Cloud = (() => {
     // The list of them all (cheatsheet.js), with the keys that open it now; Help's menu when they were taken off.
     const sheet = all.find((k) => k.id === 'keyboardShortcuts')?.label;
     page.innerHTML =
-      wheelCard(wheel) + msg('shortcutsWheel') +
+      wheelCard(wheel, st.ringFingers ?? 4) + msg('shortcutsWheel') +
       groups.map((g) => `<section class="st-group ks-group"><h3 class="st-h">${esc(g.name)}</h3><div class="st-box">` + g.items.map((k) =>
-        `<div class="ks-row" data-find="${esc(`${k.title} ${g.name} ${k.label || ''}`.toLowerCase())}" data-keys="${esc(keyFind.keys([k.label]))}"><span>${esc(k.title)}</span>` +
+        `<div class="ks-row" data-find="${esc(`${k.title} ${g.name} ${k.label || ''}${k.id === 'closePane' && hasEsc ? ' esc escape' : ''}`.toLowerCase())}" data-keys="${esc(keyFind.keys([k.label]))}"><span>${esc(k.title)}</span>` +
         (k.changed ? `<button type="button" class="ks-undo" data-id="${esc(k.id)}" title="Back to how it came" aria-label="${esc(k.title)}: back to how it came">↺</button>` : '') +
         `<button type="button" class="ks-key${k.label ? '' : ' none'}" data-id="${esc(k.id)}" title="Click, then press the new keys · Delete: none" aria-label="${esc(k.title)}: ${k.label ? esc(k.label) : 'no keys'}">${k.label ? esc(k.label) : '—'}</button></div>` +
-        msg(k.id)).join('') + '</div></section>').join('') +
+        msg(k.id) + (k.id === 'closePane' && hasEsc ? escRow(st.escClose, k.label) : '')).join('') + '</div></section>').join('') +
       '<p class="ks-none" hidden></p>' +
       '<div class="ks-foot">' +
       `<p class="st-note">${sheet ? `see them all any time with <kbd>${esc(sheet)}</kbd>` : 'see them all any time in Help › Keyboard Shortcuts'}</p>` +
-      (all.some((k) => k.changed) ? '<button type="button" class="st-btn ks-all" title="Every shortcut back to how it came">reset all</button>' : '') +
+      (all.some((k) => k.changed) || (st.ringFingers ?? 4) !== 4 || st.escClose === true ? '<button type="button" class="st-btn ks-all" title="Every shortcut back to how it came">reset all</button>' : '') +
       '</div>';
     const card = page.querySelector('.ks-wheel');
     if (card) {
-      card.dataset.find = `ring shortcut wheel chats 4-finger click ${wheel?.label || ''}`.toLowerCase();
+      card.dataset.find = `ring shortcut wheel chats 3-finger 4-finger click trackpad ${wheel?.label || ''}`.toLowerCase();
       card.dataset.keys = keyFind.keys([wheel?.label]);
     }
     page.onclick = onKeysClick;
@@ -1086,6 +1120,16 @@ window.Cloud = (() => {
     }
   }
   async function onKeysClick(e) {
+    const escSw = e.target.closest('.ks-esc');
+    if (escSw) return toggleEsc(escSw);
+    const opt = e.target.closest('.ksw-opt, .ks-undo[data-fingers]');
+    if (opt) {
+      keysMsg = null;
+      const n = Number(opt.dataset.fingers);
+      await renderKeys(await keysCall({ type: 'fingers', fingers: n }));
+      q(`.ksw-opt[data-fingers="${n}"]`)?.focus(); // the page is drawn again: the keys stay where they were
+      return;
+    }
     const undo = e.target.closest('.ks-undo'), all = e.target.closest('.ks-all'), key = e.target.closest('.ks-key');
     if (!undo && !all && !key) return;
     keysMsg = null;
@@ -1099,6 +1143,52 @@ window.Cloud = (() => {
     const done = await keysCall({ type: 'set', id: key.dataset.id, combo: r.combo });
     if (done.error) keysMsg = { id: key.dataset.id, text: done.error };
     renderKeys(done.error ? null : done);
+  }
+
+  async function toggleEsc(sw) {
+    keysMsg = null;
+    const on = sw.getAttribute('aria-checked') !== 'true';
+    if (on && !(await escAsk())) return sw.focus();
+    await renderKeys(await keysCall({ type: 'escClose', on }));
+    q('.ks-esc')?.focus();
+  }
+  // The question before Esc and the close shortcut swap (Atalay, 2026-11-22), in the Settings window as its other questions
+  // (.mn-confirm). Cancel, Esc (cloud.js's Esc handler removes the top .mn-confirm) or a click outside: no, the switch
+  // stays off. Cancel has the focus, so Return doesn't turn it on unread.
+  async function escAsk() {
+    const panel = q('.pk.hk.menu');
+    if (!panel) return false;
+    const st = await keysCall({ type: 'list' }).catch(() => null);
+    const cmd = st?.shortcuts?.find((k) => k.id === 'closePane')?.label || '';
+    panel.querySelector('.mn-confirm')?.remove();
+    const ask = document.createElement('div');
+    ask.className = 'mn-confirm';
+    ask.innerHTML =
+      '<div class="mn-ask esc-ask" role="alertdialog" aria-modal="true" aria-labelledby="esc-ask-t" aria-describedby="esc-ask-p">' +
+      `<b id="esc-ask-t">Swap Esc and ${esc(cmd || 'Close')}?</b>` +
+      `<p id="esc-ask-p">Esc will hide the terminal, like ${esc(cmd || 'Close')}. Your AI keeps working. ` +
+      (cmd ? `To send Esc to Claude, Codex or agy (stop, Esc Esc to rewind), press ${esc(cmd)} instead.` : 'Close has no keys, so nothing sends Esc to the terminal.') + '</p>' +
+      '<div class="mn-ask-btns"><button type="button" class="mn-btn" data-ans="no">cancel</button>' +
+      '<button type="button" class="mn-btn go" data-ans="yes">swap</button></div></div>';
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = (v) => {
+        if (done) return;
+        done = true;
+        obs.disconnect();
+        ask.remove();
+        resolve(v);
+      };
+      const obs = new MutationObserver(() => !ask.isConnected && finish(false));
+      ask.onclick = (e) => {
+        const b = e.target.closest('[data-ans]');
+        if (e.target === ask || b?.dataset.ans === 'no') finish(false);
+        else if (b) finish(true);
+      };
+      obs.observe(panel, { childList: true });
+      panel.appendChild(ask);
+      ask.querySelector('[data-ans="no"]').focus();
+    });
   }
 
   async function copyHandle() {
@@ -1183,8 +1273,8 @@ window.Cloud = (() => {
         `${fire.canvas}<span class="fr-av st-${esc(f.presence || 'offline')}" style="--rc:${r.color}">${pic}${Social.dot(f.presence)}</span>` +
         `<div class="mn-main" title="${esc(hover)}Click for their profile"><span class="lb-l1">${name}` +
         `${window.Badges && f.badge ? window.Badges.small(f.badge, 24, f.id) : ''}${fire.mark}</span><small${f.last && f.unread ? ' class="fr-new"' : ''}>${line}</small></div>` +
-        `${today}${f.unread ? `<i class="cnt hot">${f.unread}</i>` : ''}<span class="fr-btns"><button class="mn-btn" type="button" data-act="profile" title="Profile: level and hours">◎</button>` +
-        '<button class="mn-btn" type="button" data-act="chat" title="Message (right-click for more)">✉</button></span></div>';
+        `${today}${f.unread ? `<i class="cnt hot">${f.unread}</i>` : ''}<span class="fr-btns"><button class="mn-btn mn-ic" type="button" data-act="profile" aria-label="Profile" title="Profile">${FR_IC.person}</button>` +
+        `<button class="mn-btn mn-ic" type="button" data-act="chat" aria-label="Message" title="Message (right-click for more)">${FR_IC.bubble}</button></span></div>`;
     };
     const on = s.friends.filter((f) => f.presence && f.presence !== 'offline');
     const off = s.friends.filter((f) => !f.presence || f.presence === 'offline');
@@ -1256,7 +1346,7 @@ window.Cloud = (() => {
     const menu = document.createElement('div');
     menu.className = 'mn-ctx';
     menu.innerHTML =
-      '<button type="button" data-ctx="chat">✉ message</button><button type="button" data-ctx="profile">◎ view profile</button>' +
+      `<button type="button" data-ctx="chat">${FR_IC.bubble}message</button><button type="button" data-ctx="profile">${FR_IC.person}view profile</button>` +
       `<button type="button" data-ctx="nick">✎ ${f.nick ? 'change nickname' : 'add nickname'}</button>` +
       (f.nick ? '<button type="button" data-ctx="unnick">⌫ remove nickname</button>' : '') +
       '<button type="button" data-ctx="copy">⧉ copy name#tag</button><hr><button type="button" class="danger" data-ctx="remove">✕ remove friend</button>';
@@ -1418,6 +1508,24 @@ window.Cloud = (() => {
     }
   }
 
+  // Settings · memory: the switch, the threshold and the idle time as the app keeps them (Cleanup.swift, window.__cleanupPrefs).
+  function renderCleanup() {
+    const p = window.__cleanupPrefs;
+    const sw = modal === 'menu' && q('.hk-sw.cu-sug');
+    if (!sw || !p) return;
+    sw.classList.toggle('on', p.suggest);
+    sw.setAttribute('aria-checked', String(p.suggest));
+    const row = q('.cu-swaprow');
+    if (row) row.hidden = !p.suggest;
+    for (const [sel, v] of [['.cu-swap', p.swapGB], ['.cu-idle', p.idleHours]]) {
+      q(sel)?.querySelectorAll('button[data-v]').forEach((b) => {
+        const on = Number(b.dataset.v) === Number(v);
+        b.classList.toggle('on', on);
+        b.setAttribute('aria-pressed', String(on));
+      });
+    }
+  }
+
   // Settings · POWER: power save on by itself at low battery, as the Mac app keeps it (app.js setPowerSave).
   function renderPower() {
     const sw = modal === 'menu' && q('.hk-sw.pwr-auto');
@@ -1518,6 +1626,95 @@ window.Cloud = (() => {
   let boardEnter = false;
   let counted = false; // everyone's hours count up once when the board opens
   let fetched = false;
+  // The live count ("N people coding right now"): the heartbeat's answer carries it (S.working), so the card is the
+  // same in every view and costs no request. An older API doesn't send it: the skeleton shows for one heartbeat, then
+  // the card is left out.
+  let liveN = null;
+  let liveGone = false;
+  let liveWait = null;
+  let liveShownN = null; // what the card last showed, so only a change animates
+  let liveFxNow = false; // the number changed in the HTML just built: tick and ping it once it is in the page
+  let liveOpenAt = 0; // when the card first showed on this visit: its three opening pulses play out before `calm` applies
+  const LIVE_TIP = 'Coding now: at work in Orbiterm in the last 3 minutes. Invisible people aren’t counted.';
+  const liveKey = () => {
+    if ((S && S.reachable === false) || (board && board.error === 'offline')) return 'off';
+    if (liveGone) return 'none';
+    if (liveN === null) return 'load';
+    return liveN === 0 ? 'zero' : liveN === 1 ? 'one' : 'live';
+  };
+  function liveHTML() {
+    const k = liveKey();
+    if (k === 'none') return '';
+    const d = `data-s="${k}"`;
+    if (k === 'load') return `<div class="bd-coding load" ${d} aria-busy="true"><span class="bd-pulse" aria-hidden="true"></span><span class="bd-coding-t"><i class="bd-skel bd-coding-sk"></i></span></div>`;
+    if (k === 'off') return `<div class="bd-coding off" ${d} title="${LIVE_TIP}"><span class="bd-pulse" aria-hidden="true"></span><span class="bd-coding-t"><span class="bd-coding-w">Can’t see who’s coding</span><span class="bd-coding-l2">You’re offline. It shows again when you’re back.</span></span></div>`;
+    if (k === 'zero') return `<div class="bd-coding zero" ${d} title="${LIVE_TIP}"><span class="bd-pulse" aria-hidden="true"></span><span class="bd-coding-t"><span class="bd-coding-w">No one is coding right now</span><span class="bd-coding-l2">Start coding and you’ll be the first.</span></span></div>`;
+    const changed = liveShownN !== null && liveShownN !== liveN;
+    if (liveShownN === null) liveOpenAt = Date.now();
+    liveFxNow = changed;
+    liveShownN = liveN;
+    return `<div class="bd-coding" ${d} title="${LIVE_TIP}"><span class="bd-pulse" aria-hidden="true"></span><span class="bd-coding-t"><span class="bd-coding-l1"><b class="bd-coding-n">${liveN.toLocaleString('en-US')}</b><span class="bd-coding-w">${liveN === 1 ? 'person' : 'people'} coding right now</span></span></span></div>`;
+  }
+  // Motion classes go on after the HTML is set, never inside it, so a refresh that only ends the opening pulses
+  // doesn't make the board rebuild (and the list jump to the top).
+  function liveFx() {
+    const el = views.board.querySelector('.bd-coding');
+    if (!el) return;
+    if (liveFxNow) {
+      liveFxNow = false;
+      el.classList.remove('calm');
+      for (const [x, c] of [[el.querySelector('.bd-coding-n'), 'tick'], [el, 'pinged']]) {
+        if (!x) continue;
+        x.classList.remove(c);
+        void x.offsetWidth;
+        x.classList.add(c);
+      }
+    } else if (Date.now() - liveOpenAt > 4800) el.classList.add('calm');
+  }
+  // The minute's refresh: only the number's text is rewritten; the card is replaced only when its kind changes.
+  function liveUpdate() {
+    const el = views.board.querySelector('.bd-coding');
+    const k = liveKey();
+    if (!el) {
+      if (k !== 'none') renderBoard();
+      return;
+    }
+    const host = views.board.querySelector('.bd-in');
+    const nEl = el.querySelector('.bd-coding-n');
+    if (el.dataset.s === k && k === 'live' && nEl) {
+      if (liveShownN === liveN) return;
+      liveShownN = liveN;
+      nEl.textContent = liveN.toLocaleString('en-US');
+      el.classList.remove('calm');
+      for (const [x, c] of [[nEl, 'tick'], [el, 'pinged']]) {
+        x.classList.remove(c);
+        void x.offsetWidth;
+        x.classList.add(c);
+      }
+      if (host) host.__h = null;
+    } else if (el.dataset.s !== k) {
+      el.outerHTML = liveHTML();
+      liveFx();
+      if (host) host.__h = null;
+    }
+  }
+  // Called with every state the API link pushes (each heartbeat, once a minute).
+  function liveSeen(st) {
+    if (Number.isInteger(st.working)) {
+      clearTimeout(liveWait);
+      liveWait = null;
+      liveN = st.working;
+      liveGone = false;
+    } else if (st.reachable && st.registered) {
+      if (liveN !== null) liveN = null;
+      if (!liveGone && !liveWait) liveWait = setTimeout(() => {
+        liveWait = null;
+        liveGone = true;
+        if (shown === 'board') renderBoard();
+      }, 70_000);
+    }
+    if (shown === 'board' && views.board) liveUpdate();
+  }
   const BOARD_STALE_MS = 30_000;
   const boardCache = new Map(); // viewKey -> { data, at }
   const weeksCache = new Map(); // `${metric}|${friends}` -> weeks payload, cleared per board visit
@@ -1541,8 +1738,8 @@ window.Cloud = (() => {
     const v = n / d;
     return `${v >= 100 ? Math.round(v) : v.toFixed(v >= 10 ? 1 : 2).replace(/\.?0+$/, '')}${unit}`;
   };
-  const AI_NAMES = { claude: 'Claude', codex: 'Codex', antigravity: 'Antigravity' };
-  const AI_ORDER = ['claude', 'codex', 'antigravity'];
+  const AI_NAMES = { claude: 'Claude', codex: 'Codex', antigravity: 'Antigravity', cursor: 'Cursor' };
+  const AI_ORDER = ['claude', 'codex', 'antigravity', 'cursor'];
   const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   const DOW = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
   const WEEKDAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
@@ -1767,7 +1964,7 @@ window.Cloud = (() => {
   const bdAvatar = (u, cls = '') => {
     const r = Xp.rank(u.level);
     const live = isLiveWeek() && u.working && u.id;
-    return `<span class="bd-av ${cls}" style="--rc:${r.color}">${u.avatar ? `<img alt="" src="${esc(u.avatar)}">` : `<b>${u.id ? esc((u.name || '?').trim().charAt(0).toUpperCase()) : '?'}</b>`}${live ? '<i class="bd-live" title="Working now"></i>' : ''}</span>`;
+    return `<span class="bd-av ${cls}" style="--rc:${r.color}">${u.avatar ? `<img alt="" src="${esc(u.avatar)}">` : `<b>${u.id ? esc((u.name || '?').trim().charAt(0).toUpperCase()) : '?'}</b>`}${live ? '<i class="bd-live" title="Coding now"></i>' : ''}</span>`;
   };
 
   // Convert API's rolling 7-day array (`days`, ending on `daysEnd`) into Monday..Sunday with `null` for days to come.
@@ -1822,17 +2019,17 @@ window.Cloud = (() => {
     const r = Xp.rank(u.level);
     const anon = !u.id;
     const fire = isLiveWeek() && !tokens() && !anon ? fireTier(u.fire, place - 1) : 0;
-    const burn = fire && !reduced() ? `<canvas class="bd-fire" data-look="${fire === 2 ? 'blue' : 'orange'}" data-reach="20" aria-hidden="true"></canvas>` : '';
+    const burn = fire && !reduced() ? `<canvas class="bd-fire" data-look="${fire === 2 ? 'blue' : 'orange'}" data-reach="${Math.round((place === 1 ? 40 : place === 2 ? 30 : 22) / (fire === 2 ? 1.45 : 1))}" aria-hidden="true"></canvas>` : '';
     const who = anon ? '<b>Anonymous</b>' : `<b>${esc(u.name)}</b><i class="bd-tag">${tagText(u.tag)}</i>`;
     const badge = window.Badges && u.badge ? `<span class="bd-cbadge">${window.Badges.small(u.badge, place === 1 ? 38 : 30, u.me ? null : u.id)}</span>` : '';
     const label = `${place === 1 ? 'First' : place === 2 ? 'Second' : 'Third'}: ${esc(anon ? 'Anonymous' : u.name)}${u.me ? ', you' : ''}, level ${u.level} ${r.name}, ${scoreText(u)} ${unit()}${fire ? `. ${FIRE_TEXT[fire]}` : ''}${anon ? '' : '. Opens their profile'}`;
     return (
       `<button type="button" class="bd-champ p${place}${u.me ? ' me' : ''}"${anon ? ' disabled' : ` data-open="${esc(u.id)}"`} style="--rc:${r.color}" aria-label="${label}">` +
-      `${burn}<span class="bd-champ-top">${place === 1 ? BD_I.crown : ''}<span class="bd-cav">${bdAvatar(u)}${badge}</span>` +
+      `<span class="bd-champ-top">${place === 1 ? BD_I.crown : ''}<span class="bd-cav">${bdAvatar(u)}${badge}</span>` +
       `<span class="bd-cname">${who}${u.friend ? BD_I.friend : ''}${flameMark(fire)}</span>` +
       `<span class="bd-clv">Lv ${u.level} · ${esc(r.name)}${u.me ? '<em class="bd-you">YOU</em>' : ''}</span>` +
       `<span class="bd-cscore"><span${tokens() ? ` title="${Xp.num(u.tokens)} tokens"` : ''}>${scoreText(u)}</span><i>${unit().toUpperCase()}</i></span></span>` +
-      `<span class="bd-podstep" aria-hidden="true">${place}</span></button>`
+      `<span class="bd-podstep${burn ? ' lit' : ''}" aria-hidden="true">${burn}<b class="bd-pn">${place}</b></span></button>`
     );
   }
 
@@ -1859,7 +2056,7 @@ window.Cloud = (() => {
       if (d) move = `<span class="bd-move${d < 0 ? ' down' : ''}" title="${d > 0 ? 'Up' : 'Down'} ${Math.abs(d)} ${Math.abs(d) === 1 ? 'place' : 'places'} since yesterday">${d > 0 ? '▲' : '▼'} ${Math.abs(d)}</span>`;
     }
     const badge = window.Badges && u.badge ? window.Badges.small(u.badge, 22, u.me ? null : u.id) : '';
-    const label = `${u.pos}, ${esc(u.name)}${u.me ? ', you' : u.friend ? ', friend' : ''}, level ${u.level} ${r.name}, ${scoreText(u)} ${unit()}${live && u.working ? ', working now' : ''}${fire ? `. ${FIRE_TEXT[fire]}` : ''}. Opens their profile`;
+    const label = `${u.pos}, ${esc(u.name)}${u.me ? ', you' : u.friend ? ', friend' : ''}, level ${u.level} ${r.name}, ${scoreText(u)} ${unit()}${live && u.working ? ', coding now' : ''}${fire ? `. ${FIRE_TEXT[fire]}` : ''}. Opens their profile`;
     return (
       `<button type="button" class="bd-row${u.me ? ' me' : ''}${u.pos <= 10 ? ' top' : ''}${fire ? ' fire' : ''}" data-open="${esc(u.id)}" style="--k:${k};--rc:${r.color}" aria-label="${label}">` +
       `${burn}<span class="bd-pos">${u.pos}${move}</span>${bdAvatar(u)}` +
@@ -1885,7 +2082,7 @@ window.Cloud = (() => {
     };
     const sel = (k, any, list) =>
       `<select class="bd-pick" data-pick="${k}" aria-label="${k === 'model' ? 'Model' : 'Effort'}"><option value="">${any}</option>${list.map((v) => `<option value="${esc(v)}"${tokPick[k] === v ? ' selected' : ''}>${esc(v)}</option>`).join('')}</select>`;
-    return `<div class="bd-ais" role="radiogroup" aria-label="Which AI">${chip('', 'All AIs')}${chip('claude', 'Claude')}${chip('codex', 'Codex')}${chip('antigravity', 'Antigravity')}` +
+    return `<div class="bd-ais" role="radiogroup" aria-label="Which AI">${chip('', 'All AIs')}${chip('claude', 'Claude')}${chip('codex', 'Codex')}${chip('antigravity', 'Antigravity')}${chip('cursor', 'Cursor')}` +
       (tokPick.tool ? sel('model', `Any ${AI_NAMES[tokPick.tool] || tokPick.tool} model`, models) : '') +
       (tokPick.tool && (tokPick.model || tokPick.effort) && efforts.length ? sel('effort', 'Any effort', efforts) : '') +
       (picked() ? '<span class="bd-pick-note">Picked model: you and your friends only</span>' : '') + '</div>';
@@ -2081,7 +2278,7 @@ window.Cloud = (() => {
         mineDays.forEach((v, i) => { if ((v || 0) > (mineDays[best] || 0)) best = i; });
         const active = mineDays.filter((v) => v >= 1800).length;
         const xp = me ? me.week : 0;
-        const comHeadRight = boardFriends() ? (fallbackPeople || '') : `${Xp.num(c?.people || 0)} worked${live && board?.working ? ` · ${board.working} working now` : ''}`;
+        const comHeadRight = boardFriends() ? (fallbackPeople || '') : `${Xp.num(c?.people || 0)} worked`;
         cards =
           `<section class="bd-wc"><div class="bd-wc-h"><span>${whoLabel}</span><small>${comHeadRight}</small></div>` +
           `<div class="bd-big"><b data-count="${Math.round(comTotal / 3600)}">${Xp.num(Math.round(comTotal / 3600))}</b><span>h coded together</span></div>` +
@@ -2089,7 +2286,7 @@ window.Cloud = (() => {
             `<span>${done ? `✓ Goal reached · ${Xp.num(Math.round(goal / 3600))} h` : `<b>${Math.round((100 * comTotal) / goal)}%</b> of the ${Xp.num(Math.round(goal / 3600))} h goal`}</span></div>` : '') +
           (trend === null ? '' : `<p class="bd-facts">${trend >= 0 ? `<b>${trend}% more</b>` : `<b>${-trend}% less</b>`} than last week at this point</p>`) +
           chartHTML(comDays, { fmt: (v, long) => (long ? `${Math.round(v / 3600)} hours` : `${Math.round(v / 3600)}h`), labels, today: todayIdx }) + '</section>' +
-          `<section class="bd-wc"><div class="bd-wc-h"><span>You</span></div><div class="bd-big you"><b>${Xp.dur(mineSum)}</b><span>+${Xp.num(xp)} XP</span><span class="bd-chips">${place}</span></div>` +
+          `<section class="bd-wc"><div class="bd-wc-h"><span>You</span>${me && window.ShareCard ? `<button type="button" class="bd-share" data-share aria-haspopup="dialog" title="Share your week as a picture">${ShareCard.icon}Share</button>` : ''}</div><div class="bd-big you"><b>${Xp.dur(mineSum)}</b><span>+${Xp.num(xp)} XP</span><span class="bd-chips">${place}</span></div>` +
           chartHTML(mineDays, { fmt: (v, long) => (long ? Xp.dur(v) : shortH(v)), cls: 'you', labels, today: todayIdx, flames: true, h: '3.75rem', top: Math.max(8 * 3600, ...mineDays.map((v) => v || 0)) }) +
           `<p class="bd-facts"><b>${active}</b> active ${active === 1 ? 'day' : 'days'}${mineSum ? ` · best day <b>${labels[best].long.split(' ')[0]}</b>, ${Xp.dur(mineDays[best])}` : ''}</p></section>`;
         strip = `<b>${Xp.num(Math.round(comTotal / 3600))} h</b><span>coded together · you ${Xp.dur(mineSum)}</span>`;
@@ -2111,10 +2308,10 @@ window.Cloud = (() => {
     }
 
     return `<aside class="bd-week${boardWeekOpen ? ' open' : ''}" aria-label="The week, day by day"><div class="bd-wscroll">` +
-      `<button type="button" class="bd-strip" aria-expanded="${boardWeekOpen}" data-strip>${strip}${BD_I.down}</button><div class="bd-wfull">${head}${cards}</div></div></aside>`;
+      `${liveHTML()}<button type="button" class="bd-strip" aria-expanded="${boardWeekOpen}" data-strip>${strip}${BD_I.down}</button><div class="bd-wfull">${head}${cards}</div></div></aside>`;
   }
 
-  function emptyBoardHTML(mode) {
+  function emptyBoardHTML(mode, live = '') {
     if (mode === 'loading') {
       const pod = [
         { cls: 'p2', av: '3.75rem', r: '.9375rem', step: '2.5rem' },
@@ -2137,6 +2334,7 @@ window.Cloud = (() => {
         `<div class="bd-list">${cols}${Array.from({ length: 7 }, skRow).join('')}</div>` +
         '</div></div></div>' +
         '<aside class="bd-week" aria-label="The week, day by day"><div class="bd-wscroll">' +
+        liveHTML() +
         '<div class="bd-strip"><i class="bd-skel" style="width:4rem;height:1.125rem"></i><i class="bd-skel" style="width:10rem;height:.8125rem"></i></div>' +
         '<div class="bd-wfull">' +
         '<div class="bd-eyebrow"><i class="bd-skel" style="width:7rem;height:.75rem"></i><i class="bd-skel" style="width:5rem;height:.75rem"></i></div>' +
@@ -2147,17 +2345,17 @@ window.Cloud = (() => {
       );
     }
     if (mode === 'offline') {
-      return `<div class="bd-empty"><div class="bd-ghost off"><i>2</i><i>1</i><i>3</i>${BD_I.cloud}</div><h2>Can't reach the server</h2><p>The leaderboard comes back with the connection.</p></div>`;
+      return `<div class="bd-empty">${live}<div class="bd-ghost off"><i>2</i><i>1</i><i>3</i>${BD_I.cloud}</div><h2>Can't reach the server</h2><p>The leaderboard comes back with the connection.</p></div>`;
     }
     if (mode === 'error') {
-      return `<div class="bd-empty"><h2>Couldn't load the leaderboard</h2><p>${esc(errorText(board.error))}</p></div>`;
+      return `<div class="bd-empty">${live}<h2>Couldn't load the leaderboard</h2><p>${esc(errorText(board.error))}</p></div>`;
     }
     if (boardFriends()) {
-      return '<div class="bd-empty"><div class="bd-ghost"><i>2</i><i>1</i><i>3</i><span class="bd-ember"></span></div>' +
+      return `<div class="bd-empty">${live}<div class="bd-ghost"><i>2</i><i>1</i><i>3</i><span class="bd-ember"></span></div>` +
         '<h2>Race your friends here</h2><p>Add a friend and the two of you show up on this board, week after week.</p>' +
         '<button type="button" class="bd-primary" data-empty-act="friends">Add friends</button></div>';
     }
-    return '<div class="bd-empty"><div class="bd-ghost"><i>2</i><i>1</i><i>3</i><span class="bd-ember"></span></div>' +
+    return `<div class="bd-empty">${live}<div class="bd-ghost"><i>2</i><i>1</i><i>3</i><span class="bd-ember"></span></div>` +
       '<h2>The week is wide open</h2><p>No one has XP this week yet. Your first minute of work puts you on top.</p>' +
       '<button type="button" class="bd-primary" data-empty-act="new">New terminal</button></div>';
   }
@@ -2216,10 +2414,10 @@ window.Cloud = (() => {
       metaText = 'loading…';
     } else if (board.error) {
       const off = board.error === 'offline' || (S && S.reachable === false);
-      content = emptyBoardHTML(off ? 'offline' : 'error');
+      content = emptyBoardHTML(off ? 'offline' : 'error', off ? '' : liveHTML());
       metaText = off ? 'offline' : 'error';
     } else if (emptyFriends || emptyAll) {
-      content = emptyBoardHTML('empty');
+      content = emptyBoardHTML('empty', liveHTML());
       metaText = 'no one yet';
     } else {
       content = rankHTML(all, c) + weekPaneHTML(all, c);
@@ -2228,7 +2426,11 @@ window.Cloud = (() => {
     }
 
     body.classList.toggle('bd-enter', boardEnter && !reduced());
+    // liveUpdate() patched the card in place and dropped the cache: this rebuild is the same page, so keep the list where it was.
+    const keepTop = host.__h === null ? host.querySelector('.bd-scroll')?.scrollTop : null;
     setHTML(host, boardBarHTML() + content);
+    if (keepTop) { const sc = host.querySelector('.bd-scroll'); if (sc) sc.scrollTop = keepTop; }
+    liveFx();
     if (meta) meta.textContent = metaText;
     fitBoard();
     lightFires(host);
@@ -2258,6 +2460,7 @@ window.Cloud = (() => {
   async function boardAction(e) {
     if (test()?.click(e.target)) return renderBoard();
     if (window.SocialTest?.click(e.target)) return renderBoard();
+    if (e.target.closest('[data-share]')) return window.ShareCard?.open({ week: activeWeekStart(), from: 'board' });
     const t = e.target.closest('[data-set], [data-step], [data-now], [data-all], [data-tome], [data-strip], [data-week], [data-open], [data-empty-act]');
     if (!t) return;
     if (t.dataset.set) {
@@ -2694,7 +2897,7 @@ window.Cloud = (() => {
 
   // ---------- the activity bar's views (git.js): the leaderboard and the themes, where the dashboard's middle is ----------
   const views = {};
-  for (const v of [...(window.Notes ? ['notes'] : []), 'friends', 'profile', 'board', 'themes', 'notifications', ...(window.Roadmap ? ['roadmap'] : [])]) {
+  for (const v of [...(window.Notes ? ['notes'] : []), 'friends', 'profile', 'board', 'themes', 'notifications', ...(window.Roadmap ? ['roadmap'] : []), ...(window.Cleanup ? ['cleanup'] : [])]) {
     const el = document.createElement('section');
     el.id = `${v}-view`;
     el.className = 'cv';
@@ -2782,6 +2985,7 @@ window.Cloud = (() => {
   views.profile.addEventListener('click', (e) => {
     const b = e.target.closest('[data-me]');
     if (b && b.dataset.me === 'edit') window.ProfileEdit?.open();
+    if (b && b.dataset.me === 'share') share({ from: 'profile' });
   });
   // Your badges came in or changed: your card on Friends shows the one you display and how many you have.
   window.Badges?.on(() => shown === 'friends' && meCard());
@@ -2904,6 +3108,7 @@ window.Cloud = (() => {
         boardLastWeek = null;
       }
       weeksCache.clear();
+      liveShownN = null;
       loadBoard(false, true);
     } else {
       clearTimeout(boardTimer);
@@ -2914,6 +3119,9 @@ window.Cloud = (() => {
     if (v === 'notifications') openNotes();
     if (v === 'roadmap') window.Roadmap.show();
     else window.Roadmap?.hide();
+    // Clean Up: the page in the middle that lists what slows the Mac down (cleanup.js); it tells the app when it is open.
+    if (v === 'cleanup') window.Cleanup?.open();
+    else if (prev === 'cleanup') window.Cleanup?.close();
     if (v === 'notes') window.Notes.showBoard();
     else window.Notes?.hideBoard();
   }
@@ -2945,6 +3153,8 @@ window.Cloud = (() => {
     if (!modal && shown) {
       const top = views[shown].querySelector('.mn-confirm, .mn-ctx') || document.querySelector('.bdg-ctx');
       if (top) return top.remove();
+      // Clean Up: its summary closes first, then it goes back to the dashboard (not while it cleans).
+      if (shown === 'cleanup') return window.Cleanup.escape();
       return shown === 'profile' && window.Profile?.closePerson ? window.Profile.closePerson() : window.GitView?.view('dash');
     }
     if (modal === 'update') {
@@ -2992,9 +3202,12 @@ window.Cloud = (() => {
     return { ok: true };
   }
 
-  return { rename, nameMax: MAX, render, state: () => S, openMenu, openSettings: (pane = 'account') => {
+  // Share your week as a picture (share-card.js): the leaderboard's own week from its button; from the profile, Last week | This week.
+  const share = (opts) => window.ShareCard?.open(opts);
+
+  return { rename, share, nameMax: MAX, render, state: () => S, openMenu, openSettings: (pane = 'account') => {
     // Opened for a purpose (the account menu's Settings…, a badge's sign in, the shortcut list's "Change shortcuts…"):
     // that category, Account unless another is named, whatever was open last time. The gear and the app menu open the last one.
     openMenu(pane);
-  }, openProfile, openPerson, openFriend, openUpdate, openFeedback, openWhatsNew, openTips, showView, renderPower, renderDiscord, close, copyHandle, statusMenu, keyFind };
+  }, openProfile, openPerson, openFriend, openUpdate, openFeedback, openWhatsNew, openTips, showView, renderPower, renderCleanup, renderDiscord, close, copyHandle, statusMenu, keyFind };
 })();

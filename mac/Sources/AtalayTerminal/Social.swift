@@ -36,6 +36,7 @@ final class Social {
     /// The network came back or the Mac woke up: a line opened before may be dead without anyone noticing (no
     /// error comes until something is sent), so start a fresh one now instead of waiting out a backoff.
     func kick() {
+        MainWindowController.shared?.notesNetBack()
         delay = 2
         if let t = task {
             task = nil

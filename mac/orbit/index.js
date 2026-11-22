@@ -592,7 +592,8 @@ class Session {
     const s = this.s;
     this.icon.draw(R, s, this.hueCss);
     this.label.classList.toggle('ended', s.status === 'ended');
-    setText(this.label, R.clipT(s.title || s.lastPrompt || s.cwd || '', 32));
+    // A worktree's session: a leading ⎇ (the label is all the map shows until the planet is hovered).
+    setText(this.label, (s.wt ? '⎇ ' : '') + R.clipT(s.title || s.lastPrompt || s.cwd || '', 32));
   }
 
   die(now) {

@@ -272,6 +272,7 @@ function createCloud(opts = {}) {
     // Names repeat; name + tag (1-9999, shown as #0427) is unique, like Discord.
     tag: Number.isInteger(settings.hackerTag) ? settings.hackerTag : null,
     online: 0,
+    working: null,
     // Settings: "install updates right away", kept for main.js's updater to read.
     updateRightAway: settings.updateRightAway === true,
     // Settings, "check for updates": asking now, and when it last asked (ms).
@@ -292,7 +293,7 @@ function createCloud(opts = {}) {
   function json() {
     return {
       reachable: S.reachable, registered: S.registered, hackerName: S.hackerName, tag: S.tag,
-      online: S.online, version, build: 0,
+      online: S.online, working: S.working, version, build: 0,
       update: null, updating: null, updateError: null, nameError: S.nameError,
       updateReady: false, updateRightAway: S.updateRightAway, checking: S.checking, checkedAt: S.checkedAt,
       xpPaused: S.xpPaused, xp: S.xp,
@@ -385,7 +386,7 @@ function createCloud(opts = {}) {
       }
     }
     set({
-      reachable: true, registered: true, hackerName: name, tag, online: a.online,
+      reachable: true, registered: true, hackerName: name, tag, online: a.online, working: Number.isInteger(a.working) ? a.working : null,
       xp: a.xp && typeof a.xp === 'object' ? a.xp : S.xp, xpPaused: a.xpPaused === true,
     });
     // Without a name the API takes none yet: they wait for the account it signs in to. Not awaited: the first read of

@@ -44,6 +44,8 @@ enum Detached {
         defflow off
         vbell off
         msgwait 0
+        # Esc waits only 10 ms (default 300) for the rest of a key sequence: an Esc typed right before text must not merge with it.
+        maptimeout 10
 
         """
         try? rc.write(to: url, atomically: true, encoding: .utf8)
@@ -99,6 +101,29 @@ enum Detached {
         if name.hasPrefix("atls-") { return "Orbiterm Staging" }
         if name.hasPrefix("atld-") { return "a development run of Orbiterm" }
         return "Orbiterm"
+    }
+
+    private static var tuned = Set<String>()
+    private static let tunedLock = NSLock()
+
+    /// This build's session that has the short Esc wait (see tune): only there Esc and `/rewind` stay apart.
+    static func isTuned(_ name: String) -> Bool {
+        tunedLock.lock(); defer { tunedLock.unlock() }
+        return name.hasPrefix(prefix) && tuned.contains(name)
+    }
+
+    /// Gives one of this build's sessions that started under an older screenrc the Esc timing of the current one
+    /// (`maptimeout` in rcPath). Once per session per run; another build's sessions (a mirror) are left alone.
+    static func tune(_ name: String) {
+        guard name.hasPrefix(prefix) else { return }
+        tunedLock.lock()
+        let first = tuned.insert(name).inserted
+        tunedLock.unlock()
+        guard first else { return }
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: screen)
+        p.arguments = ["-S", name, "-X", "maptimeout", "10"]
+        try? p.run()
     }
 
     /// Makes the session take its display's size. A window that attached while hidden (without `-A`, so
@@ -189,13 +214,19 @@ enum Detached {
     // MARK: quit closes everything
 
     /// Screen daemons of this build's sessions (`prefix`), current user's only.
-    static func ownedDaemons(prefix: String = Detached.prefix) -> [(pid: Int32, name: String)] {
+    static func ownedDaemons(prefix: String = Detached.prefix, pids: [Int32]? = nil) -> [(pid: Int32, name: String)] {
         let me = getuid()
-        return Proc.all().compactMap { pid in
+        return (pids ?? Proc.all()).compactMap { pid in
             guard Proc.name(pid) == "screen", Proc.info(pid)?.uid == me, let args = Proc.arguments(pid),
                   let i = args.firstIndex(of: "-dmS"), i + 1 < args.count, args[i + 1].hasPrefix(prefix) else { return nil }
             return (pid, args[i + 1])
         }
+    }
+
+    /// This build's sessions, each with the screen daemon that is the root of what runs in it and when that daemon started
+    /// (Clean Up and MemoryWatch measure and list what runs below a root). Another build's sessions are never in it.
+    static func sessionRoots(pids: [Int32]? = nil) -> [(name: String, root: Int32, started: UInt64)] {
+        ownedDaemons(pids: pids).compactMap { d in Proc.info(d.pid).map { (d.name, d.pid, $0.started) } }
     }
 
     /// The app quits for good: every session of this build ends with everything running in it. Each session's whole
@@ -294,6 +325,13 @@ enum Detached {
     /// The shell of a named session (maps live sessions to their window), a mirrored one's too.
     static func shellPid(_ name: String) -> Int32? {
         Proc.all().first(where: { daemonName($0, anyBuild: true) == name }).flatMap(shellProcess(under:))
+    }
+
+    /// The folder each live session's shell is in now (the notes offer these as the projects to link a note to).
+    static func liveFolders() -> [String] {
+        Proc.all().compactMap { daemon in
+            daemonName(daemon) == nil ? nil : shellProcess(under: daemon).flatMap { Proc.cwd($0) }
+        }
     }
 
     struct RunningSession {

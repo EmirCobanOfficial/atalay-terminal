@@ -110,7 +110,7 @@
 
     const hint = document.createElement('div');
     hint.className = 'hint';
-    hint.textContent = `${WIN ? 'Ctrl + middle click' : '4-finger click'} · keys 1–5 · right-click a folder to change it · esc`;
+    hint.textContent = `${WIN ? 'Ctrl + middle click' : how} · keys 1–5 · right-click a folder to change it · esc`;
     pie.appendChild(hint);
     root.appendChild(pie);
     root.classList.add('on');
@@ -120,7 +120,10 @@
   // folder renamed or deleted since would stay on the wheel (the Windows app leaves out a folder that is gone). A close
   // before they're in (the overlay hidden) drops the open.
   let showing = 0;
-  async function show(x, y) {
+  // How it was opened, from the app (Mac: the trackpad click and keys set in Settings); kept for the reopen after a picker.
+  let how = '4-finger click';
+  async function show(x, y, opened) {
+    if (opened) how = opened;
     const n = ++showing;
     await loadSlots();
     if (n === showing) open(x, y);
@@ -181,11 +184,16 @@
     const r = pie.getBoundingClientRect();
     m.style.left = x - r.left + 'px';
     m.style.top = y - r.top + 'px';
-    m.innerHTML = `<div class="t">${esc(SLOTS[i].display || SLOTS[i].dir)}${SLOTS[i].missing ? ' (missing)' : ''}</div><button data-a="change">Change folder…</button><button data-a="remove">Remove from slot ${i + 1}</button>`;
+    // `git`: the slice's folder is in a git repo (the Mac app says; the Windows one doesn't, and then there's no entry).
+    const wt = SLOTS[i].git && !SLOTS[i].missing && window.Worktree ? '<button data-a="worktree">New worktree here…</button>' : '';
+    m.innerHTML = `<div class="t">${esc(SLOTS[i].display || SLOTS[i].dir)}${SLOTS[i].missing ? ' (missing)' : ''}</div>${wt}<button data-a="change">Change folder…</button><button data-a="remove">Remove from slot ${i + 1}</button>`;
     m.addEventListener('click', async (e) => {
       e.stopPropagation();
       const a = e.target.dataset.a;
-      if (a === 'change') {
+      if (a === 'worktree') {
+        close(false, true);
+        Overlay.newWorktree(SLOTS[i].dir);
+      } else if (a === 'change') {
         close(false, true);
         choose(i, SLOTS[i].dir);
       } else if (a === 'remove') {

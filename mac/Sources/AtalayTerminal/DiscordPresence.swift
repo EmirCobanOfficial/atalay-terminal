@@ -97,6 +97,8 @@ final class DiscordPresence {
         case "codex": return "codex"
         case "gemini": return "gemini"
         case "antigravity": return "antigravity"
+        // Its picture ("cursor") has to be uploaded to the Discord application's art assets; without it Discord shows none.
+        case "cursor": return "cursor"
         default: return nil
         }
     }

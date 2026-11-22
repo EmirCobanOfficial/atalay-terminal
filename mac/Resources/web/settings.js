@@ -116,6 +116,12 @@ window.Settings = (() => {
       (window.__sound
         ? group('sound', row('play a sound when a chat needs you', "a short ping · the top bar's sound button does the same", sw('st-sound', 'Play a sound when a chat needs you', !!window.__sound.on())))
         : '') +
+      // Only where the app answers the switch (the Mac app sets window.__worktreeNudge): Windows has no worktrees yet.
+      (typeof window.__worktreeNudge === 'boolean'
+        ? group('worktrees', row('suggest a worktree for a second AI',
+            'when an AI starts in a folder where another one is working · a note in its window until you send it something',
+            sw('st-wtnudge' + (window.__worktreeNudge !== false ? ' on' : ''), 'Suggest a worktree for a second AI', window.__worktreeNudge !== false)))
+        : '') +
       (c.savers
         ? group('save tokens',
             row('shorter command output <em class="st-tag">rtk</em>', { cls: 'ts-note', attr: ' data-which="rtk"', text: '…' }, sw('ts', 'Turn rtk on or off', false, ' data-which="rtk"'), 'ts-row') +
@@ -153,7 +159,7 @@ window.Settings = (() => {
       // Only where the notes' AI switch is (Settings > Privacy, the "notesai" handler).
       (c.notesai ? '<p class="st-note">Notes follow your Notes setting, not this one. Set it in <button type="button" class="st-ln st-nai-open">Notes \u203a AI</button>.</p>' : '') +
       `<p class="st-note">Watch and type lets Claude type into your terminals. Notes follow your Notes setting.</p>` +
-      `<p class="st-note">Claude only sees Claude Code, Codex and Antigravity chats, never a plain terminal. Passwords, keys and tokens are masked before anything leaves Orbiterm. It can't answer approvals, and can't type into a chat started with permissions bypassed. While it's on, ${WIN ? 'an icon shows in the system tray' : 'a sign shows in the menu bar'} with a way to turn it off.</p>`;
+      `<p class="st-note">Claude only sees Claude Code, Codex, Antigravity and Cursor chats, never a plain terminal. Passwords, keys and tokens are masked before anything leaves Orbiterm. It can't answer approvals, and can't type into a chat started with permissions bypassed. While it's on, ${WIN ? 'an icon shows in the system tray' : 'a sign shows in the menu bar'} with a way to turn it off.</p>`;
 
     const privacy =
       group('friends and leaderboard',
@@ -168,6 +174,7 @@ window.Settings = (() => {
         ? group('notes and AI',
             row('what AI can do with my notes', { cls: 'na-note', text: '…' },
               '<span class="lb-seg ui-seg st-notesai"><button type="button" data-mode="off">Off</button><button type="button" data-mode="read">Read</button><button type="button" data-mode="write">Read and edit</button></span>')) +
+          '<p class="st-note">Shared notes are stored on Orbiterm\u2019s server, encrypted.</p>' +
           '<p class="st-note">Hide a note from AI or connect Claude Desktop from <button type="button" class="st-ln st-nai-open">Notes \u203a AI</button></p>'
         : '') +
       (dc
@@ -187,7 +194,15 @@ window.Settings = (() => {
       group('updates', '<div class="hk-info"></div>') +
       (pw
         ? group('battery', row('power save at low battery', `below ${esc(pw.threshold)}% battery or in ${esc(pw.saver || 'Low Power Mode')}, the map moves less to save battery · the switch on the map turns it off`, sw('pwr-auto', 'Power save on by itself at low battery', true)))
-        : '');
+        : '') +
+      // Clean Up (cleanup.js, Cleanup.swift): what the line on the map does when the Mac runs low on memory, and when a chat counts as idle.
+      // Only where the app answers (it sends its settings first): the Windows app doesn't yet.
+      (!window.__cleanupPrefs ? '' : group('memory',
+        row('suggest a clean up', `when your ${MACHINE} runs low on memory, a line on the map offers to close what you aren't using · nothing closes by itself`, sw('cu-sug', 'Suggest a clean up', true)) +
+        row('when the disk holds more than', `memory your ${MACHINE} had to move onto the disk`, '<span class="lb-seg ui-seg cu-swap">' + [2, 4, 8].map((g) => `<button type="button" data-v="${g}">${g} GB</button>`).join('') + '</span>', 'st-sub cu-swaprow') +
+        row('tick idle chats after', 'in Clean Up, chats left alone this long are ticked for you', '<span class="lb-seg ui-seg cu-idle">' + [[1, '1 hour'], [12, '12 hours'], [24, '1 day'], [72, '3 days']].map(([h, n]) => `<button type="button" data-v="${h}">${n}</button>`).join('') + '</span>') +
+        row('clean up now', 'end idle chats, stop leftover programs, remove finished worktrees', '<button type="button" class="st-btn cu-now">Open Clean Up…</button>')));
+
 
     return (
       nav +
@@ -316,6 +331,14 @@ window.Settings = (() => {
       const next = panes[to % panes.length].id;
       show(next);
       nav.querySelector(`button[data-pane="${next}"]`)?.focus();
+    };
+    const wtn = page.querySelector('.st-wtnudge');
+    if (wtn) wtn.onclick = () => {
+      const on = wtn.getAttribute('aria-checked') !== 'true';
+      window.__worktreeNudge = on;
+      wtn.classList.toggle('on', on);
+      wtn.setAttribute('aria-checked', String(on));
+      window.webkit?.messageHandlers?.radar?.postMessage({ type: 'worktreeNudge', on });
     };
     const snd = page.querySelector('.st-sound');
     if (snd) snd.onclick = () => {

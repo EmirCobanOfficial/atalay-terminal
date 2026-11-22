@@ -96,6 +96,116 @@ enum Proc {
         }
     }
 
+    /// One variable of the process's environment (the user's own processes only; nil when it can't be read or isn't set).
+    static func environmentVariable(_ pid: Int32, _ name: String) -> String? {
+        var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, pid]
+        var size = 0
+        guard sysctl(&mib, 3, nil, &size, nil, 0) == 0, size > MemoryLayout<Int32>.size else { return nil }
+        var buf = [UInt8](repeating: 0, count: size)
+        guard sysctl(&mib, 3, &buf, &size, nil, 0) == 0 else { return nil }
+        let argc = Int(buf.withUnsafeBytes { $0.load(as: Int32.self) })
+        var i = MemoryLayout<Int32>.size
+        while i < size, buf[i] != 0 { i += 1 }
+        while i < size, buf[i] == 0 { i += 1 }
+        var index = 0, start = i
+        let key = name + "="
+        while i < size {
+            if buf[i] == 0 {
+                // The first argc strings are the arguments (an empty one counts); then the environment, up to the empty end.
+                if index >= argc {
+                    if i == start { break }
+                    let entry = String(decoding: buf[start..<i], as: UTF8.self)
+                    if entry.hasPrefix(key) { return String(entry.dropFirst(key.count)) }
+                }
+                index += 1
+                start = i + 1
+            }
+            i += 1
+        }
+        return nil
+    }
+
+    // MARK: memory, ports, one look at every process (MemoryWatch, Cleanup)
+
+    /// Activity Monitor's "Memory" column: the process's physical footprint (internal + compressed + IOKit), in bytes. Only
+    /// the user's own processes can be read; another user's answers EPERM and is nil.
+    static func footprint(_ pid: Int32) -> UInt64? {
+        var ri = rusage_info_v4()
+        let r = withUnsafeMutablePointer(to: &ri) { p in
+            p.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) { proc_pid_rusage(pid, RUSAGE_INFO_V4, $0) }
+        }
+        return r == 0 ? ri.ri_phys_footprint : nil
+    }
+
+    /// The TCP ports `pid` listens on.
+    static func listeningPorts(_ pid: Int32) -> [UInt16] {
+        var ports: [UInt16] = []
+        for fd in descriptors(pid) where fd.proc_fdtype == UInt32(PROX_FDTYPE_SOCKET) {
+            var info = socket_fdinfo()
+            let size = Int32(MemoryLayout<socket_fdinfo>.size)
+            guard proc_pidfdinfo(pid, fd.proc_fd, PROC_PIDFDSOCKETINFO, &info, size) == size,
+                  info.psi.soi_kind == Int32(SOCKINFO_TCP), info.psi.soi_proto.pri_tcp.tcpsi_state == Int32(TSI_S_LISTEN) else { continue }
+            let port = UInt16(bigEndian: UInt16(truncatingIfNeeded: info.psi.soi_proto.pri_tcp.tcpsi_ini.insi_lport))
+            if port != 0, !ports.contains(port) { ports.append(port) }
+        }
+        return ports.sorted()
+    }
+
+    /// Every process of the user, read once: what Runaways and MemoryWatch share, so a round scans the table once.
+    struct Snapshot {
+        var pids: [Int32] = []
+        var infos: [Int32: Info] = [:]
+        /// Children by parent for the user's processes whose parent isn't launchd (pid 1).
+        var children: [Int32: [Int32]] = [:]
+        /// Seconds of uptime and ms since 1970 when it was taken.
+        var uptime = 0.0
+        var wall = 0.0
+    }
+
+    static func snapshot() -> Snapshot {
+        let me = getuid()
+        var s = Snapshot()
+        s.uptime = ProcessInfo.processInfo.systemUptime
+        s.wall = Date().timeIntervalSince1970 * 1000
+        s.pids = all()
+        for pid in s.pids where pid > 1 {
+            guard let info = Proc.info(pid), info.uid == me else { continue }
+            s.infos[pid] = info
+            if info.ppid > 1 { s.children[info.ppid, default: []].append(pid) }
+        }
+        return s
+    }
+
+    /// What ending a program came to.
+    enum Ended { case gone, stopped, failed }
+
+    /// Ends the process `root` (the one seen at `started`) and everything under it, deepest first: TERM, then, when some are
+    /// still the same process after `grace` seconds, KILL. Each signal goes to a pid with the start time it was seen at, never
+    /// to a process group (a group can hold processes that left the tree, or belong to someone else's), and only to the user's
+    /// own. Blocks up to `grace` + 2 s: call it off the main thread. `.gone`: it was not that process any more.
+    static func endTree(root: Int32, started: UInt64, grace: TimeInterval = 5) -> Ended {
+        let me = getuid()
+        guard root > 1, let r = info(root), r.uid == me, r.started == started else { return .gone }
+        typealias P = (pid: Int32, started: UInt64)
+        var tree: [P] = []
+        func walk(_ pid: Int32, _ depth: Int) {
+            guard depth < 30 else { return }
+            for child in children(of: pid) { walk(child, depth + 1) }
+            if let i = info(pid), i.uid == me { tree.append((pid, i.started)) }
+        }
+        walk(root, 0)
+        let alive = { (list: [P]) in list.filter { t in info(t.pid)?.started == t.started } }
+        for t in tree { kill(t.pid, SIGTERM) }
+        var deadline = Date().addingTimeInterval(grace)
+        while !alive(tree).isEmpty, Date() < deadline { Thread.sleep(forTimeInterval: 0.1) }
+        let left = alive(tree)
+        if left.isEmpty { return .stopped }
+        for t in left { kill(t.pid, SIGKILL) }
+        deadline = Date().addingTimeInterval(2)
+        while !alive(left).isEmpty, Date() < deadline { Thread.sleep(forTimeInterval: 0.1) }
+        return alive(left).isEmpty ? .stopped : .failed
+    }
+
     static func all() -> [Int32] { list(UInt32(PROC_ALL_PIDS), 0) }
 
     private static func list(_ type: UInt32, _ info: UInt32) -> [Int32] {

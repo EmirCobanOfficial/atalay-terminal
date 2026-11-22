@@ -37,6 +37,8 @@ final class MessagePanel: NSObject, WKScriptMessageHandler, WKNavigationDelegate
     static var onOpenWhatsNew: (() -> Void)?
     /// The daily bonus notice was clicked (the main window shows your profile).
     static var onOpenProfile: (() -> Void)?
+    /// A shared note's invite was accepted from a notice: the dashboard opens that note.
+    static var onOpenShared: ((String) -> Void)?
     /// A friend's picture or name was clicked in the chat (the main window shows their card, by their id).
     static var onOpenFriend: ((String) -> Void)?
     /// A notification from the developer was clicked.
@@ -469,6 +471,9 @@ final class MessagePanel: NSObject, WKScriptMessageHandler, WKNavigationDelegate
             Self.onOpenWhatsNew?()
         case "openProfile":
             Self.onOpenProfile?()
+        case "openShared":
+            guard let id = body["id"] as? String, !id.isEmpty, id.count <= 64 else { return }
+            Self.onOpenShared?(id)
         case "openNotifications":
             Self.onOpenNotifications?()
         case "openDanger":

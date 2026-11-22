@@ -101,7 +101,7 @@ window.WhatsNew = (() => {
   // user set it (Settings › Shortcuts); a tip whose keys were taken off is left out of the list.
   const TIPS = [
     { id: 'wheel', title: 'Ring', at: '#newchat', key: 'shortcutsWheel',
-      text: (k) => `Click with four fingers anywhere in the app${k ? `, or ${k},` : ''} to open the Ring, your favourite folders around the pointer.` },
+      text: (k, f = 4) => `${f ? `Click with ${f === 3 ? 'three' : 'four'} fingers anywhere in the app${k ? `, or ${k},` : ''}` : `Press ${k}`} to open the Ring, your favourite folders around the pointer.` },
     { id: 'notes', title: 'Quick note', at: '#p-notes > header',
       text: () => 'Press ⇧⌘J to type in your note from anywhere on the dashboard.' },
     { id: 'streamer', title: 'Streamer mode', at: '#strm',
@@ -125,12 +125,16 @@ window.WhatsNew = (() => {
     const h = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.keys;
     const st = h ? await h.postMessage({ type: 'list' }).catch(() => null) : null;
     const all = st && Array.isArray(st.shortcuts) ? st.shortcuts : [];
-    return (id) => all.find((k) => k.id === id)?.label;
+    const keyOf = (id) => all.find((k) => k.id === id)?.label;
+    keyOf.fingers = st && st.ringFingers !== undefined ? st.ringFingers : 4; // the Ring's trackpad click: 4, 3 or 0
+    return keyOf;
   }
   // A tip as it reads with those keys; null when the keys it names were taken off.
   const tipText = (t, keyOf) => {
     const k = t.key ? (keyOf && keyOf(t.key) !== undefined ? keyOf(t.key) : DEFAULT_KEYS[t.key]) : '';
-    return t.need && !k ? null : t.text(k);
+    const f = keyOf && keyOf.fingers !== undefined ? keyOf.fingers : 4;
+    if (t.id === 'wheel' && !f && !k) return null; // the Ring has no way to open: no tip
+    return t.need && !k ? null : t.text(k, f);
   };
   const tips = (keyOf) => TIPS.map((t) => ({ id: t.id, title: t.title, text: tipText(t, keyOf) })).filter((t) => t.text !== null);
 

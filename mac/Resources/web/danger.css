@@ -31,3 +31,6 @@
 .dp.left .dp-l1 b { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dp.left .dp-end { flex: none; margin-left: auto; border-color: #ffa040; background: #ffa040; color: #1a0d00; }
 .dp.left .dp-end.sure { border-color: #fff; background: #fff; color: #a04800; }
+/* A way on to Clean Up (danger.js): quiet, under the card. */
+.dp-more { display: block; margin: 6px 0 0 auto; padding: 0; border: 0; background: none; color: #c9a5a5; font: 11px var(--font); cursor: pointer; }
+.dp-more:hover { color: #fff; }

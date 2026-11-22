@@ -596,3 +596,5 @@ body.danger-on #msgbox { display: none; }
 @media (prefers-reduced-motion: reduce) {
   .fc-sk i, .fc-wait .fc-tab .fc-pic, .fc-wait .fc-tl b, .fc-wait .fc-tl small { animation: none; }
 }
+.mb-x.mb-expand { display: inline-flex; align-items: center; justify-content: center; }
+.mb-x.mb-expand svg { width: 13px; height: 13px; display: block; }

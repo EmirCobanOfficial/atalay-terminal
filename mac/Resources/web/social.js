@@ -70,6 +70,24 @@ window.Social = (() => {
     });
   }
 
+  // Shared notes: the invites waiting for you (the corner notice, the bell and the notes board show them) and the notes you're in.
+  // `v1/notes` lists both; live `note.*` events keep them up.
+  // Where the app can't share notes yet (Windows) the invites aren't shown either.
+  const SHARING = window.__platform !== 'win32';
+  let NI = []; // invites waiting: { id, title, owner, members, ai, pending }
+  let NS = null; // the notes you're in (accepted), or null before the first answer
+  function loadNoteInvites() {
+    if (!SHARING) return Promise.resolve({ notes: [] });
+    return api('GET', 'v1/notes').then((r) => {
+      if (r && !r.error && Array.isArray(r.notes)) {
+        NI = r.notes.filter((n) => n.pending);
+        NS = r.notes.filter((n) => !n.pending);
+        emit({ type: 'noteInvites' });
+      }
+      return r;
+    });
+  }
+
   const friend = (id) => (S ? S.friends.find((f) => f.id === id) : null);
   const drop = (list, id) => list.filter((r) => r.id !== id);
 
@@ -77,7 +95,7 @@ window.Social = (() => {
   function event(ev) {
     if (!ev || !ev.type) return;
     // (Re)connected: anything that happened while the line was down is in a fresh snapshot.
-    if (ev.type === 'hello') loadNotes();
+    if (ev.type === 'hello') loadNotes(), loadNoteInvites();
     if (ev.type === 'hello' || !S) {
       load().then(() => emit(ev));
       return;
@@ -88,6 +106,22 @@ window.Social = (() => {
         break;
       case 'outgoing':
         if (!S.outgoing.some((r) => r.id === ev.request.id)) S.outgoing.unshift(ev.request);
+        break;
+      case 'note.invite':
+        if (SHARING && ev.note && !NI.some((n) => n.id === ev.note.id)) NI.unshift(ev.note);
+        break;
+      case 'note.invite_gone':
+        NI = drop(NI, ev.id);
+        break;
+      case 'note.added':
+        if (ev.note) {
+          NI = drop(NI, ev.note.id);
+          NS = [ev.note, ...(NS || []).filter((n) => n.id !== ev.note.id)];
+        }
+        break;
+      case 'note.removed':
+      case 'note.unshared':
+        if (NS) NS = drop(NS, ev.id);
         break;
       case 'request_gone':
         S.incoming = drop(S.incoming, ev.id);
@@ -175,6 +209,23 @@ window.Social = (() => {
     event,
     on: (f) => (subs.add(f), () => subs.delete(f)),
     state: () => S,
+    call: api,
+    sharing: SHARING,
+    noteInvites: () => (SHARING ? NI : []),
+    sharedNotes: () => NS || [],
+    loadNoteInvites,
+    // Accept a shared note's invite: the answer has the note (`{ note }`); it is on every computer of the account.
+    acceptNote: (id) =>
+      api('POST', `v1/notes/${id}/accept`, {}).then((r) => {
+        if (!r.error) event({ type: 'note.added', note: r.note });
+        return r;
+      }),
+    // Decline an invite (or leave a note: `member` is your own id).
+    declineNote: (id, me) =>
+      api('DELETE', `v1/notes/${id}/members/${me}`).then((r) => {
+        if (!r.error) event({ type: 'note.invite_gone', id });
+        return r;
+      }),
     notes: () => N,
     loadNotes,
     unreadNotes: () => (N ? N.unread : 0),

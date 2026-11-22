@@ -319,6 +319,30 @@ window.Profile = (() => {
     lock: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>',
   };
 
+  // Viktoria on a profile (araştırma/viktoria-profil/SPEC.md): Off, or her Mischief level by the same four names as
+  // her control in Settings and Themes; nothing when it isn't known (prof.mascot null: an app from before 0.24.x).
+  const MISCHIEF = ['Calm', 'Playful', 'Naughty', 'Crazy'];
+  // Yours, from this app (what its next heartbeat sends): -1 off (switched off or not downloaded), 0..3 on. Until the
+  // app has told the page (window.__mascotEnabled not set yet), the server's copy.
+  function ownMascot(fromServer) {
+    if (typeof window.__mascotEnabled !== 'boolean') return fromServer ?? null;
+    if (!window.__mascotEnabled || !(window.MascotUI ? window.MascotUI.ready() : true)) return -1;
+    const n = Number(window.__mascotMischief);
+    return Number.isInteger(n) && n >= 0 && n <= 3 ? n : (fromServer ?? null);
+  }
+  function viktoriaCell(level, isSelf) {
+    if (!Number.isInteger(level) || level < -1 || level > 3) return '';
+    if (level === -1) {
+      return '<div class="pv-cell" title="Viktoria is off"><label>VIKTORIA</label><span class="pv-val"><b class="off">Off</b></span></div>';
+    }
+    const name = MISCHIEF[level];
+    const dots = [0, 1, 2, 3].map((i) => `<i${i <= level ? ' class="on"' : ''}></i>`).join('');
+    const same = !isSelf && ownMascot(null) === level;
+    return `<div class="pv-cell" title="Mischief: ${name} (${level + 1} of 4)"><label>VIKTORIA</label>` +
+      `<span class="pv-val"><b>${name}</b><span class="pv-dots" aria-hidden="true">${dots}</span>` +
+      `<span class="pv-sr">, mischief ${level + 1} of 4</span></span>${same ? '<em>same as you</em>' : ''}</div>`;
+  }
+
   let currentId = null; // null when closed, 'me' or UUID when open
   let currentOpts = {};
   let scrollWas = 0;
@@ -343,16 +367,16 @@ window.Profile = (() => {
     const v = n / d;
     return `${v >= 100 ? Math.round(v) : v.toFixed(v >= 10 ? 1 : 2).replace(/\.?0+$/, '')}${unit}`;
   };
-  const TOOL_NAMES = { claude: 'Claude', codex: 'Codex', antigravity: 'Antigravity' };
+  const TOOL_NAMES = { claude: 'Claude', codex: 'Codex', antigravity: 'Antigravity', cursor: 'Cursor' };
   const toolLabel = (t) => TOOL_NAMES[t] || (t ? t.charAt(0).toUpperCase() + t.slice(1) : '');
 
-  const themeList = async () => {
-    if (themesCache) return themesCache;
-    if (!h || !h.theme) return null;
+  const themeList = async (fresh) => {
+    if (themesCache && !fresh) return themesCache;
+    if (!h || !h.theme) return themesCache;
     try {
-      themesCache = await h.theme.postMessage({ type: 'list' });
+      themesCache = (await h.theme.postMessage({ type: 'list' })) || themesCache;
     } catch {
-      themesCache = null;
+      /* keep what we had */
     }
     return themesCache;
   };
@@ -505,7 +529,8 @@ window.Profile = (() => {
     }
 
     const acts = isSelf
-      ? `<button type="button" class="pp-edit" data-me="edit" aria-expanded="${!!look}">${PV_ICONS.pen}<span>Edit profile</span></button>`
+      ? '<div class="pp-acts">' + (window.ShareCard ? `<button type="button" class="pp-share" data-me="share" aria-haspopup="dialog">${window.ShareCard.icon}<span>Share</span></button>` : '') +
+        `<button type="button" class="pp-edit" data-me="edit" aria-expanded="${!!look}">${PV_ICONS.pen}<span>Edit profile</span></button></div>`
       : '<div class="pv-acts">' + (isFriend
         ? `<button type="button" class="bd-primary" data-pv-act="msg">${PV_ICONS.msg}Message</button>` +
           `<button type="button" class="bd-glassbtn pv-more" data-pv-act="more" aria-label="More: set a nickname, remove friend" title="More">${PV_ICONS.more}</button>`
@@ -551,25 +576,20 @@ window.Profile = (() => {
       ? (look ? links({ links: look.links }) : (A?.signedIn ? links(A) : ''))
       : links({ links: prof?.links || src.links });
 
-    // THEME and, when they have Viktoria switched on, VIKTORIA with her Mischief level (prof.mascot: null unknown,
-    // -1 off, 0..3 on). Side by side; each is its own cell so a narrow window wraps them under each other.
+    // THEME and VIKTORIA side by side, on every profile, yours too (on yours, what others see, without "you use it
+    // too"). Yours come from this app, at once; theirs from their profile answer.
     let themeCell = '';
-    if (!isSelf && themeId && themesCache?.themes) {
-      const t = themesCache.themes.find((x) => x.id === themeId) || themesCache.themes[0];
+    const rowThemeId = isSelf ? (themesCache?.chosen ?? themeId) : themeId;
+    if (rowThemeId && themesCache?.themes) {
+      const t = themesCache.themes.find((x) => x.id === rowThemeId) || themesCache.themes[0];
       if (t) {
-        themeCell = `<div class="pv-cell"><span><label>THEME</label><b>${esc(t.name)}</b></span>${t.id === themesCache.chosen ? '<em>you use it too</em>' : ''}</div>`;
+        themeCell = `<div class="pv-cell" title="${esc(t.name)}"><label>THEME</label><span class="pv-val"><b>${esc(t.name)}</b></span>` +
+          `${!isSelf && t.id === themesCache.chosen ? '<em>you use it too</em>' : ''}</div>`;
       }
     }
-    let mascotCell = '';
-    const mascotLevel = prof?.mascot;
-    if (!isSelf && Number.isInteger(mascotLevel) && mascotLevel >= 0 && mascotLevel <= 3) {
-      const lvlName = ['Calm', 'Playful', 'Naughty', 'Crazy'][mascotLevel];
-      const dots = [0, 1, 2, 3].map((i) => `<i class="${i <= mascotLevel ? 'on' : ''}"></i>`).join('');
-      const same = window.__mascotEnabled === true && window.__mascotMischief === mascotLevel;
-      const label = `Mischief: ${lvlName} (${mascotLevel + 1} of 4)`;
-      mascotCell = `<div class="pv-cell" title="${esc(label)}"><span><label>VIKTORIA</label><b>${esc(lvlName)}</b></span>` +
-        `<span class="pv-dots" aria-hidden="true">${dots}</span><span class="pv-sr">Mischief ${mascotLevel + 1} of 4</span>${same ? '<em>same as you</em>' : ''}</div>`;
-    }
+    let mascotCell = viktoriaCell(isSelf ? ownMascot(prof?.mascot) : prof?.mascot, isSelf);
+    // Theme list not here yet: keep VIKTORIA in the right column so it does not jump when THEME arrives.
+    if (!themeCell && mascotCell && (isSelf || themeId) && !themesCache?.themes) mascotCell = mascotCell.replace('class="pv-cell"', 'class="pv-cell pv-r"');
     const themeRow = themeCell || mascotCell ? `<div class="pv-theme">${themeCell}${mascotCell}</div>` : '';
 
     const joinedStr = formatDate(prof?.joined);
@@ -622,7 +642,7 @@ window.Profile = (() => {
         `<div class="me-top">${heroHTML}</div>` +
         `<div class="me-main">${showMainHours ? '<div class="me-more"></div>' : lockHTML}` +
         `${isFriend ? `<div class="pv-h2h-host" data-id="${esc(currentId)}"></div>` : ''}` +
-        `<div class="me-inv"></div><div class="pv-tok-host">${tokSection}</div>` +
+        `<div class="pv-gh-host"></div><div class="me-inv"></div><div class="pv-tok-host">${tokSection}</div>` +
         `${isSelf ? `<div class="me-how">${howSection}</div>` : ''}</div></div>`;
       window.Badges?.mountShowcase(host.querySelector('.me-show'), host.querySelector('.me-inv'), targetKey, { skipFetch: true });
     } else {
@@ -666,6 +686,9 @@ window.Profile = (() => {
       const stripData = isSelf ? (window.Cloud?.state?.()?.xp || prof?.strip || null) : (prof?.strip || null);
       if (moreEl) window.ProfileStats?.render(moreEl, stripData, targetKey, { skipFetch: true });
     }
+    // GitHub's calendar (github-calendar.js): after the hours and head to head, before the badges. `prof.github` is null
+    // when this viewer sees nothing (off, not linked, shadowed, or the server has no GitHub token): then nothing is drawn.
+    window.GhCal?.mount(host.querySelector('.pv-gh-host'), targetKey, prof?.github || null, isSelf);
     if (isFriend) {
       const h2hEl = host.querySelector('.pv-h2h-host');
       const meObj = { name: Social?.state()?.me?.name || 'You', avatar: A?.avatar || null, level: prof?.level || 1 };
@@ -710,11 +733,12 @@ window.Profile = (() => {
           window.ProfileStats?.ingest?.(targetKey, r);
           if (targetKey !== 'me') window.Badges?.ingest?.(targetKey, r.badges);
           if (r.relation === 'friend' || r.rivalry !== undefined) window.Community?.ingestRivalry?.(targetKey, r.rivalry);
+          if (r.github) window.GhCal?.load(targetKey, force);
         }
         repaint();
       });
     }
-    if (!themesCache) themeList().then(repaint);
+    themeList(true).then(repaint);
   }
 
   function openPerson(id, opts = {}) {
@@ -945,6 +969,23 @@ window.Profile = (() => {
 
   window.addEventListener('profilestats', () => {
     if (currentId && document.querySelector('#profile-view.on')) renderPerson(false);
+  });
+  // Viktoria switched, levelled, downloaded or removed in this app: your own row, and "same as you" on theirs.
+  const repaintOpen = () => { if (currentId && document.querySelector('#profile-view.on')) renderPerson(false); };
+  window.addEventListener('mascotchange', repaintOpen);
+  // mascotasset fires several times a second while downloading: repaint only when readiness flips.
+  let mascotReady = null;
+  window.addEventListener('mascotasset', () => {
+    const r = window.MascotUI ? window.MascotUI.ready() : true;
+    if (r === mascotReady) return;
+    mascotReady = r;
+    repaintOpen();
+  });
+  // GitHub's calendar landed, or its switch changed (here, or on another computer of yours: `stale`, ask the server again).
+  window.addEventListener('ghcal', (e) => {
+    if (!currentId || !document.querySelector('#profile-view.on') || e.detail?.key !== currentId) return;
+    if (e.detail.stale) fetchPerson(currentId, currentId, true);
+    else if (!e.detail.changed) renderPerson(false);
   });
   window.addEventListener('profiledraft', () => {
     if (currentId === 'me' && document.querySelector('#profile-view.on')) renderPerson(false);

@@ -18,6 +18,10 @@ enum Shortcuts {
     static let actions: [Action] = [
         // ⌘N is VS Code's new file (Source Control's editor); a terminal takes ⇧⌘N, VS Code's new window.
         Action(id: "newTerminal", group: "Chats", title: "New terminal", combo: "shift+cmd+n"),
+        Action(id: "newWorktree", group: "Chats", title: "New worktree", combo: "opt+shift+cmd+n"),
+        Action(id: "moveToWorktree", group: "Chats", title: "Open in a worktree", combo: ""),
+        // Conductor's key for it; the window in front must be in a worktree (WorktreeShip.swift).
+        Action(id: "createPR", group: "Chats", title: "Create pull request", combo: "shift+cmd+p"),
         Action(id: "newFile", group: "Editor", title: "New file", combo: "cmd+n"),
         Action(id: "newTab", group: "Chats", title: "New tab", combo: "cmd+t"),
         Action(id: "newTabNext", group: "Chats", title: "New tab next to the current one", combo: "opt+cmd+t"),
@@ -25,6 +29,8 @@ enum Shortcuts {
         Action(id: "splitHorizontally", group: "Chats", title: "Split horizontally", combo: "shift+cmd+d"),
         // Its second way to open (the first is the trackpad's four-finger click): keys, or a mouse button with modifiers.
         Action(id: "shortcutsWheel", group: "Chats", title: "Ring", combo: "ctrl+mouse2"),
+        // The header's env button: the env files under the terminal's folder (EnvView.swift).
+        Action(id: "envFiles", group: "Chats", title: "Env files", combo: "shift+cmd+e"),
         Action(id: "copyReply", group: "Chats", title: "Copy Claude's last reply", combo: "shift+cmd+c"),
         Action(id: "closePane", group: "Chats", title: "Close the tab or pane", combo: "cmd+w"),
         Action(id: "closeWindow", group: "Chats", title: "Close the terminal window", combo: "shift+cmd+w"),
@@ -53,6 +59,8 @@ enum Shortcuts {
         // Every shortcut at a glance (Help → Keyboard Shortcuts, web/cheatsheet.js): no key of its own, it's clicked
         // (Atalay, 2026-11-15); one can be set in Settings › Shortcuts. Never ⌘?, the system's (it opens the Help menu).
         Action(id: "keyboardShortcuts", group: "View", title: "Keyboard shortcuts", combo: ""),
+        // Clean Up (the app menu, below Settings): no key of its own, it is clicked; one can be set in Settings › Shortcuts.
+        Action(id: "cleanUp", group: "View", title: "Clean Up", combo: ""),
         // iTerm2's own: find in the terminal, clear it, move through its history.
         Action(id: "find", group: "Terminal", title: "Find", combo: "cmd+f"),
         Action(id: "findNext", group: "Terminal", title: "Find next", combo: "cmd+g"),
@@ -118,12 +126,51 @@ enum Shortcuts {
 
     static func reset(_ id: String?) {
         var all = saved
-        if let id { all[id] = nil } else { all = [:] }
+        if let id { all[id] = nil } else { all = [:]; escCloses = false }
         UserDefaults.standard.set(all, forKey: key)
         for a in actions where id == nil || a.id == id { apply(a.id) }
+        // The Ring's trackpad click goes back with "reset all" (its own row has its own ↺), not with the keys row's.
+        if id == nil { UserDefaults.standard.removeObject(forKey: fingersKey) }
     }
 
-    static func state() -> [String: Any] { ["shortcuts": list()] }
+    // MARK: the Ring's trackpad click
+
+    private static let fingersKey = "ringFingers"
+    /// The fingers that open the Ring with a click: 4 (it came so), 3, or 0 for none.
+    static var ringFingers: Int {
+        let n = UserDefaults.standard.object(forKey: fingersKey) as? Int ?? 4
+        return [0, 3, 4].contains(n) ? n : 4
+    }
+    static func setRingFingers(_ n: Int) {
+        if n == 4 { UserDefaults.standard.removeObject(forKey: fingersKey) }
+        else if [0, 3].contains(n) { UserDefaults.standard.set(n, forKey: fingersKey) }
+    }
+    /// How the Ring opens now, for its caption: the trackpad click and the keys set, or where else to find it.
+    static var ringHint: String {
+        var parts: [String] = []
+        if ringFingers > 0 { parts.append("\(ringFingers)-finger click") }
+        let l = label(combo("shortcutsWheel"))
+        if !l.isEmpty { parts.append(l) }
+        return parts.isEmpty ? "File › Ring" : parts.joined(separator: " or ")
+    }
+    /// Whether the fingers on the trackpad now are the ones set for the Ring.
+    static var fingersOpen: Bool {
+        switch ringFingers {
+        case 3: return Trackpad.threeFingersDown
+        case 4: return Trackpad.fourFingersDown
+        default: return false
+        }
+    }
+
+    // MARK: Esc closes too (Settings › Shortcuts, under Close the tab or pane; EscClose.swift)
+    private static let escKey = "escClosesTerminal"
+    /// Off until the user turns it on and confirms what Esc still does in Claude, Codex and vim.
+    static var escCloses: Bool {
+        get { UserDefaults.standard.bool(forKey: escKey) }
+        set { UserDefaults.standard.set(newValue, forKey: escKey) }
+    }
+
+    static func state() -> [String: Any] { ["shortcuts": list(), "ringFingers": ringFingers, "escClose": escCloses] }
 
     static func list() -> [[String: Any]] {
         actions.map { a in
@@ -297,8 +344,14 @@ final class KeysBridge: NSObject, WKScriptMessageHandlerWithReply {
             case "set":
                 if let why = Shortcuts.set(id, body["combo"] as? String ?? "") { replyHandler(["error": why], nil) }
                 else { replyHandler(Shortcuts.state(), nil) }
+            case "fingers":
+                Shortcuts.setRingFingers(body["fingers"] as? Int ?? 4)
+                replyHandler(Shortcuts.state(), nil)
             case "reset":
                 Shortcuts.reset(id.isEmpty ? nil : id)
+                replyHandler(Shortcuts.state(), nil)
+            case "escClose":
+                Shortcuts.escCloses = body["on"] as? Bool == true
                 replyHandler(Shortcuts.state(), nil)
             default: replyHandler(nil, "unknown request")
             }

@@ -58,13 +58,14 @@ Works with Claude Code, Codex and Antigravity; not affiliated with Anthropic, Op
   off that board, turn off "Show my name on the Tokens board" (you then show as Anonymous; your total still counts).
 - The app talks to its server only for the social parts, feedback and updates: your hacker name and tag, the app and
   macOS version, whether you're working each minute (for XP) and your time zone, your friends, requests, messages and
-  status, the leaderboard, your token counts (above, unless you turn them off), and the feedback you send (kept with
+  status, the notes you share, the leaderboard, your token counts (above, unless you turn them off), and the feedback you send (kept with
   your name#tag and the time, no e-mail).
 - Your Mac is known to the server by a salted hash of its hardware UUID (never the UUID itself) and a random token
   kept on the Mac.
 - On Windows the same goes for your PC: Claude Code's files are in `%USERPROFILE%\.claude`, the server gets the
   Windows version, and the PC is known by a salted hash of Windows' MachineGuid.
 - Messages are stored on the server so they reach your friends; they aren't end-to-end encrypted.
+- Notes stay on your computer, encrypted, unless you share one. A shared note is stored on the server so the friends you invite can edit it with you: encrypted at rest like messages (the server can read it; it isn't end-to-end encrypted), sent only to those friends, and deleted from the server when the owner stops sharing it or deletes it. A shared note shows on every Mac of your account (Windows later); your other notes don't.
 - Settings can hide your active time from friends and your name on the leaderboard and the Tokens board, keep which
   AI and model you use from friends, and stop sending your token counts.
 - Discord presence (on unless Settings · DISCORD turns it off) tells the Discord app on your computer how many

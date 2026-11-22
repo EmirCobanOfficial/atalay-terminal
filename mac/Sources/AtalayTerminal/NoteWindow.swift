@@ -31,6 +31,9 @@ final class NoteWindow: NSObject, NSWindowDelegate, WKNavigationDelegate {
     /// Out of the way of a dashboard menu.
     private var steppedAside = false
     private var closing = false
+    /// The server's id of this window's note when it is shared (read from its note as it is loaded and saved): the only note this
+    /// window may ask a socket ticket for.
+    private var sharedID: String?
     private var finished = false
     /// Its page has its note (it's shown from then on).
     private var loaded = false
@@ -108,6 +111,11 @@ final class NoteWindow: NSObject, NSWindowDelegate, WKNavigationDelegate {
         let n = NoteWindow(id: id)
         n.pendingFocus = focus
         open[id] = n
+    }
+
+    /// The network came back: every window's shared note tries its line again.
+    static func netBack() {
+        for n in open.values where n.loaded { n.webView.evaluateJavaScript("window.Notes && Notes.netBack && Notes.netBack(); true", completionHandler: nil) }
     }
 
     /// For the AI tools (note_show): the note in its window without taking the keyboard from what the user is doing, and, when
@@ -388,6 +396,31 @@ final class NoteWindow: NSObject, NSWindowDelegate, WKNavigationDelegate {
         case "close":
             reply(nil)
             close(flush: true)
+        // A shared note's own parts, for this window's note only: its socket's ticket, its document file, the secrets check.
+        case "syncCaps", "syncTicket", "saveY", "loadY", "secretCheck", "attPick", "attAdd", "attHas", "attRead", "attSave", "attUpload", "attDownload", "attRemove", "attForget", "attAdds":
+            let mine = id, shared = sharedID
+            // A shared note's id is the server's (a uuid), not the window's note id: the ticket is for a note this account is in.
+            let isTicket = body["type"] as? String == "syncTicket" || body["type"] as? String == "attUpload"
+            if !NotesSync.handle(body["type"] as? String, body, store: .shared, allow: { isTicket ? ($0.lowercased() == shared?.lowercased() && shared != nil) : ($0 == mine || $0.isEmpty) }, reply: reply) { reply(["error": "unknown request"]) }
+        // The friends and the shared notes' calls (share, invite, remove, leave, stop) for this window's page, which has no `cloud`.
+        case "notesApi":
+            let path = body["path"] as? String ?? ""
+            let method = (body["method"] as? String ?? "GET").uppercased()
+            guard Self.mayCall(path, method) else { return reply(["error": "bad_path"]) }
+            let payload = body["body"]
+            Task { @MainActor in reply(await Cloud.shared.social(method, path, body: payload)) }
+        // Signing in with GitHub happens in the browser: only GitHub's own sign-in page opens (as the dashboard's `cloud` handler does).
+        case "openSignIn":
+            guard let s = body["url"] as? String, s.hasPrefix("https://github.com/login/oauth/authorize?"), let url = URL(string: s) else { return reply(false) }
+            NSWorkspace.shared.open(url)
+            reply(true)
+        // Not a member any more (or the sharing ended): the window closes and the dashboard's page drops the note.
+        case "sharedGone":
+            let id = self.id, why = body["why"] as? String ?? "removed"
+            reply(nil)
+            close(flush: false)
+            Self.forget(id)
+            Self.radar?.callNotes("window.Notes && Notes.dropSharedNow && Notes.dropSharedNow(id, why)", ["id": id, "why": why])
         case "confirm": confirm(body, reply)
         case "delete":
             reply(nil)
@@ -400,6 +433,22 @@ final class NoteWindow: NSObject, NSWindowDelegate, WKNavigationDelegate {
         }
     }
 
+    private func learnShared(_ json: String) {
+        let pad = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [String: Any]
+        let note = (pad?["notes"] as? [[String: Any]])?.first
+        sharedID = (note?["shared"] as? [String: Any])?["id"] as? String
+    }
+
+    /// What a note window's page may ask the API for: the friends (to pick who to share with) and the shared notes.
+    private static func mayCall(_ path: String, _ method: String) -> Bool {
+        guard CloudBridge.pageMayCall(path) else { return false }
+        // The sign-in a shared note asks for (GitHub or an e-mailed code), and whether this computer has an account: only those calls
+        // (reading the account; starting GitHub; sending and checking an e-mailed code), nothing else of /v1/account or /v1/auth.
+        if path == "v1/account" { return method == "GET" }
+        if path.hasPrefix("v1/auth") { return method == "POST" && ["v1/auth/github", "v1/auth/email", "v1/auth/email/verify"].contains(path) }
+        return path == "v1/social" || path == "v1/notes" || path.hasPrefix("v1/notes/")
+    }
+
     /// The note, from the dashboard's page: `{ json }` (a one-note pad), `{ gone }` (deleted: the window closes) or
     /// `{ wait }` (the dashboard's page is loading; the page asks again).
     private func load(_ reply: @escaping @MainActor (Any?) -> Void) {
@@ -409,6 +458,7 @@ final class NoteWindow: NSObject, NSWindowDelegate, WKNavigationDelegate {
             let answer = value as? [String: Any]
             guard let self, !self.finished else { return reply(["gone": true]) }
             if let json = answer?["json"] as? String {
+                self.learnShared(json)
                 reply(["json": json, "onTop": self.onTop, "streamer": Streamer.on])
                 if !self.loaded {
                     self.loaded = true
@@ -429,6 +479,7 @@ final class NoteWindow: NSObject, NSWindowDelegate, WKNavigationDelegate {
         guard let json, let pad = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [String: Any],
               let list = pad["notes"] as? [[String: Any]], list.count == 1, let note = list.first,
               note["id"] as? String == id else { return reply(["error": "bad request"]) }
+        learnShared(json)
         guard let radar = Self.radar else { return reply(["error": "the dashboard isn't open"]) }
         let js = "const N = window.Notes; return N && N.fromWindow ? await N.fromWindow(note) : { error: 'the dashboard is loading' };"
         radar.callNotes(js, ["note": note]) { value in

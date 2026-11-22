@@ -15,6 +15,7 @@ window.CheatSheet = (() => {
   // The ones nobody changes (Shortcuts.swift's reserved), each with the group it belongs to.
   const FIXED = [
     { group: 'Tabs and panes', title: 'Tab 1 to 9 of the window', label: '⌘1 … ⌘9' },
+    { group: 'Chats', title: 'Rewind a chat (Claude Code, Antigravity)', label: 'Esc Esc', swapLabel: '⌘W ⌘W' },
   ];
 
   let el = null;
@@ -26,15 +27,20 @@ window.CheatSheet = (() => {
     } catch {}
   };
 
-  function groupsOf(list) {
+  function groupsOf(list, fingers = 4, escOn) {
     const groups = [];
     const add = (k) => (groups.find((g) => g.name === k.group) || (groups.push({ name: k.group, items: [] }), groups[groups.length - 1])).items.push(k);
     for (const k of list) {
-      // The shortcut wheel opens with the trackpad first, then with the keys or the mouse button set for it.
-      if (k.id === 'shortcutsWheel') add({ ...k, keys: ['4-finger click', k.label].filter(Boolean) });
+      // The shortcut wheel opens with the trackpad first (4 fingers, 3, or none: Settings), then with the keys or the mouse button set for it.
+      if (k.id === 'shortcutsWheel') add({ ...k, keys: [fingers ? `${fingers}-finger click` : '', k.label].filter(Boolean) });
+      else if (k.id === 'closePane' && escOn) {
+        // Swapped (Settings › Shortcuts): Esc closes, the close keys send Esc to the terminal.
+        add({ ...k, keys: ['Esc'] });
+        if (k.label) add({ ...k, id: 'escSend', title: 'Send Esc to the terminal', keys: [k.label] });
+      }
       else add({ ...k, keys: k.label ? [k.label] : [] });
     }
-    for (const k of FIXED) add({ ...k, keys: [k.label] });
+    for (const k of FIXED) add({ ...k, keys: [escOn && k.swapLabel ? k.swapLabel : k.label] });
     return groups;
   }
 
@@ -60,7 +66,7 @@ window.CheatSheet = (() => {
       '<input type="search" class="cs-find" placeholder="type to filter" aria-label="Filter shortcuts" spellcheck="false" autocomplete="off" autocapitalize="off"></label></div>' +
       '<div class="cs-body"><div class="cs-cols">' +
       // A group may go on in the next column, so that they all fit without scrolling; its name stays with its first rows.
-      groupsOf(list).map((g) => {
+      groupsOf(list, st?.ringFingers ?? 4, st?.escClose === true).map((g) => {
         const rows = g.items.map((k) => row(g, k));
         return `<section class="cs-group"><div class="cs-head"><h3>${esc(g.name)}</h3><dl>${rows.slice(0, 2).join('')}</dl></div>` +
           (rows.length > 2 ? `<dl>${rows.slice(2).join('')}</dl>` : '') + '</section>';

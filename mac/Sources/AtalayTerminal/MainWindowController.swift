@@ -74,6 +74,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         files.onOpen = { [weak self] url, line, cwd in self?.radar.openFile(url, line: line, column: nil, cwd: cwd) }
         files.repositories = { Git.listedRoots() }
         overlay.manager = self
+        WorktreeShip.shared.manager = self
         buildLayout()
         wireEngine()
         WaitNotifier.shared.titleOf = { [weak self] b in self?.sidebar.customTitles[b.id] ?? b.title }
@@ -83,7 +84,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             MessagePanel.notices.runaways(json)
             self?.pushTerminals()
         }
-        runaways.start()
+        MemoryWatch.shared.start(manager: self, runaways: runaways)
         observeVisibility()
         Mascot.shared.bind(manager: self)
         PowerSaver.shared.onChange = { [weak self] in self?.pushPower() }
@@ -133,6 +134,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             open: { [weak self] in self?.userOpenSession($0) },
             fork: { [weak self] in self?.userOpenSession($0, fork: true) },
             newTerminal: { [weak self] in self?.newTerminal(in: $0) },
+            newWorktree: { [weak self] in self?.overlay.showNewWorktree(from: $0) },
+            ship: { [weak self] id, top in WorktreeShip.shared.handle(id, top: top, from: self?.shipWindow(for: top)) },
             reveal: { NSWorkspace.shared.open(URL(fileURLWithPath: $0)) },
             copyId: {
                 NSPasteboard.general.clearContents()
@@ -207,6 +210,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             self?.showDashboard()
             self?.radar.push("openProfile", "null")
         }
+        // A shared note's invite was accepted in a notice: the dashboard in front, and that note opened in its window.
+        MessagePanel.onOpenShared = { [weak self] id in
+            self?.showDashboard()
+            self?.radar.callNotes("window.Notes && Notes.openShared && Notes.openShared(id)", ["id": id])
+        }
         // A friend's picture or name was clicked in the chat: the dashboard in front, on the friends with their card.
         MessagePanel.onOpenFriend = { [weak self] id in
             guard let data = try? JSONSerialization.data(withJSONObject: [id]), let list = String(data: data, encoding: .utf8) else { return }
@@ -271,7 +279,20 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             terminalsJSON = ""
             pushTerminals()
             radar.push("runaways", runaways.json)
+            Cleanup.shared.viewChanged(open: false)
+            Cleanup.shared.pushPrefs()
+            MemoryWatch.shared.pushMemory(force: true)
         // Power save: the switch on the map, and Settings' "on by itself at low battery".
+        // Clean Up (Cleanup.swift, web/cleanup.js): the view opened or closed, the list asked for, the run and what goes with it.
+        case "cleanupOpen": showCleanup()
+        case "cleanupView": Cleanup.shared.viewChanged(open: msg["open"] as? Bool == true)
+        case "cleanupList": Cleanup.shared.pushList(force: true)
+        case "cleanupRun", "cleanupRetry": Cleanup.shared.run(msg["items"] as? [[String: Any]] ?? [])
+        case "cleanupHalt": Cleanup.shared.halt()
+        case "cleanupDismiss": MemoryWatch.shared.dismiss()
+        case "cleanupLog": Cleanup.shared.showLog()
+        case "cleanupPrefs": Cleanup.shared.setPrefs(msg)
+        case "openActivityMonitor": Cleanup.openActivityMonitor()
         case "powerSave": PowerSaver.shared.choose(msg["on"] as? Bool == true)
         case "powerSaveAuto": PowerSaver.shared.setAuto(msg["on"] as? Bool == true)
         // Settings · DISCORD: what you're doing on your Discord profile, and the project's name in it.
@@ -281,6 +302,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         case "open": if let sid = msg["sid"] as? String { userOpenSession(sid) }
         case "fork": if let sid = msg["sid"] as? String { userOpenSession(sid, fork: true) }
         case "newTerminal": overlay.showNewTerminal()
+        case "newWorktree": overlay.showNewTerminal(worktree: true)
         case "openTerminal": if let id = msg["id"] as? String { openTerminal(id) }
         case "endLeftover":
             if let pid = (msg["pid"] as? NSNumber)?.int32Value, let started = (msg["started"] as? NSNumber)?.doubleValue {
@@ -340,6 +362,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         case "whatsNewRead": UserDefaults.standard.removeObject(forKey: Self.whatsNewKey)
         case "mascotThemeGuard":
             Mascot.shared.onThemeChooserOpened()
+        case "worktreeNudge":
+            WorktreeNudge.enabled = (msg["on"] as? NSNumber)?.boolValue ?? true
+            if !WorktreeNudge.enabled { for c in chats.values { c.hud.nudge = nil } }
         case "mascotEnabled":
             Mascot.isEnabled = (msg["on"] as? NSNumber)?.boolValue ?? false
         // Viktoria's download (Themes row, Settings > Appearance): get, stop, or remove her files.
@@ -434,7 +459,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     /// A dashboard card's red button (the page asked already): Claude stops wherever it runs, and the card goes. A chat in
     /// one of our windows ends like its End button; elsewhere (iTerm2, a split pane) Claude gets SIGTERM.
-    private func endSession(_ sid: String) {
+    func endSession(_ sid: String) {
         guard let b = briefs[sid], b.live, let pid = b.pid else { return dismiss(sessionId: sid, pid: nil) }
         if let name = Detached.sessionName(hosting: pid) {
             if let c = chats.values.first(where: { $0.detached?.name == name }) { return c.endChat(confirm: false) }
@@ -491,7 +516,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         if hasState { sids.forEach { openSession($0) } } else { pendingOpen += sids }
     }
 
+    /// Status of each live AI session by its process id (AgyRewind asks whether Antigravity is idle).
+    static var aiStatus: [Int32: String] = [:]
+
     private func apply(_ list: [SessionBrief]) {
+        Self.aiStatus = Dictionary(list.filter(\.live).compactMap { b in b.pid.map { ($0, b.status) } }, uniquingKeysWith: { a, _ in a })
         briefs = Dictionary(list.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         if !hasState {
             hasState = true
@@ -503,6 +532,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             let b = list.first(where: { $0.tab == c.id }) ?? c.sessionId.flatMap { briefs[$0] }
             c.apply(b)
             c.applyHosted(list.filter { $0.tab == c.id && $0.live })
+            WorktreeNudge.review(c, briefs: briefs)
         }
         let live = list.filter(\.live)
         runaways.liveSessions = live.compactMap { b in
@@ -510,6 +540,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             let started = b.pid.flatMap { Proc.info($0).map { Double($0.started / 1000) } } ?? 0
             return Runaways.LiveSession(cwd: b.cwd, started: started, busy: b.status == "busy")
         }
+        MemoryWatch.setAIPids(live.compactMap(\.pid))
         let needYou = live.filter { $0.status == "waiting" }.count
         NSApp.dockTile.badgeLabel = needYou > 0 ? "\(needYou)" : nil
         for b in live {
@@ -674,7 +705,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     /// The jobs and everything they started (npm starts node, node starts esbuild, …).
-    private static func tree(_ roots: [Int32]) -> [Int32] {
+    static func tree(_ roots: [Int32]) -> [Int32] {
         var all = roots, next = roots
         for _ in 0..<5 where !next.isEmpty {
             next = next.flatMap { Proc.children(of: $0) }
@@ -694,9 +725,16 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     /// The hacker name, online count and update state, for the brand, settings and update button.
+    /// The network is back or the Mac woke: the notes' live lines (the dashboard's, and each note window's) try again at once.
+    func notesNetBack() {
+        radar.callNotes("window.Notes && Notes.netBack && Notes.netBack()", [:])
+        NoteWindow.netBack()
+    }
+
     private func pushCloud() {
         guard let data = try? JSONSerialization.data(withJSONObject: Cloud.shared.json), let js = String(data: data, encoding: .utf8) else { return }
         radar.push("cloud", js)
+        radar.webView.evaluateJavaScript("window.__worktreeNudge = \(WorktreeNudge.enabled)", completionHandler: nil)
     }
 
     /// Another theme (the theme screen): the window's own background and the sidebar's divider; the page, the sidebar
@@ -828,13 +866,241 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     /// A terminal in `cwd`, not a chat: a new conversation starts with `claude`, an earlier one in that folder
     /// with `claude -r`. Whatever Claude runs there shows up in the window like any chat.
-    func newTerminal(in cwd: String, frame: NSRect? = nil) {
+    func newTerminal(in cwd: String, frame: NSRect? = nil, nudgeTold: Bool = false) {
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: cwd, isDirectory: &isDir), isDir.boolValue else {
             alert("Folder not found", tildify(cwd))
             return
         }
-        makeChat(cwd: cwd, claudeArgs: nil, sessionId: nil, title: (cwd as NSString).lastPathComponent, frame: frame)
+        makeChat(cwd: cwd, claudeArgs: nil, sessionId: nil, title: (cwd as NSString).lastPathComponent, frame: frame, told: nudgeTold)
+    }
+
+    /// A new chat in `cwd` with the AI the new-worktree sheet picked: Claude, Codex, Antigravity, Cursor, or none (a plain terminal).
+    /// Each starts in the folder the same way (`cd`, then its command), as a chat opened from the list does.
+    func newChat(in cwd: String, ai: String) {
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: cwd, isDirectory: &isDir), isDir.boolValue else {
+            alert("Folder not found", tildify(cwd))
+            return
+        }
+        let args: [String]? = ai == "codex" ? ["codex"] : ai == "agy" ? ["agy"] : ai == "cursor" ? ["cursor-agent"] : ai == "terminal" ? nil : []
+        makeChat(cwd: cwd, claudeArgs: args, sessionId: nil, title: (cwd as NSString).lastPathComponent)
+    }
+
+    /// The AIs working in the working tree `path` is in, by name (the folder picker's "· Codex is working here").
+    func aiTools(inTreeOf path: String) -> [String] {
+        guard let top = Worktrees.info(of: path)?.top else { return [] }
+        let live = briefs.values.filter { $0.live && $0.status != "ended" && !$0.cwd.isEmpty && Worktrees.info(of: $0.cwd)?.top == top }
+        let trees = briefs.values.filter { $0.live }.compactMap { o -> (id: String, set: Set<Int32>)? in o.pid.map { (o.id, Set(Self.tree([$0]))) } }
+        return live.filter { o in
+            guard let pid = o.pid else { return true }
+            return !trees.contains { $0.id != o.id && $0.set.contains(pid) }
+        }.map(WorktreeNudge.name)
+    }
+
+    /// The chat in front, when a worktree can be offered for it: a live chat of one of the three AIs, in a git folder.
+    func movableChat() -> (c: ChatWindowController, b: SessionBrief)? {
+        guard let c = NSApp.keyWindow?.windowController as? ChatWindowController, let b = c.hud.brief, b.live,
+              !c.hud.mirror, WorktreeNudge.aiOf(b) != nil, Worktrees.info(of: b.cwd) != nil else { return nil }
+        return (c, b)
+    }
+
+    /// Whether panes of the window named `window` (a detached session's name) were closed to run on as cars.
+    func hasParked(of window: String) -> Bool {
+        parked.keys.contains { Detached.extraInfo($0)?.parent == window }
+    }
+
+    /// The note's button, Chat → Open in a Worktree…: the name sheet alone, for this chat's AI.
+    func moveToWorktree(_ c: ChatWindowController? = nil) {
+        guard let (chat, b) = c.flatMap({ c in c.hud.brief.map { (c, $0) } }) ?? movableChat(), let ai = WorktreeNudge.aiOf(b) else { return NSSound.beep() }
+        let folder = Worktrees.info(of: b.cwd).map { ($0.top as NSString).lastPathComponent } ?? ""
+        overlay.showNewWorktree(from: b.cwd, ai: ai, moving: (window: chat.id, sid: b.id, tool: WorktreeNudge.name(b), folder: folder))
+    }
+
+    /// The worktree is made: the AI starts in it, in the usual place. The old chat is not touched; its strip says where the
+    /// new one is and offers "Close this chat" (the usual confirmation). Nothing closes by itself.
+    func finishMove(replacing id: String, sid: String, path: String, ai: String) {
+        newChat(in: path, ai: ai)
+        guard let old = chats[id], let b = old.hud.brief, b.id == sid || old.sessionId == sid else { return }
+        let w = Worktrees.info(of: path)
+        old.hud.nudge = WorktreeOffer(sid: sid, tool: WorktreeNudge.name(b), folder: "", top: w?.top ?? path, dir: b.cwd,
+                                      ai: WorktreeNudge.aiOf(b) ?? "claude", others: [], openedIn: w?.branch ?? (path as NSString).lastPathComponent)
+    }
+
+    // MARK: Clean Up (Cleanup.swift)
+
+    /// The app menu's Clean Up\u{2026}, Settings' Open Clean Up\u{2026}, the map's strip: the dashboard in front, the view open.
+    func showCleanup() {
+        showDashboard()
+        radar.push("openCleanup", "null")
+    }
+
+    /// One AI chat Clean Up may list: a live AI of this build's sessions, with what it needs to know of the window it is in.
+    struct CleanupChat {
+        let brief: SessionBrief
+        let title: String
+        /// ms since 1970 of the last key or paste in its terminal (0: none seen).
+        let lastInput: Double
+        /// Its window is the one in front now.
+        let inFront: Bool
+        /// "claude", "codex", "agy" or "cursor".
+        let ai: String
+        let aiName: String
+        /// Something that would end with it that the summary doesn't name (ChatWindowController.cleanupBlocker).
+        let blocker: String?
+    }
+
+    /// The live AI chats that run in this build's sessions (a chat running under another's process, Claude's own `codex exec`,
+    /// is part of that chat). A mirror of the other build's chat and an AI in another app are not here: they aren't Orbiterm's.
+    func cleanupChats() -> [CleanupChat] {
+        let live = briefs.values.filter { $0.live && $0.status != "ended" && $0.pid != nil }
+        let trees = live.compactMap { o -> (id: String, set: Set<Int32>)? in o.pid.map { (o.id, Set(Self.tree([$0]))) } }
+        var out: [CleanupChat] = []
+        for b in live {
+            guard let pid = b.pid, let kind = WorktreeNudge.aiOf(b),
+                  !trees.contains(where: { $0.id != b.id && $0.set.contains(pid) }),
+                  let name = Detached.sessionName(hosting: pid) else { continue }
+            let win = chats.values.first { $0.detached?.name == name || $0.extras.contains { $0.link?.name == name } }
+            if win?.hud.mirror == true { continue }
+            let title = sidebar.customTitles[b.id] ?? (b.title.isEmpty ? (b.cwd as NSString).lastPathComponent : b.title)
+            out.append(CleanupChat(brief: b, title: title, lastInput: win?.lastInputAt(session: name) ?? 0,
+                                   inFront: win?.window?.isKeyWindow == true, ai: kind, aiName: WorktreeNudge.name(b),
+                                   blocker: win?.detached?.name == name ? win?.cleanupBlocker() : nil))
+        }
+        return out
+    }
+
+    /// Every live AI session, whoever runs it (a worktree it works in is in use).
+    func cleanupLiveBriefs() -> [SessionBrief] { briefs.values.filter { $0.live } }
+
+    /// A live chat's brief, as it is now.
+    func cleanupBrief(_ sid: String) -> SessionBrief? { briefs[sid].flatMap { $0.live ? $0 : nil } }
+
+    /// Ends the chat the user ticked (they agreed on the summary): only this chat, as its End button ends it. A chat in a window of
+    /// its own ends with the window's own chat (never another tab); one in a split pane stops its AI. False when it isn't there.
+    func cleanupEnd(_ sid: String) -> Bool {
+        guard let b = briefs[sid], b.live, b.status == "idle", let pid = b.pid, let name = Detached.sessionName(hosting: pid) else { return false }
+        if let c = chats.values.first(where: { $0.detached?.name == name }) { return c.endOwnChatForCleanup() }
+        endSession(sid)
+        return true
+    }
+
+    /// The folders Clean Up looks for worktrees from: where live chats work, where chats were in the last 30 days, the app's
+    /// terminals, Source Control's repos.
+    func cleanupFolders() -> [String] {
+        var out = Set(briefs.values.filter { $0.live && !$0.cwd.isEmpty }.map(\.cwd))
+        let since = nowMs() - 30 * 86_400_000
+        for item in sidebar.items where item.mtime >= since && !item.cwd.isEmpty { out.insert(item.cwd) }
+        out.formUnion(terminalFolders())
+        out.formUnion(Git.listedRoots())
+        return Array(out)
+    }
+
+    // MARK: worktree: PR, merge, delete (WorktreeShip.swift)
+
+    /// Linked worktrees with a window on screen: their status is kept fresh.
+    func shipTops() -> Set<String> {
+        Set(chats.values.compactMap { $0.isShown && !$0.hud.mirror ? $0.hud.wtTop : nil })
+    }
+
+    /// Whether the chats list can be seen now (the dashboard on screen with the list open): only then its groups are read.
+    func shipListVisible() -> Bool {
+        guard let w = window, w.isVisible, !w.isMiniaturized, w.occlusionState.contains(.visible), NSApp.isActive || w.isKeyWindow else { return false }
+        return !sidebarHost.isHidden && sidebarHost.frame.width > 8
+    }
+
+    /// The window in front when it is a window of the worktree `top` (what the chats list's menu and the Chat menu open the sheet
+    /// from); else the newest shown window of it, else none (the sheet then stands alone).
+    func shipWindow(for top: String) -> ChatWindowController? {
+        if let c = NSApp.keyWindow?.delegate as? ChatWindowController, c.hud.wtTop == top, !c.hud.mirror { return c }
+        return nil
+    }
+
+    /// The chat or terminal window in front, when it is in a linked worktree (Chat menu: Create Pull Request…).
+    func shipFront() -> ChatWindowController? {
+        guard let c = NSApp.keyWindow?.delegate as? ChatWindowController, c.hud.wtTop != nil, !c.hud.mirror else { return nil }
+        return c
+    }
+
+    /// The AI chats and terminals open in the worktree `top`: the AI sessions (the app's and any other app's) and the app's terminals.
+    func shipLive(top: String) -> [ShipLive] {
+        var out: [ShipLive] = []
+        // Under the folder counts too: a worktree inside it (`claude -w`) goes to the Trash with it.
+        func under(_ cwd: String) -> Bool {
+            guard let t = Worktrees.info(of: cwd)?.top else { return cwd == top || cwd.hasPrefix(top + "/") }
+            return t == top || t.hasPrefix(top + "/")
+        }
+        let live = briefs.values.filter { $0.live && $0.status != "ended" && !$0.cwd.isEmpty && under($0.cwd) }
+        let trees = briefs.values.filter { $0.live }.compactMap { o -> (id: String, set: Set<Int32>)? in o.pid.map { (o.id, Set(Self.tree([$0]))) } }
+        for o in live {
+            // One that runs under another's process (Claude's own `codex exec`) is part of that chat.
+            if let pid = o.pid, trees.contains(where: { $0.id != o.id && $0.set.contains(pid) }) { continue }
+            let inApp = chat(for: o) != nil || (o.pid.flatMap { Detached.sessionName(hosting: $0) } != nil)
+            out.append(ShipLive(id: o.id, name: WorktreeNudge.name(o), kind: "chat", status: o.status, inApp: inApp))
+        }
+        for c in chats.values where !c.hud.mirror {
+            if c.hud.status == "terminal", !c.hud.exited, c.hud.wtTop == top {
+                out.append(ShipLive(id: c.id, name: "terminal", kind: "terminal", status: "idle", inApp: true))
+            }
+            for pane in c.extras where under(pane.cwd) {
+                out.append(ShipLive(id: "pane:" + (pane.link?.name ?? pane.cwd), name: "terminal", kind: "terminal", status: "idle", inApp: true))
+            }
+        }
+        return out
+    }
+
+    /// The AI "Ask … to fix" goes to: the one in the window the sheet dropped from, else the newest live AI chat in the worktree.
+    func shipAI(top: String, preferring window: ChatWindowController?) -> ShipAI? {
+        func ai(_ b: SessionBrief) -> ShipAI? {
+            guard b.live, b.status != "ended", let kind = WorktreeNudge.aiOf(b) else { return nil }
+            return ShipAI(name: WorktreeNudge.name(b), sid: b.id, kind: kind)
+        }
+        if let b = window?.hud.brief, let a = ai(b) { return a }
+        let mine = briefs.values.filter { $0.live && !$0.cwd.isEmpty && Worktrees.info(of: $0.cwd)?.top == top && ai($0) != nil }
+        return mine.max { $0.statusSince < $1.statusSince }.flatMap(ai)
+    }
+
+    /// A pull request's title when the window has none (a terminal's): the newest chat's in the worktree.
+    func shipTitle(in top: String) -> String? {
+        let mine = briefs.values.filter { !$0.title.isEmpty && !$0.cwd.isEmpty && Worktrees.info(of: $0.cwd)?.top == top }
+        return mine.max { $0.statusSince < $1.statusSince }?.title
+    }
+
+    /// Delete worktree: every chat and terminal open there ends, as its End button ends it; the windows stay, ended. False when
+    /// something still ran after five seconds.
+    func endSessions(in top: String) async -> Bool {
+        for c in chats.values where !c.hud.mirror {
+            c.endPanes(inTop: top)
+            if c.hud.wtTop == top, !c.hud.exited { c.endLeavingWindow() }
+        }
+        for _ in 0..<50 {
+            let windows = chats.values.contains { !$0.hud.mirror && $0.hud.wtTop == top && !$0.hud.exited }
+            let sessions = shipLive(top: top).contains { $0.kind == "chat" || $0.inApp }
+            if !windows && !sessions { return true }
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        return false
+    }
+
+    /// The folder is deleted: the ended windows say so in their terminals; their chips say `deleted` (WorktreeShip.deleted).
+    func shipDeleted(top: String, branch: String, sha: String, kept: Bool) {
+        let shownBranch = Streamer.on ? Streamer.fake("branch", branch) : branch
+        let line = "[worktree deleted \u{00B7} the folder is in the Trash \u{00B7} " + (kept ? "branch \(shownBranch) kept" : "branch \(shownBranch) was \(Streamer.on ? "\u{2026}" : sha)") + "]"
+        for c in chats.values where c.hud.wtTop == top && c.hud.exited { c.noteEnded(line) }
+    }
+
+    /// "Show Claude": its window to the front (or the one that ran it).
+    func showChat(sessionId sid: String) {
+        guard let b = briefs[sid], let c = chat(for: b) else { return }
+        c.show()
+    }
+
+    /// The chip, Show Changes: Source Control on this worktree.
+    func showSourceControl(root: String) {
+        showDashboard()
+        window?.makeFirstResponder(radar.webView)
+        let arg = (try? JSONSerialization.data(withJSONObject: [root], options: [])).flatMap { String(data: $0, encoding: .utf8) } ?? "[\"\"]"
+        radar.webView.evaluateJavaScript("window.GitView && GitView.show(\(arg)[0]); true", completionHandler: nil)
     }
 
     /// Delete in the chats list (a chat's menu, a folder's, or the bar over the list while some are picked): asks first,
@@ -946,6 +1212,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             guard !fork else { return }
             return makeChat(cwd: cwd, claudeArgs: ["agy", "--conversation", sid], sessionId: sid, title: title)
         }
+        // A Cursor chat that isn't running: `cursor-agent --resume <chat id>`.
+        if item?.tool == "cursor" {
+            guard !fork else { return }
+            return makeChat(cwd: cwd, claudeArgs: ["cursor-agent", "--resume", sid], sessionId: sid, title: title)
+        }
         // A Codex conversation that isn't running (a running one opened its pane above): Codex resumes it.
         if item?.tool == "codex" {
             guard !fork else { return }
@@ -1006,9 +1277,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// Opens a chat window and starts its shell (and Claude, with `claudeArgs`) in a detached session, so it
     /// outlives the app. The window opens at once; screen starts off the main thread and the window attaches after.
     private func makeChat(cwd: String, claudeArgs: [String]?, sessionId: String?, title: String, origin: ITermOrigin? = nil,
-                          frame: NSRect? = nil) {
+                          frame: NSRect? = nil, told: Bool = false) {
         guard Detached.available else {
-            openWindow(cwd: cwd, claudeArgs: claudeArgs, sessionId: sessionId, title: title, detached: nil, frame: frame).origin = origin
+            let c = openWindow(cwd: cwd, claudeArgs: claudeArgs, sessionId: sessionId, title: title, detached: nil, frame: frame)
+            c.origin = origin
+            c.nudgeTold = told
             return
         }
         // A fresh name every time: a session named after the conversation clashed with an older one of the same
@@ -1016,6 +1289,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         let link = DetachedLink(name: Detached.prefix + UUID().uuidString.lowercased())
         let c = openWindow(cwd: cwd, claudeArgs: claudeArgs, sessionId: sessionId, title: title, detached: link, attach: false, frame: frame)
         c.origin = origin
+        c.nudgeTold = told
         Detached.start(name: link.name, cwd: cwd, claudeArgs: claudeArgs) { [weak self, weak c] ok in
             guard let self, let c else { return }
             guard ok else {
@@ -1080,8 +1354,21 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         c.split(vertical: vertical)
     }
 
+    /// Some chat window holds env changes not saved: an update's restart waits.
+    var hasUnsavedEnv: Bool { chats.values.contains { $0.envUnsaved } }
+
+    /// Before a quit: every chat window with env changes not saved asks (and comes to the front). False when one is cancelled.
+    func confirmEnvBeforeQuit() -> Bool {
+        for c in chats.values where !c.confirmEnvForQuit() { return false }
+        return true
+    }
+
     /// ⌘W: the pane in front closes, or with only the window's own, the window.
     func closePane() {
+        // The env view over a terminal closes first, as a tab does (Esc does the same there, whatever the swap says).
+        if let c = activeChat, c.closeEnvKey() { return }
+        // Esc and ⌘W swapped (Settings › Shortcuts): in a terminal the close keys (not a menu click) are an Esc for the program there (EscClose).
+        if NSApp.currentEvent?.type == .keyDown, EscClose.sendEsc() { return }
         // A friend's chat in front closes itself (the terminal behind keeps its panes).
         if MessagePanel.closeKeyChat() { return }
         if NoteWindow.closeKey() { return }

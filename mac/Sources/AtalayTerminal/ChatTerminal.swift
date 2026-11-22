@@ -8,6 +8,8 @@ final class ChatTerminalView: LocalProcessTerminalView {
     var chatId = ""
     /// The shell inside this chat's detached session (0 when it has none), to tell which program is in front.
     var sessionShell: () -> Int32 = { 0 }
+    /// The screen session this terminal shows (set by `attach`); AgyRewind works only in this build's tuned ones.
+    var screenName = ""
     /// The selected text after every change (nil when nothing is selected), and what ⌘C copied.
     var onSelection: ((String?) -> Void)?
     var onCopy: ((String) -> Void)?
@@ -293,7 +295,12 @@ final class ChatTerminalView: LocalProcessTerminalView {
     }
 
     /// Everything typed or pasted goes out through here: typing in a chat or terminal is work (Activity, for XP).
+    /// When something was last typed or pasted here (not the terminal's own replies, nor a lone arrow key or Esc), in ms:
+    /// the second-AI note is not offered to a chat that was typed into since its AI started (WorktreeNudge.swift).
+    var typedAt = 0.0
+
     override func send(source: TerminalView, data: ArraySlice<UInt8>) {
+        if let f = data.first, f != 0x1b || data.starts(with: [0x1b, 0x5b, 0x32, 0x30, 0x30, 0x7e]) { typedAt = nowMs() }
         Activity.work()
         // Real keystrokes only (the terminal's own replies to the program come through here too): the mascot may notice.
         if let ev = NSApp.currentEvent, ev.type == .keyDown, ev.window === window { Mascot.shared.onTyping(chatId) }
@@ -320,6 +327,38 @@ final class ChatTerminalView: LocalProcessTerminalView {
 
     private static func isInteractiveAI(_ pid: Int32) -> Bool {
         Proc.isClaude(pid) || Proc.otherAI(pid) != nil
+    }
+
+    /// Antigravity is in front, idle (and not just sent a prompt), and its prompt is really empty: a second Esc may become
+    /// `/rewind` (AgyRewind.swift). Anything unclear is a no. Its own check, not McpTools.inputState's: that one takes
+    /// typed text that starts like a placeholder ("Find and fix the login bug") for an empty prompt.
+    func agyRewindReady() -> Bool {
+        // A mirror window shows another build's session: it keeps screen's 300 ms Esc wait, which would merge Esc with /rewind.
+        guard Detached.isTuned(screenName),
+              let group = foregroundGroup(), Proc.otherAI(group) == "Antigravity",
+              MainWindowController.aiStatus[group] == "idle", let terminal = engine else { return false }
+        // The status stays "idle" a moment after a prompt is sent: Esc Esc to stop that turn must not open the panel too.
+        guard nowMs() - typedAt > 1500 else { return false }
+        let (rows, cursor): ([String], (x: Int, y: Int)) = terminal.terminalLock.withLock {
+            ((0..<terminal.rows).map { terminal.getLine(row: $0)?.translateToString(trimRight: true) ?? "" }, terminal.getCursorLocation())
+        }
+        let box: Set<Character> = ["│", "┃", "|"]
+        for (y, raw) in rows.enumerated().reversed().prefix(30) {
+            let chars = Array(raw)
+            var lead = 0
+            while lead < chars.count, chars[lead] == " " || box.contains(chars[lead]) { lead += 1 }
+            guard lead < chars.count, ">❯›!→".contains(chars[lead]) else { continue }
+            // The bottom-most prompt line decides. Anything but ">" (bash mode ! …) is no.
+            guard chars[lead] == ">" else { return false }
+            var rest = String(chars[(lead + 1)...]).trimmingCharacters(in: .whitespaces)
+            while let e = rest.last, box.contains(e) { rest = String(rest.dropLast()).trimmingCharacters(in: .whitespaces) }
+            // The cursor sits right after the mark, where the placeholder starts: typed text would have moved it.
+            guard cursor.y == y, cursor.x <= lead + 2 else { return false }
+            if rest.isEmpty { return true }
+            // Its own placeholder, whole: "Accept-edits mode: file edits auto-approved (shift+tab to cycle)".
+            return rest.range(of: #"^[A-Za-z][A-Za-z0-9 \-]* mode: .*\(shift\+tab to cycle\)$"#, options: .regularExpression) != nil
+        }
+        return false
     }
 
     private var claudeInFront: Bool { foregroundGroup().map(Self.isInteractiveAI) ?? false }
@@ -409,8 +448,8 @@ enum TerminalFactory {
     /// without, it is a plain terminal (where Claude can be started or resumed by hand).
     nonisolated static func shellArgs(_ shell: String, cwd: String, claudeArgs: [String]?) -> [String] {
         guard let claudeArgs else { return ["-il"] }
-        // Antigravity's and Codex's own command lines (a saved conversation opened from the chats list), else Claude's.
-        let cmd = (["agy", "codex"].contains(claudeArgs.first) ? claudeArgs : ["claude"] + claudeArgs).map(shellQuote).joined(separator: " ")
+        // Antigravity's, Codex's and Cursor's own command lines (a saved conversation opened from the chats list), else Claude's.
+        let cmd = (["agy", "codex", "cursor-agent"].contains(claudeArgs.first) ? claudeArgs : ["claude"] + claudeArgs).map(shellQuote).joined(separator: " ")
         return ["-ilc", "cd -- \(shellQuote(cwd)) && \(cmd); exec \(shellQuote(shell)) -il"]
     }
 
@@ -507,6 +546,8 @@ enum TerminalFactory {
     /// behind the app's own relay, which gives Claude's frames back the marks screen drops (SyncRelay).
     static func attach(_ tv: ChatTerminalView, screenName: String, cwd: String, fit: Bool) {
         let relay = Bundle.main.executablePath ?? CommandLine.arguments[0]
+        Detached.tune(screenName)
+        tv.screenName = screenName
         tv.startProcess(executable: relay, args: ["--sync-relay", Detached.screen] + Detached.attachArgs(screenName, fit: fit),
                         environment: childEnvironment(), execName: nil, currentDirectory: cwd)
     }

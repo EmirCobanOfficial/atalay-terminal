@@ -116,7 +116,9 @@ final class SidebarModel: ObservableObject {
     private var shownChats: [ChatItem] {
         var out = sections.favorites
         for card in cards where !(folded.contains(Self.folderKey(card.cwd)) && query.isEmpty) {
-            out += expanded.contains(card.cwd) || !query.isEmpty ? card.items : Array(card.items.prefix(5))
+            let all = expanded.contains(card.cwd) || !query.isEmpty
+            out += all ? card.items : Array(card.items.prefix(5))
+            for g in card.worktrees { out += all ? g.items : Array(g.items.prefix(3)) }
         }
         return out
     }
@@ -157,12 +159,12 @@ final class SidebarModel: ObservableObject {
     /// The chats a folder's card shows (not its archived or starred ones), for deleting a whole folder's.
     func chats(inFolders cwds: Set<String>) -> [String] {
         let keys = Set(cwds.map(Self.folderKey))
-        return cards.filter { keys.contains(Self.folderKey($0.cwd)) }.flatMap { $0.items.map(\.id) }
+        return cards.filter { keys.contains(Self.folderKey($0.cwd)) }.flatMap { $0.items.map(\.id) + $0.worktrees.flatMap { $0.items.map(\.id) } }
     }
 
     // MARK: deleting chats
 
-    /// Whether a chat can be deleted here: a saved conversation of Claude Code's, Codex's or Antigravity's, not running
+    /// Whether a chat can be deleted here: a saved conversation of Claude Code's, Codex's, Antigravity's or Cursor's, not running
     /// (a running one is ended first).
     func canDelete(_ item: ChatItem) -> Bool {
         guard brief(for: item)?.live != true else { return false }
@@ -170,6 +172,7 @@ final class SidebarModel: ObservableObject {
         case "claude": return ChatTrash.isTranscript(item.path)
         case "codex": return ChatTrash.isCodexLog(item.path, id: item.id)
         case "antigravity": return ChatTrash.isSessionId(item.id)
+        case "cursor": return ChatTrash.isCursorChat(item.path, id: item.id)
         default: return false
         }
     }
@@ -207,7 +210,7 @@ final class SidebarModel: ObservableObject {
 
     func putBackAll() { trash = [:] }
 
-    /// A deleted chat that runs again (continued in a terminal: `claude --resume`, `codex resume`, `agy --conversation`)
+    /// A deleted chat that runs again (continued in a terminal: `claude --resume`, `codex resume`, `agy --conversation`, `cursor-agent --resume`)
     /// comes back: it's in use.
     private func reviveRunning() {
         guard !trash.isEmpty else { return }
@@ -303,15 +306,23 @@ final class SidebarModel: ObservableObject {
 
     /// A whole folder in or out of the archive. Out, everything in it comes back, chats archived one by one too.
     func setFolder(_ cwd: String, archived on: Bool) {
-        let ids = Set(groups.first { $0.cwd == cwd }?.items.map(\.id) ?? [])
+        var ids = Set(groups.first { $0.cwd == cwd }?.items.map(\.id) ?? [])
+        // A card's worktrees go with it: what the card shows is what's archived.
+        var cwds: Set<String> = [cwd]
+        if let card = cards.first(where: { Self.folderKey($0.cwd) == Self.folderKey(cwd) }) {
+            for g in card.worktrees {
+                ids.formUnion(g.items.map(\.id))
+                cwds.formUnion(g.items.map(\.cwd))
+            }
+        }
         if on {
-            archivedFolders.insert(cwd)
+            archivedFolders.formUnion(cwds)
             restored.subtract(ids)
             favorites.subtract(ids)
             // Archived, a folder opened from the list leaves it too.
             unpin(cwd)
         } else {
-            archivedFolders.remove(cwd)
+            archivedFolders.subtract(cwds)
             archived.subtract(ids)
             restored.subtract(ids)
         }
@@ -336,19 +347,33 @@ final class SidebarModel: ObservableObject {
         var order: [String] = []
         var map: [String: FolderCard] = [:]
         func card(_ cwd: String) -> String {
-            let key = Self.folderKey(cwd)
+            let key = Self.folderKey(Worktrees.real(cwd))
             if map[key] == nil {
                 order.append(key)
-                map[key] = FolderCard(cwd: cwd, items: [], terms: [], pinned: false)
+                map[key] = FolderCard(cwd: cwd, items: [], terms: [], pinned: false, worktrees: [], isRepo: Worktrees.info(of: cwd) != nil)
             }
             return key
         }
-        for p in pinned where !archivedFolders.contains(p) { map[card(p)]?.pinned = true }
-        for g in sections.groups { map[card(g.cwd)]?.items = g.items }
-        for t in terminals where q.isEmpty || "\(t.title) \(t.job) \(t.cwd)".lowercased().contains(q) {
-            map[card(t.cwd)]?.terms.append(t)
+        /// A linked worktree's chats and terminals sit in its main repo's card (in the same sub folder of it), in a group of
+        /// their own. Anything else is its own folder's card, as before.
+        func home(_ cwd: String) -> (key: String, wt: WorktreeInfo?) {
+            guard let w = Worktrees.info(of: cwd), w.linked else { return (card(cwd), nil) }
+            return (card(w.sub.isEmpty ? w.main : w.main + "/" + w.sub), w)
         }
-        return order.compactMap { map[$0] }.filter { q.isEmpty || !$0.items.isEmpty || !$0.terms.isEmpty }
+        for p in pinned where !archivedFolders.contains(p) { map[card(p)]?.pinned = true }
+        for g in sections.groups {
+            let h = home(g.cwd)
+            if let w = h.wt { map[h.key]?.add(w, items: g.items) } else { map[h.key]?.items = g.items }
+        }
+        for t in terminals where q.isEmpty || "\(t.title) \(t.job) \(t.cwd)".lowercased().contains(q) {
+            let h = home(t.cwd)
+            if let w = h.wt { map[h.key]?.add(w, terms: [t]) } else { map[h.key]?.terms.append(t) }
+        }
+        // The worktree with the newest chat first; those with only a terminal after them.
+        for key in order {
+            map[key]?.worktrees.sort { ($0.items.first?.mtime ?? 0) > ($1.items.first?.mtime ?? 0) }
+        }
+        return order.compactMap { map[$0] }.filter { q.isEmpty || !$0.items.isEmpty || !$0.terms.isEmpty || !$0.worktrees.isEmpty }
     }
 
     /// The live brief matching a chat row (either by session id for Claude, or by convId for Antigravity).
@@ -364,7 +389,7 @@ final class SidebarModel: ObservableObject {
         var all = items.filter { trash[$0.id] == nil && !erasing.contains($0.id) }
         let known = Set(items.map(\.id))
         for b in briefs.values where b.live && !known.contains(b.id) && (b.convId.map { !known.contains($0) } ?? true) && !b.cwd.isEmpty {
-            let tool = b.name == "Antigravity" ? "antigravity" : b.name == "Codex" ? "codex" : "claude"
+            let tool = b.name == "Antigravity" ? "antigravity" : b.name == "Codex" ? "codex" : b.name == "Cursor" ? "cursor" : "claude"
             all.append(ChatItem(id: b.id, path: "", cwd: b.cwd, mtime: Date().timeIntervalSince1970 * 1000, size: 0,
                                 title: b.title.isEmpty ? "new chat · \(b.name)" : b.title, lastPrompt: "", tool: tool))
         }
@@ -428,18 +453,49 @@ struct TermRow: Identifiable, Equatable {
     let shown: Bool
 }
 
+/// The chats and terminals of one linked worktree, shown in its main repo's card under "worktree · branch".
+struct WorktreeGroup {
+    let top: String
+    let branch: String
+    var items: [ChatItem] = []
+    var terms: [TermRow] = []
+    /// Its folder is gone (deleted by hand): the chats are still saved.
+    var gone: Bool { !FileManager.default.fileExists(atPath: top) }
+}
+
 /// A folder of the chats list: its chats, the app's terminals in it, and whether it was opened from the list.
 struct FolderCard {
     let cwd: String
     var items: [ChatItem]
     var terms: [TermRow]
     var pinned: Bool
+    /// Its linked worktrees (git worktree), each a group inside the card.
+    var worktrees: [WorktreeGroup]
+    /// Whether the folder is in a git repo: only then a worktree can be made from it.
+    var isRepo: Bool
+
+    /// What the card shows: its own and its worktrees' chats and terminals.
+    var total: Int { items.count + terms.count + worktrees.reduce(0) { $0 + $1.items.count + $1.terms.count } }
+
+    /// Chats and terminals of the worktree `w`, into its group (made when there isn't one yet).
+    mutating func add(_ w: WorktreeInfo, items: [ChatItem] = [], terms: [TermRow] = []) {
+        if let i = worktrees.firstIndex(where: { $0.top == w.top }) {
+            worktrees[i].items += items
+            worktrees[i].terms += terms
+        } else {
+            worktrees.append(WorktreeGroup(top: w.top, branch: w.branch, items: items, terms: terms))
+        }
+    }
 }
 
 struct SidebarActions {
     let open: (String) -> Void
     let fork: (String) -> Void
     let newTerminal: (String) -> Void
+    /// The name sheet for a new worktree of the repo this folder is in (Overlay.swift).
+    let newWorktree: (String) -> Void
+    /// One of a worktree's actions (WorktreeShip.swift: create, prmerge, openpr, merge, delete, changes) on the folder.
+    let ship: (String, String) -> Void
     let reveal: (String) -> Void
     let copyId: (String) -> Void
     /// Delete, for these chats: the app asks first, then they go to Settings' deleted chats for 30 days.
@@ -457,6 +513,8 @@ struct SidebarView: View {
     @ObservedObject var model: SidebarModel
     let actions: SidebarActions
     @ObservedObject var theme = ThemeStore.shared
+    /// What each worktree group says: its work, its pull request, merged or deleted (WorktreeShip.swift).
+    @ObservedObject var ship = WorktreeShip.shared
     /// Her switch: the rects she walks on are reported only while she is on (Mascot.swift).
     @State private var mascotOn = Mascot.isEnabled
 
@@ -592,9 +650,13 @@ struct SidebarView: View {
     private func folderCard(_ card: FolderCard, label: String) -> some View {
         let shut = model.folded.contains(SidebarModel.folderKey(card.cwd)) && model.query.isEmpty
         let expanded = model.expanded.contains(card.cwd) || !model.query.isEmpty
-        let live = card.terms.contains(where: \.shown) || card.items.contains {
-            model.openInTabs.contains($0.id) || (model.brief(for: $0).map { model.openInTabs.contains($0.id) } ?? false)
+        let inWindow = { (i: ChatItem) in
+            model.openInTabs.contains(i.id) || (model.brief(for: i).map { model.openInTabs.contains($0.id) } ?? false)
         }
+        let live = card.terms.contains(where: \.shown) || card.items.contains(where: inWindow)
+            || card.worktrees.contains { $0.terms.contains(where: \.shown) || $0.items.contains(where: inWindow) }
+        // What "+N more" opens: the chats past the first 5 here, and past the first 3 of each worktree group.
+        let hidden = max(0, card.items.count - 5) + card.worktrees.reduce(0) { $0 + max(0, $1.items.count - 3) }
         return VStack(alignment: .leading, spacing: 1) {
             header(card, label: label, shut: shut)
                 .mascotPlatform("side:\(card.cwd)", on: mascotOn)
@@ -602,11 +664,12 @@ struct SidebarView: View {
                 VStack(alignment: .leading, spacing: 1) {
                     ForEach(card.terms) { t in termRow(t) }
                     ForEach(expanded ? card.items : Array(card.items.prefix(5))) { item in row(item) }
-                    if !expanded && card.items.count > 5 {
+                    ForEach(card.worktrees, id: \.top) { g in worktreeGroup(g, card: card, expanded: expanded) }
+                    if !expanded && hidden > 0 {
                         Button {
                             model.expanded.insert(card.cwd)
                         } label: {
-                            Text("+\(card.items.count - 5) more")
+                            Text("+\(hidden) more")
                                 .font(.mono(9.5))
                                 .foregroundColor(Theme.cDim)
                                 .padding(.leading, 26)
@@ -614,7 +677,7 @@ struct SidebarView: View {
                         }
                         .buttonStyle(.plain)
                     }
-                    if card.items.isEmpty && card.terms.isEmpty {
+                    if card.items.isEmpty && card.terms.isEmpty && card.worktrees.isEmpty {
                         HStack(spacing: 4) {
                             Text("nothing here yet ·").font(.mono(9.5)).foregroundColor(Theme.cDim)
                             Button { actions.newTerminal(card.cwd) } label: {
@@ -634,6 +697,39 @@ struct SidebarView: View {
         .padding(.top, 6)
     }
 
+    /// A linked worktree inside its main repo's card: a header "⎇ worktree · branch" with a thin branch line down its left side,
+    /// then its terminals and chats, as the card's own rows. At most 3 chats until the card's "+N more" opens them all.
+    private func worktreeGroup(_ g: WorktreeGroup, card: FolderCard, expanded: Bool) -> some View {
+        let shown = expanded ? g.items : Array(g.items.prefix(3))
+        let branch = model.streamer ? Streamer.fake("branch", g.branch) : g.branch
+        let gone = g.gone
+        return VStack(alignment: .leading, spacing: 1) {
+            WorktreeGroupHeader(branch: branch, count: g.items.count + g.terms.count, gone: gone,
+                                tip: model.streamer ? "worktree" : "\(tildify(g.top)) · branch \(g.branch)",
+                                onNew: { actions.newTerminal(g.top) }, onWorktree: { actions.newWorktree(g.top) },
+                                onReveal: { actions.reveal(g.top) }, canOpen: !gone,
+                                top: g.top, st: ship.status[g.top], deleted: ship.deleted.contains(g.top), streamer: model.streamer,
+                                onShip: { actions.ship($0, g.top) })
+            VStack(alignment: .leading, spacing: 1) {
+                ForEach(g.terms) { t in termRow(t) }
+                ForEach(shown) { item in row(item) }
+            }
+            .padding(.leading, 9)
+        }
+        .padding(.leading, 13)
+        .padding(.trailing, 2)
+        .padding(.top, 3)
+        .overlay(alignment: .topLeading) {
+            // The branch line: bright at the header, fading down to its last row.
+            Rectangle()
+                .fill(LinearGradient(colors: [Theme.cAccentSoft.opacity(0.9), Theme.cAccent.opacity(0.18)], startPoint: .top, endPoint: .bottom))
+                .frame(width: 1.5)
+                .padding(.leading, 16.5)
+                .padding(.top, 22)
+                .padding(.bottom, 6)
+        }
+    }
+
     /// One of the app's terminals with no Claude in it: what runs in it, and whether its window shows. A click shows it;
     /// ending it is in its menu only, so it can't go by mistake.
     private func termRow(_ t: TermRow) -> some View {
@@ -642,6 +738,7 @@ struct SidebarView: View {
             .contextMenu {
                 Button("Show Terminal") { actions.openTerminal(t.id) }
                 Button("New Terminal in This Folder") { actions.newTerminal(t.cwd) }
+                Button("New Worktree…") { actions.newWorktree(t.cwd) }.disabled(Worktrees.info(of: t.cwd) == nil)
                 Button("Show Folder in Finder") { actions.reveal(t.cwd) }
                 Divider()
                 Button("End Terminal") { actions.endTerminal(t.id) }
@@ -667,9 +764,10 @@ struct SidebarView: View {
     /// A folder card's strip: a click folds it shut or open, ⌘-click picks it for the bulk bar.
     private func header(_ card: FolderCard, label: String, shut: Bool) -> some View {
         let cwd = card.cwd
-        return ProjectHeader(cwd: cwd, shownPath: model.shownPath(cwd), label: label, count: card.items.count + card.terms.count, terms: card.terms.count,
+        return ProjectHeader(cwd: cwd, shownPath: model.shownPath(cwd), label: label, count: card.total, terms: card.terms.count + card.worktrees.reduce(0) { $0 + $1.terms.count },
                              pinned: card.pinned, shut: shut, archived: false, selected: model.selectedFolders.contains(cwd),
-                             bulk: model.selectedFolders.count, onNew: { actions.newTerminal(cwd) },
+                             bulk: model.selectedFolders.count, isRepo: card.isRepo, onNew: { actions.newTerminal(cwd) },
+                             onWorktree: { actions.newWorktree(cwd) },
                              onArchive: { withAnimation(.easeInOut(duration: 0.25)) { model.setFolder(cwd, archived: true) } },
                              // Its chats, or those of every folder picked with it.
                              onDelete: {
@@ -727,6 +825,7 @@ struct SidebarView: View {
                     Button("Open a Copy (fork)") { actions.fork(item.id) }
                 }
                 Button("New Terminal in This Folder") { actions.newTerminal(item.cwd) }
+                Button("New Worktree…") { actions.newWorktree(item.cwd) }.disabled(Worktrees.info(of: item.cwd) == nil)
                 Divider()
                 Button("Show Folder in Finder") { actions.reveal(item.cwd) }
                 Button("Copy Session ID") { actions.copyId(item.id) }
@@ -773,7 +872,10 @@ private struct ProjectHeader: View {
     /// Picked for the bulk bar (⌘-click on the strip), and how many are.
     let selected: Bool
     let bulk: Int
+    /// In a git repo: the ⎇ button and the menu's New Worktree… are for it (a folder that isn't one has no ⎇ at all).
+    let isRepo: Bool
     let onNew: () -> Void
+    let onWorktree: () -> Void
     let onArchive: () -> Void
     let onDelete: () -> Void
     let onSelect: () -> Void
@@ -815,6 +917,16 @@ private struct ProjectHeader: View {
             .opacity(hover ? 1 : 0)
             .allowsHitTesting(hover)
             .help(archived ? "Unarchive the folder: all its chats back in the list" : "Archive the folder: all its chats out of the list")
+            if isRepo {
+                Button(action: onWorktree) {
+                    Image(systemName: "arrow.triangle.branch").font(.system(size: 11, weight: .semibold)).foregroundColor(Theme.cAccent)
+                        .frame(width: 16, height: 16)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .opacity(hover ? 1 : 0.35)
+                .help("New worktree from this repo: a separate folder on a branch of its own")
+            }
             Button(action: onNew) {
                 Image(systemName: "plus").font(.system(size: 9, weight: .bold)).foregroundColor(Theme.cAccent)
             }
@@ -845,6 +957,7 @@ private struct ProjectHeader: View {
                 Divider()
             }
             Button("New Terminal in This Folder", action: onNew)
+            Button("New Worktree…", action: onWorktree).disabled(!isRepo)
             Button("Show Folder in Finder", action: onReveal)
             Divider()
             Button(archived ? "Unarchive Folder" : "Archive Folder", action: onArchive)
@@ -854,6 +967,103 @@ private struct ProjectHeader: View {
             Button(bulk > 1 && selected ? "Delete the Chats in the \(bulk) Selected Folders…" : "Delete the Chats in This Folder…",
                    action: onDelete)
         }
+    }
+}
+
+/// The head of a worktree's group in its main repo's card: "worktree · branch", how many rows, and on hover a + for a new
+/// terminal in that worktree. Only a label (no folding): the card is level one, its rows level two.
+private struct WorktreeGroupHeader: View {
+    let branch: String
+    let count: Int
+    let gone: Bool
+    let tip: String
+    let onNew: () -> Void
+    let onWorktree: () -> Void
+    let onReveal: () -> Void
+    let canOpen: Bool
+    let top: String
+    let st: WorktreeStatus?
+    let deleted: Bool
+    var streamer = false
+    let onShip: (String) -> Void
+    @State private var hover = false
+
+    var body: some View {
+        let dim = deleted
+        HStack(spacing: 5) {
+            Image(systemName: "arrow.triangle.branch").font(.system(size: 9)).foregroundColor(dim ? Theme.cDim : Theme.cAccentSoft)
+            Text("worktree ·").font(.mono(9.5)).foregroundColor(ThemeStore.shared.swiftUI("--txt3"))
+            Text(branch).font(.mono(9.5, .semibold)).foregroundColor(dim ? Theme.cDim : Theme.cAccentSoft).lineLimit(1)
+            Text("\(count)").font(.mono(9)).foregroundColor(Theme.cDim2)
+            if gone && !deleted { Text("(folder gone)").font(.mono(9)).foregroundColor(Theme.cDim).lineLimit(1) }
+            Spacer(minLength: 0)
+            WorktreeGroupState(st: st, deleted: deleted)
+            if canOpen && !deleted {
+                Button(action: onNew) {
+                    Text("+").font(.mono(11, .bold)).foregroundColor(Theme.cAccent).frame(width: 15, height: 15).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .opacity(hover ? 1 : 0)
+                .allowsHitTesting(hover)
+                .help("New terminal in this worktree")
+            }
+        }
+        .frame(height: 19)
+        .padding(.trailing, 2)
+        .contentShape(Rectangle())
+        .onHover { hover = $0 }
+        .help(tip)
+        .onAppear { WorktreeShip.shared.watchList(top) }
+        .onDisappear { WorktreeShip.shared.unwatchList(top) }
+        .contextMenu {
+            Button("New Terminal in This Worktree", action: onNew).disabled(!canOpen || deleted)
+            Button("New Worktree…", action: onWorktree).disabled(!canOpen || deleted)
+            Button("Show Folder in Finder", action: onReveal).disabled(!canOpen || deleted)
+            Divider()
+            ForEach(WorktreeShip.items(st, deleted: deleted, streamer: streamer).filter { $0.id != "changes" && $0.id != "reveal" }) { item in
+                Button(item.title) { onShip(item.id) }.disabled(!item.enabled)
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("worktree \(branch), \(count) chats" + (streamer ? "" : st.map { ", " + $0.chipLabel(deleted: deleted) } ?? ""))
+    }
+}
+
+/// The group's state, right-aligned before the hover +: `+42 −7`, `#48 ✓`, `merged ✓`, `deleted` (spec 4.3).
+private struct WorktreeGroupState: View {
+    let st: WorktreeStatus?
+    let deleted: Bool
+
+    var body: some View {
+        let tx3 = ThemeStore.shared.swiftUI("--txt3")
+        HStack(spacing: 4) {
+            if deleted {
+                Text("deleted").foregroundColor(Theme.cDim)
+            } else if let st {
+                switch st.phase {
+                case "work":
+                    if let pr = st.pr, pr.state == "CLOSED" { Text("#\(pr.number) closed") }
+                    else {
+                        Text("+\(st.add)").foregroundColor(Theme.cAccentSoft)
+                        Text("\u{2212}\(st.del)").foregroundColor(ThemeStore.shared.swiftUI("--red-soft"))
+                    }
+                case "pr":
+                    if let pr = st.pr {
+                        Text("#\(pr.number)\(pr.draft ? " draft" : "")")
+                        if !pr.draft { ChecksMark(kind: pr.checks.kind).scaleEffect(0.85) }
+                    }
+                case "merged":
+                    Text("merged")
+                    ChecksMark(kind: "pass").scaleEffect(0.85)
+                case "gone": Text("folder gone").foregroundColor(Theme.cDim)
+                default: EmptyView()
+                }
+            }
+        }
+        .font(.mono(9))
+        .foregroundColor(tx3)
+        .lineLimit(1)
+        .padding(.trailing, 2)
     }
 }
 
@@ -982,8 +1192,8 @@ private struct ChatRow: View {
                             .font(.mono(11, isActive ? .semibold : .regular))
                             .foregroundColor(isActive || live ? Theme.cHi : Theme.cText)
                             .lineLimit(1)
-                        if isAgy || item.tool == "codex" {
-                            Text(isAgy ? "agy" : "codex")
+                        if isAgy || item.tool == "codex" || item.tool == "cursor" {
+                            Text(isAgy ? "agy" : item.tool == "cursor" ? "cursor" : "codex")
                                 .font(.mono(8, .medium))
                                 .foregroundColor(Theme.cAccent.opacity(0.8))
                                 .padding(.horizontal, 3)

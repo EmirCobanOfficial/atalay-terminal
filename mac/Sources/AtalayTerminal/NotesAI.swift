@@ -28,8 +28,8 @@ enum NotesAI {
     }
 
     enum Tool: String, CaseIterable {
-        case claude, codex, agy
-        var title: String { ["claude": "Claude Code", "codex": "Codex", "agy": "Antigravity"][rawValue] ?? rawValue }
+        case claude, codex, agy, cursor
+        var title: String { ["claude": "Claude Code", "codex": "Codex", "agy": "Antigravity", "cursor": "Cursor"][rawValue] ?? rawValue }
 
         /// Whether the tool is on this Mac at all.
         var present: Bool {
@@ -40,6 +40,7 @@ enum NotesAI {
             case .agy:
                 return ["antigravity-cli", "antigravity", "antigravity-ide"].contains { fm.fileExists(atPath: HOME + "/.gemini/" + $0) }
                     || fm.fileExists(atPath: HOME + "/.gemini/config")
+            case .cursor: return fm.fileExists(atPath: NotesAI.cursorHome)
             }
         }
 
@@ -49,6 +50,8 @@ enum NotesAI {
             case .claude: return "claude mcp add --scope user \(name) -- \(q)"
             case .codex: return "codex mcp add \(name) -- \(q)"
             case .agy: return "agy mcp add \(name) \(q)"
+            // Cursor's CLI has no `mcp add`: its documented ~/.cursor/mcp.json is written directly (cursorSet).
+            case .cursor: return ""
             }
         }
 
@@ -57,6 +60,7 @@ enum NotesAI {
             case .claude: return "claude mcp remove --scope user \(name)"
             case .codex: return "codex mcp remove \(name)"
             case .agy: return "agy mcp remove \(name)"
+            case .cursor: return ""
             }
         }
 
@@ -74,11 +78,35 @@ enum NotesAI {
                 return (servers?[name] as? [String: Any]).map { $0["command"] as? String ?? "" }
             case .codex:
                 return NotesAI.codexCommand(name)
+            case .cursor:
+                let servers = NotesAI.json(NotesAI.cursorHome + "/mcp.json")?["mcpServers"] as? [String: Any]
+                return (servers?[name] as? [String: Any]).map { $0["command"] as? String ?? "" }
             }
         }
     }
 
     nonisolated static var codexHome: String { ProcessInfo.processInfo.environment["CODEX_HOME"] ?? HOME + "/.codex" }
+
+    nonisolated static var cursorHome: String { ProcessInfo.processInfo.environment["CURSOR_CONFIG_DIR"] ?? HOME + "/.cursor" }
+
+    /// Puts our server into Cursor's mcp.json (`mcpServers.<name>` = `{"command": launcher}`), or takes it out (`launcher`
+    /// nil), the user's own servers and every other key left as they are. A file that isn't JSON is left alone.
+    nonisolated static func cursorSet(_ name: String, _ launcher: String?) {
+        // A link (dotfiles) is written through: its target changes, the link stays.
+        let file = URL(fileURLWithPath: cursorHome + "/mcp.json").resolvingSymlinksInPath().path
+        var root: [String: Any] = [:]
+        if let data = FileManager.default.contents(atPath: file) {
+            guard let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+            root = j
+        } else if launcher == nil {
+            return
+        }
+        var servers = root["mcpServers"] as? [String: Any] ?? [:]
+        if let launcher { servers[name] = ["command": launcher] } else { servers[name] = nil }
+        root["mcpServers"] = servers
+        guard let out = try? JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]) else { return }
+        try? out.write(to: URL(fileURLWithPath: file), options: .atomic)
+    }
 
     nonisolated static func json(_ file: String) -> [String: Any]? {
         FileManager.default.contents(atPath: file).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
@@ -132,6 +160,10 @@ enum NotesAI {
             if known {
                 for tool in Tool.allCases where tool.present {
                     let now = tool.registered(name)
+                    if tool == .cursor {
+                        if want != nil ? now != want : now != nil { cursorSet(name, want) }
+                        continue
+                    }
                     if let want {
                         if now == want { continue }
                         if now != nil { _ = run(shell, tool.remove(name)) }
@@ -207,12 +239,12 @@ final class NotesAIBridge: NSObject, WKScriptMessageHandlerWithReply {
         alert.alertStyle = want == .write ? .warning : .informational
         if want == .write {
             alert.messageText = "Let AI read and edit your notes?"
-            alert.informativeText = "AI in Orbiterm's terminals (Claude Code, Codex, Antigravity) and Claude Desktop, if you connect it, will be able to read all your notes, add to them, change them, make new ones and pin or open them on your screen. What they read goes to their provider. Passwords and keys are hidden first, but everything else in a note is sent. Every change shows on the note with Undo. You can turn this off at any time."
+            alert.informativeText = "AI in Orbiterm's terminals (Claude Code, Codex, Antigravity, Cursor) and Claude Desktop, if you connect it, will be able to read all your notes, add to them, change them, make new ones and pin or open them on your screen. Shared notes are read only when their owner allows it. What they read goes to their provider. Passwords and keys are hidden first, but everything else in a note is sent. Every change shows on the note with Undo. You can turn this off at any time."
             alert.addButton(withTitle: "Cancel")
             alert.addButton(withTitle: "Allow reading and editing")
         } else {
             alert.messageText = "Let AI read your notes?"
-            alert.informativeText = "AI in Orbiterm's terminals (Claude Code, Codex, Antigravity) and Claude Desktop, if you connect it, will be able to read all your notes, never change them. What they read goes to their provider. Passwords and keys are hidden first, but everything else in a note is sent. Hide a note from AI with its eye. You can turn this off at any time."
+            alert.informativeText = "AI in Orbiterm's terminals (Claude Code, Codex, Antigravity, Cursor) and Claude Desktop, if you connect it, will be able to read all your notes, never change them. Shared notes are read only when their owner allows it. What they read goes to their provider. Passwords and keys are hidden first, but everything else in a note is sent. Hide a note from AI with its eye. You can turn this off at any time."
             alert.addButton(withTitle: "Cancel")
             alert.addButton(withTitle: "Allow reading")
         }

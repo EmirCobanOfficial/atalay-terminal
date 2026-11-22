@@ -77,6 +77,8 @@ final class Cloud {
         /// Names repeat; name + tag (1–9999, shown as #0427) is unique, like Discord.
         var tag: Int?
         var online = 0
+        /// How many are coding right now (the heartbeat carries it); nil until an API that sends it answers.
+        var working: Int?
         var update: Release?
         /// The build on offer is downloaded, checked and waiting next to the app (`Updater.prepare`).
         var updateReady = false
@@ -235,7 +237,7 @@ final class Cloud {
     /// Keeps this Mac online, says whether its user is working (XP), picks up updates and sends a name picked offline.
     private func heartbeat(_ token: String) async {
         // No name (nor tag) yet: a token from `begin`, before signing in or picking one.
-        struct Answer: Decodable { let hackerName: String?; let tag: Int?; let online: Int; let update: Release?; let xp: XP?; let xpPaused: Bool? }
+        struct Answer: Decodable { let hackerName: String?; let tag: Int?; let online: Int; let working: Int?; let update: Release?; let xp: XP?; let xpPaused: Bool? }
         // The theme too: the leaderboard shows someone's card in their theme, and anyone can take it.
         let work: [String: Any] = ["active": Activity.active, "tz": TimeZone.current.secondsFromGMT() / 60, "theme": ThemeStore.shared.chosenId,
                                    // Viktoria: -1 when she is off, else her Mischief level (0..3); a profile shows it.
@@ -264,6 +266,7 @@ final class Cloud {
             s.hackerName = name
             s.tag = tag
             s.online = a.online
+            s.working = a.working
             s.update = build > 0 ? a.update : nil
             s.updateReady = s.update != nil && staged?.build == s.update?.build
             if s.update?.force == true, !preparing, !applying, s.updating != nil {
@@ -623,8 +626,12 @@ final class Cloud {
     /// and no chat runs outside its detached session, which quitting would stop. Forced builds skip the idle wait and
     /// install after 60 min even if `canRestart()` keeps refusing: the notices say when 5 min before, and the restart
     /// never comes sooner than 5 min after they did.
+    /// A quit is waiting for a worktree job (AppDelegate): no restart of any kind starts meanwhile, a second quit from code would
+    /// skip the quit's own steps.
+    var quitPending = false
+
     func maybeRestart() {
-        guard let staged, staged.build == state.update?.build, !applying, !preparing else { return }
+        guard !quitPending, let staged, staged.build == state.update?.build, !applying, !preparing else { return }
         if state.update?.force == true {
             if canRestart() { return restart(into: staged) }
             guard let since = forcedSince else { return }
@@ -716,6 +723,24 @@ final class Cloud {
         return a?.ticket
     }
 
+    /// A shared note's socket: a ticket (one use, 30 s) and the address to open it at, `{ url }`; `{ gone }` when this account isn't
+    /// in the note any more, `{ error }` when the API can't be reached. The page opens the socket; staging or production is
+    /// decided here, as for the live line.
+    func notesTicket(id: String) async -> [String: Any] {
+        let id = id.lowercased()
+        guard UUID(uuidString: id) != nil else { return ["error": "bad_id"] }
+        let r = await social("POST", "v1/notes/\(id)/ticket", body: [:])
+        guard let d = r as? [String: Any] else { return ["error": "offline"] }
+        if let t = d["ticket"] as? String {
+            var c = URLComponents(url: base.appendingPathComponent("v1/notes/\(id)/sync"), resolvingAgainstBaseURL: false)!
+            c.scheme = base.scheme == "https" ? "wss" : "ws"
+            c.queryItems = [URLQueryItem(name: "ticket", value: t)]
+            return ["url": c.url!.absoluteString]
+        }
+        if d["error"] as? String == "not_found" { return ["gone": true] }
+        return ["error": d["error"] as? String ?? "offline"]
+    }
+
     func liveURL(ticket: String) -> URL {
         var c = URLComponents(url: base.appendingPathComponent("v1/live"), resolvingAgainstBaseURL: false)!
         c.scheme = base.scheme == "https" ? "wss" : "ws"
@@ -752,6 +777,32 @@ final class Cloud {
     }
 
     // MARK: HTTP
+
+    /// A signed GET of a file's bytes (a shared note's file, streamed by the API): the data and the reply's headers (names in lower
+    /// case), or the API's error code ("offline", "signed_out", "http_<status>").
+    func fileData(_ path: String) async -> (data: Data?, headers: [String: String], error: String?) {
+        guard let token else { return (nil, [:], "signed_out") }
+        guard let url = URL(string: path, relativeTo: base) else { return (nil, [:], "bad_path") }
+        var req = URLRequest(url: url, timeoutInterval: 120)
+        req.httpMethod = "GET"
+        req.setValue("Bearer " + token, forHTTPHeaderField: "authorization")
+        ClientKey.sign(&req)
+        do {
+            let (data, response) = try await Cloud.session.data(for: req)
+            ClientKey.learn(from: response)
+            let http = response as? HTTPURLResponse
+            let status = http?.statusCode ?? 0
+            var h: [String: String] = [:]
+            for (k, v) in http?.allHeaderFields ?? [:] { if let k = k as? String, let v = v as? String { h[k.lowercased()] = v } }
+            if (200..<300).contains(status) { return (data, h, nil) }
+            if status == 401 { Task { await self.beat() } }
+            if status == 426 { UpdateWatch.shared.checkNow() }
+            let code = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["error"] as? String
+            return (nil, h, code ?? "http_\(status)")
+        } catch {
+            return (nil, [:], "offline")
+        }
+    }
 
     /// A client-signed GET with no Authorization header (works before a device is registered): for the app's own public
     /// reads, such as Viktoria's download address. The JSON object, or nil.
@@ -798,7 +849,7 @@ extension Cloud {
         return [
             "reachable": s.reachable, "registered": s.registered.map { $0 as Any } ?? NSNull(),
             "hackerName": s.hackerName ?? NSNull(), "tag": s.tag.map { $0 as Any } ?? NSNull(),
-            "online": s.online, "version": version, "build": build,
+            "online": s.online, "working": s.working.map { $0 as Any } ?? NSNull(), "version": version, "build": build,
             "update": s.update.map { ["version": $0.version, "build": $0.build, "notes": $0.notes] as [String: Any] } ?? NSNull(),
             "updating": s.updating ?? NSNull(), "updateProgress": s.updateProgress ?? NSNull(), "updateError": s.updateError ?? NSNull(), "nameError": s.nameError ?? NSNull(),
             "updateReady": s.updateReady, "updateRightAway": s.updateRightAway, "checking": s.checking,
@@ -822,7 +873,7 @@ final class CloudBridge: NSObject, WKScriptMessageHandlerWithReply {
         guard !path.contains("#"), !path.contains(";") else { return false }
         let routes = ["v1/me/status", "v1/me/activity", "v1/me/leaderboard", "v1/me/profile", "v1/me/avatar", "v1/feedback"]
         let trees = ["v1/social", "v1/friends", "v1/messages", "v1/leaderboard", "v1/notifications", "v1/roadmap", "v1/account", "v1/auth",
-                     "v1/settings", "v1/badges", "v1/releases",
+                     "v1/settings", "v1/badges", "v1/releases", "v1/notes",
                      // A whole screen in one answer (the API's screens.ts: a person's profile page).
                      "v1/screens"]
         guard routes.contains(path) || trees.contains(where: { path == $0 || path.hasPrefix($0 + "/") || path.hasPrefix($0 + "?") }),
@@ -909,10 +960,116 @@ final class CloudBridge: NSObject, WKScriptMessageHandlerWithReply {
             // The Mac's monospaced fonts, for Settings' list.
             case "terminalFonts":
                 replyHandler(["families": TerminalFont.families], nil)
+            // The share card (web/share-card.js): its picture to the pasteboard or to ~/Downloads, shown in Finder, and the
+            // few images it draws (badges, avatars) fetched here, as data: addresses, so the picture never depends on the
+            // image servers' CORS headers (a canvas drawn with a cross-origin image can't be exported).
+            case "shareImage":
+                replyHandler(Self.shareImage(action: body["action"] as? String ?? "", base64: body["png"] as? String ?? "", name: body["name"] as? String ?? ""), nil)
+            case "revealFile":
+                replyHandler(Self.reveal(path: body["path"] as? String ?? ""), nil)
+            case "fetchImage":
+                replyHandler(await Self.fetchImage(body["url"] as? String ?? "", api: cloud.apiBaseURL), nil)
             default:
                 replyHandler(nil, "unknown message")
             }
         }
+    }
+
+    // MARK: the share card
+
+    private static let pngMagic: [UInt8] = [0x89, 0x50, 0x4E, 0x47]
+    private static var downloads: URL { FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first ?? URL(fileURLWithPath: NSHomeDirectory() + "/Downloads") }
+
+    /// `copy`: the picture on the general pasteboard (as PNG, and as TIFF for the apps that only read that); `save`: a new
+    /// file in Downloads, " (2)" and on if the name is taken. { ok, path? }.
+    private static func shareImage(action: String, base64: String, name: String) -> [String: Any] {
+        guard base64.count < 12_000_000, let data = Data(base64Encoded: base64), data.count > 8, [UInt8](data.prefix(4)) == pngMagic else { return ["ok": false] }
+        switch action {
+        case "copy":
+            let pb = NSPasteboard.general
+            pb.clearContents()
+            var ok = pb.setData(data, forType: .png)
+            if let tiff = NSImage(data: data)?.tiffRepresentation { ok = pb.setData(tiff, forType: .tiff) || ok }
+            return ["ok": ok]
+        case "save":
+            let base = (name as NSString).lastPathComponent
+            guard base.range(of: "^[A-Za-z0-9._ -]{1,80}\\.png$", options: .regularExpression) != nil else { return ["ok": false] }
+            let stem = (base as NSString).deletingPathExtension
+            var url = downloads.appendingPathComponent(base)
+            var n = 2
+            while FileManager.default.fileExists(atPath: url.path), n < 1000 {
+                url = downloads.appendingPathComponent("\(stem) (\(n)).png")
+                n += 1
+            }
+            do {
+                try data.write(to: url, options: .withoutOverwriting)
+                return ["ok": true, "path": url.path]
+            } catch { return ["ok": false] }
+        default: return ["ok": false]
+        }
+    }
+
+    /// Shows a file the card was saved as, in Finder: only one inside Downloads.
+    private static func reveal(path: String) -> Bool {
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        guard url.path.hasPrefix(downloads.standardizedFileURL.path + "/"), FileManager.default.fileExists(atPath: url.path) else { return false }
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+        return true
+    }
+
+    /// Whether the share card may fetch `url`: https only (no user, no port) for the files bucket's `/public/`, GitHub's avatars
+    /// and `*.orbiterm.dev`'s `/v1/avatars/`; and exactly the app's own configured API origin (a staging API is plain http on
+    /// 127.0.0.1) under `/v1/avatars/`. No "." or ".." segment (the path is read decoded, so %2e%2e counts), no backslash.
+    nonisolated static func mayFetchImage(_ url: URL, api: URL) -> Bool {
+        guard url.user == nil, url.password == nil, let scheme = url.scheme?.lowercased(), let host = url.host?.lowercased() else { return false }
+        let path = url.path
+        let segments = path.split(separator: "/", omittingEmptySubsequences: true)
+        guard !path.contains("\\"), !segments.contains(".."), !segments.contains(".") else { return false }
+        let port = url.port ?? (scheme == "https" ? 443 : 80)
+        let apiPort = api.port ?? (api.scheme?.lowercased() == "https" ? 443 : 80)
+        if scheme == api.scheme?.lowercased(), host == api.host?.lowercased(), port == apiPort { return path.hasPrefix("/v1/avatars/") }
+        guard scheme == "https", port == 443 else { return false }
+        return (host == "orbiterm-files.s3.eu-central-1.amazonaws.com" && path.hasPrefix("/public/"))
+            || host == "avatars.githubusercontent.com"
+            || (host.hasSuffix(".orbiterm.dev") && path.hasPrefix("/v1/avatars/"))
+    }
+
+    /// Every redirect is checked against the same list; one that leaves it is refused.
+    private final class ImageGuard: NSObject, URLSessionTaskDelegate {
+        let api: URL
+        init(api: URL) { self.api = api }
+        func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                        newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
+            completionHandler(request.url.map { CloudBridge.mayFetchImage($0, api: api) } == true ? request : nil)
+        }
+    }
+
+    /// A badge's picture (the files bucket), an avatar (the API's, or GitHub's) as a data: address, or nil. At most 3 MB,
+    /// counted as it arrives, and 10 s in all. Not on the main actor: the byte loop runs off it, and the reply is sent from main once.
+    nonisolated private static func fetchImage(_ s: String, api: URL) async -> Any {
+        guard let url = URL(string: s), mayFetchImage(url, api: api) else { return NSNull() }
+        let cap = 3_000_000
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 6
+        config.timeoutIntervalForResource = 10
+        let session = URLSession(configuration: config, delegate: ImageGuard(api: api), delegateQueue: nil)
+        defer { session.finishTasksAndInvalidate() }
+        var req = URLRequest(url: url, timeoutInterval: 6)
+        req.httpMethod = "GET"
+        do {
+            let (bytes, response) = try await session.bytes(for: req)
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200, http.expectedContentLength <= Int64(cap),
+                  let final = http.url, mayFetchImage(final, api: api) else { return NSNull() }
+            let type = (http.value(forHTTPHeaderField: "Content-Type") ?? "").split(separator: ";").first.map { $0.trimmingCharacters(in: .whitespaces).lowercased() } ?? ""
+            guard ["image/png", "image/jpeg", "image/webp", "image/gif"].contains(type) else { return NSNull() }
+            var data = Data()
+            for try await byte in bytes {
+                data.append(byte)
+                if data.count > cap { return NSNull() }
+            }
+            guard !data.isEmpty else { return NSNull() }
+            return "data:\(type);base64,\(data.base64EncodedString())"
+        } catch { return NSNull() }
     }
 
     /// `queued`: kept on this Mac (offline) and sent when the API answers again.

@@ -360,7 +360,7 @@ final class PaneTabBar: NSView {
     }
 }
 
-/// What a tab's chip shows of the AI session in it (Claude, Codex, Antigravity): its context and today's counts.
+/// What a tab's chip shows of the AI session in it (Claude, Codex, Antigravity, Cursor): its context and today's counts.
 struct TabStats: Equatable {
     var ctx: Int, ctxMax: Double, tools: Int, web: Int, errors: Int
 }

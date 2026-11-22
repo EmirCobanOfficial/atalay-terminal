@@ -125,7 +125,7 @@ func externalAISubAgentTool(_ cmd: String) -> String? {
         if part.contains("=") { continue }
         let bin = (String(part) as NSString).lastPathComponent
         switch bin {
-        case "codex", "agy", "antigravity", "gemini": return bin == "antigravity" ? "agy" : bin
+        case "codex", "agy", "antigravity", "gemini", "cursor-agent": return bin == "antigravity" ? "agy" : bin
         default: return nil
         }
     }
@@ -416,7 +416,7 @@ extension Proc {
         "codex": "Codex", "gemini": "Gemini", "opencode": "OpenCode", "aider": "Aider", "cursor-agent": "Cursor",
         "amp": "Amp", "qwen": "Qwen Code", "crush": "Crush", "droid": "Droid", "copilot": "Copilot", "kiro-cli": "Kiro",
         "grok": "Grok", "auggie": "Auggie", "cline": "Cline", "kimi": "Kimi", "kilocode": "Kilo Code", "plandex": "Plandex",
-        "agy": "Antigravity",
+        "agy": "Antigravity", "cursor-agent-sea": "Cursor",
     ]
     private static let interpreters: Set<String> = ["node", "bun", "deno", "python", "python3", "Python"]
 
@@ -429,6 +429,17 @@ extension Proc {
                   // The script, past the interpreter's options (`node --no-warnings …/bin/gemini`, `python -m aider`).
                   let script = args.dropFirst().first(where: { !$0.hasPrefix("-") }) else { return nil }
             found = otherAIs[((script as NSString).lastPathComponent as NSString).deletingPathExtension]
+            // Cursor's CLI runs as `node …/cursor-agent/versions/<version>/index.js` (its `agent` and `cursor-agent` commands are a
+            // bash launcher that execs its bundled Node): known by that folder, never by the name `agent`.
+            if found == nil, script.contains("/cursor-agent/versions/"), (script as NSString).lastPathComponent == "index.js" { found = "Cursor" }
+        }
+        // Cursor's one-shot commands (`agent status`, `agent ls`, `agent mcp …`, its `-p` runs) are no session.
+        if found == "Cursor", let args = arguments(pid) {
+            let rest = Array(args.drop(while: { !$0.hasSuffix("index.js") }).dropFirst())
+            if rest.contains(where: { $0 == "-p" || $0 == "--print" }) { return nil }
+            if let sub = rest.first(where: { !$0.hasPrefix("-") }),
+               ["status", "whoami", "about", "login", "logout", "ls", "mcp", "update", "upgrade", "install-shell-integration",
+                "uninstall-shell-integration", "worker-server", "create-chat", "generate-rule", "rule", "models", "help", "agent-pool"].contains(sub) { return nil }
         }
         if found == "Antigravity", let args = arguments(pid),
            args.contains(where: { $0 == "-p" || $0 == "--prompt" || $0 == "/usage" }) {

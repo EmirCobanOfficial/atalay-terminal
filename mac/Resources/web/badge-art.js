@@ -40,6 +40,7 @@ window.BadgeArt = (() => {
     codex: '<path class="s" d="M9 5c-2.5 0-3 1.2-3 3v1.8c0 1.2-.8 2.2-2.2 2.2 1.4 0 2.2 1 2.2 2.2V16c0 1.8.5 3 3 3M15 5c2.5 0 3 1.2 3 3v1.8c0 1.2.8 2.2 2.2 2.2-1.4 0-2.2 1-2.2 2.2V16c0 1.8-.5 3-3 3"/><circle cx="12" cy="12" r="1.3" class="f"/>',
     gemini: '<path class="f" d="M12 2c.7 5.3 4.7 9.3 10 10-5.3.7-9.3 4.7-10 10-.7-5.3-4.7-9.3-10-10 5.3-.7 9.3-4.7 10-10z"/>',
     antigravity: '<path class="s" d="M12 3v11"/><path class="s" d="M8 7l4-4 4 4"/><ellipse class="s" cx="12" cy="17.5" rx="8" ry="2.6"/>',
+    cursor: '<path class="s" d="M12 2.8l8 4.6v9.2l-8 4.6-8-4.6V7.4z"/><path class="f" d="M12 2.8l8 4.6-8 4.6-8-4.6z"/><path class="s" d="M12 12v9.2"/>',
     polyglot: '<circle cx="9" cy="9.5" r="5" class="s"/><circle cx="15" cy="9.5" r="5" class="s"/><circle cx="12" cy="14.5" r="5" class="s"/>',
     squad: '<circle cx="9" cy="8" r="3" class="s"/><path class="s" d="M3.5 19c.5-3.4 2.7-5.5 5.5-5.5s5 2.1 5.5 5.5"/><circle cx="16.5" cy="9" r="2.5" class="s"/><path class="s" d="M15.5 13.6c2.8.1 4.5 2.1 5 5"/>',
     voice: '<path class="s" d="M12 2.5c3 2 4.5 5.2 4.5 9.2V16h-9v-4.3c0-4 1.5-7.2 4.5-9.2z"/><circle cx="12" cy="9.5" r="1.6" class="f"/><path class="s" d="M7.5 13.5L5 17l2.5 1M16.5 13.5L19 17l-2.5 1M10 19l2 2.5 2-2.5"/>',
