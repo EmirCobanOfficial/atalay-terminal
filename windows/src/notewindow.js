@@ -5,13 +5,16 @@
 // one that writes the notes: this window's page sends its note here and it goes on to the dashboard's `Notes.fromWindow`,
 // so a note window never gets the `notes` or `cloud` handlers (main.js refuses them). Each note's place and pin are kept
 // (`noteWindows` in the settings), and the notes still out when the app quits come back at the next launch.
+// A shared note's own parts go through its window's handler too (the Mac's NoteWindow handle): its socket's ticket, its
+// document file, its files and the secrets check (notessync.js), for this window's note only; the friends' and shared notes'
+// calls (share, invite, remove, leave, stop) and the sign-in a share asks for (cloud.js), from a short list.
 const path = require('path');
 
 const KEY = 'noteWindows';
 const NAME = /^[A-Za-z0-9-]{1,100}$/;
 const FLUSH = 'return window.Notes && Notes.flush ? await Notes.flush() : true';
 
-function createNoteWindows({ BrowserWindow, screen, dialog, WEB, settings, webPrefs, bootFor, checkPages, ownerView, getDash, pin, uiScale, streamerOn, quitting, bg, opacity, editMenu }) {
+function createNoteWindows({ BrowserWindow, screen, dialog, WEB, settings, webPrefs, bootFor, checkPages, ownerView, getDash, pin, uiScale, streamerOn, quitting, bg, opacity, editMenu, notesSync, social, openSignIn }) {
   const open = new Map(); // note id -> its window's record
   let restored = false;
   let watching = false;
@@ -104,6 +107,9 @@ function createNoteWindows({ BrowserWindow, screen, dialog, WEB, settings, webPr
     const n = {
       id, onTop: saved.onTop === true, steppedAside: false, closing: false, finished: false, loaded: false,
       pendingFocus: null, reopen: false, dragFrom: null, win: null,
+      // The server's id of this window's note when it is shared (read from its note as it is loaded and saved): the only note
+      // this window may ask a socket ticket for, or upload a file into.
+      sharedID: null,
     };
     const frame = startFrame(saved.frame);
     const win = new BrowserWindow({
@@ -231,6 +237,30 @@ function createNoteWindows({ BrowserWindow, screen, dialog, WEB, settings, webPr
     if (deleted) forget(id);
   }
 
+  // For the AI tools (note_show, the Mac's NoteWindow.present): the note in its window without taking the keyboard from what the
+  // user is doing, and, when asked, kept on top (or not). The place is set before the window is made, so it opens as asked.
+  function presentFor(id, keepOnTop) {
+    if (typeof id !== 'string' || !NAME.test(id)) return;
+    if (typeof keepOnTop === 'boolean') {
+      const n = open.get(id);
+      if (n && !n.finished && !n.win.isDestroyed()) {
+        if (n.onTop !== keepOnTop) {
+          n.onTop = keepOnTop;
+          update(id, (e) => { e.onTop = keepOnTop; });
+          applyOnTop(n);
+          // Its page's pin button follows.
+          if (n.loaded) n.win.webContents.executeJavaScript(`window.Notes && Notes.setTop && Notes.setTop(${keepOnTop}); true`).catch(() => {});
+        }
+      } else {
+        update(id, (e) => { e.onTop = keepOnTop; });
+      }
+    }
+    show(id, false);
+  }
+
+  // For note_hide (the Mac's NoteWindow.close(id:flush:)): closed as its × does, what was typed kept.
+  const closeById = (id) => closeNote(id, true, false);
+
   // The dashboard's notes are loaded: the notes left out at the last quit come back once, and the page learns which
   // notes are out (a reloaded page has forgotten).
   function notesReady() {
@@ -279,6 +309,14 @@ function createNoteWindows({ BrowserWindow, screen, dialog, WEB, settings, webPr
     const n = open.get(id);
     if (!n || !n.loaded || n.finished || n.win.isDestroyed()) return;
     n.win.webContents.executeJavaScript(`window.Notes && Notes.aiHiddenSet && Notes.aiHiddenSet(${on === true}); true`).catch(() => {});
+  }
+
+  // The network came back or the PC woke up: every window's shared note tries its line again (the Mac's NoteWindow.netBack).
+  function netBack() {
+    for (const n of open.values()) {
+      if (!n.loaded || n.finished || n.win.isDestroyed()) continue;
+      n.win.webContents.executeJavaScript('window.Notes && Notes.netBack && Notes.netBack(); true').catch(() => {});
+    }
   }
 
   function setStreamer(on) {
@@ -451,9 +489,55 @@ function createNoteWindows({ BrowserWindow, screen, dialog, WEB, settings, webPr
       case 'title':
         win.setTitle(String(typeof body.name === 'string' ? body.name : 'Note').slice(0, 80));
         return null;
+      // The friends and the shared notes' calls (share, invite, remove, leave, stop) for this window's page, which has no `cloud`.
+      case 'notesApi': {
+        const p = typeof body.path === 'string' ? body.path : '';
+        const method = (typeof body.method === 'string' ? body.method : 'GET').toUpperCase();
+        if (!social || !mayCall(p, method)) return { error: 'bad_path' };
+        return social(method, p, body.body);
+      }
+      // Signing in with GitHub happens in the browser: only GitHub's own sign-in page opens (as the dashboard's `cloud` does).
+      case 'openSignIn':
+        return openSignIn ? openSignIn(body.url) === true : false;
+      // Not a member any more (or the sharing ended): the window closes and the dashboard's page drops the note.
+      case 'sharedGone': {
+        const why = typeof body.why === 'string' ? body.why : 'removed';
+        setImmediate(() => {
+          close(n, false);
+          forget(n.id);
+          callNotes('window.Notes && Notes.dropSharedNow && Notes.dropSharedNow(id, why)', { id: n.id, why });
+        });
+        return null;
+      }
       default:
+        // A shared note's own parts, for this window's note only: its socket's ticket, its document file, its files, the secrets
+        // check. A shared note's id is the server's (a uuid), not the window's note id: a ticket or an upload is for that one.
+        if (notesSync && notesSync.handles(body.type)) {
+          const ticket = body.type === 'syncTicket' || body.type === 'attUpload';
+          const allow = (x) => (ticket ? !!n.sharedID && String(x).toLowerCase() === n.sharedID.toLowerCase() : x === n.id || x === '');
+          return notesSync.handle(body, { allow, sender: webContents });
+        }
         return { error: 'unknown request' };
     }
+  }
+
+  // This window's note's server id, from a one-note pad (its load, or what it saves).
+  function learnShared(n, json) {
+    try {
+      const pad = JSON.parse(String(json));
+      const note = pad && Array.isArray(pad.notes) ? pad.notes[0] : null;
+      n.sharedID = note && note.shared && typeof note.shared.id === 'string' ? note.shared.id : null;
+    } catch {}
+  }
+
+  // What a note window's page may ask the API for (the Mac's NoteWindow.mayCall): the friends (to pick who to share with), the
+  // shared notes, and the sign-in a shared note asks for (reading the account; starting GitHub; sending and checking an
+  // e-mailed code), nothing else of v1/account or v1/auth. cloud.js's allow-list is checked on top of this.
+  function mayCall(p, method) {
+    if (/[#;]/.test(p) || p.includes('..')) return false;
+    if (p === 'v1/account') return method === 'GET';
+    if (p.startsWith('v1/auth')) return method === 'POST' && ['v1/auth/github', 'v1/auth/email', 'v1/auth/email/verify'].includes(p);
+    return p === 'v1/social' || p === 'v1/notes' || p.startsWith('v1/notes/');
   }
 
   // The note, from the dashboard's page: `{ json }`, `{ gone }` (deleted: the window closes) or `{ wait }` (loading).
@@ -462,6 +546,7 @@ function createNoteWindows({ BrowserWindow, screen, dialog, WEB, settings, webPr
     const answer = await callNotes(js, { id: n.id });
     if (n.finished) return { gone: true };
     if (answer && typeof answer.json === 'string') {
+      learnShared(n, answer.json);
       if (!n.loaded) {
         n.loaded = true;
         // Shown after the reply goes out, so the page has its note when it appears.
@@ -486,12 +571,13 @@ function createNoteWindows({ BrowserWindow, screen, dialog, WEB, settings, webPr
       if (pad && Array.isArray(pad.notes) && pad.notes.length === 1) note = pad.notes[0];
     } catch {}
     if (!note || note.id !== n.id) return { error: 'bad request' };
+    learnShared(n, json);
     if (!dashPage()) return { error: "the dashboard isn't open" };
     const r = await callNotes("const N = window.Notes; return N && N.fromWindow ? await N.fromWindow(note) : { error: 'the dashboard is loading' };", { note });
     return r && typeof r === 'object' ? r : { error: "the dashboard didn't answer" };
   }
 
-  return { radar, handle, has, pinAll, stepAside, setStreamer, flushAll, closeKey, setBackground, liveView, places, dashboardShown, agentCall };
+  return { radar, handle, has, pinAll, stepAside, setStreamer, flushAll, closeKey, setBackground, liveView, places, dashboardShown, agentCall, netBack, present: presentFor, closeById };
 }
 
 module.exports = { createNoteWindows };

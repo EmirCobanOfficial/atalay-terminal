@@ -33,9 +33,23 @@ const SOCIAL_ROUTES = ['v1/me/status', 'v1/me/activity', 'v1/me/leaderboard', 'v
 const SOCIAL_TREES = [
   'v1/social', 'v1/friends', 'v1/messages', 'v1/leaderboard', 'v1/notifications',
   'v1/roadmap', 'v1/account', 'v1/auth', 'v1/settings', 'v1/badges', 'v1/releases',
+  // The shared notes (share, invite, accept, remove, leave, stop; web/notes.js and social.js), as the Mac's CloudBridge.
+  'v1/notes',
   // A whole screen in one answer (the API's screens.ts: a person's profile page).
   'v1/screens',
 ];
+// The calls the app makes itself for the notes' files and live line (attachments.js, notessync.js), never a page's: a file's
+// upload is made and finished, removed or brought back, and a note's socket ticket asked for, each by its id.
+const ID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
+const APP_CALLS = [
+  ['POST', new RegExp(`^v1/notes/${ID}/attachments$`)],
+  ['POST', new RegExp(`^v1/notes/${ID}/ticket$`)],
+  ['POST', new RegExp(`^v1/attachments/${ID}/(?:done|restore)$`)],
+  ['DELETE', new RegExp(`^v1/attachments/${ID}$`)],
+];
+const FILE_PATH = new RegExp(`^v1/attachments/${ID}/file$`);
+// A note's file is 20 MB at most (attachments.js): a download that says it's bigger isn't read.
+const FILE_MAX = 20 * 1024 * 1024;
 const under = (p, t) => p === t || p.startsWith(t + '/') || p.startsWith(t + '?');
 // Signing out answers with this PC's new token: only signOut() here calls it, so the token stays in the main process
 // and never reaches a page. Checked as the API reads the path (decoded, any case, slashes squeezed).
@@ -695,6 +709,71 @@ function createCloud(opts = {}) {
     }
   }
 
+  // ---------- the shared notes' own calls (the Mac's Cloud.notesTicket and fileData, Attachments.swift) ----------
+
+  // One of APP_CALLS: the API's JSON, or { error } with its code. Never a page's path (attachments.js and notessync.js build
+  // these from ids they checked).
+  async function appCall(method, p, body) {
+    const m = String(method || '').toUpperCase();
+    if (!APP_CALLS.some(([verb, rx]) => verb === m && rx.test(p))) return { error: 'bad_path' };
+    return social(m, p, body, true);
+  }
+
+  // A shared note's socket: a ticket (one use, 30 s) and the address to open it at, { url }; { gone } when this account isn't in
+  // the note any more, { error } when the API can't be reached. The page opens the socket; the staging API's gate takes the
+  // `ak` proof in the address (a page's WebSocket can't add a header), as the live line does.
+  async function notesTicket(id) {
+    const nid = String(id || '').toLowerCase();
+    if (!new RegExp(`^${ID}$`).test(nid)) return { error: 'bad_id' };
+    const d = await appCall('POST', `v1/notes/${nid}/ticket`, {});
+    if (!d || typeof d !== 'object') return { error: 'offline' };
+    if (typeof d.ticket === 'string' && d.ticket) {
+      const u = new URL(`v1/notes/${nid}/sync`, base);
+      u.protocol = base.protocol === 'https:' ? 'wss:' : 'ws:';
+      u.searchParams.set('ticket', d.ticket);
+      if (accessKey) u.searchParams.set('ak', crypto.createHmac('sha256', accessKey).update(d.ticket).digest('hex'));
+      return { url: u.href };
+    }
+    if (d.error === 'not_found') return { gone: true };
+    return { error: typeof d.error === 'string' ? d.error : 'offline' };
+  }
+
+  // A signed GET of a shared note's file, streamed by the API: { data, headers } (names in lower case), or { error, headers }
+  // with the API's code ("offline", "signed_out", "http_<status>"). Two minutes at most.
+  async function fileData(p) {
+    const token = readToken();
+    if (!token) return { error: 'signed_out', headers: {} };
+    if (!FILE_PATH.test(p)) return { error: 'bad_path', headers: {} };
+    const url = new URL(p, base);
+    const headers = { authorization: 'Bearer ' + token };
+    if (accessKey) headers['x-orbiterm-access'] = accessKey;
+    key.sign('GET', url, undefined, headers);
+    try {
+      const res = await fetcher(String(url), { method: 'GET', headers, signal: AbortSignal.timeout(120_000) });
+      key.learn(res);
+      const h = {};
+      res.headers.forEach((v, k) => {
+        h[k.toLowerCase()] = v;
+      });
+      if (res.status >= 200 && res.status < 300) {
+        if (Number(h['content-length']) > FILE_MAX + 1024) return { error: 'bad_answer', headers: h };
+        const data = Buffer.from(await res.arrayBuffer());
+        if (data.length > FILE_MAX + 1024) return { error: 'bad_answer', headers: h };
+        return { data, headers: h };
+      }
+      if (res.status === 401 && running) beat();
+      if (res.status === 426 && typeof opts.onUpdateRequired === 'function') opts.onUpdateRequired();
+      let code = '';
+      try {
+        const j = JSON.parse(await res.text());
+        if (j && typeof j.error === 'string') code = j.error;
+      } catch {}
+      return { error: code || `http_${res.status}`, headers: h };
+    } catch {
+      return { error: 'offline', headers: {} };
+    }
+  }
+
   // ---------- the messages sealed end to end before (unseal.js, the Mac's Unseal.swift) ----------
   // Messages are encrypted on the server now. The keys the old versions kept sit in a file of the app's folder sealed by
   // Windows for this user, one per API as the token is; unseal.js reads them and hands the server what it needs to open
@@ -1031,7 +1110,8 @@ function createCloud(opts = {}) {
     }
   };
 
-  return { start, stop, kick, json, handle, api };
+  // `social`: the pages' calls (the allow-list above), for a note window's page, which has no `cloud` handler (notewindow.js).
+  return { start, stop, kick, json, handle, api, social: (method, p, body) => (allowed(String(p)) ? social(String(method || 'GET'), String(p), body) : { error: 'bad_path' }), appCall, notesTicket, fileData };
 }
 
 module.exports = { createCloud };

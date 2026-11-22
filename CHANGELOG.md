@@ -5,6 +5,7 @@ Each version's lines are its release notes: the app lists them on its "what's ne
 
 ## Next
 
+- Windows: shared notes as on the Mac. Share a note with friends and write it together live (cursors, offline edits merged), accept invites from the corner, the bell or the notes board, add pictures and files to a note (shared notes upload them for the others; Save puts a file in Downloads), link a note to a project so the AIs in that project see it first, and AI tools can now create, pin and open notes on your screen too
 - Windows: Settings › Shortcuts. Change the app's keys (Help › Keyboard Shortcuts, or ? on the dashboard, lists them all), choose how the middle mouse button opens the Ring (with Ctrl, alone, or not at all; a touchpad's three-finger tap can be set to a middle click in Windows) and its keys, and swap Esc and Ctrl+W: Esc hides the terminal, Ctrl+W sends Esc to Claude, Codex or agy
 - Windows: the weekly share card copies its picture, saves it to Downloads and shows it in its folder, with your avatar and badges on it
 - Windows: when a terminal hides (Ctrl+W, its ×), the dashboard takes the keys, so Ctrl+Shift+N or the Ring's keys work right away

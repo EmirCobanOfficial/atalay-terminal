@@ -104,6 +104,9 @@ const { createLimits } = require('./limits');
 const { createCodexHooks } = require('./codexhooks');
 const { createMcp } = require('./mcp');
 const { createNotesStore } = require('./notesstore');
+const { createAttachments } = require('./attachments');
+const { createNotesSync } = require('./notessync');
+const notesProjects = require('./notesprojects');
 const { createStreamer } = require('./streamer');
 const { createNoteWindows } = require('./notewindow');
 const { createNotesAI } = require('./notesai');
@@ -500,6 +503,31 @@ const notesStore = createNotesStore({
   keyFile: path.join(app.getPath('userData'), 'notes.key'),
   safeStorage,
 });
+// Shared notes and files in notes (notessync.js, attachments.js; the Mac's NotesSync and Attachments.swift): a note's socket
+// ticket and its document file, the files kept beside the notes, their upload to a shared note and download from it, all here
+// in the main process. The pages ask through `notes` (the dashboard) and `noteWindow` (a note's own window).
+const notesSync = createNotesSync({
+  store: notesStore,
+  cloud,
+  // The same masking the AI tools use (mcpshared.js), to tell a note holds a password or key before it's shared.
+  redactMore: (s) => require('./mcpshared').redactMore(s),
+  attachments: createAttachments({
+    store: notesStore, cloud, fetch: (url, init) => net.fetch(url, init), dialog, shell,
+    downloads: () => app.getPath('downloads'),
+    // The file picker opens over the window of the page that asked (the dashboard, or a note's window).
+    parent: (wc) => (wc && !wc.isDestroyed() ? BrowserWindow.fromWebContents(wc) || dash : dash),
+  }),
+});
+// The folder each of the app's terminals is in: the AI's own when one runs there (the engine reads it from its records), else
+// the folder the terminal opened in (Windows doesn't tell another process's current folder, the Mac's Proc.cwd). For the
+// notes' projects (notesprojects.js): the board's "move to project" and the AI tools' project filter.
+function terminalFolder(id) {
+  const s = engine.live().find((x) => x.tab === id && typeof x.cwd === 'string' && x.cwd);
+  if (s) return s.cwd;
+  const t = terminals.list().find((x) => x.id === id);
+  return (t && t.cwd) || null;
+}
+const liveFolders = () => terminals.list().map((t) => terminalFolder(t.id)).filter(Boolean);
 // Source Control's files (files.js, the Mac's FileEditor.swift): the ones the dashboard's editor may read and write.
 // When Windows last delivered a click (or Enter or Space) and any key or click to the dashboard's page (its input-event,
 // in createDashboard), or the user picked an item in one of its native menus (popupMenu): the user's, since a page can't
@@ -686,13 +714,15 @@ const noteWindows = createNoteWindows({
   BrowserWindow, screen, dialog, WEB, settings, webPrefs, bootFor, checkPages, ownerView: () => dashView, getDash: () => dash,
   pin: pinToDash, uiScale: () => themes.uiScale(), streamerOn: () => streamer.on, quitting: () => quitting, bg: () => themes.color('--bg'),
   opacity: () => WINDOW_OPACITY, editMenu,
+  // A shared note's own parts and the friends' and shared notes' calls, for a note window's page (it has no `cloud`).
+  notesSync, social: (method, p, body) => cloud.social(method, p, body), openSignIn,
 });
 const feedPanel = createFeedPanel({ BrowserWindow, WEB, webPrefs, bootFor, checkPages, home: () => chatHome() });
 // AI tools and my notes (notesai.js, notestools.js; the Mac's NotesAI.swift and NotesTools.swift): Settings > Privacy's
 // switch, and the notes' six tools on the local MCP server (`mcp`, mcp.js), which keeps its pipe open while
 // notesAI.access() says so. Asked for lazily: the server is made elsewhere, and a build without it has none (null).
 const notesAI = createNotesAI({
-  settings, dialog, parent: () => dash, notesStore, noteWindows, terminals, dataDir: app.getPath('userData'), which, childEnvironment,
+  settings, dialog, parent: () => dash, notesStore, noteWindows, terminals, folderOf: terminalFolder, dataDir: app.getPath('userData'), which, childEnvironment,
   // Never from a development check, nor from a run on a Mac (the three tools' settings there are the Mac app's).
   usable: process.platform === 'win32' && !PROBE,
   mcp: () => mcp,
@@ -2493,6 +2523,13 @@ function handleMessages(win, body) {
       showDashboard();
       toDash('openProfile()');
       return true;
+    // A shared note's invite was accepted in a notice: the dashboard in front, and that note opened in its window once it is
+    // in (the Mac's MessagePanel.onOpenShared).
+    case 'openShared':
+      if (typeof body.id !== 'string' || !body.id || body.id.length > 64) return true;
+      showDashboard();
+      run(dashView, `window.Notes && Notes.openShared && Notes.openShared(${JSON.stringify(body.id)})`);
+      return true;
     case 'openNotifications':
       showDashboard();
       toDash('openView("notifications")');
@@ -2880,6 +2917,11 @@ ipcMain.handle('atl:post', async (e, name, body) => {
       // The notes (web/notes.js): the dashboard's page only, as on the Mac.
       case 'notes':
         if (e.sender !== pageOf(dashView)) throw new Error('not this page');
+        // A shared note's ticket and document, the files in notes, the secrets check: the dashboard's page writes every note.
+        if (notesSync.handles(body.type)) return await notesSync.handle(body, { allow: () => true, sender: e.sender });
+        // The projects the board's "move to project" offers: those of the folders the terminals are in, and which of the
+        // folders the notes are linked to (`dirs`) are gone (the Mac's NotesBridge `projects`).
+        if (body.type === 'projects') return notesProjects.choices(Array.isArray(body.dirs) ? body.dirs : [], liveFolders());
         return await notesStore.handle(body);
       // Settings › Shortcuts and the list of them all (shortcuts.js, the Mac's KeysBridge): the dashboard's page only.
       case 'keys':
@@ -3136,7 +3178,12 @@ app.whenReady().then(() => {
   // NotesAI.autoStart).
   notesAI.autoStart();
   if (!PROBE) aiColors.autoStart();
-  powerMonitor.on('resume', () => cloud.kick());
+  // The PC woke up: the live line comes back at once, and so does every shared note's (the Mac's Social.kick, notesNetBack).
+  powerMonitor.on('resume', () => {
+    cloud.kick();
+    run(dashView, 'window.Notes && Notes.netBack && Notes.netBack()');
+    noteWindows.netBack();
+  });
   // Viktoria rests while the PC is locked or asleep (the Mac's display sleep), and lets go of the cursor at once.
   powerMonitor.on('lock-screen', () => mascot.setAsleep('lock', true));
   powerMonitor.on('unlock-screen', () => mascot.setAsleep('lock', false));

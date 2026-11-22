@@ -24,9 +24,10 @@ const SERVER_NAME = /^[A-Za-z0-9_-]{1,64}$/;
  * notesStore, noteWindows, terminals: what the tools read (notestools.js). dataDir: the app's data folder (notes-ai.log).
  * which(name), childEnvironment(): terminals.js's, to find and run the three tools. usable: false where nothing may be
  * registered (a development check, or a run on a Mac). mcp: item 6's server, or a function that answers it (null while it
- * isn't there): register, ensureBridge, serverName, refresh, mode.
+ * isn't there): register, ensureBridge, serverName, refresh, mode. folderOf(id): the folder one of the app's terminals is
+ * in (main.js), for the notes' projects.
  */
-function createNotesAI({ settings, dialog, parent, notesStore, noteWindows, terminals, dataDir, which, childEnvironment, usable, mcp }) {
+function createNotesAI({ settings, dialog, parent, notesStore, noteWindows, terminals, folderOf, dataDir, which, childEnvironment, usable, mcp }) {
   const HOME = os.homedir();
   const CLAUDE_DIR = process.env.CLAUDE_CONFIG_DIR || path.join(HOME, '.claude');
   const codexHome = () => process.env.CODEX_HOME || path.join(HOME, '.codex');
@@ -57,6 +58,7 @@ function createNotesAI({ settings, dialog, parent, notesStore, noteWindows, term
     notesStore,
     noteWindows,
     terminals,
+    folderOf,
     dataDir,
     claudeDir: CLAUDE_DIR,
   });
@@ -298,7 +300,9 @@ function createNotesAI({ settings, dialog, parent, notesStore, noteWindows, term
       name = m ? String(m.serverName('notes') || '') : '';
     } catch {}
     for (const t of TOOLS) if (present(t)) tools[t] = SERVER_NAME.test(name) && registeredCommand(t, name) !== null;
-    return { mode: mode(), ready: !!m && usable && !bridgeFailed, tools };
+    // `outsideWriteNeedsType`: false, as the Mac's NotesTools.outsideWritesNeedWatchAndType: Claude Desktop changes notes by the
+    // notes' own level alone (notestools.js), and the page says so.
+    return { mode: mode(), ready: !!m && usable && !bridgeFailed, tools, outsideWriteNeedsType: false };
   }
 
   // ---------- Settings' switch (web/cloud.js), the Mac's NotesAIBridge ----------
@@ -312,7 +316,12 @@ function createNotesAI({ settings, dialog, parent, notesStore, noteWindows, term
         const want = MODES.includes(body.mode) ? body.mode : null;
         if (!want) return state();
         const was = mode();
-        if (want !== 'off' && want !== was && !(want === 'read' && was === 'write') && !(await confirm(want))) return state();
+        if (want !== 'off' && want !== was && !(want === 'read' && was === 'write')) {
+          // `refused` says why nothing changed (the Mac's NotesAIBridge): "wait" (a question is up, or one was asked a moment
+          // ago) or "cancel" (the user said no).
+          const answer = await confirm(want);
+          if (answer !== 'yes') return { ...state(), refused: answer };
+        }
         await setMode(want);
         return state();
       }
@@ -324,18 +333,20 @@ function createNotesAI({ settings, dialog, parent, notesStore, noteWindows, term
   let asking = false;
   let lastAsk = -Infinity;
 
+  // 'yes', 'wait' (a question is up, or one was asked a moment ago) or 'cancel' (the user said no).
   async function confirm(want) {
     // One question at a time, and not more often than every ten seconds: a page can't wear the answer out.
-    if (asking || performance.now() - lastAsk < 10_000) return false;
+    if (asking || performance.now() - lastAsk < 10_000) return 'wait';
     asking = true;
     try {
       const write = want === 'write';
+      // The Mac's NotesAIBridge words (its list of AIs as this app has them; shared notes only with their owner's leave).
       const options = {
         type: write ? 'warning' : 'info',
-        message: write ? 'Let AI tools read and edit your notes?' : 'Let AI tools read your notes?',
+        message: write ? 'Let AI read and edit your notes?' : 'Let AI read your notes?',
         detail: write
-          ? 'Claude Code, Codex and Antigravity running in Orbiterm will be able to read all your notes and add to or change them. What they read goes to their provider. Passwords and keys are masked before they leave Orbiterm, but anything else in a note is sent. Every change can be undone from the note\'s strip or with Ctrl+Z. You can turn this off at any time.'
-          : 'Claude Code, Codex and Antigravity running in Orbiterm will be able to read all your notes, never change them. What they read goes to their provider. Passwords and keys are masked before they leave Orbiterm, but anything else in a note is sent. You can turn this off at any time.',
+          ? "AI in Orbiterm's terminals (Claude Code, Codex, Antigravity) and Claude Desktop, if you connect it, will be able to read all your notes, add to them, change them, make new ones and pin or open them on your screen. Shared notes are read only when their owner allows it. What they read goes to their provider. Passwords and keys are hidden first, but everything else in a note is sent. Every change shows on the note with Undo. You can turn this off at any time."
+          : "AI in Orbiterm's terminals (Claude Code, Codex, Antigravity) and Claude Desktop, if you connect it, will be able to read all your notes, never change them. Shared notes are read only when their owner allows it. What they read goes to their provider. Passwords and keys are hidden first, but everything else in a note is sent. Hide a note from AI with its eye. You can turn this off at any time.",
         buttons: ['Cancel', write ? 'Allow reading and editing' : 'Allow reading'],
         // Cancel is the one Enter presses, and Esc's.
         defaultId: 0,
@@ -344,9 +355,9 @@ function createNotesAI({ settings, dialog, parent, notesStore, noteWindows, term
       };
       const win = parent && parent();
       const r = win && !win.isDestroyed() ? await dialog.showMessageBox(win, options) : await dialog.showMessageBox(options);
-      return r.response === 1;
+      return r.response === 1 ? 'yes' : 'cancel';
     } catch {
-      return false;
+      return 'cancel';
     } finally {
       asking = false;
       lastAsk = performance.now();

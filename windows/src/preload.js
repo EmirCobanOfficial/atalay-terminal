@@ -21,6 +21,9 @@ for (const name of full
 contextBridge.exposeInMainWorld('webkit', { messageHandlers: handlers });
 // The pages name the computer and the command key by it ("this PC", Ctrl+).
 contextBridge.exposeInMainWorld('__platform', process.platform);
+// This app shares notes (notessync.js): social.js shows the shared notes' invites, as on the Mac (the corner notice, the bell,
+// the notes board). Every page with the full set of handlers, as the notices and chat panels have their own social.js.
+if (full) contextBridge.exposeInMainWorld('__notesSharing', true);
 // The terminal look is set by a function run in the page's own world: exposeInMainWorld would hand the page a frozen
 // object, and fonts.js assigns window.__terminalLook.font when the family changes.
 if (boot.look) contextBridge.executeInMainWorld({ func: (look) => { window.__terminalLook = { ...look }; }, args: [boot.look] });

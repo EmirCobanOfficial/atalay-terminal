@@ -72,8 +72,9 @@ window.Social = (() => {
 
   // Shared notes: the invites waiting for you (the corner notice, the bell and the notes board show them) and the notes you're in.
   // `v1/notes` lists both; live `note.*` events keep them up.
-  // Where the app can't share notes yet (Windows) the invites aren't shown either.
-  const SHARING = window.__platform !== 'win32';
+  // Where the app can't share notes yet (a Windows app without its notes bridge) the invites aren't shown either; the Windows app
+  // that shares says so before the page loads (preload.js `__notesSharing`).
+  const SHARING = window.__platform !== 'win32' || window.__notesSharing === true;
   let NI = []; // invites waiting: { id, title, owner, members, ai, pending }
   let NS = null; // the notes you're in (accepted), or null before the first answer
   function loadNoteInvites() {
