@@ -5,6 +5,19 @@ Each version's lines are its release notes: the app lists them on its "what's ne
 
 ## Next
 
+## 0.27.0
+
+- Mac: Orbiterm is now signed and notarized by Apple: after this update macOS asks once more for the permissions you gave before (Automation, Files and Folders), then never again
+- Spaceship attack: fire at an online friend from Friends (🚀). They see LOCKED ON, then a ship on their map fires at its centre and it blows up and rebuilds; they're shielded for 30 minutes. You feel it too: an In flight countdown, two hit ticks, their row cracking and flaring at the blast, with sounds
+- ORB: you earn 12.71 ORB an hour while you work (the time XP counts, up to 16 hours a day). An attack costs 42.32 ORB, back if you cancel during the lock-on, and a friend can be hit 3 times a day. Everyone starts with 42.32 ORB
+- Notes: links (⌘K), and AI tools can create, pin, show and hide notes on your screen; AI settings on the notes screen
+- Mac: terminals run on the app's own terminal instead of screen: emoji and wide characters show right
+- Privacy Notice and Terms of Use: linked from the welcome screen and Settings; accounts from before ask once (Agree / Not now)
+- Quitting Orbiterm closes every terminal it started; an update's restart still keeps them
+- Subagents: a finished subagent leaves the orbit at once, a quiet one parks as an idle hexagon
+- Top bar: icons for New Terminal and sound
+- Badges: Rare now starts at 5% (was 9%)
+
 - Windows: the env button (Ctrl+Shift+E) in a terminal's strip lists the .env files in its folder and the ones in it, and edits one with the values hidden until you open them; Copy all copies the whole file with its real values
 - Windows: shared notes as on the Mac. Share a note with friends and write it together live (cursors, offline edits merged), accept invites from the corner, the bell or the notes board, add pictures and files to a note (shared notes upload them for the others; Save puts a file in Downloads), link a note to a project so the AIs in that project see it first, and AI tools can now create, pin and open notes on your screen too
 - Windows: Settings › Shortcuts. Change the app's keys (Help › Keyboard Shortcuts, or ? on the dashboard, lists them all), choose how the middle mouse button opens the Ring (with Ctrl, alone, or not at all; a touchpad's three-finger tap can be set to a middle click in Windows) and its keys, and swap Esc and Ctrl+W: Esc hides the terminal, Ctrl+W sends Esc to Claude, Codex or agy
