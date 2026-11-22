@@ -47,6 +47,9 @@
   term.loadAddon(new Unicode11Addon.Unicode11Addon());
   term.unicode.activeVersion = '11';
   term.loadAddon(new WebLinksAddon.WebLinksAddon((e, uri) => atl.send('term:open', uri)));
+  // Find (the find bar below), as the Mac's find bar over its terminal (NSTextFinder).
+  const search = new SearchAddon.SearchAddon();
+  term.loadAddon(search);
   // Links a program prints itself (OSC 8): a web address in the browser; a file:// one, Ctrl-clicked, as a path is.
   term.options.linkHandler = {
     allowNonHttpProtocols: true,
@@ -149,6 +152,15 @@
   // The AI tool running in this window, as the app tells it (term:info), for the keys it needs, and its own status.
   let tool = null;
   let toolStatus = null;
+  // The app's last word on this window (term:info). An AI runs in front here (the Mac's claudeInFront) when the app found
+  // its session in it (Claude's, Codex's, Antigravity's), or while a chat's Claude is still starting (busy before its
+  // session is found: a plain shell is never busy). A plain shell gets every key as xterm.js sends it.
+  let info = {};
+  const aiOn = () => info.status !== 'ended' && (!!info.chat || ['busy', 'idle', 'waiting'].includes(info.status));
+  // Claude's full-screen view in front and following the mouse (the alternate screen, with mouse reports asked for): a
+  // drag there selects in Claude rather than in the terminal, and the history is Claude's own (the alternate screen keeps
+  // none).
+  const claudeView = () => aiOn() && term.buffer.active.type === 'alternate' && term.modes.mouseTrackingMode !== 'none';
   // Antigravity's rewind (the Mac's AgyRewind.swift): agy has /rewind but no key for it, and its own Esc Esc only clears
   // the prompt. Esc Esc while it waits for you with an empty prompt types /rewind instead: the second Esc is swallowed,
   // a third never rewinds, and anything unclear lets Esc go to agy as usual. Swapped (Settings › Shortcuts), the Esc
@@ -192,14 +204,35 @@
   };
   // Copy-on-select, as on the Mac: dragging or double-clicking a selection copies it to the clipboard on mouse release,
   // shows the "COPIED N CHARS" badge in the HUD, and keeps the selection highlighted.
-  let mouseDown = false, pendingCopy = false, copyTimer = 0;
+  let mouseDown = false, pendingCopy = false, copyTimer = 0, copyUntil = 0, selFrame = 0;
   const copiedEl = document.getElementById('copied');
+  const findEl = document.getElementById('find');
+  const lineCount = (t) => Math.max(1, t.split(/\r?\n/).length - (/\r?\n$/.test(t) ? 1 : 0));
+  // The badge's text, and the strip fitted again when it comes, goes or changes length (fitHud, below).
+  const setBadge = (text) => {
+    const was = copiedEl.hidden ? 0 : copiedEl.textContent.length;
+    copiedEl.hidden = !text;
+    if (text) copiedEl.textContent = text;
+    if ((text || '').length !== was) fitHud();
+  };
+  // While something is selected the same badge counts it, live as the drag goes on (the Mac's selection badge): its
+  // lines, and a single line's characters. A copy's badge keeps its 2.2 seconds first, and the find bar's match (it's
+  // the selection while the bar is open) isn't counted.
+  const showSelection = () => {
+    if (Date.now() < copyUntil) return;
+    const text = term.hasSelection() && findEl.hidden ? term.getSelection() : '';
+    const n = text ? lineCount(text) : 0;
+    setBadge(!text ? '' : n === 1 ? `1 LINE SELECTED · ${text.length} CHAR${text.length === 1 ? '' : 'S'}` : `${n} LINES SELECTED`);
+  };
   const showCopied = (n) => {
     if (!(n > 0)) return;
-    copiedEl.textContent = `COPIED ${n} CHAR${n === 1 ? '' : 'S'}`;
-    copiedEl.hidden = false;
+    setBadge(`COPIED ${n} CHAR${n === 1 ? '' : 'S'}`);
+    copyUntil = Date.now() + 2200;
     clearTimeout(copyTimer);
-    copyTimer = setTimeout(() => (copiedEl.hidden = true), 2200);
+    copyTimer = setTimeout(() => {
+      copyUntil = 0;
+      showSelection();
+    }, 2200);
   };
   const copySelection = () => {
     if (!term.hasSelection()) return false;
@@ -216,6 +249,12 @@
     }
   }, true);
   term.onSelectionChange(() => {
+    if (!selFrame) {
+      selFrame = requestAnimationFrame(() => {
+        selFrame = 0;
+        showSelection();
+      });
+    }
     if (!term.hasSelection()) {
       pendingCopy = false;
       return;
@@ -230,9 +269,97 @@
       copySelection();
     }
   });
+  // Copy (Ctrl+C or Ctrl+Shift+C, the right-click menu's Copy): the selection. With nothing selected on the terminal while
+  // Claude's full-screen view is in front, the selection is Claude's (a drag goes to Claude there): Claude is asked to
+  // copy it with its own key for that, Ctrl+Shift+C in the keyboard protocol it reads, as the Mac's ⌘C does. Claude
+  // answers with OSC 52 (below), which puts it on the clipboard and shows the badge.
+  const copyAction = () => {
+    if (copySelection()) return true;
+    if (!claudeView()) return false;
+    atl.send('term:input', '\x1b[99;6u');
+    return true;
+  };
+  // OSC 52, a program's own copy (Claude's, of what's selected in its full-screen view; tmux's, vim's): onto the clipboard
+  // through the app, up to 1 MB, with the badge. A request to read the clipboard ("?") gets no answer, as on the Mac
+  // (ClipboardGuard): any text a program prints (a file cat'd, ssh, an AI's output) could otherwise read what was copied.
+  const MB = 1 << 20;
+  term.parser.registerOscHandler(52, (data) => {
+    const semi = data.indexOf(';');
+    const b64 = semi < 0 ? '' : data.slice(semi + 1).replace(/\s+/g, '');
+    if (!b64 || b64 === '?' || b64.length > Math.ceil(MB / 3) * 4) return true;
+    try {
+      const text = new TextDecoder().decode(Uint8Array.from(atob(b64), (ch) => ch.charCodeAt(0)));
+      if (text) {
+        atl.send('term:clipboard', { text });
+        showCopied(text.length);
+      }
+    } catch {}
+    return true;
+  });
+  // Paths as they'd be typed at the prompt: one with a space or a character a shell reads (& ( ) ; , $ and the like) in
+  // double quotes, which PowerShell, cmd and Claude's prompt all take; several apart, with a space after the last for
+  // what's typed next, as the Mac's pastePaths (iTerm2's) leaves one.
+  const quoted = (p) => (/[\s&()[\]{}^=;!'+,`$@#%]/.test(p) ? `"${p}"` : p);
+  const pastePaths = (paths) => {
+    const list = (Array.isArray(paths) ? paths : []).filter((p) => typeof p === 'string' && p);
+    if (!list.length) return false;
+    term.paste(`${list.map(quoted).join(' ')} `);
+    return true;
+  };
+  // A paste, the Mac's way (ChatTerminal's paste): files copied in Explorer as their paths (a picture's path becomes an
+  // image in Claude); a picture with no text (a screenshot, an image copied in a browser) as Ctrl+V while an AI runs
+  // here, Claude's (and Codex's) key for taking it off the clipboard; text as it is. `text` is the paste event's own; the
+  // right-click menu's Paste has none and reads the clipboard. An app that doesn't answer term:pasteInfo pastes text.
+  const pasteClipboard = async (text) => {
+    let got = null;
+    try {
+      got = await atl.ask('term:pasteInfo');
+    } catch {}
+    if (got && pastePaths(got.files)) return;
+    if (typeof text !== 'string') text = await navigator.clipboard.readText().catch(() => '');
+    if (text) term.paste(text);
+    else if (got && got.image && aiOn()) atl.send('term:input', '\x16');
+  };
+  // Ctrl+V, Ctrl+Shift+V, Shift+Insert and Edit › Paste all come as the page's paste event (the key handler below leaves
+  // them to it): taken here, before xterm.js's own, so files and pictures paste as above.
+  termEl.addEventListener('paste', (e) => {
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    pasteClipboard(e.clipboardData ? e.clipboardData.getData('text/plain') : undefined);
+  }, true);
+  // Files and folders dropped on the window paste their paths (the Mac's performDragOperation, iTerm2's). Nothing dropped
+  // on it opens in it instead, which would take the window away from the terminal.
+  const dragOver = (e) => {
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = [...e.dataTransfer.types].includes('Files') ? 'copy' : 'none';
+  };
+  addEventListener('dragenter', dragOver);
+  addEventListener('dragover', dragOver);
+  addEventListener('drop', (e) => {
+    e.preventDefault();
+    const files = [...((e.dataTransfer && e.dataTransfer.files) || [])].map((f) => (atl.pathForFile ? atl.pathForFile(f) : ''));
+    if (pastePaths(files)) term.focus();
+  });
+  // A right click: the app's menu (Copy, Paste, Select All, Find…, Clear Buffer), as the Mac's menu(for:), iTerm2's; its
+  // items come back on term:do. The press itself never reaches the program in front, as on the Mac: a full-screen Claude
+  // that asked for the mouse would take it as a click.
+  for (const type of ['mousedown', 'mouseup']) {
+    termEl.addEventListener(type, (e) => {
+      if (e.button !== 2) return;
+      e.stopPropagation();
+      if (type === 'mousedown') term.focus();
+    }, true);
+  }
+  termEl.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    // Not xterm.js's own handling either, which readies its text box for a menu of the page's that never opens.
+    e.stopPropagation();
+    atl.send('term:contextMenu', { hasSelection: term.hasSelection() });
+  }, true);
   // Ctrl+C copies when something is selected (else it interrupts), Ctrl+V pastes: Windows Terminal's keys. The copy
   // goes through the app, as the page's clipboard API refuses a window without focus. Ctrl+V only keeps xterm.js from
-  // sending ^V: the browser's own paste follows and xterm.js takes it (pasting here as well put everything in twice).
+  // sending ^V: the browser's own paste follows and the paste handler above takes it (pasting here as well put
+  // everything in twice).
   // The keys the app takes in a terminal (Settings › Shortcuts, the app's shortcuts.js): every action's but the
   // dashboard's own (Ctrl+B, Ctrl+R stay the shell's). As it came: Ctrl+N (a new file in Source Control's editor),
   // Ctrl+Shift+N (a new terminal), Ctrl+K (the Ring), Ctrl+W and Ctrl+Shift+W (close the window: what runs in it goes
@@ -307,11 +434,185 @@
     // Left unhandled, the app's keys reach its menu instead of the shell. Antigravity approves its subagents' steps with
     // Ctrl+K, so while it runs here that key is its own (the Ring is still the middle mouse button away).
     if (combo && keys.app.includes(combo)) return combo === 'ctrl+k' && tool === 'Antigravity';
+    // Ctrl+Shift+C with nothing selected in Claude's full-screen view: Claude's own copy (copyAction). Anywhere else it
+    // goes on as before, an interrupt, as Windows Terminal passes it on with nothing to copy.
+    if (e.ctrlKey && e.shiftKey && !e.altKey && k === 'c' && claudeView()) {
+      e.preventDefault();
+      copyAction();
+      return false;
+    }
+    // Editing keys for the AI's prompt, as the Mac sends them (AppDelegate's): Shift+Enter a new line (ESC CR, where
+    // xterm.js sends a CR that submits), Ctrl+Backspace a word back (ESC DEL, the Mac's Option+Delete) and Ctrl+Delete a
+    // word ahead (ESC d, its Option+fn+Delete). Only while an AI runs: ConPTY hands PowerShell and cmd an ESC CR as
+    // Alt+Enter, which neither takes as a new line, and xterm.js's own Ctrl+Backspace (^H) and Ctrl+Delete already reach
+    // them as those keys (ConPTY's), a word back and ahead in PSReadLine and in cmd.
+    if (aiOn() && !e.altKey && !e.metaKey && !e.isComposing) {
+      const seq = e.key === 'Enter' && e.shiftKey && !e.ctrlKey ? '\x1b\r'
+        : e.ctrlKey && !e.shiftKey && e.key === 'Backspace' ? '\x1b\x7f'
+          : e.ctrlKey && !e.shiftKey && e.key === 'Delete' ? '\x1bd' : '';
+      if (seq) {
+        e.preventDefault();
+        term.input(seq, true);
+        return false;
+      }
+    }
     if (!e.ctrlKey || e.altKey) return true;
     return k !== 'v';
   });
   atl.on('term:data', (data) => term.write(data));
-  atl.on('term:exit', () => term.write('\r\n\x1b[2m[ended]\x1b[0m\r\n'));
+  // Its end, said as the Mac's window says it (processTerminated): a chat's when an AI was what ran in it last, else a
+  // terminal's.
+  let wasAI = false;
+  atl.on('term:exit', () => term.write(`\r\n\x1b[2m[${wasAI ? 'chat' : 'terminal'} ended · close this window to remove it]\x1b[0m\r\n`));
+  // The bell (BEL) to the app, which rings it; a program spilling bells (binary output) rings it a few times a second.
+  let bellAt = 0;
+  term.onBell(() => {
+    const now = Date.now();
+    if (now - bellAt < 250) return;
+    bellAt = now;
+    atl.send('term:bell');
+  });
+  // Through the history (the Mac's scrollBuffer, iTerm2's ⌘↑ ⌘↓ ⌘⇞ ⌘⇟ ⌘↖ ⌘↘). Claude's full-screen view keeps its own,
+  // so there these go to Claude as its scroll keys: the wheel (a report at the middle of the window), Page Up and Down,
+  // Ctrl+Home and Ctrl+End.
+  const scrollBy = (step) => {
+    if (claudeView()) {
+      const mid = `${Math.max(1, term.cols >> 1)};${Math.max(1, term.rows >> 1)}`;
+      const keysFor = { lineUp: `\x1b[<64;${mid}M`, lineDown: `\x1b[<65;${mid}M`, pageUp: '\x1b[5~', pageDown: '\x1b[6~', top: '\x1b[1;5H', bottom: '\x1b[1;5F' };
+      atl.send('term:input', keysFor[step]);
+      return;
+    }
+    if (step === 'lineUp' || step === 'lineDown') term.scrollLines(step === 'lineUp' ? -1 : 1);
+    else if (step === 'pageUp' || step === 'pageDown') term.scrollPages(step === 'pageUp' ? -1 : 1);
+    else if (step === 'top') term.scrollToTop();
+    else term.scrollToBottom();
+  };
+  // Clear Buffer (the Mac's, iTerm2's ⌘K): the history goes and the screen clears, the program in front drawing itself
+  // again (Ctrl+L: PowerShell's ClearScreen, Claude's redraw).
+  const clearBuffer = () => {
+    term.write('\x1b[3J');
+    atl.send('term:input', '\x0c');
+  };
+  // The find bar (Ctrl+Shift+F, the right-click menu's Find…): every match lit as it's typed, Enter and F3 the next,
+  // Shift with them the one before, the count when the search gives it, Esc closing it. F3 and Shift+F3 go on finding
+  // with the bar's text from the terminal too, and Use Selection for Find puts the selection's first line in it.
+  const findQ = document.getElementById('find-q');
+  const findN = document.getElementById('find-n');
+  // The matches in the theme's colours: each on a wash of the accent, the one in front on the accent. The search takes
+  // #RRGGBB colours only, so the theme's are read through a canvas, which writes any CSS colour that way (or as rgba()).
+  const paint = document.createElement('canvas').getContext('2d');
+  const rgbOf = (c, d) => {
+    paint.fillStyle = d;
+    paint.fillStyle = c || d;
+    const s = String(paint.fillStyle);
+    const m = /^#([0-9a-f]{6})$/i.exec(s);
+    const n = m ? [0, 2, 4].map((i) => parseInt(m[1].slice(i, i + 2), 16)) : (s.match(/[\d.]+/g) || []).slice(0, 3).map(Number);
+    return n.length === 3 && n.every(Number.isFinite) ? n : [0, 2, 4].map((i) => parseInt(d.slice(1 + i, 3 + i), 16));
+  };
+  const hex = (rgb) => `#${rgb.map((v) => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0')).join('')}`;
+  const findLook = () => {
+    const bg = rgbOf(token('--code-bg'), '#251200');
+    const accent = rgbOf(token('--accent'), '#f88008');
+    const wash = (f) => hex(bg.map((v, i) => v + (accent[i] - v) * f));
+    return {
+      matchBackground: wash(0.35), matchBorder: wash(0.7), matchOverviewRuler: hex(accent),
+      activeMatchBackground: hex(accent), activeMatchBorder: hex(rgbOf(token('--hi'), '#fff8f0')), activeMatchColorOverviewRuler: hex(accent),
+    };
+  };
+  const runFind = (dir, incremental) => {
+    const q = findQ.value;
+    if (!q) {
+      search.clearDecorations();
+      findN.textContent = '';
+      findEl.classList.remove('none');
+      return;
+    }
+    const opts = { incremental, decorations: findLook() };
+    findMissed = null;
+    if (!(dir < 0 ? search.findPrevious(q, opts) : search.findNext(q, opts))) {
+      findMissed = q;
+      findN.textContent = 'no match';
+      findEl.classList.add('none');
+    }
+  };
+  // The query that found nothing: a count the search sends after that (the last query's, for a moment) isn't this one's.
+  let findMissed = null;
+  search.onDidChangeResults(({ resultIndex, resultCount }) => {
+    if (!findQ.value || findMissed === findQ.value) return;
+    // Past the search's limit of lit matches (1,000) it counts no further and says which one is in front no more.
+    findN.textContent = !resultCount ? 'no match' : resultIndex < 0 ? `${resultCount}${resultCount >= 1000 ? '+' : ''}` : `${resultIndex + 1}/${resultCount}`;
+    findEl.classList.toggle('none', !resultCount);
+  });
+  const showFind = () => {
+    if (!findEl.hidden) return;
+    findEl.hidden = false;
+    showSelection();
+  };
+  const openFind = () => {
+    showFind();
+    findQ.focus();
+    findQ.select();
+    if (findQ.value) runFind(1, true);
+  };
+  const closeFind = () => {
+    findEl.hidden = true;
+    search.clearDecorations();
+    findN.textContent = '';
+    findEl.classList.remove('none');
+    term.focus();
+    showSelection();
+  };
+  const findStep = (dir) => {
+    if (!findQ.value) return openFind();
+    showFind();
+    runFind(dir, false);
+  };
+  const useSelectionForFind = () => {
+    const line = term.hasSelection() ? term.getSelection().split(/\r?\n/).find((l) => l.trim()) : '';
+    if (!line) return;
+    findQ.value = line.trim();
+    openFind();
+  };
+  findQ.addEventListener('input', () => runFind(1, true));
+  findQ.addEventListener('keydown', (e) => {
+    if (e.isComposing) return;
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      closeFind();
+    } else if (e.key === 'Enter' || e.key === 'F3') {
+      e.preventDefault();
+      runFind(e.shiftKey ? -1 : 1, false);
+    }
+  });
+  for (const [id, act] of [['find-prev', () => runFind(-1, false)], ['find-next', () => runFind(1, false)], ['find-close', closeFind]]) {
+    const b = document.getElementById(id);
+    b.addEventListener('mousedown', (e) => e.preventDefault());
+    b.onclick = act;
+  }
+  // The last reply copied whole (the strip's button, Edit's Copy Last Reply), from the transcript: the badge counts it.
+  const copyReply = () => atl.ask('term:copyReply').then((r) => r && r.ok && showCopied(r.chars), () => {});
+  // The app's menus (the right-click one, the menu bar's items and their keys) act on the terminal through term:do.
+  const ACTIONS = {
+    copy: copyAction,
+    paste: () => pasteClipboard(),
+    selectAll: () => term.selectAll(),
+    find: openFind,
+    findNext: () => findStep(1),
+    findPrevious: () => findStep(-1),
+    useSelectionForFind,
+    clearBuffer,
+    scrollLineUp: () => scrollBy('lineUp'),
+    scrollLineDown: () => scrollBy('lineDown'),
+    scrollPageUp: () => scrollBy('pageUp'),
+    scrollPageDown: () => scrollBy('pageDown'),
+    scrollTop: () => scrollBy('top'),
+    scrollBottom: () => scrollBy('bottom'),
+    copyReply,
+  };
+  atl.on('term:do', (m) => {
+    const action = typeof m === 'string' ? m : m && m.action;
+    if (typeof action === 'string' && Object.hasOwn(ACTIONS, action)) ACTIONS[action]();
+  });
   // The local MCP server (the app's mcp.js, the Mac's terminalText): what this terminal shows, as text, for Claude's
   // read_session and for the checks before it types a prompt. The screen in front (Claude's full-screen view is the
   // alternate one), row by row, the last 60,000 characters.
@@ -335,14 +636,84 @@
     if (n >= 1e3) return `${(n / 1e3).toFixed(1)}k`;
     return String(n);
   };
-  const STATUS = { busy: ['WORKING', '--accent'], idle: ['YOUR TURN', '--cyan'], waiting: ['NEEDS YOU', '--warn'], terminal: ['TERMINAL', '--cyan'], ended: ['ENDED', '--ended'] };
-  atl.on('term:info', (i) => {
+  // Money, durations and clocks as the Mac's HUD writes them: $0.42, $12; 45s, 3m07, 1h05; 0:42, 1:02:33.
+  const fmtUsd = (n) => (n >= 100 ? `$${n.toFixed(0)}` : n >= 0.01 ? `$${n.toFixed(2)}` : n > 0 ? `$${n.toFixed(3)}` : '$0');
+  const two = (n) => String(n).padStart(2, '0');
+  const fmtDur = (ms) => {
+    const s = Math.trunc(Math.max(0, ms) / 1000);
+    if (s < 60) return `${s}s`;
+    if (s < 3600) return `${Math.trunc(s / 60)}m${two(s % 60)}`;
+    return `${Math.trunc(s / 3600)}h${two(Math.trunc((s % 3600) / 60))}`;
+  };
+  const clock = (ms) => {
+    const s = Math.trunc(Math.max(0, ms) / 1000);
+    const h = Math.trunc(s / 3600), m = Math.trunc((s % 3600) / 60);
+    return h > 0 ? `${h}:${two(m)}:${two(s % 60)}` : `${m}:${two(s % 60)}`;
+  };
+  const STATUS = { busy: ['WORKING', '--accent'], idle: ['YOUR TURN', '--cyan'], waiting: ['⚠ NEEDS YOU', '--warn'], terminal: ['TERMINAL', '--cyan'], ended: ['ENDED', '--ended'] };
+  // A tool call's colour by its kind (the Mac's Theme.catHex), a plan's for the rest.
+  const CAT = { web: '--sky', browser: '--blue', read: '--green', search: '--lime', edit: '--amber', bash: '--orange', agent: '--violet', mcp: '--magenta', plan: '--lavender' };
+  const hudEl = document.getElementById('hud');
+  const titleEl = document.getElementById('title');
+  const statusEl = document.getElementById('status');
+  const actionEl = document.getElementById('action');
+  const sparkEl = document.getElementById('spark');
+  const pinEl = document.getElementById('pin');
+  // A narrow window drops the strip's pieces one at a time, the least needed first, rather than wrapping it or cutting
+  // off its buttons: the sparkline, model and effort, today's counts, the cost, why it waits, the tool call, the context.
+  // The folder, the tool call's own words and the title give way on their own before that (the title slowest, and only
+  // down to ten characters' worth).
+  const DROPS = ['#spark', '#model', '#counts', '#cost', '#status .why', '#action', '#ctx'].map((s) => hudEl.querySelector(s));
+  const fitHud = () => {
+    for (const el of DROPS) el.classList.remove('dropped');
+    const cramped = () => hudEl.scrollWidth > hudEl.clientWidth || titleEl.clientWidth < Math.min(titleEl.scrollWidth, 72);
+    for (const el of DROPS) {
+      if (!cramped()) break;
+      el.classList.add('dropped');
+    }
+  };
+  new ResizeObserver(fitHud).observe(hudEl);
+  // The status's and the tool call's clocks, every second (the Mac's header redraws as often).
+  // A clock grown a digit fits the strip again.
+  const tick = () => {
+    const now = Date.now();
+    const timed = ['busy', 'idle', 'waiting'].includes(info.status) && info.statusSince > 0;
+    const a = info.action;
+    const t = statusEl.querySelector('.t'), dur = actionEl.querySelector('.dur');
+    const was = t.textContent.length + dur.textContent.length;
+    t.textContent = timed ? ` ${clock(now - info.statusSince)}` : '';
+    dur.textContent = a && a.since > 0 ? fmtDur(now - a.since) : '';
+    if (t.textContent.length + dur.textContent.length !== was) fitHud();
+  };
+  setInterval(tick, 1000);
+  // The activity sparkline: a bar for each slice of time, the busiest the full height (the Mac's SparkView).
+  const drawSpark = (values) => {
+    const max = Math.max(1, ...values);
+    const bw = 96 / values.length;
+    sparkEl.firstElementChild.innerHTML = values.map((v, x) => {
+      const h = v > 0 ? Math.max(3, (v / max) * 16) : 2;
+      return `<rect x="${(x * bw + 0.5).toFixed(2)}" y="${(18 - h).toFixed(2)}" width="${Math.max(0.5, bw - 1).toFixed(2)}" height="${h.toFixed(2)}" fill-opacity="${v > 0 ? 0.85 : 0.18}"/>`;
+    }).join('');
+  };
+  const setPin = (on) => {
+    pinEl.classList.toggle('on', on);
+    pinEl.title = on ? 'Stop keeping this window above all other apps' : 'Keep this window above all other apps';
+  };
+  atl.on('term:info', (got) => {
+    const i = (info = got || {});
     tool = i.tool || null;
     toolStatus = i.toolStatus || null;
-    document.getElementById('title').textContent = i.title || 'terminal';
+    if (info.status !== 'ended') wasAI = aiOn();
+    titleEl.textContent = i.title || 'terminal';
     document.title = `${i.title || 'terminal'} · Orbiterm`;
     const [label, color] = STATUS[i.status] || ['', '--dim'];
-    document.getElementById('status').textContent = label;
+    // Why it waits (a permission, a question) after the label, as the Mac's footer has it, and as the status's tooltip.
+    // Streamer mode leaves it out: it can name a file or a command.
+    const why = i.status === 'waiting' && !i.streamer && typeof i.waitingFor === 'string' ? i.waitingFor : '';
+    statusEl.querySelector('.lbl').textContent = label;
+    statusEl.querySelector('.why').textContent = why ? ` · ${why}` : '';
+    statusEl.title = why;
+    statusEl.classList.toggle('waiting', i.status === 'waiting');
     document.getElementById('where').textContent = i.cwd || '';
     document.body.style.setProperty('--st', `var(${color})`);
     // Streamer mode: the names above are made up already; the terminal itself goes behind frosted glass.
@@ -359,8 +730,39 @@
     if (st) {
       ctxEl.querySelector('.bar span').style.width = `${st.ctxMax > 0 ? Math.min(1, st.ctx / st.ctxMax) * 100 : 0}%`;
       ctxEl.querySelector('.n').textContent = fmtTok(st.ctx) + (st.ctxMax > 0 ? ` / ${fmtTok(st.ctxMax)}` : '');
-      countsEl.innerHTML = `<b>${st.tools}</b><i> tools · </i><b>${st.web}</b><i> web · </i><b${st.errors > 0 ? ' class="err"' : ''}>${st.errors}</b><i> err</i>`;
+      // Its subagents at work after the counts, as the Mac's "⤷2".
+      const agents = Math.trunc(Number(i.agentsRunning) || 0);
+      countsEl.innerHTML = `<b>${st.tools}</b><i> tools · </i><b>${st.web}</b><i> web · </i><b${st.errors > 0 ? ' class="err"' : ''}>${st.errors}</b><i> err</i>` +
+        (agents > 0 ? `<span class="ag"> · ⤷${agents}</span>` : '');
     }
+    // The tool call the AI is on ("▸ Bash"), what it's doing and for how long, in its kind's colour. Streamer mode keeps
+    // the name and the time only: what it's doing can name a file or a command.
+    const a = i.action && i.action.name ? i.action : null;
+    actionEl.hidden = !a;
+    if (a) {
+      actionEl.style.setProperty('--cat', `var(${CAT[a.cat] || '--lavender'})`);
+      actionEl.querySelector('.name').textContent = `▸ ${a.name}`;
+      actionEl.querySelector('.label').textContent = i.streamer ? '' : String(a.label || '');
+      actionEl.title = i.streamer ? '' : [a.name, a.label].filter(Boolean).join(' ');
+    }
+    // Model and effort, and what the session has cost (Claude's only: another AI tool's would be a $0 it didn't cost).
+    const modelEl = document.getElementById('model');
+    const model = [i.model, i.effort].filter((x) => typeof x === 'string' && x).join(' · ');
+    modelEl.hidden = !model;
+    modelEl.textContent = model;
+    const costEl = document.getElementById('cost');
+    const priced = typeof i.cost === 'number' && Number.isFinite(i.cost) && !i.tool;
+    costEl.hidden = !priced;
+    if (priced) costEl.textContent = fmtUsd(i.cost);
+    const spark = Array.isArray(i.spark) && i.status !== 'terminal' ? i.spark.map(Number).filter(Number.isFinite) : [];
+    sparkEl.hidden = !spark.length;
+    if (spark.length) drawSpark(spark);
+    // Copy the last reply (once there's one to copy), and keep the window on top.
+    document.getElementById('copyreply').hidden = i.canCopyReply !== true;
+    pinEl.hidden = typeof i.pinned !== 'boolean';
+    if (!pinEl.hidden) setPin(i.pinned);
+    tick();
+    fitHud();
   });
   // ---------- a linked worktree: the chip and the split button (the Mac's WorktreeChip.swift) ----------
   // The app sends what to show (term:ship, from its worktreeship.js; null: not in a worktree) and does what a click asks:
@@ -422,6 +824,8 @@
     const now = v && v.tail && v.tail.type === 'pr' ? v.tail : null;
     ship = v || null;
     drawShip();
+    // The chip and the button take room on the strip: it's fitted again (fitHud).
+    fitHud();
     // Checks finishing is said once (WCAG 4.1.3): the colour isn't the only sign.
     if (old && now && old.number === now.number && old.checks !== now.checks && (now.checks === 'pass' || now.checks === 'fail')) {
       announce.textContent = `PR #${now.number}: ${now.checks === 'pass' ? 'checks passed' : 'a check failed'}.`;
@@ -446,6 +850,14 @@
   document.getElementById('star').onclick = () => {
     term.focus();
     atl.send('term:favorite');
+  };
+  document.getElementById('copyreply').onclick = () => {
+    term.focus();
+    copyReply();
+  };
+  pinEl.onclick = () => {
+    term.focus();
+    atl.ask('term:pin').then((r) => r && typeof r.pinned === 'boolean' && setPin(r.pinned), () => {});
   };
   document.getElementById('end').onclick = () => atl.send('term:end');
   term.focus();

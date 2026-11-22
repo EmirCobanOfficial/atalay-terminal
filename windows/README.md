@@ -104,7 +104,7 @@ in `src/main.js` and pushes to them with `window.__radar.*`, `window.__messages.
 | `src/shortcuts.js` | Settings › Shortcuts: the menu's keys as the user set them (`settings.json` `shortcuts`), recording new ones, the Ring's middle click (with Ctrl, alone or off) and its keys, Esc and the close keys swapped | Shortcuts.swift, EscClose.swift |
 | `src/envfiles.js`, `src/envbridge.js`, `pages/env.*` | the strip's env button (Ctrl+Shift+E): the .env, .env.*, *.env and .envrc files under the terminal's folder (4 folders down, 100 files, hidden and heavy folders skipped), a list, then one file's lines with the values masked until opened; Copy all, Save (a copy renamed over it, CRLF/LF, BOM and untouched lines kept), the file changing on disk; every read and write checks the path again (inside the folder, no link out, an env name, at most 1 MB) | EnvFiles.swift, EnvView.swift |
 | `src/sharecard.js` | the share card's picture to the clipboard or Downloads, shown in Explorer, and its badges and avatars fetched for it (an allow-list, every redirect checked) | Cloud.swift (CloudBridge share part) |
-| `pages/terminal.*` | a chat or terminal window: xterm.js and its header | ChatWindow |
+| `pages/terminal.*` | a chat or terminal window: xterm.js and its header (the model and effort, the cost, the tool at work, the subagents running, what it waits for), its right-click menu (Copy, Paste, Select All, Find, Clear), Find, a dropped file's path, Copy Claude's last reply, pinned above every app, End's "End this chat?" | ChatWindow, ChatTerminal |
 
 ### The session host
 
@@ -112,7 +112,8 @@ Windows has no `screen`, so the app brings its own: `src/host.cs`, compiled at f
 with Windows (.NET Framework's `csc.exe`) into `%LOCALAPPDATA%\atalay-terminal-host`. Every chat and terminal runs in a
 pseudo console it holds, so the app can quit, update or crash and Claude keeps working; at the next launch the windows
 attach again (hidden, as on the Mac: a click on the dashboard opens one), starting from the end of the output the host
-kept. It runs outside the app's folder because an update's installer ends everything that runs from there; it ends by
+kept. What's typed into a session waits in a queue of its own, written by a thread of its own, so a big paste into one
+never holds up the others' typing, resizing or End. It runs outside the app's folder because an update's installer ends everything that runs from there; it ends by
 itself once its last session has and no app is connected, and uninstalling ends it (`build/installer.nsh`). The
 installed app and a development run (`npm start`) each have their own. Without it (it couldn't be built or started) the
 chats run in the app, through node-pty, and end with it.
@@ -136,3 +137,5 @@ chats run in the app, through node-pty, and end with it.
   Create PR / Merge / Delete worktree button and the chats list's items all the same. The worktree items are in the File
   menu (there's no Chat menu), and Delete sends the folder to the Recycle Bin.
 - Updates come from the releases repo's `windows` release (above), not from the API's offer, which is the Mac app's.
+- No What's New after an update (`web/whatsnew.js` leaves Windows out).
+- The folder picker's favourites are a fixed list (home, Desktop, Documents, Downloads…), not Explorer's Quick Access.

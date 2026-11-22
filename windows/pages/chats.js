@@ -32,7 +32,12 @@
   $('bulkClear').innerHTML = ICON.x;
 
   let data = { rows: [], terms: [], pinned: [], saved: 0, live: 0, folders: {} };
+  // The focused window's session, and the conversation it is in when that's another id (an AI tool's "ai:…" session in a
+  // plain terminal): its row is marked by either, or by the live session the app says the row is (`sid`), as the Mac's
+  // row is by its brief (Sidebar.swift).
   let activeId = null;
+  let activeAlt = null;
+  const isActive = (r) => (!!activeId && (r.id === activeId || r.sid === activeId)) || (!!activeAlt && r.id === activeAlt);
   let query = '';
   const expanded = new Set();
   // Folders folded shut: kept in this page's storage.
@@ -55,6 +60,12 @@
   let lastPicked = null;
   // The chat being renamed in place: ↩ keeps the name, Esc (or a click elsewhere) leaves it.
   let renaming = null;
+  // What moves eases in 0.2 to 0.25 s, as the Mac's withAnimation(.easeInOut) does (Sidebar.swift): a chat starred or
+  // unstarred grows in where it lands (`arrive`, until the app's list has it there), a folder unfolded grows its rows in
+  // (`unfolding`, for one drawing), one folded or archived and an archived chat shrink away first. Not with the system's
+  // reduced motion.
+  let arrive = null, unfolding = null, foldTimer = 0;
+  const calm = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
 
   function relative(ms) {
     // A live chat with nothing saved yet comes without a time: it's happening now.
@@ -71,8 +82,7 @@
   function meta(r) {
     const bits = [relative(r.mtime)];
     if (r.size > 0) bits.push(fmtBytes(r.size));
-    const isActive = r.id === activeId;
-    if (isActive) bits.push('active window');
+    if (isActive(r)) bits.push('active window');
     else if (r.open) bits.push('in a window');
     else if (r.status) bits.push(r.host === 'term' ? 'in another terminal' : 'live');
     if (r.status === 'waiting') bits.push('NEEDS YOU');
@@ -82,11 +92,13 @@
 
   function row(r) {
     const st = r.status || 'ended';
-    const isActive = r.id === activeId;
+    const on = isActive(r);
+    // Just starred or unstarred, and now where the app's list puts it: it grows in there.
+    const lands = !!arrive && r.id === arrive.id && r.fav === arrive.fav;
     const badge = r.tool === 'antigravity' ? '<span class="tool-badge">agy</span>' : r.tool === 'codex' ? '<span class="tool-badge">codex</span>' : r.tool === 'cursor' ? '<span class="tool-badge">cursor</span>' : '';
     // Picked: a tick in its light's place, and a brighter row.
     const sel = pickedChats.has(r.id);
-    return `<div class="row${r.open ? ' open' : ''}${isActive ? ' active' : ''}${sel ? ' sel' : ''}" data-id="${esc(r.id)}" title="${esc(r.lastPrompt || r.title)}">` +
+    return `<div class="row${r.open ? ' open' : ''}${on ? ' active' : ''}${sel ? ' sel' : ''}${lands ? ' arrive' : ''}" data-id="${esc(r.id)}" title="${esc(r.lastPrompt || r.title)}">` +
       (sel ? `<span class="tick">${ICON.tick}</span>` : `<span class="dot s-${esc(st)}${r.status ? '' : ' hollow'}"></span>`) +
       (r.id === renaming
         ? `<span class="txt"><input class="ren" value="${esc(r.title || r.lastPrompt)}" spellcheck="false" maxlength="120">`
@@ -129,7 +141,8 @@
   function render() {
     $('count').textContent = `${data.saved} saved · ${data.live} live`;
     const q = query.trim().toLowerCase();
-    const rows = q ? data.rows.filter((r) => `${r.title} ${r.lastPrompt} ${r.cwd}`.toLowerCase().includes(q)) : data.rows;
+    // A renamed chat by its own name or the title its AI gave it (`origTitle`), as the Mac's search has both.
+    const rows = q ? data.rows.filter((r) => `${r.title} ${r.origTitle || ''} ${r.lastPrompt} ${r.cwd}`.toLowerCase().includes(q)) : data.rows;
     const terms = (data.terms || []).filter((t) => !q || `${t.title} ${t.job} ${t.cwd}`.toLowerCase().includes(q));
     const favs = rows.filter((r) => r.fav);
     const groups = [];
@@ -160,10 +173,14 @@
         if (!all && g.items.length > 5) body += `<button type="button" class="more" data-key="${esc(g.key)}">+${g.items.length - 5} more</button>`;
         if (!g.items.length && !g.terms.length) body += '<div class="empty">nothing here yet · <button type="button" data-act="new">open a terminal</button></div>';
       }
-      html += `<section class="grp${g.pinned ? ' pinned' : ''}${shut ? ' shut' : ''}${g.terms.some((t) => t.shown) || g.items.some((r) => r.open) ? ' live' : ''}" data-key="${esc(g.key)}" data-cwd="${esc(g.cwd)}">${head(g)}${body}</section>`;
+      const opening = !shut && g.key === unfolding ? ' unfolding' : '';
+      html += `<section class="grp${g.pinned ? ' pinned' : ''}${shut ? ' shut' : ''}${opening}${g.terms.some((t) => t.shown) || g.items.some((r) => r.open) ? ' live' : ''}" data-key="${esc(g.key)}" data-cwd="${esc(g.cwd)}">${head(g)}${body}</section>`;
     }
     if (!html) html = `<div class="none">${q ? 'nothing matches' : 'no chats yet · open a folder to start'}</div>`;
     $('list').innerHTML = html;
+    // Grown in once: the next drawing (the app's next list, the clock's) draws them as they are.
+    unfolding = null;
+    if (arrive && ($('list').querySelector('.row.arrive') || performance.now() > arrive.until)) arrive = null;
     const ren = renaming && $('list').querySelector('.ren');
     if (ren) {
       ren.focus();
@@ -229,6 +246,39 @@
   const remove = async (msg) => {
     if ((await post(msg)) === true) clearPicked();
   };
+  // A star given or taken: the app moves the chat (to FAVORITES or back to its folder), and it grows in where it lands.
+  const star = (id) => {
+    const r = data.rows.find((x) => x.id === id);
+    arrive = r && !calm() ? { id, fav: !r.fav, until: performance.now() + 1500 } : null;
+    post({ type: 'favorite', id });
+  };
+  // Archived: the chats' rows or the folders' panels shrink away (0.25 s), then the app takes them out of the list. A
+  // drawing meanwhile (the app's list came) only cuts it short.
+  const leave = (els, then) => {
+    const shown = els.filter(Boolean);
+    if (!shown.length || calm()) return then();
+    let done = false;
+    const go = () => {
+      if (done) return;
+      done = true;
+      then();
+    };
+    // Each from its own height (a folder's panel is taller than a row).
+    const heights = shown.map((el) => el.offsetHeight);
+    shown.forEach((el, i) => {
+      el.style.setProperty('--h', `${heights[i]}px`);
+      // A row that just grew in (starred, its folder unfolded) would keep that animation over this one.
+      el.classList.remove('arrive');
+      if (el.parentElement) el.parentElement.classList.remove('unfolding');
+      el.classList.add('leaving');
+    });
+    shown[0].addEventListener('animationend', (e) => e.target === shown[0] && go());
+    setTimeout(go, 300);
+  };
+  const rowEl = (id) => [...$('list').querySelectorAll('.row[data-id]')].find((el) => el.dataset.id === id);
+  const folderEl = (key) => [...$('list').querySelectorAll('.grp[data-key]')].find((el) => el.dataset.key === key);
+  const archiveChat = (id) => leave([rowEl(id)], () => post({ type: 'archive', id }));
+  const archiveFolder = (key) => leave([folderEl(key)], () => post({ type: 'folders', keys: [key], on: true }));
 
   $('list').addEventListener('click', (e) => {
     const button = e.target.closest('button');
@@ -244,7 +294,8 @@
     if (r && e.target.classList.contains('ren')) return;
     if (r) {
       const act = button && button.dataset.act;
-      if (act === 'star' || act === 'archive') return post({ type: act === 'star' ? 'favorite' : 'archive', id: r.dataset.id });
+      if (act === 'star') return star(r.dataset.id);
+      if (act === 'archive') return archiveChat(r.dataset.id);
       // Shift+click picks all up to it, Ctrl+click picks it; while some are picked a click picks too, so one that
       // misses its key doesn't open a chat (and start Claude). Else a click opens it.
       if (e.shiftKey) return pickUpTo(r.dataset.id);
@@ -254,16 +305,28 @@
     const h = e.target.closest('.head');
     if (!h) return;
     const act = button && button.dataset.act;
-    if (act === 'archive') return post({ type: 'folders', keys: [h.dataset.key], on: true });
+    if (act === 'archive') return archiveFolder(h.dataset.key);
     if (act === 'new') return post({ type: 'newTerminal', cwd: h.dataset.cwd });
     // Ctrl+click picks it for archiving several at once; a click folds it shut or open.
     if (e.ctrlKey || e.metaKey || e.shiftKey) return pick(h.dataset.key);
     fold(h.dataset.key);
   });
 
+  // Folding shut, its rows shrink away (0.2 s) before it's drawn shut; folding open, they grow in.
   function fold(key) {
-    if (!folded.delete(key)) folded.add(key);
+    const shutting = !folded.has(key);
+    if (shutting) folded.add(key);
+    else folded.delete(key);
     keepFolded();
+    clearTimeout(foldTimer);
+    const el = !query && !calm() ? folderEl(key) : null;
+    if (shutting && el) {
+      el.classList.remove('unfolding');
+      el.classList.add('folding');
+      foldTimer = setTimeout(render, 200);
+      return;
+    }
+    if (!shutting && el) unfolding = key;
     render();
   }
 
@@ -318,6 +381,8 @@
         renaming = item.id;
         render();
       } else if (choice === 'select') pickChat(item.id);
+      else if (choice === 'favorite') star(item.id);
+      else if (choice === 'archive') archiveChat(item.id);
       else if (choice === 'delete') remove({ type: 'delete', ids: many || [item.id] });
       else if (choice === 'new' || choice === 'reveal') post({ type: choice === 'new' ? 'newTerminal' : 'reveal', cwd: item.cwd });
       else if (choice) post({ type: choice, id: item.id });
@@ -347,9 +412,12 @@
       }
       const choice = await post({ type: 'menu', at, items });
       if (typeof choice === 'string' && choice.startsWith('wt:') && wt) post({ type: 'ship', id: choice.slice(3), top: wt.top });
-      else if (choice === 'bulkOn' || choice === 'bulkOff') archiveFolders([...picked], choice === 'bulkOn');
+      else if (choice === 'bulkOn') {
+        const keys = [...picked];
+        leave(keys.map(folderEl), () => archiveFolders(keys, true));
+      } else if (choice === 'bulkOff') archiveFolders([...picked], false);
       else if (choice === 'delete') remove({ type: 'deleteFolders', keys: all });
-      else if (choice === 'archive') post({ type: 'folders', keys: [key], on: true });
+      else if (choice === 'archive') archiveFolder(key);
       else if (choice === 'select') pick(key);
       else if (choice === 'new' || choice === 'reveal') post({ type: choice === 'new' ? 'newTerminal' : 'reveal', cwd: h.dataset.cwd });
       else if (choice === 'fold') fold(key);
@@ -374,10 +442,15 @@
   $('close').addEventListener('click', () => post({ type: 'close' }));
   // The bar over the list while chats or folders are picked: archive or delete them all at once.
   $('bulkArchive').addEventListener('click', () => {
-    if (picked.size) return archiveFolders([...picked], true);
+    if (picked.size) {
+      const keys = [...picked];
+      return leave(keys.map(folderEl), () => archiveFolders(keys, true));
+    }
     const ids = [...pickedChats];
-    clearPicked();
-    post({ type: 'archiveMany', ids });
+    leave(ids.map(rowEl), () => {
+      clearPicked();
+      post({ type: 'archiveMany', ids });
+    });
   });
   $('bulkDelete').addEventListener('click', () => remove(picked.size ? { type: 'deleteFolders', keys: [...picked] } : { type: 'delete', ids: [...pickedChats] }));
   $('bulkClear').addEventListener('click', clearPicked);
@@ -412,7 +485,10 @@
   window.__chats = {
     update(d) {
       data = d && Array.isArray(d.rows) ? d : data;
-      if (d && 'active' in d) activeId = d.active || null;
+      if (d && 'active' in d) {
+        activeId = d.active || null;
+        activeAlt = d.activeAlt || null;
+      }
       // A folder that left the list (archived) isn't picked any more, nor is a chat that did (archived, deleted).
       const keys = new Set(data.rows.map((r) => r.key));
       for (const k of picked) if (!keys.has(k)) picked.delete(k);
@@ -420,11 +496,22 @@
       for (const id of pickedChats) if (!ids.has(id)) pickedChats.delete(id);
       render();
     },
-    active(id) {
+    // The focused window's session, and (`altId`) the conversation its AI is in when that's another id: the row with
+    // either id gets the active bar (the Mac's MainWindowController and SidebarView).
+    active(id, altId) {
       const next = id || null;
-      if (next === activeId) return;
+      const alt = altId && altId !== next ? altId : null;
+      if (next === activeId && alt === activeAlt) return;
       activeId = next;
+      activeAlt = alt;
       render();
+    },
+    // The keys the app has for the list (Settings › Shortcuts can change them): `chatsList`, as the top bar shows it
+    // ("Ctrl+B"); '' when it has none, and the label goes.
+    keys(k) {
+      if (!k || typeof k.chatsList !== 'string') return;
+      $('key').textContent = k.chatsList;
+      $('key').hidden = !k.chatsList;
     },
     // Sliding open, it comes in from nothing; sliding shut, it fades out.
     fade(on) {

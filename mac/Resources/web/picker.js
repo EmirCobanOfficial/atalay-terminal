@@ -26,8 +26,9 @@
   let st = null; // { cwd, list, sel, back, fwd, onPick, places, showHidden, filter, around, slots, assign, mode, wtOk }
 
   // What the native side says of a folder (gitInfo: { repo, worktree, branch }), by path, for the bottom bar and the
-  // ⎇ New worktree… button. Asked 80 ms after the selection stops moving. Where the app doesn't answer (the Windows one),
-  // the button never shows.
+  // ⎇ New worktree… button. Asked 80 ms after the selection stops moving. Where the app doesn't answer, or answers with
+  // `noWorktree` (the Windows one: it reads the branch and who works there, but makes no worktrees yet), the button never
+  // shows. The Mac never sends `noWorktree`.
   const gitCache = new Map();
   let gitTimer = 0;
   function gitOf(p) {
@@ -43,7 +44,7 @@
       if (!st) return;
       if (!r || typeof r !== 'object') st.wtOk = false;
       else {
-        st.wtOk = true;
+        st.wtOk = !r.noWorktree;
         if (gitCache.size > 300) gitCache.clear();
         gitCache.set(p, r);
       }

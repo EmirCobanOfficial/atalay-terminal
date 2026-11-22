@@ -22,6 +22,7 @@ const os = require('os');
 const path = require('path');
 const { performance } = require('perf_hooks');
 const { redactMore, wrap, envelopeNote, clip } = require('./mcpshared');
+const { createCodexHooks } = require('./codexhooks');
 
 const MODES = ['off', 'watch', 'write'];
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -220,6 +221,9 @@ function agyRisk(v, depth = 0) {
  * What the terminal itself says it is in (Claude's "bypass permissions on", Codex's full access, a mode changed while
  * running). Claude's "auto mode on" too: auto counts as a bypass when a flag or a settings file sets it (flagBypass,
  * settingsBypass), and a Claude switched to it with Shift+Tab, or starting in it with nothing set, says so only here.
+ * Antigravity's mode shows in its input box's placeholder, which counts as an empty box (inputState): a mode that runs
+ * everything, or approves file edits by itself ("Accept-edits mode: file edits auto-approved"), is refused here, as the
+ * Mac's words refuse it.
  */
 function screenSaysBypass(screen) {
   const footer = String(screen || '').split('\n').slice(-14).join('\n').toLowerCase();
@@ -358,6 +362,7 @@ function trayBitmap(filled) {
  * - chatWindow(id): the window of terminal `id`, whose page reads its screen (pages/terminal.js, term:screen)
  * - parentWindow(): the dashboard's window, for the native questions; push(json): the dashboard page's __radar.mcp
  * - notesAccess(): the notes' AI mode isn't off (notesai.js); the pipe is open while this or the Claude access is on
+ * - codexHooks (optional): main.js's codexhooks.js reader, for what a Codex asks to run
  * - tag: the build's letter ('' the installed app, 's' staging, 'd' a development run); source: mcpbridge.cs's path
  */
 function createMcp(deps) {
@@ -415,6 +420,9 @@ function createMcp(deps) {
     briefs = (Array.isArray(list) ? list : []).filter((b) => b && typeof b.sessionId === 'string').map((b) => ({
       id: b.sessionId, name: b.name || '', title: b.title || '', cwd: b.cwd || '', status: b.status, waitingFor: b.waitingFor || null,
       pid: b.pid, tab: typeof b.tab === 'string' ? b.tab : null, ai: !!b.ai,
+      // The step it is on (the tool call waiting for approval, the command it runs), and a Codex's session (its log's),
+      // under which its hook keeps what it asks to run (the Mac's SessionBrief actionLabel and convId).
+      actionLabel: typeof b.actionLabel === 'string' ? b.actionLabel : '', convId: typeof b.convId === 'string' ? b.convId : null,
     }));
     for (const b of briefs) if (b.status === 'busy' && sent.has(b.id)) worked.add(b.id);
   }
@@ -484,23 +492,44 @@ function createMcp(deps) {
   const done = (text) => ({ ok: true, text });
   const shellPid = (id) => (terminals.list().find((x) => x.id === id) || {}).pid || null;
 
+  /** Which AI a session is: claude, codex, agy or cursor; null for another tool, which this server doesn't reach. */
+  const kindOf = (b) =>
+    !b.ai ? 'claude' : b.name === 'Codex' ? 'codex' : b.name === 'Antigravity' ? 'agy' : b.name === 'Cursor' ? 'cursor' : null;
+
   /** The AI sessions in this app's own terminals (never one in another terminal app, never a plain shell). */
   function targets() {
     const out = [];
     for (const b of briefs) {
       if (b.status === 'ended' || b.pid == null || !b.tab || !terminals.has(b.tab)) continue;
-      let kind = 'claude';
-      if (b.ai) {
-        if (b.name === 'Codex') kind = 'codex';
-        else if (b.name === 'Antigravity') kind = 'agy';
-        else if (b.name === 'Cursor') kind = 'cursor';
-        else continue;
-      }
+      const kind = kindOf(b);
+      if (!kind) continue;
       out.push({ id: b.id, brief: b, kind, screen: b.tab });
     }
     return out;
   }
   const find = (id) => (typeof id === 'string' ? targets().find((t) => t.id === id) || null : null);
+
+  // Codex's approval requests, as its hook keeps them (codexhooks.js): main.js's reader when it passes one, else one of
+  // our own over the same folder (reading it changes nothing but a day-old file, which goes).
+  const codexHooks = deps.codexHooks || createCodexHooks({
+    ownDir: path.join(process.env.LOCALAPPDATA || app.getPath('appData'), 'atalay-terminal'),
+    codexDir: process.env.CODEX_HOME || path.join(os.homedir(), '.codex'),
+  });
+  /**
+   * What a session waiting for the user waits on (the Mac's listPending): the step it is on (the tool call to approve,
+   * the question), else what the engine says it waits for, else, for a Codex, the command its hook says it asks to run.
+   * Not masked: the caller masks it.
+   */
+  function pendingWhat(t) {
+    const b = t.brief;
+    let what = b.actionLabel || b.waitingFor || '';
+    if (!what && t.kind === 'codex' && b.convId) {
+      try {
+        what = (codexHooks.waiting().get(b.convId) || {}).command || '';
+      } catch {}
+    }
+    return what;
+  }
 
   // A terminal's screen, as its window's page shows it (pages/terminal.js): the Mac's terminalText(session:). null when
   // it has no window or doesn't answer.
@@ -609,7 +638,7 @@ function createMcp(deps) {
     const lines = [];
     for (const t of targets()) {
       const b = t.brief;
-      if (b.status === 'waiting') lines.push(`needs_you | ${b.id} | ${aiName(t)} | ${clip(redactMore(b.name), 40)} | ${clip(redactMore(b.waitingFor || ''), 120)}`);
+      if (b.status === 'waiting') lines.push(`needs_you | ${b.id} | ${aiName(t)} | ${clip(redactMore(b.name), 40)} | ${clip(redactMore(pendingWhat(t)), 120)}`);
       else if (b.status === 'idle') lines.push(`idle | ${b.id} | ${aiName(t)} | ${clip(redactMore(b.name), 40)} | waiting for a new prompt`);
     }
     const body = lines.length ? `type | id | ai | name | detail\n${lines.join('\n')}` : 'Nothing waits.';
@@ -631,6 +660,31 @@ function createMcp(deps) {
     const text = file && (await readTail(file));
     if (!text) return null;
     return t.kind === 'codex' ? codexReply(text) : t.kind === 'cursor' ? cursorReply(text) : agyReply(text);
+  }
+
+  /**
+   * The whole last reply of the AI in app terminal `tabId`, for the menu's Copy Claude's Last Reply (the Mac's
+   * ChatWindowController.copyLastReply, ⇧⌘C): from the AI's own records, since a full-screen AI keeps its history inside
+   * itself and the terminal lets a reply be selected only as far as it fits the window. Neither masked nor cut, as the
+   * Mac copies it: it goes to the user's own clipboard, not to an AI, so it needs no Claude access and isn't audited.
+   * Whose: the Mac copies its window's Claude conversation. Here the Claude running in that terminal (the chat's own,
+   * `chatSid`, first: a Claude started inside it doesn't take its window), else a Codex, Antigravity or Cursor running there,
+   * else the conversation the chat was opened for (`chatSid`, main.js's chat sessionId), whose Claude may have quit.
+   * Null when that one has no reply yet.
+   */
+  async function lastReplyForTab(tabId, chatSid) {
+    if (typeof tabId !== 'string' || !tabId) return null;
+    // A conversation's id only (the engine's SID): it becomes part of a file's name.
+    const sid = typeof chatSid === 'string' && /^[A-Za-z0-9-]{8,64}$/.test(chatSid) ? chatSid : null;
+    const here = briefs.filter((b) => b.tab === tabId && b.status !== 'ended' && kindOf(b));
+    const claude = here.filter((b) => !b.ai).sort((a, b) => (b.id === sid) - (a.id === sid));
+    const pick = claude[0] || here.find((b) => b.ai) || (sid ? { id: sid, ai: false } : null);
+    if (!pick) return null;
+    try {
+      return (await lastReply({ id: pick.id, kind: kindOf(pick) })) || null;
+    } catch {
+      return null;
+    }
   }
 
   async function terminalTail(t, lines) {
@@ -677,7 +731,7 @@ function createMcp(deps) {
   async function waited(what, t) {
     if (what === 'needs_you') {
       return wrap(`needs_you: the session waits for the user's approval or answer in Orbiterm. This server can't answer it. ${envelopeNote}`,
-        `WAITING FOR: ${t.brief.waitingFor || '(unknown)'}`);
+        `WAITING FOR: ${pendingWhat(t) || '(unknown)'}`);
     }
     const reply = await lastReply(t);
     return wrap(`finished: the session is idle. Last reply below. ${envelopeNote}`, reply ? tail(redactMore(reply), 6000) : '(none found)');
@@ -1502,6 +1556,7 @@ function createMcp(deps) {
     update,
     handle,
     push,
+    lastReplyForTab,
     /** notesai.js's switch, when it isn't given to createMcp. */
     setNotesAccess(fn) {
       if (typeof fn === 'function') notesAccess = fn;

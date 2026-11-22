@@ -3,7 +3,7 @@
 // .postMessage(body), a promise where the Mac's handler replies, and they get a few values the Mac sets before they
 // load (the terminals' font, the messages panel's role and friend). This gives them the same over Electron's IPC, so
 // they run unchanged, and inserts the theme's colours before they draw (and again when the theme changes).
-const { contextBridge, ipcRenderer, webFrame } = require('electron');
+const { contextBridge, ipcRenderer, webFrame, webUtils } = require('electron');
 
 const boot = ipcRenderer.sendSync('atl:boot') || {};
 
@@ -56,6 +56,15 @@ if (full) {
     on: (channel, fn) => TERM.test(channel) && ipcRenderer.on(channel, (_e, data) => fn(data)),
     // A question with an answer (which of a line's pieces are files).
     ask: (channel, data) => (TERM.test(channel) ? ipcRenderer.invoke(channel, data) : Promise.reject(new Error('not a terminal channel'))),
+    // Where a file dropped on the terminal is on disk, for its path to be pasted (the Mac's performDragOperation):
+    // Electron's webUtils, as a File's own path is gone. Empty for anything that isn't a file on disk.
+    pathForFile: (file) => {
+      try {
+        return webUtils.getPathForFile(file) || '';
+      } catch {
+        return '';
+      }
+    },
   });
 }
 

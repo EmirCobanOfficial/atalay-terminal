@@ -27,6 +27,9 @@ function isExcludedPosix(cmd, name) {
   return c.includes('.app/Contents/') || c.split(/\s+/)[0].includes('.app/');
 }
 
+// Bytes to whole megabytes, rounded down, as the Mac's Int(rss / 1_048_576).
+const megabytes = (bytes) => Math.floor((bytes || 0) / 1_048_576);
+
 function normDir(d) {
   return String(d || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
 }
@@ -52,6 +55,7 @@ const INTERPRETER = /^(node|bun|deno|python[0-9.]*|pythonw)$/i;
 // Cursor's CLI runs as its own Node on `cursor-agent\versions\<version>\index.js` (its `agent` and `cursor-agent` commands
 // are launchers, agent.cmd or PowerShell): known by that folder, never by the name `agent` (the Mac's Proc.otherAI).
 const CURSOR_SCRIPT = /[\\/]cursor-agent[\\/]versions[\\/][^\\/]+[\\/]index\.js$/i;
+// A command line's words, a quoted one as one word without its quotes, the program first.
 const words = (cmd) => [...String(cmd || '').matchAll(/"([^"]*)"|(\S+)/g)].map((m) => m[1] ?? m[2]);
 function aiTool(p) {
   const name = String(p.name).toLowerCase();
@@ -68,6 +72,13 @@ function aiTool(p) {
   const lower = cmd.replace(/\\/g, '/').toLowerCase();
   const hit = AI_PACKAGES.find(([pkg]) => lower.includes(pkg));
   return hit ? hit[1] : null;
+}
+
+// An Antigravity the user ran for one answer and no chat, as the Mac's Proc.otherAI leaves out: `agy -p "…"`,
+// `agy --prompt "…"`, `agy /usage`. It prints and quits, so a planet for it would only blow up a moment later. The
+// `=` forms are the same switches to its flag parser.
+function agyOneShot(cmd) {
+  return words(cmd).slice(1).some((w) => w === '-p' || w === '--prompt' || w === '/usage' || w.startsWith('-p=') || w.startsWith('--prompt='));
 }
 
 // Cursor's one-shot commands (`agent status`, `agent ls`, `agent mcp …`, its `-p` runs, the `worker-server` its TUI leaves
@@ -763,9 +774,19 @@ function createRunaways({ onChange, onRead, onPower, onDone }) {
     /** % of a core the processes under `roots` used over the last reading. */
     busy,
     /**
+     * One process alone, as the Mac's RadarEngine reads each live Claude's (pollProcesses): the % of a core it used over
+     * the last reading (one decimal) and its memory (the reading's `mem`, whole MB), or null when the last reading hasn't
+     * it. The engine's Claude sessions take theirs from here (setOthers), so the cards' cpu and mem cost no query of their
+     * own.
+     */
+    usage(pid) {
+      const p = table.get(pid);
+      return p ? { cpu: Math.round((p.pct || 0) * 10) / 10, mem: megabytes(p.mem) } : null;
+    },
+    /**
      * The other AI tools running in a terminal (aiTool, TERMINAL_RE), each once: a launcher's child that's the same tool
      * (Codex's Node script starts its own codex.exe) isn't another, nor one Claude runs. Its CPU is all it runs: the
-     * launcher only waits while its child works. [{ pid, started, tool, cwd, pct, chain (its parents) }]
+     * launcher only waits while its child works. [{ pid, started, tool, cwd, pct, mem (MB), chain (its parents) }]
      * An Antigravity's also carries what it runs, for the engine's agyPendingWork (it goes on by itself after its turn):
      * `procs`, every process under it (ten levels down) with its parent, start, depth and whether it listens on a TCP port;
      * and `childBusy`, whether a command it started (past the helpers it starts with, such as an MCP server: five seconds
@@ -780,6 +801,8 @@ function createRunaways({ onChange, onRead, onPower, onDone }) {
         // Nor `agy -p /usage`: the engine's reader of Antigravity's limits, once a minute while an Antigravity chat runs.
         if (/(^|\s)-p\s+"?\/usage\b/.test(p.cmd || '')) continue;
         const tool = aiTool(p);
+        // Nor the user's own one-shot Antigravity runs (agyOneShot).
+        if (tool === 'Antigravity' && agyOneShot(p.cmd)) continue;
         if (tool === 'Cursor' && cursorOneShot(p.cmd)) continue;
         if (tool) found.set(p.pid, tool);
       }
@@ -791,7 +814,8 @@ function createRunaways({ onChange, onRead, onPower, onDone }) {
         for (let q = !p.orphan && table.get(p.ppid); q && chain.length < 12; q = !q.orphan && table.get(q.ppid)) chain.push(q);
         if (chain.some((q) => /^claude$/i.test(q.name)) || !chain.some((q) => TERMINAL_RE.test(q.name))) continue;
         const shell = shellCommand(pid);
-        const ai = { pid, started: p.started, tool, cwd: p.cwd || '', cmd: p.cmd || '', pct: busy([pid]), chain: chain.map((q) => q.pid), command: shell && shell.line, commandStarted: shell && shell.started };
+        // `mem`: the tool's own process in RAM (MB), as the Mac's O.mem (a launcher's, for one that has one, as there).
+        const ai = { pid, started: p.started, tool, cwd: p.cwd || '', cmd: p.cmd || '', pct: busy([pid]), mem: megabytes(p.mem), chain: chain.map((q) => q.pid), command: shell && shell.line, commandStarted: shell && shell.started };
         // A Cursor's too: when a command it started last used the CPU tells a call at work from one waiting for the user's
         // approval (the engine's otherStatus), as the Mac's childCpuAt does.
         if (tool === 'Antigravity' || tool === 'Cursor') {

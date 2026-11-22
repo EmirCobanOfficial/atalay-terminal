@@ -2,11 +2,36 @@
    inserts the theme's tokens, Themes). */
 html, body { height: 100%; margin: 0; }
 body { display: flex; flex-direction: column; overflow: hidden; background: var(--code-bg, #251200); color: var(--txt, #f5ebe0); font: 12px "Cascadia Mono", Consolas, monospace; }
-#hud { display: flex; align-items: center; gap: 10px; height: 32px; flex: none; padding: 0 10px; border-bottom: 1px solid rgba(var(--accent-rgb, 248, 128, 8), 0.32); background: linear-gradient(rgba(var(--accent-rgb, 248, 128, 8), 0.1), transparent); }
-#dot { width: 8px; height: 8px; border-radius: 50%; background: var(--st, var(--dim, #8f7a66)); box-shadow: 0 0 6px var(--st, transparent); }
-#title { overflow: hidden; color: var(--hi, #fff8f0); white-space: nowrap; text-overflow: ellipsis; }
-#status { color: var(--st, var(--dim, #8f7a66)); font-weight: 700; letter-spacing: 0.08em; white-space: nowrap; }
-#where { flex: 1; overflow: hidden; color: var(--dim, #8f7a66); white-space: nowrap; text-overflow: ellipsis; }
+/* One line, whatever the window's width: what doesn't fit is dropped piece by piece (terminal.js fitHud), never wrapped. */
+#hud { display: flex; align-items: center; gap: 10px; height: 32px; flex: none; overflow: hidden; padding: 0 10px; border-bottom: 1px solid rgba(var(--accent-rgb, 248, 128, 8), 0.32); background: linear-gradient(rgba(var(--accent-rgb, 248, 128, 8), 0.1), transparent); }
+#dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--st, var(--dim, #8f7a66)); box-shadow: 0 0 6px var(--st, transparent); }
+#title { flex: 0 0.25 auto; min-width: 0; overflow: hidden; color: var(--hi, #fff8f0); white-space: nowrap; text-overflow: ellipsis; }
+/* The status and its timer, and why it waits between them, which gives way first; the whole blinks while it waits, as the
+   Mac's pill does. Its pieces sit in the strip itself (display: contents), so only the reason shrinks. */
+#status { display: contents; color: var(--st, var(--dim, #8f7a66)); font-weight: 700; letter-spacing: 0.08em; white-space: nowrap; }
+#status > span { flex: none; white-space: nowrap; }
+#status > .why { flex: 0 1 auto; min-width: 0; max-width: 40ch; overflow: hidden; margin-left: -10px; font-weight: 400; letter-spacing: 0; text-overflow: ellipsis; }
+#status > .t { margin-left: -10px; }
+#status > span:empty { display: none; }
+#status.waiting > span { animation: atl-blink 2s step-end infinite; }
+@keyframes atl-blink { 50% { opacity: 0.45; } }
+#where { flex: 1; min-width: 0; overflow: hidden; color: var(--dim, #8f7a66); white-space: nowrap; text-overflow: ellipsis; }
+/* The tool call: its name in its kind's colour, what it's on (shrinks first), how long it's taken. */
+#action { display: contents; font-size: 10.5px; }
+#action[hidden] { display: none; }
+#action > * { flex: none; font-size: 10.5px; white-space: nowrap; }
+#action .name { color: var(--cat, var(--lavender, #c8a8ff)); font-weight: 700; }
+#action .label { flex: 0 1 auto; min-width: 0; max-width: 46ch; overflow: hidden; margin-left: -5px; color: var(--txt, #f5ebe0); text-overflow: ellipsis; }
+#action .label:empty { display: none; }
+#action .dur { margin-left: -5px; color: var(--dim, #8f7a66); font-style: normal; }
+/* Model and effort, the session's cost, the activity sparkline (in the status's colour, as the Mac's). */
+#model, #cost { flex: none; font-size: 10.5px; white-space: nowrap; }
+#model { max-width: 24ch; overflow: hidden; color: var(--dim, #8f7a66); text-overflow: ellipsis; }
+#cost { color: var(--amber, #ffc040); font-weight: 700; }
+#spark { display: inline-flex; flex: none; }
+#spark svg { width: 96px; height: 18px; fill: var(--st, var(--accent, #f88008)); }
+#model[hidden], #cost[hidden], #spark[hidden] { display: none; }
+#hud .dropped { display: none !important; }
 #copied { padding: 2px 7px; border: 1px solid rgba(var(--accent-rgb, 248, 128, 8), 0.45); border-radius: 3px; background: rgba(0, 0, 0, 0.55); color: var(--accent, #f88008); font-size: 10.5px; font-weight: 700; letter-spacing: 0.06em; white-space: nowrap; }
 #copied[hidden] { display: none; }
 #hud button { height: 22px; padding: 0 10px; border: 1px solid rgba(var(--accent-rgb, 248, 128, 8), 0.45); border-radius: 4px; background: transparent; color: var(--accent-soft, #ffb057); font: inherit; cursor: pointer; }
@@ -17,6 +42,13 @@ body { display: flex; flex-direction: column; overflow: hidden; background: var(
 #hud #star[hidden] { display: none; }
 #hud #star svg { fill: none; stroke: currentColor; stroke-width: 1.3; stroke-linejoin: round; }
 #hud #star.on svg { fill: currentColor; }
+/* Copy the last reply, and keep the window on top (filled while it is), as the Mac HUD's buttons. */
+#hud .icon { display: inline-flex; flex: none; align-items: center; padding: 0 6px; }
+#hud .icon[hidden] { display: none; }
+#hud .icon svg { fill: none; stroke: currentColor; stroke-width: 1.3; stroke-linecap: round; stroke-linejoin: round; }
+#hud #pin.on { border-color: var(--accent, #f88008); background: rgba(var(--accent-rgb, 248, 128, 8), 0.22); color: var(--hi, #fff8f0); }
+#hud #pin.on svg { fill: currentColor; }
+#hud #star, #hud #end, #copied { flex: none; }
 /* The AI session's context (a bar, as the Mac's) and today's counts; the counts give way first in a narrow window. */
 #ctx, #counts { flex: none; color: var(--txt, #f5ebe0); font-size: 10.5px; white-space: nowrap; }
 #ctx { display: inline-flex; align-items: center; gap: 6px; }
@@ -26,6 +58,7 @@ body { display: flex; flex-direction: column; overflow: hidden; background: var(
 #ctx .bar span { position: absolute; inset: 0 auto 0 0; width: 0; background: linear-gradient(90deg, var(--accent, #f88008), var(--amber, #ffc040)); box-shadow: 0 0 6px rgba(var(--accent-rgb, 248, 128, 8), 0.7); }
 #counts b { font-weight: 700; }
 #counts b.err { color: var(--red, #ff4d4d); }
+#counts .ag { color: var(--violet, #b48cff); font-weight: 700; }
 @media (max-width: 720px) { #counts { display: none !important; } }
 @media (max-width: 520px) { #ctx { display: none !important; } }
 /* A linked worktree (spec 4.1; the Mac's WorktreeChipView and WorktreeShipButton): the chip after the title and the
@@ -75,4 +108,16 @@ body { display: flex; flex-direction: column; overflow: hidden; background: var(
    text). The terminal runs on under it, and the mouse and the keys still reach it. */
 #veil { position: fixed; inset: 33px 0 0; z-index: 20; pointer-events: none; background: color-mix(in srgb, var(--code-bg, #251200) 45%, transparent); -webkit-backdrop-filter: blur(16px) saturate(1.2); backdrop-filter: blur(16px) saturate(1.2); }
 #veil[hidden] { display: none; }
+/* The find bar: at the terminal's top right, under the strip, in its colours; the count goes red with no match. */
+#find { position: fixed; top: 40px; right: 22px; z-index: 30; display: flex; align-items: center; gap: 4px; height: 28px; padding: 0 4px 0 6px; border: 1px solid rgba(var(--accent-rgb, 248, 128, 8), 0.55); border-radius: 4px; background: color-mix(in srgb, var(--code-bg, #251200) 88%, black); box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5), 0 0 8px rgba(var(--accent-rgb, 248, 128, 8), 0.25); font-size: 11.5px; }
+#find[hidden] { display: none; }
+#find input { width: 190px; height: 20px; padding: 0 6px; border: 1px solid rgba(var(--accent-rgb, 248, 128, 8), 0.3); border-radius: 3px; outline: none; background: rgba(0, 0, 0, 0.35); color: var(--hi, #fff8f0); font: inherit; }
+#find input:focus { border-color: var(--accent, #f88008); }
+#find input::placeholder { color: var(--dim, #8f7a66); }
+#find-n { min-width: 54px; color: var(--dim, #8f7a66); font-size: 10.5px; text-align: right; white-space: nowrap; }
+#find.none #find-n { color: var(--red, #ff4d4d); }
+#find button { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 20px; padding: 0; border: 1px solid transparent; border-radius: 3px; background: transparent; color: var(--accent-soft, #ffb057); cursor: pointer; }
+#find button:hover { border-color: var(--accent, #f88008); color: var(--hi, #fff8f0); }
+#find button svg { fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+@media (max-width: 420px) { #find input { width: 110px; } }
 .xterm .xterm-viewport { scrollbar-color: rgba(var(--accent-rgb, 248, 128, 8), 0.35) transparent; }

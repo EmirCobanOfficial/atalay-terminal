@@ -957,6 +957,20 @@ const plainPath = (p) => String(p || '').replace(/^\\\\\?\\UNC\\/i, '\\\\').repl
 // log's, so the chats list shows a running one once, as that saved conversation.
 const otherConv = (O) => O.convId || (O.tool === 'Codex' && O.log ? codexSession(O.log) : null);
 
+// A session's or subagent's oldest tool call still waiting for its result ({ n, c, l, t }), or undefined.
+const firstPending = (t) => t.pending.values().next().value;
+
+// Calls per 20 s over the last 10 minutes, oldest first: a card's spark, from a session's buckets (spark, by 20 s slot).
+function spark30(buckets, now) {
+  const k0 = Math.floor(now / 20_000), out = [];
+  for (let k = k0 - 29; k <= k0; k++) out.push(buckets.get(k) || 0);
+  return out;
+}
+
+// The tool call a session runs right now, as the Mac's SessionBrief has it: its name, category, label and start (ms), or
+// empty strings and 0 with none.
+const actionOf = (p) => ({ actionName: (p && p.n) || '', actionCat: (p && p.c) || '', actionLabel: (p && p.l) || '', actionSince: (p && p.t) || 0 });
+
 // Another AI tool's counts for the day, as a Claude session has them: its calls by kind, its errors and web calls, its
 // prompts and tokens, its calls per 20 s (the card's spark), and what it already counted (`counted`, `resulted`).
 function resetOther(O) {
@@ -1793,19 +1807,31 @@ class RadarEngine {
     return t && t.bytes > 0 ? { memTree: t.bytes, memTop: t.top } : {};
   }
 
-  // The chats Claude Code's registry has running now, with the status the dashboard shows for each.
+  // The chats Claude Code's registry has running now, with the status the dashboard shows for each. Each also carries
+  // what the Mac's SessionBrief gives its chat windows and sidebar (RadarEngine's briefs): the model and effort, today's
+  // cost (USD; the other tools have no list price, so 0), the spark (calls per 20 s over the last 10 minutes, oldest
+  // first), its subagents at work, the tool call it runs right now (action*: name, category, label, since when in ms;
+  // '' and 0 with none) and whether no prompt was sent yet (`fresh`).
   live() {
     const now = Date.now();
     const bySession = this.agentsBySession();
     const out = [];
     for (const S of this.sessions.values()) {
       if (!S.live || S.pid == null) continue;
+      const mine = bySession.get(S.id) || [];
+      // What it runs: its own oldest call out, else one of its subagents', as the Mac's brief takes it (not one older than
+      // 3 hours, as pendingList).
+      const call = firstPending(S) || mine.map(firstPending).find(Boolean);
       out.push({
-        sessionId: S.id, pid: S.pid, cwd: S.cwd, status: this.shownStatus(S, bySession.get(S.id) || [], now),
+        sessionId: S.id, pid: S.pid, cwd: S.cwd, status: this.shownStatus(S, mine, now),
         name: S.name || S.id.slice(0, 8), title: S.title || '', prompt: S.lastPrompt || '', waitingFor: S.waitingFor ?? null,
         host: this.hostLabel(S), tab: typeof S.hostTab === 'string' ? S.hostTab : null, statusSince: S.statusSince || 0,
         // Its context and today's counts, for the strip of the window it runs in (terminal.js).
         ctx: S.ctx, ctxMax: S.ctxMax, tools: S.tools, web: S.web, errors: S.errors,
+        model: shortModel(S.model), effort: S.effort || '', cost: S.cost, spark: spark30(S.spark, now),
+        agentsRunning: mine.filter((A) => this.agentLife(A, now).running).length,
+        ...actionOf(call && now - call.t < 3 * 3_600_000 ? call : null),
+        fresh: !S.lastPrompt && !S.title && S.prompts === 0,
       });
     }
     // The other AI tools (`ai`: no conversation to resume, nor one a new chat window should take for its own).
@@ -1816,6 +1842,11 @@ class RadarEngine {
         sessionId: O.id, convId: otherConv(O), pid: O.pid, cwd: O.cwd, status, waitingFor: waiting, name: O.tool, title: O.title || O.prompt || baseName(O.cwd),
         host: O.hostTab != null ? 'app' : 'term', tab: typeof O.hostTab === 'string' ? O.hostTab : null, ai: true,
         statusSince: O.statusSince || 0, ctx: O.ctx, ctxMax: O.ctxMax, tools: O.tools, web: O.web, errors: O.errors,
+        // What its records give (Codex's log, Antigravity's databases): its model (the tool's name until they tell), its
+        // effort, its subagents, and what it runs (a shell of its own, else the call its records have it on).
+        model: O.model || O.tool, effort: O.effort || '', cost: 0, spark: spark30(O.spark, now),
+        agentsRunning: (O.agents || []).filter((a) => a.running).length, ...actionOf(this.otherRunning(O)),
+        fresh: !O.prompt && !O.title && !O.turns && !O.prompts,
       });
     }
     return out;
@@ -3400,7 +3431,8 @@ class RadarEngine {
 
   // The Mac engine reads each live Claude's parent, terminal, CPU and memory from the kernel here. Node can't, so only
   // the parents are looked up (once per Claude process, see processTable), for the app's own chats, with when each
-  // started for the registry's new entries; cpu and mem stay 0 and tty null, which the page shows as nothing.
+  // started for the registry's new entries. The CPU and memory come with runaways.js's process reading every 5 seconds
+  // instead (setOthers' `usage`); tty stays null, which the page shows as nothing.
   pollProcesses() {
     const pids = new Set();
     for (const S of this.sessions.values()) if (S.live && S.pid != null) pids.add(S.pid);
@@ -3450,8 +3482,18 @@ class RadarEngine {
   // on the Mac: busy while it uses the CPU, idle once it has been quiet for 10 seconds; one that quits leaves the
   // dashboard at once and is kept two more minutes as ended, so its window turns back into a terminal. Codex's and Antigravity's own records tell more (readCodexLog,
   // readAntigravity): their turn, their calls and tokens, counted with Claude's (otherTool). No cost: no list price.
-  setOthers(list) {
+  // `usage(pid)` (runaways.usage) is the same reading's CPU and memory of one process: each live Claude's, for its card
+  // (the Mac reads them in pollProcesses), so they cost no process query of their own.
+  setOthers(list, usage) {
     const now = Date.now(), seen = new Set();
+    if (typeof usage === 'function') {
+      for (const S of this.sessions.values()) {
+        if (!S.live || S.pid == null) continue;
+        const u = usage(S.pid);
+        S.cpu = u ? u.cpu : 0;
+        S.mem = u ? u.mem : 0;
+      }
+    }
     if (this.codexRunning()) this.refreshCodexWaits();
     else this.codexWaits = new Map();
     for (const a of [...list].sort((x, y) => (x.started || 0) - (y.started || 0))) {
@@ -3470,6 +3512,8 @@ class RadarEngine {
         this.stateDirty = true;
       }
       O.cpu = a.pct;
+      // Its own process's memory (MB), as the Mac's O.mem.
+      O.mem = a.mem || 0;
       O.chain = a.chain;
       if (a.cmd) O.cmd = a.cmd;
       if ((a.command || null) !== (O.command || null)) {
@@ -4839,14 +4883,18 @@ class RadarEngine {
     return out;
   }
 
-  agentView(A, S, now) {
-    // A finished agent is "ended" and leaves the map at once. One still open is "running" while it has a tool call out,
-    // a model call open (it can be silent for 13 minutes inside one) or wrote within 3 minutes; else "parked" (dim, not
-    // orbiting) until 30 minutes of silence. The chat's own busy/idle no longer matters: Claude keeps a chat "busy" for as
-    // long as any background agent lives.
+  // A finished agent is "ended" and leaves the map at once. One still open is "running" while it has a tool call out,
+  // a model call open (it can be silent for 13 minutes inside one) or wrote within 3 minutes; else "parked" (dim, not
+  // orbiting) until 30 minutes of silence. The chat's own busy/idle no longer matters: Claude keeps a chat "busy" for as
+  // long as any background agent lives.
+  agentLife(A, now) {
     const quiet = now - A.lastTs;
     const alive = !A.ended && (quiet < 30 * MIN || (A.pending.size > 0 && quiet < 180 * MIN));
-    const running = alive && (A.pending.size > 0 || A.inFlight || quiet < 3 * MIN);
+    return { alive, running: alive && (A.pending.size > 0 || A.inFlight || quiet < 3 * MIN) };
+  }
+
+  agentView(A, S, now) {
+    const { alive, running } = this.agentLife(A, now);
     const v = {
       id: A.id, sid: A.sid, desc: A.desc || A.type || A.id.slice(0, 8), type: A.type, model: shortModel(A.model), bg: A.bg,
       running, parked: alive && !running, ended: A.ended, firstTs: A.firstTs, lastTs: A.lastTs, tools: A.tools, errors: A.errors, web: A.web,
@@ -4932,7 +4980,7 @@ class RadarEngine {
         id: O.id, name: O.tool, title: O.title || baseName(O.cwd), lastPrompt: O.prompt || '', cwd: cwdLabel(O.cwd), branch: '',
         tool: O.tool,
         model: O.model || O.tool, effort: O.effort || '', status, live, statusSince: live ? O.statusSince : O.endedAt,
-        cpu: O.cpu, mem: 0, kind: '', entry: '', firstTs: O.firstTs, lastTs: O.lastTs, ctx: O.ctx || 0, ctxMax: O.ctxMax || 0, turnMs: 0,
+        cpu: O.cpu, mem: O.mem || 0, kind: '', entry: '', firstTs: O.firstTs, lastTs: O.lastTs, ctx: O.ctx || 0, ctxMax: O.ctxMax || 0, turnMs: 0,
         tok: { ...O.tok }, cost: 0, tools: O.tools, errors: O.errors, web: O.web, prompts: O.prompts,
         byCat: O.byCat, pending: running ? [running] : [], spark, flags, agents, agentsRunning: nRun,
         waitingFor: waiting, tty: null, pid: O.pid, host: O.hostTab != null ? 'app' : live ? 'term' : null,
@@ -5093,7 +5141,7 @@ function createEngine(opts = {}) {
     gitSessions: () => e.gitSessions(),
     written: () => e.written(),
     live: () => e.live(),
-    setOthers: (list) => e.setOthers(list),
+    setOthers: (list, usage) => e.setOthers(list, usage),
     sessionCwd: (sessionId) => e.sessionCwd(sessionId),
     sessionTool: (sessionId) => e.sessionTool(sessionId),
     // Chats were deleted from the disk (chattrash.js): the list is read again now, not at the engine's next look.

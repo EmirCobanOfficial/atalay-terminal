@@ -144,5 +144,27 @@ button { display: flex; align-items: center; padding: 0; border: 0; background: 
 @keyframes glow { to { box-shadow: 0 0 5px var(--st); } }
 @keyframes blink { from { opacity: 0.35; } to { opacity: 1; } }
 
+/* What moves eases in 0.2 to 0.25 s, as the Mac's list does (withAnimation(.easeInOut), Sidebar.swift): a chat starred or
+   unstarred grows in where it lands, its star with a small pop; a folder unfolded grows its rows in, one folded shrinks
+   them away (its chevron turning); an archived chat or folder shrinks away before the app takes it out (`--h`: its height,
+   set as it starts). */
+.row.arrive { overflow: hidden; animation: grow 0.25s ease-in-out; }
+.row.arrive .star.on svg { animation: pop 0.25s ease-in-out; }
+.grp.unfolding > :not(.head) { overflow: hidden; animation: grow 0.2s ease-in-out; }
+.grp.unfolding .head .chev { animation: chev-open 0.2s ease-in-out; }
+.grp.folding > :not(.head) { overflow: hidden; animation: shrink 0.2s ease-in-out forwards; }
+.grp.folding .head .chev { transform: none; }
+.leaving { overflow: hidden; pointer-events: none; animation: shrink 0.25s ease-in-out forwards; }
+@keyframes grow { from { max-height: 0; opacity: 0; padding-top: 0; padding-bottom: 0; margin-top: 0; } to { max-height: 44px; } }
+@keyframes shrink {
+  from { max-height: var(--h, 44px); }
+  to { max-height: 0; opacity: 0; padding-top: 0; padding-bottom: 0; margin-top: 0; margin-bottom: 0; border-width: 0; }
+}
+@keyframes pop { 50% { transform: scale(1.4); } }
+@keyframes chev-open { from { transform: none; } }
+@media (prefers-reduced-motion: reduce) {
+  .row.arrive, .row.arrive .star.on svg, .grp.unfolding > :not(.head), .grp.unfolding .head .chev, .grp.folding > :not(.head), .leaving { animation: none; }
+}
+
 /* Its right edge: drag to make it wider or narrower. */
 #grip { position: fixed; top: 0; right: 0; bottom: 0; width: 5px; cursor: col-resize; }

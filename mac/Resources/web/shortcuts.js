@@ -110,7 +110,7 @@
 
     const hint = document.createElement('div');
     hint.className = 'hint';
-    hint.textContent = `${WIN ? 'Ctrl + middle click' : how} · keys 1–5 · right-click a folder to change it · esc`;
+    hint.textContent = `${how} · keys 1–5 · right-click a folder to change it · esc`;
     pie.appendChild(hint);
     root.appendChild(pie);
     root.classList.add('on');
@@ -120,8 +120,9 @@
   // folder renamed or deleted since would stay on the wheel (the Windows app leaves out a folder that is gone). A close
   // before they're in (the overlay hidden) drops the open.
   let showing = 0;
-  // How it was opened, from the app (Mac: the trackpad click and keys set in Settings); kept for the reopen after a picker.
-  let how = '4-finger click';
+  // How it was opened, from the app (Mac: the trackpad click and keys set in Settings; Windows: the middle mouse button
+  // and keys set in Settings › Shortcuts); kept for the reopen after a picker. Until the app says, each one's default.
+  let how = WIN ? 'Ctrl + middle click' : '4-finger click';
   async function show(x, y, opened) {
     if (opened) how = opened;
     const n = ++showing;

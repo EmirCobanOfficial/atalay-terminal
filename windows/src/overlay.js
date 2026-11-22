@@ -1,7 +1,8 @@
 'use strict';
 // The overlay page's data (overlay.html: the Ring and the new-terminal folder picker), as the Mac app's
 // Overlay.swift has it: the saved shortcut folders (the Ring's 5 slices, the 14 places around the picker), folder
-// listings with git / Claude badges, and the places to start from (the usual folders, where Claude ran lately).
+// listings with git / Claude badges, the picker's bottom bar (the folder's branch, the AIs already working in its tree)
+// and the places to start from (the usual folders, where Claude ran lately).
 const fs = require('fs');
 const fsp = fs.promises;
 const path = require('path');
@@ -55,9 +56,126 @@ function hiddenNames(dir) {
   });
 }
 
-function createOverlay({ dataDir, claudeDir }) {
+// Where a folder sits in a git repo, as the Mac's Worktrees.info has it (Worktrees.swift): read from files only, no git
+// process, since the picker asks each time its selection stops moving. `top`: the root of the working copy it's in (the
+// repo's, or a linked worktree's); `branch`: the branch checked out there, or the commit's first 7 characters; `linked`:
+// a worktree made with `git worktree add` (its `.git` is a file pointing into the main repo's). Null outside a repo. As on
+// the Mac, links are followed (a repo reached through a junction is the same repo), the home folder and a drive's root
+// aren't looked at (a repo of dotfiles in the home folder doesn't make every folder under it one), and what was read is
+// kept 30 seconds.
+let REAL_HOME = HOME;
+try {
+  REAL_HOME = fs.realpathSync.native(HOME);
+} catch {}
+const isHome = (p) => p.toLowerCase() === HOME.toLowerCase() || p.toLowerCase() === REAL_HOME.toLowerCase();
+
+async function readText(p) {
+  try {
+    return await fsp.readFile(p, 'utf8');
+  } catch {
+    return null;
+  }
+}
+
+// `ref: refs/heads/<branch>` in a HEAD file gives the branch; else (a commit) its first 7 characters.
+async function headBranch(gitdir) {
+  const line = String((await readText(path.join(gitdir, 'HEAD'))) || '').trim();
+  return line.startsWith('ref: refs/heads/') ? line.slice(16) : line.slice(0, 7);
+}
+
+// A submodule's git folder: `.git/modules/<name>`, also inside a worktree's own (`.git/worktrees/<wt>/modules/<name>`).
+function isSubmoduleGitdir(gitdir) {
+  const g = gitdir.replace(/\\/g, '/');
+  const at = g.toLowerCase().lastIndexOf('/.git/');
+  if (at < 0) return g.includes('/modules/');
+  const tail = g.slice(at + 6);
+  return tail.startsWith('modules/') || tail.includes('/modules/');
+}
+
+async function readTree(cwd) {
+  const start = await fsp.realpath(cwd).catch(() => path.resolve(cwd));
+  for (let dir = start; path.dirname(dir) !== dir && !isHome(dir); dir = path.dirname(dir)) {
+    const git = path.join(dir, '.git');
+    const st = await fsp.stat(git).catch(() => null);
+    if (!st) continue;
+    if (st.isDirectory()) return { top: dir, branch: await headBranch(git), linked: false };
+    const m = /gitdir:\s*(.+)/.exec((await readText(git)) || '');
+    if (!m) return null;
+    // Git writes it with "/" on Windows too, and relative to the folder for `git worktree add --relative-paths`.
+    const gitdir = path.resolve(dir, m[1].trim());
+    const branch = await headBranch(gitdir);
+    // A submodule's: a repo of its own.
+    if (isSubmoduleGitdir(gitdir)) return { top: dir, branch, linked: false };
+    if (/[\\/]\.git[\\/]worktrees[\\/]/i.test(gitdir)) return { top: dir, branch, linked: true };
+    // A worktree of a bare repo: its own git folder has a `commondir`.
+    if ((await readText(path.join(gitdir, 'commondir'))) != null) return { top: dir, branch, linked: true };
+    return { top: dir, branch, linked: false };
+  }
+  return null;
+}
+
+const trees = new Map();
+// The folder's tree, or undefined when the disk didn't answer within 1.5 s (a drive that's gone, a sleeping disk): the
+// picker isn't kept waiting, and the answer is kept once it comes, for the next time it asks.
+async function treeOf(cwd) {
+  const key = cwd.toLowerCase();
+  const hit = trees.get(key);
+  if (hit && Date.now() - hit.at < 30_000) return hit.info;
+  let timer;
+  const late = new Promise((resolve) => (timer = setTimeout(resolve, 1500)));
+  const read = readTree(cwd).catch(() => null).then((info) => {
+    if (trees.size > 2000) trees.clear();
+    trees.set(key, { info, at: Date.now() });
+    return info;
+  });
+  try {
+    return await Promise.race([read, late]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * `live()`, optional: the AI sessions running now (engine.live()), for the picker's "Claude is working here", which warns
+ * before a second AI starts in the same working tree.
+ */
+function createOverlay({ dataDir, claudeDir, live }) {
   const projects = path.join(claudeDir, 'projects');
-  const SETS = { pie: { file: path.join(dataDir, 'shortcuts.json'), count: 5 }, picker: { file: path.join(dataDir, 'picker-shortcuts.json'), count: 14 } };
+
+  // The AIs working in the working tree `top` (the Mac's aiTools(inTreeOf:), MainWindowController.swift), by name:
+  // "Claude", "Codex", "Antigravity"… An AI another one started in the same terminal (Claude's own `codex exec`) is part of
+  // that chat, not one more: the Mac tells them apart by process tree, here one is counted per terminal, Claude first.
+  async function aisIn(top) {
+    let list = [];
+    try {
+      list = (typeof live === 'function' && live()) || [];
+    } catch {}
+    const running = list.filter((s) => s && s.cwd && s.status !== 'ended').sort((a, b) => (a.ai ? 1 : 0) - (b.ai ? 1 : 0));
+    const tops = await Promise.all(running.map((s) => (path.isAbsolute(s.cwd) && !/^[\\/]{2}/.test(s.cwd) ? treeOf(s.cwd) : null)));
+    const tabs = new Set();
+    const names = [];
+    running.forEach((s, i) => {
+      const t = tops[i];
+      if (!t || t.top.toLowerCase() !== top.toLowerCase() || (s.tab && tabs.has(s.tab))) return;
+      if (s.tab) tabs.add(s.tab);
+      names.push(s.ai ? s.name : 'Claude');
+    });
+    return names;
+  }
+
+  // The folder picker's bottom bar (web/picker.js): the branch the folder is on, or that it isn't a repo, and which AIs
+  // already work in its working tree, as the Mac's Overlay.swift answers. `noWorktree`: this app makes no worktrees yet,
+  // so the picker doesn't offer one (the Mac never sends it). A path on another PC (\\host\share) isn't looked up: that
+  // alone would hand its host the user's NTLM hash, as files.js keeps from its paths. A folder whose disk doesn't answer
+  // in time shows as no repo, rather than keeping the bar (or the picker's next question) waiting.
+  async function gitInfo(raw) {
+    const p = expand(String(raw || ''));
+    const t = p && path.isAbsolute(p) && !/^[\\/]{2}/.test(p) ? await treeOf(p) : null;
+    if (!t) return { repo: false, worktree: false, branch: '', noWorktree: true };
+    return { repo: true, worktree: t.linked, branch: t.branch, ais: await aisIn(t.top), noWorktree: true };
+  }
+
+  const SETS ={ pie: { file: path.join(dataDir, 'shortcuts.json'), count: 5 }, picker: { file: path.join(dataDir, 'picker-shortcuts.json'), count: 14 } };
   const set = (body) => (body && body.set === 'picker' ? SETS.picker : SETS.pie);
 
   const same = (a, b) => path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase();
@@ -233,6 +351,7 @@ function createOverlay({ dataDir, claudeDir }) {
       switch (body.type) {
         case 'listDir': return listDir(body.path);
         case 'places': return places();
+        case 'gitInfo': return gitInfo(body.path);
         case 'getSlots': return { slots: await serial(set(body), () => readSlots(set(body))) };
         case 'saveSlots':
           try {

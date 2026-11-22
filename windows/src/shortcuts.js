@@ -22,9 +22,26 @@ const ACTIONS = [
   { id: 'envFiles', group: 'Chats', title: 'Env files', combo: 'ctrl+shift+e' },
   { id: 'closePane', group: 'Chats', title: 'Close the window', combo: 'ctrl+w' },
   { id: 'closeWindow', group: 'Chats', title: 'Close the window (other keys)', combo: 'ctrl+shift+w' },
+  // iTerm2's Undo Close (the Mac's ⇧⌘T): the terminal hidden last, still running, comes back. Ctrl+Shift+T, as a
+  // browser reopens its closed tab.
+  { id: 'undoClose', group: 'Chats', title: 'Undo close', combo: 'ctrl+shift+t' },
+  // No keys as it comes: the Mac's ⇧⌘C would be Ctrl+Shift+C here, which is Copy in a terminal.
+  { id: 'copyReply', group: 'Chats', title: "Copy Claude's last reply", combo: '' },
   // File › Create Pull Request… for the terminal window in front when it's in a worktree (worktreeship.js), the Mac's
   // ⇧⌘P (Conductor's key too). Merge and Delete have none: rare, and Delete shouldn't be a slip of the finger.
   { id: 'createPR', group: 'Chats', title: 'Create pull request', combo: 'ctrl+shift+p' },
+  // The terminal in front, as the Mac's Terminal group: Windows Terminal's keys (its find, its scrolling).
+  { id: 'find', group: 'Terminal', title: 'Find', combo: 'ctrl+shift+f' },
+  { id: 'findNext', group: 'Terminal', title: 'Find next', combo: 'f3' },
+  { id: 'findPrevious', group: 'Terminal', title: 'Find previous', combo: 'shift+f3' },
+  { id: 'findSelection', group: 'Terminal', title: 'Find the selected text', combo: '' },
+  { id: 'clearBuffer', group: 'Terminal', title: 'Clear the buffer', combo: '' },
+  { id: 'scrollLineUp', group: 'Terminal', title: 'Scroll up a line', combo: 'ctrl+shift+up' },
+  { id: 'scrollLineDown', group: 'Terminal', title: 'Scroll down a line', combo: 'ctrl+shift+down' },
+  { id: 'scrollPageUp', group: 'Terminal', title: 'Scroll up a page', combo: 'ctrl+shift+pageup' },
+  { id: 'scrollPageDown', group: 'Terminal', title: 'Scroll down a page', combo: 'ctrl+shift+pagedown' },
+  { id: 'scrollTop', group: 'Terminal', title: 'Scroll to the top', combo: 'ctrl+shift+home' },
+  { id: 'scrollBottom', group: 'Terminal', title: 'Scroll to the bottom', combo: 'ctrl+shift+end' },
   { id: 'reloadDashboard', group: 'View', title: 'Reload the dashboard', combo: 'ctrl+r' },
   // The dashboard's only: in a terminal Ctrl+B stays the shell's.
   { id: 'chatsList', group: 'View', title: 'Chats list', combo: 'ctrl+b' },
@@ -239,6 +256,14 @@ function createShortcuts({ settings, onChange }) {
     /** The menu's accelerator for an action, or undefined. */
     accel: (id) => accelerator(combo(id)),
     ringMouse,
+    /**
+     * How the Ring opens, for the line under it (web/shortcuts.js), as the Mac's Shortcuts.ringHint: its mouse button,
+     * then its keys ("Ctrl + middle click or Ctrl+K"), or the menu when neither is set.
+     */
+    ringHint() {
+      const parts = [{ ctrl: 'Ctrl + middle click', plain: 'middle click' }[ringMouse()], label(combo('shortcutsWheel'))].filter(Boolean);
+      return parts.length ? parts.join(' or ') : 'File › Ring';
+    },
     escCloses,
     comboOf,
     recording: () => !!recorder,

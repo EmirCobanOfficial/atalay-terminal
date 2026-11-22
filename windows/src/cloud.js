@@ -4,8 +4,9 @@
 // many are online, their XP, and the friends, messages and notifications that the API pushes into a live socket. It
 // ports the Mac app's Cloud.swift (with CloudBridge, the pages' "cloud" handler), Social.swift and ClientKey.swift.
 // main.js tells it what only main.js knows (whether the user is working, how long since the last input, the theme),
-// passes it the pages' "cloud" messages, pushes its state and live events to the pages, and kicks it after sleep or a
-// network change. Nothing here waits on the network: the dashboard and the terminals work offline, the API catches up.
+// passes it the pages' "cloud" messages, pushes its state and live events to the pages, and kicks it after sleep; a
+// network change it notices itself (watchNetwork). Nothing here waits on the network: the dashboard and the terminals
+// work offline, the API catches up.
 //
 // Updates are the one part left out. The Mac app takes its builds from the API's offers; this app updates from GitHub
 // releases (electron-updater, in main.js). So no build number goes to the API (its update offers, and its rule that
@@ -177,6 +178,18 @@ function signer(clientKey, guard, intact = () => true) {
   };
 }
 
+// Whether this PC has a network, as Chromium's own watch on Windows' network adapters has it (Electron's net.isOnline:
+// a reading, nothing goes out to ask). Null outside Electron (cloud.js run by plain Node, where `electron` is only the
+// path to its program): then only main.js's kicks tell of a change.
+function electronOnline() {
+  try {
+    const { net } = require('electron');
+    return net && typeof net.isOnline === 'function' ? () => net.isOnline() : null;
+  } catch {
+    return null;
+  }
+}
+
 // A reply outside 2xx: its status and the API's error code ('' when it gave none).
 class Failure extends Error {
   constructor(status, code) {
@@ -201,9 +214,11 @@ class Failure extends Error {
 //   `open` is used, to read the keys the old end-to-end encrypted messages were sealed with (unseal.js). Without it
 //   nothing of them is opened here.
 // - tokens: the token ledger (tokenledger.js), { start(), batch(max), sent(batch) }: the tokens burned, sent after a heartbeat
+// - isOnline(): whether the PC has a network now (default Electron's net.isOnline; none outside Electron)
 function createCloud(opts = {}) {
   const dataDir = opts.dataDir;
   if (!dataDir) throw new Error('createCloud: dataDir is required');
+  const isOnline = typeof opts.isOnline === 'function' ? opts.isOnline : electronOnline();
   const isActive = opts.isActive || (() => false);
   const toolsAtWork = opts.tools || (() => []);
   const idleSeconds = opts.idleSeconds || (() => 0);
@@ -805,7 +820,7 @@ function createCloud(opts = {}) {
   // ---------- the live socket (Social.swift) ----------
   // The app's live line to the API for friends and messages: one WebSocket the API pushes events into (a message, a
   // friend request, a friend coming online). It opens once this PC is signed in and reopens on its own after a drop, at
-  // once when main.js says the PC woke up or the network came back.
+  // once when the PC woke up (main.js) or the network came back (watchNetwork).
 
   let ws = null;
   let opening = false;
@@ -894,7 +909,9 @@ function createCloud(opts = {}) {
   }
 
   // The API pings every 25 s and Node's WebSocket answers by itself, but unlike the Mac app's it can't ping on its own
-  // to check the line. So this side listens for the API's pings: a line that died silently (sleep, a network switch)
+  // to check the line (Electron 45's, Node 24 with undici 7, has no ping; Electron's net.WebSocket neither), and the API
+  // answers nothing the app sends (it only reads `afk`), so a ping of the app's own would go unanswered. So this side
+  // listens for the API's pings, the Mac's check turned around: a line that died silently (sleep, a network switch)
   // shows by their stopping, and with nothing heard for 35 s (a ping missed, plus the 10 s the Mac app waits for a
   // pong) it counts as dead. Node tells of pings only on a diagnostics channel; until one has come through, nothing is
   // called dead, so a Node or a proxy that doesn't pass them on just leaves this check off.
@@ -1069,6 +1086,7 @@ function createCloud(opts = {}) {
     beat();
     timer = setInterval(beat, 60_000);
     timer.unref?.();
+    watchNetwork();
     // Started again after a stop: the line comes back with the state it had.
     sync();
   }
@@ -1080,13 +1098,45 @@ function createCloud(opts = {}) {
     timer = null;
     clearInterval(awayTimer);
     awayTimer = null;
+    clearInterval(netTimer);
+    netTimer = null;
     close();
     dc.unsubscribe(PING, onPing);
   }
 
-  // The PC woke up or the network came back (main.js): a line opened before may be dead without anyone noticing (no
-  // error comes until something is sent), so a fresh one now instead of waiting out a backoff; and a heartbeat, which
-  // shows at once whether the API can be reached again.
+  // ---------- the network coming and going (Cloud.swift's NWPathMonitor) ----------
+  // The network coming back syncs at once instead of at the next heartbeat (and the live socket opens again without
+  // waiting out its backoff); losing it shows offline at once. Nothing here can be told of a change, so Chromium's
+  // reading is looked at every few seconds: a reading, no traffic, and nothing goes to the API while it stays the same.
+  // The first reading only says where it stands.
+  let netUp = null;
+  let netTimer = null;
+
+  function watchNetwork() {
+    if (!isOnline || netTimer) return;
+    netUp = null;
+    checkNetwork();
+    netTimer = setInterval(checkNetwork, 3_000);
+    netTimer.unref?.();
+  }
+
+  function checkNetwork() {
+    let up;
+    try {
+      up = isOnline() === true;
+    } catch {
+      return;
+    }
+    const was = netUp;
+    netUp = up;
+    if (!running || was === null || was === up) return;
+    if (up) kick();
+    else set({ reachable: false });
+  }
+
+  // The PC woke up (main.js) or the network came back (checkNetwork): a line opened before may be dead without anyone
+  // noticing (no error comes until something is sent), so a fresh one now instead of waiting out a backoff; and a
+  // heartbeat, which shows at once whether the API can be reached again.
   function kick() {
     if (!running) return;
     beat();

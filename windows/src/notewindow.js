@@ -13,6 +13,10 @@ const path = require('path');
 const KEY = 'noteWindows';
 const NAME = /^[A-Za-z0-9-]{1,100}$/;
 const FLUSH = 'return window.Notes && Notes.flush ? await Notes.flush() : true';
+// What AI may do with the notes, as notesai.js keeps it in the settings (its KEY and MODES): each window's page shows it
+// (the eye only while AI has access), as the Mac's NoteWindow reads NotesAI.mode.
+const AI_KEY = 'notesAI';
+const AI_MODES = ['off', 'read', 'write'];
 
 function createNoteWindows({ BrowserWindow, screen, dialog, WEB, settings, webPrefs, bootFor, checkPages, ownerView, getDash, pin, uiScale, streamerOn, quitting, bg, opacity, editMenu, notesSync, social, openSignIn }) {
   const open = new Map(); // note id -> its window's record
@@ -27,6 +31,7 @@ function createNoteWindows({ BrowserWindow, screen, dialog, WEB, settings, webPr
     const d = getDash();
     return d && !d.isDestroyed() ? d : null;
   };
+  const aiMode = () => (AI_MODES.includes(settings.get(AI_KEY)) ? settings.get(AI_KEY) : 'off');
 
   // The dashboard's page runs `body` (an async function body) with the named args; its JSON result, null on any failure.
   async function callNotes(body, args = {}) {
@@ -106,7 +111,8 @@ function createNoteWindows({ BrowserWindow, screen, dialog, WEB, settings, webPr
     const saved = entries()[id] || {};
     const n = {
       id, onTop: saved.onTop === true, steppedAside: false, closing: false, finished: false, loaded: false,
-      pendingFocus: null, reopen: false, dragFrom: null, win: null,
+      // reopen: asked to open again while it was closing, null when not; true takes the keyboard then (the Mac's reopen).
+      pendingFocus: null, reopen: null, dragFrom: null, win: null, boot: null,
       // The server's id of this window's note when it is shared (read from its note as it is loaded and saved): the only note
       // this window may ask a socket ticket for, or upload a file into.
       sharedID: null,
@@ -121,7 +127,11 @@ function createNoteWindows({ BrowserWindow, screen, dialog, WEB, settings, webPr
       fullscreenable: false, skipTaskbar: false, webPreferences: webPrefs(),
     });
     n.win = win;
-    bootFor(win.webContents, { noteWindow: { id, onTop: n.onTop, streamer: streamerOn() } });
+    // The AI level too (the Mac's boot `aiMode`), so its eye shows only while AI has access. The page asks for this object
+    // at each load (main.js's atl:boot hands over the one kept here), so aiModeChanged keeps its level current for a page
+    // loaded again.
+    n.boot = { id, onTop: n.onTop, streamer: streamerOn(), aiMode: aiMode() };
+    bootFor(win.webContents, { noteWindow: n.boot });
     win.setMenuBarVisibility(false);
     win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
     // A right click on its text: Cut, Copy, Paste, Select All (main.js's editMenu).
@@ -214,7 +224,7 @@ function createNoteWindows({ BrowserWindow, screen, dialog, WEB, settings, webPr
     }
     if (open.get(n.id) === n) open.delete(n.id);
     callNotes('window.Notes && Notes.windowClosed && Notes.windowClosed(id)', { id: n.id });
-    if (n.reopen) show(n.id);
+    if (n.reopen !== null) show(n.id, n.reopen);
   }
 
   // ---------- the dashboard asks ----------
@@ -223,7 +233,8 @@ function createNoteWindows({ BrowserWindow, screen, dialog, WEB, settings, webPr
     if (typeof id !== 'string' || !NAME.test(id)) return;
     const n = open.get(id);
     if (n) {
-      if (n.closing) n.reopen = true;
+      // Opened again once it has closed: taking the keyboard if any of the asks did (an AI's note_show never does).
+      if (n.closing) n.reopen = n.reopen === true || focus;
       else if (n.loaded) present(n, focus);
       else n.pendingFocus = n.pendingFocus === true || focus;
       return;
@@ -309,6 +320,20 @@ function createNoteWindows({ BrowserWindow, screen, dialog, WEB, settings, webPr
     const n = open.get(id);
     if (!n || !n.loaded || n.finished || n.win.isDestroyed()) return;
     n.win.webContents.executeJavaScript(`window.Notes && Notes.aiHiddenSet && Notes.aiHiddenSet(${on === true}); true`).catch(() => {});
+  }
+
+  // What AI may do with the notes changed (notesai.js setMode, the Mac's NoteWindow.aiModeChanged): each note's window and
+  // the dashboard's page learn it, for the eye (shown only while AI has access) and the board's chip. Each window's boot
+  // value follows, so a page loaded again (its process died) starts at the level as it is now.
+  function aiModeChanged() {
+    const mode = aiMode();
+    const js = `window.Notes && Notes.aiMode && Notes.aiMode(${JSON.stringify(mode)}); true`;
+    for (const n of open.values()) {
+      if (n.boot) n.boot.aiMode = mode;
+      if (n.finished || n.win.isDestroyed()) continue;
+      n.win.webContents.executeJavaScript(js).catch(() => {});
+    }
+    callNotes('window.Notes && Notes.aiMode && Notes.aiMode(mode); return true', { mode });
   }
 
   // The network came back or the PC woke up: every window's shared note tries its line again (the Mac's NoteWindow.netBack).
@@ -577,7 +602,11 @@ function createNoteWindows({ BrowserWindow, screen, dialog, WEB, settings, webPr
     return r && typeof r === 'object' ? r : { error: "the dashboard didn't answer" };
   }
 
-  return { radar, handle, has, pinAll, stepAside, setStreamer, flushAll, closeKey, setBackground, liveView, places, dashboardShown, agentCall, netBack, present: presentFor, closeById };
+  return {
+    radar, handle, has, pinAll, stepAside, setStreamer, flushAll, closeKey, setBackground, liveView, places, dashboardShown, agentCall, netBack, present: presentFor, closeById,
+    // For the notes' AI switch (notesai.js setMode).
+    aiModeChanged,
+  };
 }
 
 module.exports = { createNoteWindows };

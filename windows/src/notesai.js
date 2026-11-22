@@ -65,7 +65,7 @@ function createNotesAI({ settings, dialog, parent, notesStore, noteWindows, term
     claudeDir: CLAUDE_DIR,
   });
 
-  // The notes' six tools on the server, once (the Mac's AppDelegate loop over NotesTools.all). Each is checked against the
+  // The notes' eleven tools on the server, once (the Mac's AppDelegate loop over NotesTools.all). Each is checked against the
   // notes' own mode at every call and every listing (`enabled`).
   let registered = false;
   function register() {
@@ -294,6 +294,13 @@ function createNotesAI({ settings, dialog, parent, notesStore, noteWindows, term
 
   async function setMode(m) {
     settings.set(KEY, m);
+    // Every note's window and the dashboard's page show the level (the eye, the chip): they are told at once (the Mac's
+    // NoteWindow.aiModeChanged).
+    try {
+      if (noteWindows && typeof noteWindows.aiModeChanged === 'function') noteWindows.aiModeChanged();
+    } catch (e) {
+      console.error('notes AI: the note windows could not follow the switch:', e.message);
+    }
     // The server's pipe follows: open while this or the Claude access is on (mcp.js asks access()).
     refreshServer();
     await sync();
