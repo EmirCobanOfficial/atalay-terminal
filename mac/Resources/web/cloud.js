@@ -3151,7 +3151,8 @@ window.Cloud = (() => {
   });
 
   let shown = null;
-  function showView(v) {
+  // `keep`: back where you were (attack.js, after a spaceship attack took you to the dashboard for a moment).
+  function showView(v, keep) {
     if (v === shown) return;
     const prev = shown;
     if (shown === 'themes') theme('revert').catch(() => {});
@@ -3166,8 +3167,8 @@ window.Cloud = (() => {
     }
     if (v === 'board') {
       counted = fetched = false;
-      // Back from a profile the board stays as it was (past week, "Show all"); any other way in starts fresh.
-      if (prev !== 'profile') {
+      // Back from a profile (or an attack) the board stays as it was (past week, "Show all"); any other way in starts fresh.
+      if (prev !== 'profile' && !keep) {
         boardWhole = false;
         boardWeek = null;
         boardLastWeek = null;
@@ -3274,5 +3275,5 @@ window.Cloud = (() => {
     // Opened for a purpose (the account menu's Settings…, a badge's sign in, the shortcut list's "Change shortcuts…"):
     // that category, Account unless another is named, whatever was open last time. The gear and the app menu open the last one.
     openMenu(pane);
-  }, openProfile, openPerson, openFriend, openUpdate, openFeedback, openWhatsNew, openTips, showView, renderPower, renderCleanup, renderDiscord, close, copyHandle, statusMenu, keyFind };
+  }, openProfile, openPerson, openFriend, openUpdate, openFeedback, openWhatsNew, openTips, showView, current: () => shown, renderPower, renderCleanup, renderDiscord, close, copyHandle, statusMenu, keyFind };
 })();

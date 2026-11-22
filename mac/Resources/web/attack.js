@@ -207,7 +207,8 @@ window.Attack = (() => {
   }
   function next() {
     clearTimeout(timer);
-    if (!queue.length) return;
+    // Nothing more to play (the one waiting may have been taken back since): back where you were, if the attack took you.
+    if (!queue.length) return void release();
     const wait = busyUntil - Date.now();
     if (wait > 0) return void (timer = setTimeout(next, wait + 300));
     play(queue.shift());
@@ -220,14 +221,101 @@ window.Attack = (() => {
   // while the warning showed. Windows can't tell a dashboard beside another app from one under it (it reports only shown
   // and not minimized, main.js), so there `behind` still counts, or the ship would fly unseen.
   const BEHIND_HIDES = window.__platform === 'win32';
+  // The dashboard window itself can be seen (the same conditions, apart from a view of the app lying over the map).
+  function dashboardSeen() {
+    return !html.classList.contains('paused') && !html.classList.contains('covered') && !(BEHIND_HIDES && html.classList.contains('behind')) &&
+      document.visibilityState === 'visible';
+  }
   function mapInSight() {
     const space = document.getElementById('space');
-    return !html.classList.contains('paused') && !html.classList.contains('covered') && !(BEHIND_HIDES && html.classList.contains('behind')) &&
-      document.visibilityState === 'visible' && !!space && space.clientWidth > 0 && space.clientHeight > 0;
+    return dashboardSeen() && !!space && space.clientWidth > 0 && space.clientHeight > 0;
+  }
+  // Another view of the app (Settings' pages are windows over the dashboard and don't hide the map; these do) lies over the
+  // map while the dashboard can be seen: the app goes back to the dashboard for the ship, then returns you (away/release).
+  // Never when the window is hidden, minimized or under another window (attack.js never takes the focus or un-hides it),
+  // and never from where leaving could lose something: the themes' preview, Clean Up, a profile being edited, a file with
+  // unsaved changes, a field with the cursor in it (what you type next would go nowhere; an IME's composition is in one
+  // too), a mouse button held down (a note being dragged, a selection). Notes save as you type, so they're fine. Those
+  // keep the banner alone, as before.
+  const BACK_TO = ['notes', 'friends', 'profile', 'board', 'notifications', 'roadmap'];
+  // { view, git, profile, took }: where you were, while the attack has you on the dashboard. `took`: you did something
+  // yourself meanwhile (a click or a key on the page, another view by any way, even back to the dashboard): you stay.
+  let away = null;
+  let pressed = false;
+  const appEl = document.getElementById('app');
+  const onDash = () => !window.Cloud?.current?.() && !appEl?.classList.contains('git-mode');
+  const NOT_TEXT = /^(button|checkbox|radio|range|color|file|submit|reset|image|hidden)$/i;
+  function writing() {
+    const a = document.activeElement;
+    if (!a || a === document.body) return false;
+    if (a.isContentEditable) return true;
+    return (a.tagName === 'TEXTAREA' || (a.tagName === 'INPUT' && !NOT_TEXT.test(a.type))) && !a.readOnly && !a.disabled;
+  }
+  addEventListener('pointerdown', () => {
+    pressed = true;
+    if (away) away.took = true;
+  }, true);
+  addEventListener('pointerup', () => (pressed = false), true);
+  addEventListener('pointercancel', () => (pressed = false), true);
+  // A release the page never heard of (a native menu, a drag let go outside) is put right by the next move.
+  addEventListener('pointermove', (e) => (pressed = e.buttons > 0), { capture: true, passive: true });
+  addEventListener('blur', () => (pressed = false)); // the window's own (an element's blur doesn't reach here)
+  addEventListener('keydown', (e) => {
+    if (away && !['Shift', 'Control', 'Alt', 'Meta', 'CapsLock', 'Fn'].includes(e.key)) away.took = true;
+  }, true);
+  // Any view opened meanwhile (the activity bar, a shortcut, the menu bar, a notification). Told after leave() and
+  // release() have run, so their own switching never counts: on the dashboard then, or `away` already gone.
+  if (appEl) new MutationObserver(() => away && !onDash() && (away.took = true)).observe(appEl, { attributes: true, attributeFilter: ['class'] });
+  function leave() {
+    const space = document.getElementById('space');
+    if (!window.GitView || !window.Cloud?.current || !window.Orbit?.attack || reduced() || !dashboardSeen()) return null;
+    if (!space || (space.clientWidth > 0 && space.clientHeight > 0) || onDash() || pressed || writing()) return null;
+    const view = window.Cloud.current();
+    const git = !view && !!appEl?.classList.contains('git-mode');
+    if (view && !BACK_TO.includes(view)) return null;
+    if (document.getElementById('profile-view')?.classList.contains('editing')) return null;
+    if (git && (window.FileEditor?.list?.() || []).some((t) => t.dirty)) return null;
+    // A profile comes back as it was opened: whose, where its Back goes, the leaderboard's list to step through.
+    let profile = null;
+    if (view === 'profile' && window.Profile?.currentId?.()) {
+      const { edit, picEl, ...opts } = window.Profile.opts?.() || {};
+      profile = { id: window.Profile.currentId(), opts: { ...opts, instant: true } };
+    }
+    window.GitView.view('dash'); // the way Esc goes back to the dashboard
+    return { view, git, profile, took: false };
+  }
+  // You go back to where you were, unless you did something yourself meanwhile, or another attack is waiting (it keeps
+  // you on the dashboard, and you go back after the last one). Also with the window hidden by then: it shows where you
+  // left it when it comes back.
+  function release() {
+    if (!away || queue.length) return;
+    const from = away;
+    away = null;
+    if (from.took || !onDash() || writing()) return;
+    if (from.git) return window.GitView?.open();
+    if (from.profile && window.Profile?.openPerson) return window.Profile.openPerson(from.profile.id, from.profile.opts);
+    if (!from.view) return;
+    // The leaderboard as it was (its week, "Show all"), as back from a profile.
+    if (from.view === 'board') window.Cloud?.showView('board', true);
+    window.GitView?.view(from.view);
   }
   // The ship's sounds, each played at its moment on the map (raid.js gives the moments); the alarm is the banner's.
   const SOUNDS = ['attack-flyby', 'attack-lasers', 'attack-boom', 'attack-rebuild'];
-  async function play(ev) {
+  // Each attack's own number: its timed release() does nothing once another has started (that one releases you then).
+  let seq = 0;
+  const back = (my, ms) => setTimeout(() => my === seq && release(), ms);
+  function play(ev) {
+    const my = ++seq;
+    fly(ev, my).catch(() => {
+      // Something failed half way: nothing left up, and the next one comes (or, none waiting, you go back: next()).
+      reticle(false);
+      playing = null;
+      busyUntil = Date.now();
+      clearTimeout(timer);
+      timer = setTimeout(next, 300);
+    });
+  }
+  async function fly(ev, my) {
     busyUntil = Date.now() + 20_000; // the next one waits; set right below, once this one's length is known
     const name = nameOf(ev);
     const lock = (playing = { id: ev.from.id, cancelled: false, wake: () => {} });
@@ -235,12 +323,20 @@ window.Attack = (() => {
     // The warning first, wherever the app is on screen (the notices panel shows it over whatever is in front), then the
     // ship. Its sender stays unnamed until the blast.
     banner('', 'lock');
+    // A view of the app over the map: the dashboard first, so the ship's arrival is seen (once the layout has settled).
+    // Already there for the one before: you stay. Gone your own way meanwhile: from where you are now.
+    if (away && away.took) away = null;
+    if (!away && (away = leave())) {
+      dispatchEvent(new Event('resize'));
+      await sleep(120);
+    }
     reticle(true);
     await Promise.race([sleep(LOCK_MS + HOLD_MS), woken]);
     playing = null;
     if (lock.cancelled) {
       reticle(false);
       banner('', 'lost');
+      back(my, 600);
       busyUntil = Date.now() + LOST_MS;
       clearTimeout(timer);
       timer = setTimeout(next, LOST_MS + 300);
@@ -254,6 +350,7 @@ window.Attack = (() => {
     }
     if (show) {
       busyUntil = Date.now() + show.end;
+      back(my, show.end);
       // What belongs to the map plays only if the map is still in sight at that moment.
       const at = (ms, fn) => setTimeout(() => mapInSight() && fn(), ms);
       Sfx.sample('attack-flyby', 0.8);
@@ -275,6 +372,7 @@ window.Attack = (() => {
       reticle(false);
       busyUntil = Date.now() + BANNER_MS;
       banner(name, 'danger', true);
+      back(my, 600);
     }
     clearTimeout(timer);
     timer = setTimeout(next, busyUntil - Date.now() + 300);

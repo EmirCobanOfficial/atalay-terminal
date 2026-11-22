@@ -1025,5 +1025,7 @@ window.Profile = (() => {
     mount, links, normalize, detect, safe, shortText, zoom, open, cut, square, api, say, errText, takes,
     SITES, site, ICONS, MAX_URL, SIZE,
     openPerson, closePerson, reset, isVisiting: () => !!(currentId && currentId !== 'me'), currentId: () => currentId,
+    // How the open profile was opened (where Back goes, the list to step through): attack.js opens it again so after an attack.
+    opts: () => ({ ...currentOpts }),
   };
 })();
