@@ -10,7 +10,7 @@ final class PtySession: NSObject, LocalProcessTerminalViewDelegate {
     private(set) var terminal: ChatTerminalView!
     let cwd: String
     let started = Date()
-    /// The AI it was started to resume (`tool`: "claude", "codex", "agy"), for the snapshot until one shows under the shell.
+    /// The AI it was started to resume (`tool`: "claude", "codex", "agy", "cursor"), for the snapshot until one shows under the shell.
     var ai: (tool: String, id: String)?
     /// The window or pane showing it now; nil while parked. Every delegate call is forwarded there.
     weak var owner: LocalProcessTerminalViewDelegate?
@@ -127,11 +127,17 @@ enum Sessions {
 
     nonisolated static func name(ofShell pid: Int32) -> String? { lock.withLock { shells.first { $0.value == pid }?.key } }
 
+    /// Every live session's shell, by name (Clean Up's roots, the notes' project folders).
+    nonisolated static func allShells() -> [(name: String, pid: Int32)] { lock.withLock { shells.map { ($0.key, $0.value) } } }
+
+    /// Whether `pid` is the shell of one of this run's own sessions.
+    nonisolated static func isShell(_ pid: Int32) -> Bool { lock.withLock { shells.values.contains(pid) } }
+
     private static func setShell(_ name: String, _ pid: Int32?) {
         lock.withLock { shells[name] = pid }
     }
 
-    /// A shell in `cwd` in a pty of the app's own (running Claude, Codex or Antigravity first when `claudeArgs` is given, as
+    /// A shell in `cwd` in a pty of the app's own (running Claude, Codex, Antigravity or Cursor first when `claudeArgs` is given, as
     /// TerminalFactory.shellArgs says). `history` (the scrollback an update's restart kept) shows first, then `notice`,
     /// dimmed.
     @MainActor

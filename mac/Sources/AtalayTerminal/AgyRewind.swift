@@ -1,8 +1,9 @@
 import AppKit
 
 /// Esc Esc in an idle Antigravity chat with an empty prompt types `/rewind` (agy has the command but no key for it; its
-/// own Esc Esc only clears the prompt). The second Esc is swallowed. Needs `maptimeout 10` in the screenrc (Detached),
-/// or screen would merge that Esc with the text typed right after it. Anything unclear: Esc goes to agy as usual.
+/// own Esc Esc only clears the prompt). The second Esc is swallowed. A pty session of the app's own passes the keys as they
+/// are; a screen session an older build left needs `maptimeout 10` (Detached.tune), or screen would merge that Esc with the
+/// text typed right after it. Anything unclear: Esc goes to agy as usual.
 /// Called from the one Esc monitor in AppDelegate.installMonitors, after MessagePanel.holds and EscClose.handle.
 @MainActor
 enum AgyRewind {

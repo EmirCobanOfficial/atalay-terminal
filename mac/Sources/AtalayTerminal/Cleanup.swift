@@ -147,8 +147,9 @@ final class Cleanup {
             }
             return out
         }
-        // This build's sessions: the screen daemon is the root; login(1) between it and the shell runs as root, so the walk goes
-        // through the live process table and keeps only the user's processes.
+        // This build's sessions: a pty session's shell is the root (the app's own child); for a screen session an older build
+        // left it is the screen daemon, and login(1) between it and the shell runs as root, so the walk goes through the live
+        // process table and keeps only the user's processes.
         for (name, pid, started) in Detached.sessionRoots(pids: snap.pids) {
             var r = Root(name: name, pid: pid, started: started)
             r.members = [pid]
@@ -174,10 +175,12 @@ final class Cleanup {
             s.roots.append(r)
         }
         // Leftovers and runaways: not in any session, listed as programs.
-        // Only what is Orbiterm's: a leftover of one of its own terminals (they carry its TERM_PROGRAM), a runaway that was part
-        // of a terminal's session. A service started by launchd (its own session leader), or a job from iTerm2, is another app's.
+        // Only what is Orbiterm's: a leftover of one of this build's terminals (they carry its TERM_PROGRAM, and the session's
+        // name: ORBITERM_SESSION in a pty session of the app's own, screen's STY in one an older build left), a runaway that was
+        // part of a terminal's session. A service started by launchd (its own session leader), or a job from iTerm2, is another app's.
         let left = (runaways?.left ?? []).filter { Proc.environmentVariable($0.pid, "TERM_PROGRAM") == "AtalaysTerminal"
-            && (Proc.environmentVariable($0.pid, "STY") ?? "").contains("." + Detached.prefix) }
+            && ((Proc.environmentVariable($0.pid, "ORBITERM_SESSION") ?? "").hasPrefix(Detached.prefix)
+                || (Proc.environmentVariable($0.pid, "STY") ?? "").contains("." + Detached.prefix)) }
         let found = (runaways?.found ?? []).filter { let sid = getsid($0.pid); return sid > 1 && sid != $0.pid }
         var leftSet = Set<Int32>()
         var loose: [(pid: Int32, sub: [Int32], bytes: UInt64)] = []
@@ -809,12 +812,13 @@ final class Cleanup {
         return total
     }
 
-    /// Whether the process is one of Orbiterm's to end: it runs under a screen daemon of this build, or it is a leftover or runaway
-    /// Runaways found. Anything else is refused, whatever the page said.
+    /// Whether the process is one of Orbiterm's to end: it runs under one of this build's sessions (a pty session's shell, or the
+    /// screen daemon of one an older build left), or it is a leftover or runaway Runaways found. Anything else is refused, whatever
+    /// the page said.
     private func isOurs(_ pid: Int32, started: UInt64) -> Bool {
         guard let info = Proc.info(pid), info.uid == getuid(), info.started == started else { return false }
-        // Never a session's own screen, shell or AI: those are chats, ended as chats.
-        let daemons = Set(Detached.ownedDaemons().map(\.pid))
+        // Never a session's own root (a pty's shell, a screen daemon), shell or AI: those are chats, ended as chats.
+        let daemons = Set(Detached.ownedDaemons().map(\.pid)).union(Sessions.allShells().map(\.pid))
         if daemons.contains(pid) || MemoryWatch.aiPids().contains(pid) || Self.isAIProcess(pid) { return false }
         // A runaway or a closed terminal's leftover is ended as one, whatever it is (a script runner too).
         if (runaways?.found.contains { $0.pid == pid } ?? false) || (runaways?.left.contains { $0.pid == pid } ?? false) { return true }

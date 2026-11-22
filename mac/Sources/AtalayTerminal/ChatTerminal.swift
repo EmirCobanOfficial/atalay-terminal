@@ -8,7 +8,8 @@ final class ChatTerminalView: LocalProcessTerminalView {
     var chatId = ""
     /// The shell inside this chat's detached session (0 when it has none), to tell which program is in front.
     var sessionShell: () -> Int32 = { 0 }
-    /// The screen session this terminal shows (set by `attach`); AgyRewind works only in this build's tuned ones.
+    /// The screen session this terminal shows (set by `attach`, a session an older build left); there AgyRewind works only in
+    /// this build's tuned ones. Empty for a pty session of the app's own.
     var screenName = ""
     /// The selected text after every change (nil when nothing is selected), and what ⌘C copied.
     var onSelection: ((String?) -> Void)?
@@ -344,8 +345,10 @@ final class ChatTerminalView: LocalProcessTerminalView {
     /// `/rewind` (AgyRewind.swift). Anything unclear is a no. Its own check, not McpTools.inputState's: that one takes
     /// typed text that starts like a placeholder ("Find and fix the login bug") for an empty prompt.
     func agyRewindReady() -> Bool {
-        // A mirror window shows another build's session: it keeps screen's 300 ms Esc wait, which would merge Esc with /rewind.
-        guard Detached.isTuned(screenName),
+        // A pty session of the app's own passes every key straight on: nothing merges the Esc with /rewind. A screen session
+        // (one an older build left) holds an Esc for its maptimeout: only this build's, tuned to 10 ms, can; a mirror window
+        // shows another build's session, which keeps screen's 300 ms. Anything else (another view) is no.
+        guard legacyScreen ? Detached.isTuned(screenName) : isOwnPty,
               let group = foregroundGroup(), Proc.otherAI(group) == "Antigravity",
               MainWindowController.aiStatus[group] == "idle", let terminal = engine else { return false }
         // The status stays "idle" a moment after a prompt is sent: Esc Esc to stop that turn must not open the panel too.
@@ -371,6 +374,9 @@ final class ChatTerminalView: LocalProcessTerminalView {
         }
         return false
     }
+
+    /// This view is a live pty session of this app's own (PtySession), not a screen display or a view with no session.
+    private var isOwnPty: Bool { Sessions.live.values.contains { $0.terminal === self } }
 
     private var claudeInFront: Bool { foregroundGroup().map(Self.isInteractiveAI) ?? false }
 

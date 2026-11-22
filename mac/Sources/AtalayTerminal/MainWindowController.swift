@@ -550,16 +550,18 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             var resumed: SessionSnapshot.AI?
             var what = " What ran in this terminal stopped."
             if let a = e.ai {
-                let names = ["claude": "Claude", "codex": "Codex", "agy": "Antigravity"]
+                let names = ["claude": "Claude", "codex": "Codex", "agy": "Antigravity", "cursor": "Cursor"]
                 switch a.tool {
                 case "claude": args = ["--resume", a.id]
                 case "codex": args = ["codex", "resume", a.id]
                 case "agy": args = ["agy", "--conversation", a.id]
+                case "cursor": args = ["cursor-agent", "--resume", a.id]
                 default: break
                 }
                 if args != nil, loop {
                     // Said how to resume it by hand instead.
-                    let command = ["claude": "claude --resume ", "codex": "codex resume ", "agy": "agy --conversation "][a.tool] ?? ""
+                    let command = ["claude": "claude --resume ", "codex": "codex resume ", "agy": "agy --conversation ",
+                                   "cursor": "cursor-agent --resume "][a.tool] ?? ""
                     args = nil
                     what = " To resume it: \(command)\(a.id)"
                 } else if args != nil, elsewhere.contains(a.id) {
@@ -579,7 +581,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     /// The snapshot's AI conversations that run somewhere right now (so not in a session of this app: it just started): a
-    /// Claude with a live entry in its session registry, a Codex or Antigravity process with the id in its arguments.
+    /// Claude with a live entry in its session registry, a Codex, Antigravity or Cursor process with the id in its arguments.
     /// Reads processes (call it off the main thread).
     private nonisolated static func runningElsewhere(_ snapshot: SessionSnapshot, registry: String) -> Set<String> {
         let wanted = snapshot.sessions.compactMap(\.ai)
@@ -1407,6 +1409,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         if args.count == 2, args[0] == "--resume" { return ("claude", args[1]) }
         if args.count == 3, args[0] == "codex", args[1] == "resume" { return ("codex", args[2]) }
         if args.count == 3, args[0] == "agy", args[1] == "--conversation" { return ("agy", args[2]) }
+        if args.count == 3, args[0] == "cursor-agent", args[1] == "--resume" { return ("cursor", args[2]) }
         return nil
     }
 
@@ -1753,7 +1756,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     /// What a terminal session of the app runs now: the one place that decides it, for the snapshot and for what a restart
-    /// would cut off. The AI under its shell (a brief gives its conversation: Claude's id, Codex's and Antigravity's
+    /// would cut off. The AI under its shell (a brief gives its conversation: Claude's id, Codex's, Antigravity's and Cursor's
     /// `convId`; once known it is kept in `session.ai` while a process of that tool still runs under the shell, so a later
     /// gap in the briefs doesn't lose it), and a foreground job. A job is what holds the terminal in front (not "the shell
     /// has children": prompt helpers such as gitstatusd are children of every shell).
@@ -1775,6 +1778,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             } else if let conv = b.convId {
                 if b.name == "Codex" { found = ("codex", conv) }
                 if b.name == "Antigravity" { found = ("agy", conv) }
+                if b.name == "Cursor" { found = ("cursor", conv) }
             }
             // A nested AI of another tool never replaces the one the session runs while that one still runs.
             if let found, !(s.ai.map { $0.tool != found.tool && Self.toolRuns($0.tool, under: shell) } ?? false) { s.ai = found }
@@ -1821,13 +1825,14 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         return best?.brief
     }
 
-    /// Whether a process of `tool` ("claude", "codex", "agy") runs under `shell`.
+    /// Whether a process of `tool` ("claude", "codex", "agy", "cursor") runs under `shell`.
     private static func toolRuns(_ tool: String, under shell: Int32) -> Bool {
         let match: (Int32) -> Bool = { pid in
             switch tool {
             case "claude": return Proc.isClaude(pid)
             case "codex": return Proc.otherAI(pid) == "Codex"
             case "agy": return Proc.otherAI(pid) == "Antigravity"
+            case "cursor": return Proc.otherAI(pid) == "Cursor"
             default: return false
             }
         }

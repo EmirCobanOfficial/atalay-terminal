@@ -157,7 +157,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let a = NSAlert()
                 a.messageText = "Restart to update?"
                 let shown = lost.prefix(3).joined(separator: ", ") + (lost.count > 3 ? " and \(lost.count - 3) more" : "")
-                a.informativeText = "Orbiterm restarts to update. What runs in its terminals stops: \(shown). Claude, Codex and Antigravity chats come back after the restart and continue where they were."
+                a.informativeText = "Orbiterm restarts to update. What runs in its terminals stops: \(shown). Claude, Codex, Antigravity and Cursor chats come back after the restart and continue where they were."
                 a.alertStyle = .warning
                 a.addButton(withTitle: "Restart")
                 a.addButton(withTitle: "Cancel")

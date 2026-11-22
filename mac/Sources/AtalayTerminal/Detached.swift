@@ -241,10 +241,16 @@ enum Detached {
         }
     }
 
-    /// This build's sessions, each with the screen daemon that is the root of what runs in it and when that daemon started
-    /// (Clean Up and MemoryWatch measure and list what runs below a root). Another build's sessions are never in it.
+    /// This build's sessions, each with the process that is the root of what runs in it and when that root started (Clean Up
+    /// and MemoryWatch measure and list what runs below a root): a pty session's shell (the app's own child), and the screen
+    /// daemon of a session an older build left. Another build's sessions are never in it. `pids` (a snapshot's) limits both.
     static func sessionRoots(pids: [Int32]? = nil) -> [(name: String, root: Int32, started: UInt64)] {
-        ownedDaemons(pids: pids).compactMap { d in Proc.info(d.pid).map { (d.name, d.pid, $0.started) } }
+        let alive = pids.map(Set.init)
+        let ptys: [(name: String, root: Int32, started: UInt64)] = Sessions.allShells().compactMap { s in
+            guard alive?.contains(s.pid) ?? true, let info = Proc.info(s.pid) else { return nil }
+            return (s.name, s.pid, info.started)
+        }
+        return ptys + ownedDaemons(pids: pids).compactMap { d in Proc.info(d.pid).map { (d.name, d.pid, $0.started) } }
     }
 
     /// The app quits for good: every session of this build ends with everything running in it. Each session's whole
@@ -346,9 +352,10 @@ enum Detached {
         return Proc.all().first(where: { daemonName($0, anyBuild: true) == name }).flatMap(shellProcess(under:))
     }
 
-    /// The folder each live session's shell is in now (the notes offer these as the projects to link a note to).
+    /// The folder each live session's shell is in now (the notes offer these as the projects to link a note to): the app's
+    /// own pty sessions and the screen sessions an older build left.
     static func liveFolders() -> [String] {
-        Proc.all().compactMap { daemon in
+        Sessions.allShells().compactMap { Proc.cwd($0.pid) } + Proc.all().compactMap { daemon in
             daemonName(daemon) == nil ? nil : shellProcess(under: daemon).flatMap { Proc.cwd($0) }
         }
     }
@@ -387,15 +394,22 @@ enum Detached {
     /// Name of the session that hosts this process, if any (`anyBuild`: a session of another build too). Callable from any
     /// thread. A pty session of this app: the shell is its direct child, found by pid. A screen session: its daemon is
     /// above. Another build's pty session: a shell that is a child of another Orbiterm app, which says its session's name in
-    /// the environment it started the shell with.
+    /// the environment it started the shell with. macOS hides the environment of its own binaries (/bin/zsh, /bin/sleep)
+    /// from other processes, so it is read from the first process of the way up that shows one (Claude, Codex's node…: they
+    /// inherited it), the shell first.
     nonisolated static func sessionName(hosting pid: Int32, anyBuild: Bool = false) -> String? {
         var cur = pid
+        var below: [Int32] = []
         for _ in 0..<8 {
             if let n = Sessions.name(ofShell: cur) { return n }
             if let n = daemonName(cur, anyBuild: anyBuild) { return n }
             guard let parent = Proc.parent(cur), parent > 1 else { return nil }
-            if anyBuild, parent != getpid(), Proc.name(parent) == appProcessName,
-               let n = Proc.environment(cur)?["ORBITERM_SESSION"], allPrefixes.contains(where: n.hasPrefix) { return n }
+            if anyBuild, parent != getpid(), Proc.name(parent) == appProcessName {
+                for p in [cur] + below.reversed() {
+                    if let n = Proc.environmentVariable(p, "ORBITERM_SESSION"), allPrefixes.contains(where: n.hasPrefix) { return n }
+                }
+            }
+            below.append(cur)
             cur = parent
         }
         return nil

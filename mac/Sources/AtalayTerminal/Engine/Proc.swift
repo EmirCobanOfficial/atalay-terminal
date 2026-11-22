@@ -270,35 +270,4 @@ enum Proc {
         }
         return args
     }
-
-    /// The environment a process was started with (KERN_PROCARGS2: the strings after its arguments, up to the first
-    /// empty one). Only readable for the current user's own processes.
-    static func environment(_ pid: Int32) -> [String: String]? {
-        var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, pid]
-        var size = 0
-        guard sysctl(&mib, 3, nil, &size, nil, 0) == 0, size > MemoryLayout<Int32>.size else { return nil }
-        var buf = [UInt8](repeating: 0, count: size)
-        guard sysctl(&mib, 3, &buf, &size, nil, 0) == 0 else { return nil }
-        let argc = Int(buf.withUnsafeBytes { $0.load(as: Int32.self) })
-        var i = MemoryLayout<Int32>.size
-        while i < size, buf[i] != 0 { i += 1 } // executable path
-        while i < size, buf[i] == 0 { i += 1 } // padding
-        var seen = 0
-        while i < size, seen < argc { // the arguments
-            if buf[i] == 0 { seen += 1 }
-            i += 1
-        }
-        var start = i
-        var env: [String: String] = [:]
-        while i < size {
-            if buf[i] == 0 {
-                if i == start { break }
-                let entry = String(decoding: buf[start..<i], as: UTF8.self)
-                if let eq = entry.firstIndex(of: "=") { env[String(entry[..<eq])] = String(entry[entry.index(after: eq)...]) }
-                start = i + 1
-            }
-            i += 1
-        }
-        return env
-    }
 }
