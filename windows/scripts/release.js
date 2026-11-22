@@ -195,6 +195,8 @@ async function freshKey(keyFile, token) {
   // guard. The build in three steps: the app's folder (dist/win-unpacked); its guard, built over that finished
   // Orbiterm.exe and app.asar (scripts/guard.js), so it can't be inside them; the installer from the folder.
   fs.rmSync(path.join(root, 'src', 'clientkey.js'), { force: true });
+  // Nor the staging access key (scripts/staging.js): a release has none.
+  fs.rmSync(path.join(root, 'src', 'accesskey.js'), { force: true });
   const builder = require('electron-builder');
   const config = notes ? { releaseInfo: { releaseNotes: notes } } : undefined;
   await builder.build({ targets: builder.Platform.WINDOWS.createTarget('dir'), publish: 'never', config });

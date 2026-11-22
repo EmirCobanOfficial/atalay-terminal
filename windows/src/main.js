@@ -395,7 +395,27 @@ function popupMenu(items, at, view) {
   });
 }
 
-const API_BASE = STAGING ? 'http://127.0.0.1:4800' : (!RELEASE && process.env.ATALAY_API_URL) || 'https://terminal-api.atalaykarahan.com';
+// A staging build talks to the shared staging API (scripts/staging.js: STAGING_API_URL=http://127.0.0.1:4800 for a local
+// one, which the package then says in its package.json). A run from the sources takes ATALAY_API_URL, as it always did.
+const API_BASE = (!RELEASE && process.env.ATALAY_API_URL)
+  || (STAGING ? require('../package.json').orbitermStagingApi || 'https://api-staging.orbiterm.dev' : 'https://terminal-api.atalaykarahan.com');
+// The staging API's access key (its src/gate.ts): in a staging package it is src/accesskey.js, written by
+// scripts/staging.js (gitignored, never in a release); from the sources, ATALAY_ACCESS_KEY, which that script passes in.
+// A release has none, and neither has a build against a local API (it has no gate).
+const ACCESS_KEY = (() => {
+  if (RELEASE && !STAGING) return null;
+  try {
+    const k = RELEASE ? require('./accesskey.js') : process.env.ATALAY_ACCESS_KEY;
+    return typeof k === 'string' && k.trim() ? k.trim() : null;
+  } catch {
+    return null;
+  }
+})();
+// A header for the API's own address only (never GitHub's or the file bucket's).
+const withAccess = (url, init = {}) => {
+  if (!ACCESS_KEY || new URL(url).origin !== new URL(API_BASE).origin) return init;
+  return { ...init, headers: { ...init.headers, 'x-orbiterm-access': ACCESS_KEY } };
+};
 const cloud = createCloud({
   apiBase: API_BASE,
   dataDir: app.getPath('userData'),
@@ -403,6 +423,7 @@ const cloud = createCloud({
   clientKey: RELEASE ? null : loadClientKey(),
   guard,
   fetch: (url, init) => net.fetch(url, init),
+  accessKey: ACCESS_KEY,
   // The tokens burned, read from the AI tools' own records and sent after a heartbeat (tokenledger.js).
   // Any API but production keeps its own token book: a local or staging API never got the days the release sent.
   tokens: createTokenLedger({ dir: path.join(process.env.LOCALAPPDATA || path.join(app.getPath('appData'), '..', 'Local'), 'atalay-terminal'), staging: API_BASE !== 'https://terminal-api.atalaykarahan.com' }),
@@ -827,6 +848,14 @@ function guardSession(ses) {
   ses.setPermissionRequestHandler((wc, permission, callback, details) => callback(permitted(wc, permission, details && details.requestingUrl)));
   ses.setPermissionCheckHandler((wc, permission, _origin, details) => permitted(wc, permission, details && details.requestingUrl));
   ses.setDevicePermissionHandler(() => false);
+  // The pages load the API's own pictures (avatars) by address, which can't carry a header: the API signs those
+  // addresses itself (`ak`), and the header is added on the way out too, to the staging API's pictures only (never to
+  // anything else a page asks that API for).
+  if (ACCESS_KEY) {
+    ses.webRequest.onBeforeSendHeaders({ urls: [`${new URL(API_BASE).origin}/v1/avatars/*`] }, (details, callback) => {
+      callback({ requestHeaders: { ...details.requestHeaders, 'x-orbiterm-access': ACCESS_KEY } });
+    });
+  }
 }
 app.on('session-created', guardSession);
 
@@ -2678,7 +2707,7 @@ const updates = (() => {
   // asked at once, in the feed it names if that's a release of the app's own repo: the update can be offered from the
   // server even when this app's own look at the feed went wrong, and nothing from anywhere else is ever installed.
   async function apiRelease(ignoreBackoff = false) {
-    const res = await net.fetch(`${API_BASE}/v1/releases/windows`, { cache: 'no-store', signal: AbortSignal.timeout(20_000) });
+    const res = await net.fetch(`${API_BASE}/v1/releases/windows`, withAccess(`${API_BASE}/`, { cache: 'no-store', signal: AbortSignal.timeout(20_000) }));
     if (!res.ok) return;
     const r = await res.json();
     const version = r && typeof r.version === 'string' ? r.version : '';

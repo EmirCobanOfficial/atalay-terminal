@@ -150,15 +150,9 @@ final class Cloud {
     let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
     /// 0 when run unbundled (swift run), which never asks for updates.
     let build = Int(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "") ?? 0
-    /// The API: Info.plist's AtalayAPIURL. ATALAY_API_URL overrides it only in the staging build and when run unbundled
-    /// (development): in the released app it would let anyone point the app, and its signed calls, at a server of theirs.
-    private let base = URL(string: (Cloud.mayRedirect ? ProcessInfo.processInfo.environment["ATALAY_API_URL"] : nil)
-        ?? Bundle.main.object(forInfoDictionaryKey: "AtalayAPIURL") as? String ?? "http://127.0.0.1:4800")!
+    /// The API: Info.plist's AtalayAPIURL (AccessKey.api).
+    private let base = AccessKey.api
     var apiBaseURL: URL { base }
-    private static var mayRedirect: Bool {
-        let id = Bundle.main.bundleIdentifier
-        return id == nil || id?.hasSuffix(".staging") == true
-    }
     /// The API's calls go through a session that keeps nothing on disk: URLSession.shared's cache kept their requests,
     /// token and signature included, in the app's Caches folder.
     private static let session: URLSession = {
@@ -738,6 +732,8 @@ final class Cloud {
             var c = URLComponents(url: base.appendingPathComponent("v1/notes/\(id)/sync"), resolvingAgainstBaseURL: false)!
             c.scheme = base.scheme == "https" ? "wss" : "ws"
             c.queryItems = [URLQueryItem(name: "ticket", value: t)]
+            // The page opens this socket and can't add a header: the staging API's gate takes this proof instead.
+            if let proof = AccessKey.proof(ticket: t) { c.queryItems?.append(URLQueryItem(name: "ak", value: proof)) }
             return ["url": c.url!.absoluteString]
         }
         if d["error"] as? String == "not_found" { return ["gone": true] }
@@ -763,6 +759,7 @@ final class Cloud {
             req.httpBody = try? JSONSerialization.data(withJSONObject: body)
             req.setValue("application/json", forHTTPHeaderField: "content-type")
         }
+        AccessKey.add(&req)
         ClientKey.sign(&req)
         do {
             let (data, response) = try await Cloud.session.data(for: req)
@@ -789,6 +786,7 @@ final class Cloud {
         var req = URLRequest(url: url, timeoutInterval: 120)
         req.httpMethod = "GET"
         req.setValue("Bearer " + token, forHTTPHeaderField: "authorization")
+        AccessKey.add(&req)
         ClientKey.sign(&req)
         do {
             let (data, response) = try await Cloud.session.data(for: req)
@@ -813,6 +811,7 @@ final class Cloud {
         guard let url = URL(string: path, relativeTo: base) else { return nil }
         var req = URLRequest(url: url, timeoutInterval: 15)
         req.httpMethod = "GET"
+        AccessKey.add(&req)
         ClientKey.sign(&req)
         guard let (data, response) = try? await Cloud.session.data(for: req) else { return nil }
         ClientKey.learn(from: response)
@@ -832,6 +831,7 @@ final class Cloud {
             req.setValue("application/json", forHTTPHeaderField: "content-type")
         }
         if let token { req.setValue("Bearer " + token, forHTTPHeaderField: "authorization") }
+        AccessKey.add(&req)
         ClientKey.sign(&req)
         let (data, response) = try await Cloud.session.data(for: req)
         ClientKey.learn(from: response)
@@ -1021,8 +1021,8 @@ final class CloudBridge: NSObject, WKScriptMessageHandlerWithReply {
     }
 
     /// Whether the share card may fetch `url`: https only (no user, no port) for the files bucket's `/public/`, GitHub's avatars
-    /// and `*.orbiterm.dev`'s `/v1/avatars/`; and exactly the app's own configured API origin (a staging API is plain http on
-    /// 127.0.0.1) under `/v1/avatars/`. No "." or ".." segment (the path is read decoded, so %2e%2e counts), no backslash.
+    /// and `*.orbiterm.dev`'s `/v1/avatars/`; and exactly the app's own configured API origin (a staging API: the shared one over https, or
+    /// plain http on 127.0.0.1) under `/v1/avatars/`. No "." or ".." segment (the path is read decoded, so %2e%2e counts), no backslash.
     nonisolated static func mayFetchImage(_ url: URL, api: URL) -> Bool {
         guard url.user == nil, url.password == nil, let scheme = url.scheme?.lowercased(), let host = url.host?.lowercased() else { return false }
         let path = url.path
@@ -1059,6 +1059,7 @@ final class CloudBridge: NSObject, WKScriptMessageHandlerWithReply {
         defer { session.finishTasksAndInvalidate() }
         var req = URLRequest(url: url, timeoutInterval: 6)
         req.httpMethod = "GET"
+        AccessKey.add(&req)
         do {
             let (bytes, response) = try await session.bytes(for: req)
             guard let http = response as? HTTPURLResponse, http.statusCode == 200, http.expectedContentLength <= Int64(cap),

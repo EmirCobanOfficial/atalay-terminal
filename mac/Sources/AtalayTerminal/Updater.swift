@@ -184,7 +184,7 @@ private final class Download: NSObject, URLSessionDownloadDelegate, @unchecked S
         defer { session.finishTasksAndInvalidate() }
         return try await withCheckedThrowingContinuation { c in
             lock.withLock { continuation = c }
-            session.downloadTask(with: url).resume()
+            session.downloadTask(with: AccessKey.request(url)).resume()
         }
     }
 

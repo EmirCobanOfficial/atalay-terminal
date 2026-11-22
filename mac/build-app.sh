@@ -8,7 +8,8 @@
 #   STAGING=1 ./build-app.sh --open    the staging build, to try the next version next to the installed app:
 #                                      "Orbiterm Staging", built straight into ~/Applications (its only copy,
 #                                      so Spotlight and the Dock always open the latest), its own bundle id and
-#                                      terminals, an icon with a STAGING sash, the next version's number, the local API
+#                                      terminals, an icon with a STAGING sash, the next version's number, and the shared
+#                                      staging API (STAGING_API_URL=http://127.0.0.1:4800 for the local one instead)
 #   DEVELOPER_ID=1 ./build-app.sh      signed with Apple's Developer ID for notarization (below); off by default
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -27,6 +28,37 @@ MANIFEST=Sources/AtalayTerminal/WebManifest+Build.swift
 WEBSRC="$(mktemp -d)/web"
 rsync -a --exclude '/mascot/vrm' --exclude '/mascot/live2d' Resources/web/ "$WEBSRC/"
 FLAGS=()
+# The shared staging API answers only requests with its access key (the API's src/gate.ts): ~/.atalay-terminal/
+# staging-access-key, written into a gitignored source file like the client key (Sources/AtalayTerminal/AccessKey.swift).
+# Only a staging build, and only when it talks to a remote API: the local one (http://127.0.0.1:4800) has no gate.
+ACCESS=Sources/AtalayTerminal/AccessKey+Build.swift
+STAGING_API="${STAGING_API_URL:-https://api-staging.orbiterm.dev}"
+rm -f "$ACCESS"
+if [ "${STAGING:-}" = 1 ] && [[ "$STAGING_API" != http://127.0.0.1:* && "$STAGING_API" != http://localhost:* ]]; then
+  ACCESSFILE="${ATALAY_ACCESS_KEY_FILE:-$HOME/.atalay-terminal/staging-access-key}"
+  if [ ! -s "$ACCESSFILE" ]; then
+    echo "The staging API ($STAGING_API) needs its access key, and $ACCESSFILE is missing or empty." >&2
+    echo "Put the key in that file (chmod 600), or build against the local API: STAGING_API_URL=http://127.0.0.1:4800" >&2
+    exit 1
+  fi
+  python3 - "$ACCESSFILE" "$ACCESS" <<'PY'
+import os, sys
+key = open(sys.argv[1]).read().strip().encode()
+mask = os.urandom(len(key))
+data = bytes(a ^ b for a, b in zip(key, mask))
+nums = lambda b: ', '.join(str(x) for x in b)
+with open(sys.argv[2], 'w') as f:
+    # Inside #if: a copy left behind by a staging build adds nothing to a build without ACCESS_KEY.
+    f.write('// Written by build-app.sh; never committed (.gitignore). See AccessKey.swift.\n'
+            '#if ACCESS_KEY\n'
+            'extension AccessKey {\n'
+            f'    static let embeddedMask = [UInt8]([{nums(mask)}])\n'
+            f'    static let embeddedData = [UInt8]([{nums(data)}])\n'
+            '}\n'
+            '#endif\n')
+PY
+  FLAGS+=(-Xswiftc -DACCESS_KEY)
+fi
 if [ -f "$KEYFILE" ]; then
   python3 - "$KEYFILE" "$GEN" <<'PY'
 import os, random, sys
@@ -72,7 +104,7 @@ with open(out, 'w') as f:
             '    ]\n'
             '}\n')
 PY
-  FLAGS=(-Xswiftc -DCLIENT_KEY)
+  FLAGS+=(-Xswiftc -DCLIENT_KEY)
 else
   rm -f "$GEN" "$MANIFEST"
 fi
@@ -123,7 +155,7 @@ if [ "${STAGING:-}" = 1 ]; then
   plutil -replace CFBundleName -string "$NAME" "$P"
   plutil -replace CFBundleDisplayName -string "$NAME" "$P"
   plutil -replace CFBundleShortVersionString -string "$MAJOR.$((MINOR + 1)).0-staging" "$P"
-  plutil -replace AtalayAPIURL -string http://127.0.0.1:4800 "$P"
+  plutil -replace AtalayAPIURL -string "$STAGING_API" "$P"
   # Plain http to the local API is for staging only; the released app reaches its API over https alone.
   /usr/libexec/PlistBuddy -c 'Add :NSAppTransportSecurity dict' -c 'Add :NSAppTransportSecurity:NSAllowsLocalNetworking bool true' "$P"
 fi

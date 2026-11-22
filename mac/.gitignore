@@ -4,4 +4,5 @@ build/
 .swiftpm/
 .DS_Store
 Sources/AtalayTerminal/ClientKey+Build.swift
+Sources/AtalayTerminal/AccessKey+Build.swift
 Sources/AtalayTerminal/WebManifest+Build.swift

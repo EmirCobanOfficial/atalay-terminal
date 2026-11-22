@@ -54,7 +54,7 @@ final class Social {
         Task {
             defer { opening = false }
             guard let ticket = await Cloud.shared.liveTicket() else { return later() }
-            let t = URLSession.shared.webSocketTask(with: Cloud.shared.liveURL(ticket: ticket))
+            let t = URLSession.shared.webSocketTask(with: AccessKey.request(Cloud.shared.liveURL(ticket: ticket)))
             task = t
             t.resume()
             receive(t)

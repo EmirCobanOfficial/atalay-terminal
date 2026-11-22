@@ -327,7 +327,7 @@ final class MascotAsset {
                 cfg.requestCachePolicy = .reloadIgnoringLocalCacheData
                 cfg.timeoutIntervalForRequest = 30
                 let s = URLSession(configuration: cfg, delegate: self, delegateQueue: nil)
-                let t = s.downloadTask(with: url)
+                let t = s.downloadTask(with: AccessKey.request(url, timeout: 30))
                 session = s
                 task = t
                 lock.unlock()

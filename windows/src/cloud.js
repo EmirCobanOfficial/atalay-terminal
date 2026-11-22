@@ -200,6 +200,9 @@ function createCloud(opts = {}) {
   // How calls go out: Node's fetch by default; the app passes Electron's net.fetch, which goes through Windows' proxy
   // settings and certificate store (antivirus that scans HTTPS, a company proxy).
   const fetcher = opts.fetch || fetch;
+  // The shared staging API answers only calls with its access key (the API's src/gate.ts); anything else gets a plain 404.
+  // Only a staging build has one (main.js), and it goes to that API's own address and nowhere else.
+  const accessKey = typeof opts.accessKey === 'string' && opts.accessKey ? opts.accessKey : null;
   // Paths resolve against the base like links in a page, so it ends with a slash.
   const base = new URL(String(opts.apiBase || process.env.ATALAY_API_URL || API).replace(/\/*$/, '/'));
   const version = clean(opts.version || 'dev', /[^A-Za-z0-9.+-]/g, 32) || 'dev';
@@ -652,6 +655,9 @@ function createCloud(opts = {}) {
     const u = new URL('v1/live', base);
     u.protocol = base.protocol === 'https:' ? 'wss:' : 'ws:';
     u.searchParams.set('ticket', ticket);
+    // A WebSocket from here can't count on carrying a header, so the address carries an HMAC of its one-use ticket
+    // under the access key instead: it proves the key without giving it away, and is no use with another ticket.
+    if (accessKey) u.searchParams.set('ak', crypto.createHmac('sha256', accessKey).update(ticket).digest('hex'));
     return u.href;
   }
 
@@ -896,6 +902,7 @@ function createCloud(opts = {}) {
     const data = body === undefined ? undefined : JSON.stringify(body);
     if (data !== undefined) headers['content-type'] = 'application/json';
     if (token) headers.authorization = 'Bearer ' + token;
+    if (accessKey && new URL(url).origin === base.origin) headers['x-orbiterm-access'] = accessKey;
     key.sign(method, url, data, headers);
     const res = await fetcher(String(url), { method, headers, body: data, signal: AbortSignal.timeout(15_000) });
     key.learn(res);
