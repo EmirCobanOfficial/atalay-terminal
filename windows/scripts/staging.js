@@ -58,7 +58,8 @@ function writePrivate(file, text) {
   const profile = path.join(process.env.APPDATA || os.homedir(), "Atalay's Terminal (staging)");
 
   if (!packaged) {
-    const env = { ...process.env, ATALAY_API_URL: API, ATALAY_CLIENT_KEY_FILE: keyFile };
+    // ORBITERM_STAGING: the version goes out as "<next minor>-staging", as the package's does (main.js cloudVersion).
+    const env = { ...process.env, ATALAY_API_URL: API, ATALAY_CLIENT_KEY_FILE: keyFile, ORBITERM_STAGING: '1' };
     const app = cp.spawn(require('electron'), ['.', `--user-data-dir=${profile}`], { cwd: root, env, stdio: 'inherit' });
     app.on('exit', (code) => process.exit(code ?? 0));
     return;

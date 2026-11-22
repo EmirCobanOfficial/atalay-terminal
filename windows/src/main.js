@@ -24,6 +24,16 @@ const RELEASE = app.isPackaged;
 // A staging package (npm run staging -- --packaged): a released build in every way, guard included, but it speaks to the
 // local API and never updates. Its own package.json says so; a release's can't be changed (asar integrity).
 const STAGING = RELEASE && require('../package.json').orbitermStaging === true;
+// A staging run, the package above or `npm run staging` from the sources (scripts/staging.js sets ORBITERM_STAGING=1),
+// goes out as the next minor with "-staging", as the Mac's STAGING build does (build-app.sh): it never reads like the
+// installed release, and the dashboard knows it is staging by it (fire-test.js, social-test.js: Alt-Shift-T shows their
+// test strips, "🚀 ATTACK ME" among them). The updater still compares against app.getVersion().
+function cloudVersion() {
+  const v = app.getVersion();
+  if (!STAGING && (RELEASE || process.env.ORBITERM_STAGING !== '1')) return v;
+  const [major, minor] = v.split('.').map(Number);
+  return `${major}.${minor + 1}.0-staging`;
+}
 const guard = (() => {
   if (!RELEASE) return null;
   try {
@@ -373,7 +383,7 @@ const API_BASE = STAGING ? 'http://127.0.0.1:4800' : (!RELEASE && process.env.AT
 const cloud = createCloud({
   apiBase: API_BASE,
   dataDir: app.getPath('userData'),
-  version: app.getVersion(),
+  version: cloudVersion(),
   clientKey: RELEASE ? null : loadClientKey(),
   guard,
   fetch: (url, init) => net.fetch(url, init),
