@@ -76,7 +76,8 @@ body:has(#app.pl-cols) { cursor: col-resize; }
   #app.lay-h { grid-template-rows: auto minmax(0, 1fr) minmax(140px, 30vh) 22px; }
   #bottom { gap: 6px; overflow-x: auto; overflow-y: hidden; overscroll-behavior-x: contain; scroll-snap-type: x proximity; scrollbar-width: thin; }
   #bottom > .pl-panel { flex: 0 0 clamp(240px, 32%, 360px) !important; scroll-snap-align: start; }
-  #bottom > #p-log { flex-basis: clamp(300px, 44%, 480px) !important; }
+  /* 400 px at least: the log's columns fit. (A container query on the log instead cost ~7 % of a core while it streams, measured.) */
+  #bottom > #p-log { flex-basis: clamp(400px, 44%, 480px) !important; }
   .pl-sash, .pl-gsash { display: none !important; }
   .pl-panel > header { cursor: default; }
 }

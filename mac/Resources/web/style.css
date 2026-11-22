@@ -366,9 +366,6 @@ body::after {
 .log { overflow-y: auto; font-size: 0.93em; scrollbar-width: thin; scrollbar-color: var(--dim2) transparent; }
 .ln { display: grid; grid-template-columns: 58px 82px 50px minmax(0, 1fr) auto; gap: 6px; padding: 1px 0; white-space: nowrap; }
 .ln > span { overflow: hidden; text-overflow: ellipsis; }
-/* A narrow log (a small window, or a narrow panel): the time gives way to what was done. */
-#log { container: log / inline-size; }
-@container log (max-width: 400px) { .ln { grid-template-columns: 74px 46px minmax(0, 1fr) auto; } .ln .tm { display: none; } }
 .ln .tm { color: var(--dim2); }
 .ln .cat { font-weight: 700; }
 .ln .st { color: var(--dim); }
