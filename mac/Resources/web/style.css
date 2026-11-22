@@ -500,8 +500,6 @@ body::after {
   #app { padding: 6px; gap: 6px; grid-template-columns: 40px clamp(190px, 30%, 280px) minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr) minmax(140px, 30vh) 22px; }
   #top { gap: 10px; padding: 4px 8px; }
   .clock { display: none; }
-  .brand .stack { max-width: 132px; overflow: hidden; }
-  .brand .stack b { overflow: hidden; text-overflow: ellipsis; }
   .kpis { gap: 12px; }
 }
 /* The smallest windows: the logo stands for the name (its tooltip and its click are the same). */
