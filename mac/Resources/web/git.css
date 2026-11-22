@@ -37,6 +37,17 @@
 #activity .vs-ab.on::before { content: ""; position: absolute; inset: 2px; border-radius: 6px; background: var(--sel); }
 #activity .vs-badge { position: absolute; top: 18px; right: 3px; z-index: 1; min-width: 8px; height: 16px; padding: 0 4px; border-radius: 20px; background: var(--badge); color: var(--badge-fg); font: 600 9px/16px var(--ui); font-style: normal; text-align: center; }
 #activity .vs-badge[hidden] { display: none; }
+/* A low window: smaller buttons, closer together, so every one fits; feedback's name stays in its tooltip. */
+@media (max-height: 640px) {
+  #activity { gap: 2px; }
+  #activity .vs-ab { width: 30px; height: 30px; }
+  #activity .vs-ab .vs-ci { font-size: 20px; }
+  #activity .vs-badge { top: 13px; right: 0; }
+  #activity .vs-ab.vs-ab-acct + .vs-ab-foot { margin-top: 6px; }
+  #activity .vs-ab.vs-ab-foot { width: 30px; height: 30px; margin-bottom: 6px; }
+  #activity .vs-ab.vs-ab-foot .vs-ci { font-size: 17px; }
+  #activity .vs-ab.vs-ab-foot::after { display: none; }
+}
 
 /* ---- the frame: two panels, a status bar under them, 8 px apart as the dashboard's ---- */
 #git { grid-row: 2 / 4; grid-column: 2 / -1; display: none; flex-direction: column; gap: 8px; min-height: 0; background: var(--window); color: var(--fg); font: 13px var(--ui); }
@@ -47,8 +58,12 @@
 #activity::before, #git .vs-card::before { top: -1px; left: -1px; border-width: 2px 0 0 2px; }
 #activity::after, #git .vs-card::after { bottom: -1px; right: -1px; border-width: 0 2px 2px 0; }
 #git .vs-left { display: flex; flex: none; background: var(--side); }
-#git .vs-sb { position: relative; display: flex; flex-direction: column; flex: none; width: var(--sw, 300px); min-height: 0; }
-#git .vs-sash-v { position: absolute; top: 0; bottom: 0; left: calc(var(--sw, 300px) + 4px); z-index: 30; width: 4px; cursor: ew-resize; }
+/* The side bar as wide as it was dragged (git.js), but never leaving the editor less than the drag does (360 px): a width
+   saved in a big window, back in a small one. */
+#git { container: git / inline-size; }
+#git .vs-body { --swc: max(170px, min(var(--sw, 300px), 100cqw - 360px)); }
+#git .vs-sb { position: relative; display: flex; flex-direction: column; flex: none; width: var(--swc); min-height: 0; }
+#git .vs-sash-v { position: absolute; top: 0; bottom: 0; left: calc(var(--swc) + 4px); z-index: 30; width: 4px; cursor: ew-resize; }
 #git .vs-sash-h { position: absolute; top: -2px; left: 0; right: 0; z-index: 30; height: 4px; cursor: ns-resize; }
 #git .vs-sash-v.on, #git .vs-sash-v:hover, #git .vs-sash-h.on, #git .vs-sash-h:hover { background: var(--focus); transition: background 0.1s 0.3s; }
 #git .vs-edcard { display: flex; flex: 1; overflow: hidden; background: var(--editor); }

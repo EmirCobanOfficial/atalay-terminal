@@ -7,7 +7,8 @@
 //   size     drag the lines between panels, and between the map and the right column, the bottom row and the sessions
 //            list; a double-click on a line gives it its own size back
 // The layout is kept in this page's storage (radar.layout) and set again on every load. A hidden panel isn't drawn
-// (app.js asks `visible`), so hiding one also saves its work. Narrow windows (one column) keep the page's own layout.
+// (app.js asks `visible`), so hiding one also saves its work. A compact window (1024 px or less) keeps the page's own
+// sizes and puts the right column's panels in the bottom row; widened, every panel goes back where it was put.
 window.PanelLayout = (() => {
   const KEY = 'radar.layout';
   const AREAS = {
@@ -61,6 +62,8 @@ window.PanelLayout = (() => {
     }, 150);
   }
   const areaOf = (id) => (L.right.includes(id) ? 'right' : 'bottom');
+  const COMPACT = matchMedia('(max-width: 1024px)');
+  const narrow = () => COMPACT.matches;
   const isHidden = (id) => L.hidden.includes(id);
 
   // ---------- applying it ----------
@@ -74,20 +77,22 @@ window.PanelLayout = (() => {
   }
 
   function apply() {
+    // A compact window has no right column: its panels follow the bottom row's, in the strip there (layout.css).
+    const at = narrow() ? { right: [], bottom: [...L.bottom, ...L.right] } : L;
     for (const a of ['right', 'bottom']) {
       const box = AREAS[a].el();
       if (!box) continue;
       box.querySelectorAll(':scope > .pl-sash').forEach((s) => s.remove());
       // Only a panel out of its place moves: moving one loses where its list was scrolled to.
       let cursor = box.firstElementChild;
-      for (const id of L[a]) {
+      for (const id of at[a]) {
         const p = panel(id);
         if (!p) continue;
         if (p === cursor) cursor = cursor.nextElementSibling;
         else box.insertBefore(p, cursor);
       }
       let prev = null;
-      for (const id of L[a]) {
+      for (const id of at[a]) {
         const p = panel(id);
         if (!p) continue;
         p.classList.add('pl-panel');
@@ -151,7 +156,6 @@ window.PanelLayout = (() => {
   }
 
   // ---------- sizing: the lines between panels ----------
-  const narrow = () => matchMedia('(max-width: 920px)').matches;
   let drag = null;
 
   function onSashDown(e) {
@@ -449,6 +453,8 @@ window.PanelLayout = (() => {
 
   apply();
   requestAnimationFrame(placeGridSashes);
+  // Across 1024 px the right column's panels move between it and the bottom row.
+  COMPACT.addEventListener('change', apply);
 
   return {
     // app.js: whether a panel is drawn at all.

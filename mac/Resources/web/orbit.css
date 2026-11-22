@@ -82,6 +82,22 @@
 #strm.on, #party.on { color: var(--txt); }
 #mapwrap .legend { right: 176px; z-index: 2; overflow: hidden; white-space: nowrap; }
 #mapwrap .legend .hint { overflow: hidden; text-overflow: ellipsis; }
+/* A small map (a compact window): the overlays shrink, then the ones it can do without give way, the map first. The
+   map's own canvases follow their boxes (index.js, ResizeObserver). The counts beside its name end before the switches. */
+#mapwrap { container: map / size; }
+.maptag { max-width: calc(100% - 200px); }
+.maptag em { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+@container map (max-width: 760px) { #mapwrap .legend .hint { display: none; } }
+@container map (max-width: 560px) or (max-height: 320px) {
+  #minimap { width: 96px; height: 66px; }
+  #viewctl { right: 110px; }
+  #mapwrap .legend { right: 140px; gap: 9px; }
+}
+@container map (max-width: 420px) or (max-height: 250px) {
+  #minimap { display: none; }
+  #viewctl { right: 8px; }
+  #mapwrap .legend { right: 38px; }
+}
 /* terminal ships: what runs (or the folder), cool blue; dim while the shell idles */
 /* a runaway process's blue box (index.js): its label red-hot whatever the theme */
 .mtl { display: flex; flex-direction: column; align-items: center; color: #ff5a3c; font: 700 10px/1.3 var(--font); white-space: nowrap; text-shadow: 0 0 6px #000, 0 0 3px #000, 0 0 10px rgba(255, 50, 30, 0.8); pointer-events: none; }

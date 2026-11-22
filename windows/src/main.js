@@ -194,8 +194,9 @@ const themes = createThemes({
   // Settings' text size: the dashboard zooms, as a browser does.
   onScale(factor) {
     if (dashView && !dashView.webContents.isDestroyed()) dashView.webContents.setZoomFactor(factor);
-    // The list's width in the page's px changes with its zoom (the menus centre on the whole window by it).
-    pushSide();
+    // The list's width in the page's px changes with its zoom (the menus centre on the whole window by it), and the
+    // window's smallest with it (layout() does both).
+    layout();
   },
 });
 
@@ -824,7 +825,7 @@ function createDashboard() {
   const area = screen.getPrimaryDisplay().workArea;
   const bg = themes.color('--bg');
   dash = new BaseWindow({
-    width: Math.min(1480, area.width), height: Math.min(900, area.height), minWidth: 980, minHeight: 600,
+    width: Math.min(1480, area.width), height: Math.min(900, area.height), minWidth: 560, minHeight: 440,
     title: 'Orbiterm', backgroundColor: bg, show: false, autoHideMenuBar: true,
     ...(PROBE ? { x: -32000, y: -32000, frame: false, width: 1480, height: 900 } : {}),
   });
@@ -872,6 +873,7 @@ function createDashboard() {
   dashView.webContents.on('did-finish-load', () => {
     dashView.webContents.setZoomFactor(themes.uiScale());
     pushSide(true);
+    layout();
   });
   chatsView.webContents.loadFile(path.join(__dirname, '..', 'pages', 'chats.html'));
   // A list (re)loaded while a menu is open is dimmed too.
@@ -915,6 +917,7 @@ function createDashboard() {
     chatsList.slide = null;
     chatsJSON = '';
     winOpenJSON = '';
+    minSent = '';
     badged = 0;
     stepAside(false);
     mascot.dashboardChanged();
@@ -937,6 +940,19 @@ function layout() {
   chatsView.setBounds({ x: 0, y: 0, width: side, height: h });
   dashView.setBounds({ x: side, y: 0, width: Math.max(0, w - side), height: h });
   pushSide();
+  fitMinSize(side, w, h);
+}
+
+// The window's smallest: the page's own (its compact layout, 560×440 CSS px, web/style.css) at the text size, beside the
+// chats list as wide as it is now, and the window's frame around them. Set again only when it changes.
+let minSent = '';
+function fitMinSize(side, w, h) {
+  const z = (!dashView.webContents.isDestroyed() && dashView.webContents.getZoomFactor()) || 1;
+  const [fw, fh] = dash.getSize();
+  const min = [side + Math.ceil(560 * z) + fw - w, Math.ceil(440 * z) + fh - h];
+  if (min.join() === minSent) return;
+  minSent = min.join();
+  dash.setMinimumSize(min[0], min[1]);
 }
 
 // The page centres its menus on the whole window, so it needs how far right of the window's edge it starts (the chats

@@ -25,6 +25,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// The chat list's narrowest width and the width it opens at (the one it had when it closed).
     private var sidebarMin: NSLayoutConstraint!
     private var sidebarPreferred: NSLayoutConstraint!
+    /// The page's smallest size, at the app's text size (pushSide).
+    private var pageMinWidth: NSLayoutConstraint!
+    private var pageMinHeight: NSLayoutConstraint!
     private var sidebarSliding = false
     /// The dark cover on the chat list while a menu is open on the dashboard: the page's own backdrop ends at its edge.
     private var sidebarDim: NSView?
@@ -53,7 +56,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         window.titlebarAppearsTransparent = true
         window.backgroundColor = Theme.bg
         window.appearance = NSAppearance(named: .darkAqua)
-        window.minSize = NSSize(width: 980, height: 600)
         window.collectionBehavior = [.fullScreenPrimary]
         window.tabbingMode = .disallowed
         window.isReleasedWhenClosed = false
@@ -175,6 +177,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             side.widthAnchor.constraint(lessThanOrEqualToConstant: 460),
             preferred,
         ])
+        // The page's own smallest (its compact layout, 560×440 CSS px, web/style.css; pushSide keeps it at the app's text
+        // size): neither the window nor a chat list dragged wider makes it smaller. Not required, so a list sliding open
+        // in a small window, or full screen, still lays out.
+        pageMinWidth = radar.webView.widthAnchor.constraint(greaterThanOrEqualToConstant: 560)
+        pageMinHeight = radar.webView.heightAnchor.constraint(greaterThanOrEqualToConstant: 440)
+        for c in [pageMinWidth!, pageMinHeight!] { c.priority = .defaultHigh }
+        NSLayoutConstraint.activate([pageMinWidth, pageMinHeight])
         // The page centres its menus on the whole window, so it needs the chat list's width (left of it) in its own px.
         // The dashboard's frame changes whenever the list is dragged, opened or closed, or the window is resized.
         radar.webView.postsFrameChangedNotifications = true
@@ -362,6 +371,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         let px = Int((web.frame.minX / web.pageZoom).rounded())
         web.evaluateJavaScript("document.documentElement.style.setProperty('--side-x','\(px)px'); true", completionHandler: nil)
         Mascot.shared.refreshPlatforms()
+        // The page's smallest, at the text size it has now.
+        pageMinWidth.constant = (560 * web.pageZoom).rounded(.up)
+        pageMinHeight.constant = (440 * web.pageZoom).rounded(.up)
     }
 
     /// Darkens the chat list as the page's backdrop darkens the dashboard (cloud.css #cloudui), so the open menu is the

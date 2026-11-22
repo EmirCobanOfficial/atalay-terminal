@@ -270,6 +270,9 @@ body::after {
 .ch .nm { min-width: 6ch; overflow: hidden; color: var(--hi); font-weight: 700; white-space: nowrap; text-overflow: ellipsis; }
 .ch .kind { flex: 0 1 auto; min-width: 0; margin-left: 2px; padding: 0 4px; overflow: hidden; border: 1px solid rgba(var(--violet-rgb), 0.45); color: var(--violet); font-size: 0.8em; white-space: nowrap; text-overflow: ellipsis; }
 .ch .kind:empty { display: none; }
+/* A narrow card: the name keeps its room, the kind gives way. */
+#sessions .card { container: card / inline-size; }
+@container card (max-width: 250px) { .ch .kind { display: none; } }
 .pill { flex: none; margin-left: auto; padding: 0 5px; border: 1px solid currentColor; font-size: 0.84em; letter-spacing: 0.05em; white-space: nowrap; }
 .pill.busy { color: var(--accent); }
 .pill.idle { color: var(--cyan); }
@@ -286,7 +289,7 @@ body::after {
 .card .kv b.red { color: var(--red); }
 .card .cost { margin-left: auto; color: var(--accent-soft); font-weight: 700; }
 .card svg.spark { display: block; width: 100%; height: 20px; margin-top: 5px; }
-.card .ag { color: var(--violet); font-size: 0.88em; }
+.card .ag { overflow: hidden; color: var(--violet); font-size: 0.88em; white-space: nowrap; text-overflow: ellipsis; }
 .flag { display: inline-block; margin: 4px 4px 0 0; padding: 0 5px; color: var(--ink); background: var(--amber); font-size: 0.82em; font-weight: 700; animation: blink 1.2s steps(2) infinite; }
 
 /* ---------- map ---------- */
@@ -363,6 +366,9 @@ body::after {
 .log { overflow-y: auto; font-size: 0.93em; scrollbar-width: thin; scrollbar-color: var(--dim2) transparent; }
 .ln { display: grid; grid-template-columns: 58px 82px 50px minmax(0, 1fr) auto; gap: 6px; padding: 1px 0; white-space: nowrap; }
 .ln > span { overflow: hidden; text-overflow: ellipsis; }
+/* A narrow log (a small window, or a narrow panel): the time gives way to what was done. */
+#log { container: log / inline-size; }
+@container log (max-width: 400px) { .ln { grid-template-columns: 74px 46px minmax(0, 1fr) auto; } .ln .tm { display: none; } }
 .ln .tm { color: var(--dim2); }
 .ln .cat { font-weight: 700; }
 .ln .st { color: var(--dim); }
@@ -478,17 +484,30 @@ body::after {
 @media (max-width: 1250px) {
   .marquee, .kpi:nth-child(7), .kpi:nth-child(8) { display: none; }
   /* The left edge's activity bar keeps its column (48px), as in the full layout. */
-  #app { grid-template-columns: 48px minmax(230px, 26%) minmax(0, 1fr) minmax(240px, 26%); }
+  #app { grid-template-columns: 48px minmax(230px, 24%) minmax(0, 1fr) minmax(240px, 24%); }
 }
-@media (max-width: 920px) {
-  body { overflow: auto; }
-  #app { height: auto; grid-template-columns: 1fr; grid-template-rows: auto; }
-  #top { flex-wrap: wrap; }
-  #sessions, #mapwrap, #right, #bottom, #ticker { grid-column: 1; grid-row: auto; }
-  #mapwrap { height: 70vh; }
-  #bottom { grid-template-columns: 1fr; }
-  #bottom .panel { height: 240px; }
-  #right .panel { height: 260px; }
+/* A compact window (down to the app's smallest, 560×440): the same dashboard, not a column to scroll. The activity bar,
+   the sessions and the map keep their places; the right column's panels join the bottom row, a strip that scrolls
+   sideways (layout.js); the top bar keeps its buttons and as many numbers as fit. */
+@media (max-width: 1024px) {
+  #app { padding: 6px; gap: 6px; grid-template-columns: 40px clamp(190px, 30%, 280px) minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr) minmax(140px, 30vh) 22px; }
+  #top { gap: 10px; padding: 4px 8px; }
+  .clock { display: none; }
+  .brand .stack { max-width: 132px; overflow: hidden; }
+  .brand .stack b { overflow: hidden; text-overflow: ellipsis; }
+  .kpis { gap: 12px; }
+}
+/* The smallest windows: the logo stands for the name (its tooltip and its click are the same). */
+@media (max-width: 720px) {
+  .brand .stack { display: none; }
+}
+/* A low window: the bottom row and the session cards give the map its room. */
+@media (max-height: 640px) {
+  #app { grid-template-rows: auto minmax(0, 1fr) minmax(120px, 28vh) 22px; }
+  .card svg.spark { display: none; }
+}
+@media (max-height: 520px) {
+  .card .ctx { display: none; }
 }
 
 /* The app pauses every animation while the dashboard can't be seen (covered, minimized, hidden). */

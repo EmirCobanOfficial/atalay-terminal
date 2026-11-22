@@ -478,7 +478,8 @@
 .th-mas-l { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .th-mas-l b { color: var(--txt); font-size: 12px; font-weight: 600; }
 .th-mas-l small { color: var(--dim); font-size: 11px; }
-.th-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); align-content: start; overflow-y: auto; gap: 20px 16px; padding: 16px 18px; }
+/* Four in a row, or as many as fit at 170 px in a narrow window. */
+.th-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(max(170px, (100% - 48px) / 4), 1fr)); align-content: start; overflow-y: auto; gap: 20px 16px; padding: 16px 18px; }
 .th-card { display: flex; flex-direction: column; gap: 6px; min-width: 0; padding: 0; border: 0; background: none; color: var(--txt); font: 11px var(--font); text-align: left; cursor: pointer; }
 .th-shot { display: grid; grid-template-columns: 28% minmax(0, 1fr); grid-template-rows: 15px minmax(0, 1fr) 8px; gap: 5px; height: 150px; padding: 5px; border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 6px; background: var(--t-bg); overflow: hidden; transition: border-color 0.15s, box-shadow 0.15s, transform 0.15s; }
 .th-card:hover .th-shot, .th-card.hot .th-shot { border-color: var(--accent); box-shadow: 0 0 14px rgba(var(--accent-rgb), 0.45); transform: translateY(-1px); }
@@ -581,7 +582,7 @@
 .acct-dev-main { display: flex; flex: 1; flex-direction: column; min-width: 0; }
 .acct-dev-main b { color: var(--hi); }
 .acct-dev-main small, .acct-seen { color: var(--dim); }
-.acct-ask { width: 480px; border-color: rgba(var(--glow), 0.55); }
+.acct-ask { width: 480px; max-width: calc(100vw - 32px); border-color: rgba(var(--glow), 0.55); }
 .acct-sides { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 14px 0 10px; }
 .acct-side { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; padding: 12px 14px; border: 1px solid rgba(var(--glow), 0.25); border-radius: 8px; background: rgba(0, 0, 0, 0.25); color: var(--txt); font: inherit; text-align: left; cursor: pointer; }
 .acct-side:hover { border-color: rgba(var(--glow), 0.6); }

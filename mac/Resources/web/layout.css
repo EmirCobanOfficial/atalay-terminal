@@ -12,7 +12,7 @@
 #app.lay-w { grid-template-columns: 48px var(--lay-sess, minmax(250px, 21%)) minmax(0, 1fr) var(--lay-right, minmax(270px, 23%)); }
 #app.lay-h { grid-template-rows: auto minmax(0, 1fr) var(--lay-bottom, minmax(176px, 27vh)) 22px; }
 @media (max-width: 1250px) {
-  #app.lay-w { grid-template-columns: 48px var(--lay-sess, minmax(230px, 26%)) minmax(0, 1fr) var(--lay-right, minmax(240px, 26%)); }
+  #app.lay-w { grid-template-columns: 48px var(--lay-sess, minmax(230px, 24%)) minmax(0, 1fr) var(--lay-right, minmax(240px, 24%)); }
 }
 /* every panel hidden from the column or the row: the map (and the column) take its room */
 #app.no-right #right, #app.no-bottom #bottom { display: none; }
@@ -69,13 +69,17 @@ body:has(#app.pl-cols) { cursor: col-resize; }
 .pl-menu .pl-reset:hover { border-color: var(--accent); color: var(--hi); }
 .pl-menu .pl-tip { padding: 6px 12px 0; color: var(--dim2); font-size: 0.82em; }
 
-/* one column (a narrow window): the page's own layout, nothing to drag */
-@media (max-width: 920px) {
-  #app.lay-w, #app.lay-h { grid-template-columns: 1fr; grid-template-rows: auto; }
-  #right, #bottom { flex-direction: column; }
-  #right > .pl-panel, #bottom > .pl-panel { flex: none !important; }
+/* A compact window (style.css): every shown panel in the bottom row (layout.js), each its own width, the row a strip
+   that scrolls sideways and stops at a panel's edge. The page's own sizes, nothing to drag. */
+@media (max-width: 1024px) {
+  #app.lay-w { grid-template-columns: 40px clamp(190px, 30%, 280px) minmax(0, 1fr); }
+  #app.lay-h { grid-template-rows: auto minmax(0, 1fr) minmax(140px, 30vh) 22px; }
+  #bottom { gap: 6px; overflow-x: auto; overflow-y: hidden; overscroll-behavior-x: contain; scroll-snap-type: x proximity; scrollbar-width: thin; }
+  #bottom > .pl-panel { flex: 0 0 clamp(240px, 32%, 360px) !important; scroll-snap-align: start; }
+  #bottom > #p-log { flex-basis: clamp(300px, 44%, 480px) !important; }
   .pl-sash, .pl-gsash { display: none !important; }
   .pl-panel > header { cursor: default; }
-  #app.no-right #mapwrap { grid-column: 1; }
-  #app.no-bottom #sessions, #app.no-bottom #mapwrap, #app.no-bottom #right { grid-row: auto; }
+}
+@media (max-width: 1024px) and (max-height: 640px) {
+  #app.lay-h { grid-template-rows: auto minmax(0, 1fr) minmax(120px, 28vh) 22px; }
 }
