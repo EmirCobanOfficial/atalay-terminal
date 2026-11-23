@@ -5,6 +5,10 @@ Each version's lines are its release notes: the app lists them on its "what's ne
 
 ## Next
 
+- Claude Desktop extension: Orbiterm starts again (0.27.0 showed "Orbiterm couldn't start"), on the Mac and Windows. Thanks to @EmirCobanOfficial on GitHub, EmirMac#7124 in the app (PR #52)
+- Mac: a minimized chat window stays in the Dock when a dashboard menu closes. Thanks to @alican645 on GitHub, alican645#4413 in the app (PR #55)
+- Session cards: a long kind badge stays on one line beside the name and shortens with "…" instead of wrapping under it. Thanks to @EmirCobanOfficial on GitHub, EmirMac#7124 in the app (PR #49)
+
 ## 0.27.0
 
 - Mac: Orbiterm is now signed and notarized by Apple: after this update macOS asks once more for the permissions you gave before (Automation, Files and Folders), then never again
