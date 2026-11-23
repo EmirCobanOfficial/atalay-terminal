@@ -1215,8 +1215,9 @@ enum McpConnect {
                        "mcp_config": ["command": "node", "args": ["${__dirname}/server/index.js"]] as [String: Any]] as [String: Any],
             "compatibility": ["platforms": ["darwin"]],
         ]
-        // The extension only passes stdio through to the launcher, which is the app.
-        let js = "const { spawn } = require('child_process');\nconst c = spawn(\(jsString(launcher.path)), [], { stdio: 'inherit' });\nc.on('exit', (code) => process.exit(code ?? 0));\n"
+        // The extension only passes stdio through to the launcher, which is the app. By hand, not 'inherit': Claude Desktop
+        // runs extensions on its own Node, where an inherited stdin isn't Claude's pipe and the bridge saw it closed at once.
+        let js = "const { spawn } = require('child_process');\nconst c = spawn(\(jsString(launcher.path)), [], { stdio: ['pipe', 'pipe', 'inherit'] });\nc.stdin.on('error', () => {});\nprocess.stdin.pipe(c.stdin);\nc.stdout.pipe(process.stdout);\nc.on('close', (code) => process.exit(code ?? 0));\n"
         guard let data = try? JSONSerialization.data(withJSONObject: manifest, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]),
               (try? data.write(to: work.appendingPathComponent("manifest.json"))) != nil,
               (try? js.write(to: work.appendingPathComponent("server/index.js"), atomically: true, encoding: .utf8)) != nil else { return "Couldn't prepare the extension." }

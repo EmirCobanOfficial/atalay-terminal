@@ -1450,7 +1450,9 @@ function createMcp(deps) {
       server: { type: 'node', entry_point: 'server/index.js', mcp_config: { command: 'node', args: ['${__dirname}/server/index.js'] } },
       compatibility: { platforms: ['win32'] },
     };
-    const js = `const { spawn } = require('child_process');\nconst c = spawn(${JSON.stringify(exe)}, [], { stdio: 'inherit', windowsHide: true });\nc.on('error', () => process.exit(1));\nc.on('exit', (code) => process.exit(code ?? 0));\n`;
+    // stdio passed on by hand, not 'inherit': Claude Desktop runs extensions on its own Node, where an inherited stdin
+    // isn't Claude's pipe and the bridge saw it closed at once (the Mac's Mcp.swift writes the same).
+    const js = `const { spawn } = require('child_process');\nconst c = spawn(${JSON.stringify(exe)}, [], { stdio: ['pipe', 'pipe', 'inherit'], windowsHide: true });\nc.on('error', () => process.exit(1));\nc.stdin.on('error', () => {});\nprocess.stdin.pipe(c.stdin);\nc.stdout.pipe(process.stdout);\nc.on('close', (code) => process.exit(code ?? 0));\n`;
     try {
       fs.rmSync(work, { recursive: true, force: true });
       fs.mkdirSync(path.join(work, 'server'), { recursive: true });
