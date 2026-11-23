@@ -271,8 +271,8 @@ body::after {
 .askbox button.ok:hover { background: #ff7a73; }
 .askbox button:focus-visible { outline: 2px solid var(--accent-soft); outline-offset: 1px; }
 @keyframes ask-in { from { opacity: 0; } }
-.ch .nm { overflow: hidden; color: var(--hi); font-weight: 700; white-space: nowrap; text-overflow: ellipsis; }
-.ch .kind { margin-left: 2px; padding: 0 4px; border: 1px solid rgba(var(--violet-rgb), 0.45); color: var(--violet); font-size: 0.8em; }
+.ch .nm { min-width: 6ch; overflow: hidden; color: var(--hi); font-weight: 700; white-space: nowrap; text-overflow: ellipsis; }
+.ch .kind { flex: 0 1 auto; min-width: 0; margin-left: 2px; padding: 0 4px; overflow: hidden; border: 1px solid rgba(var(--violet-rgb), 0.45); color: var(--violet); font-size: 0.8em; white-space: nowrap; text-overflow: ellipsis; }
 .ch .kind:empty { display: none; }
 .pill { flex: none; margin-left: auto; padding: 0 5px; border: 1px solid currentColor; font-size: 0.84em; letter-spacing: 0.05em; white-space: nowrap; }
 .pill.busy { color: var(--accent); }
