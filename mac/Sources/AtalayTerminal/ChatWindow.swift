@@ -2226,9 +2226,10 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
     }
 
     /// The dashboard's menus (friends, settings, updates) open on the dashboard, under the windows pinned above it:
-    /// those step out of the way meanwhile. Always-on-top windows stay.
+    /// those step out of the way meanwhile. Always-on-top windows stay, and so do windows in the Dock: ordered out and
+    /// in again (stepBack), a minimized window came back out of the Dock when the menu closed.
     func stepAside() {
-        guard let w = window, isShown, !hud.onTop, !steppedAside else { return }
+        guard let w = window, isShown, !hud.onTop, !steppedAside, !w.isMiniaturized else { return }
         steppedAside = true
         w.parent?.removeChildWindow(w)
         w.orderOut(nil)
