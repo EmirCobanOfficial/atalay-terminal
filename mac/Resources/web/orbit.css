@@ -50,6 +50,8 @@
 .stl .h .live { color: var(--c); animation: stl-blink 0.5s ease-in-out infinite alternate; }
 .stl .l { max-width: 130px; overflow: hidden; text-overflow: ellipsis; color: rgba(245, 235, 224, 0.62); }
 #space.far .stl .l { display: none; }
+/* Solar view (orbit.js SOLAR): fewer words, the ports' names and counts only */
+#space.solar .fts, #space.solar .stl .l, #space.solar .stl .live { display: none; }
 @keyframes stl-blink { from { opacity: 0.45; } to { opacity: 1; } }
 .dl { padding: 0 4px; color: #d6c3ff; font: 8px/1.35 var(--font); white-space: nowrap; background: rgba(8, 4, 20, 0.82); pointer-events: none; }
 .bl { padding: 0 0 6px 9px; font: 10px/1 var(--font); white-space: nowrap; text-shadow: 0 0 4px #000, 0 0 2px #000; pointer-events: none; }

@@ -96,6 +96,10 @@ window.Settings = (() => {
         `<div class="mas-rm-wrap" hidden><button type="button" class="mas-remove">Remove download (<span class="mas-mb">34</span> MB)</button></div>`) +
       // Credits the licences ask for (VRoid: that exact phrase; WalkLoop: its readme's credit format), and the model's.
       `<p class="st-note st-mascot-more"${mascotOn() ? '' : ' hidden'}>Model: Mei Sakuraniwa © ProjectCorelinjp<br>Character animation credits to pixiv Inc.'s VRoid Project<br>モーション：WalkLoop_v1_MotionDa／AirisuAsbel（だらてん） https://daraten.booth.pm/<br>Motions: Sachi (sachi2222, CC0), rerofumi (CC0), Maron Yatsuhashi, miracorabo</p>` +
+      // Solar view (orbit.js SOLAR, which keeps it): the map as a solar system with an eye in the core.
+      group('orbit map',
+        row('Solar view', 'The sessions as planets on flat orbits round a core with an eye, the stations as small ports outside them, calls as short arcs. Fewer lines and words. Off: the map as it is',
+          sw('st-solar' + (window.Orbit?.solarOn?.() ? ' on' : ''), 'Solar view', !!window.Orbit?.solarOn?.()))) +
       (c.ui
         ? group('dashboard text',
             row('size', 'the dashboard and messages, for text too small to read', '<span class="lb-seg ui-seg ui-scale"></span>') +
@@ -357,6 +361,13 @@ window.Settings = (() => {
     if (th) th.onclick = () => {
       window.Cloud?.close();
       window.GitView?.view('themes');
+    };
+    const sol = page.querySelector('.st-solar');
+    if (sol) sol.onclick = () => {
+      const on = !window.Orbit?.solarOn?.();
+      window.Orbit?.solar(on);
+      sol.classList.toggle('on', on);
+      sol.setAttribute('aria-checked', String(on));
     };
     const mas = page.querySelector('.st-mascot');
     if (mas) mas.onclick = () => {
