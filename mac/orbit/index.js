@@ -2019,7 +2019,9 @@ function wake() {
 }
 function targetFps(now) {
   if (press || camAnim) return QUALITY.front.fps;
-  const fps = (ACT.focused && !ACT.covered) || now < ACT.until ? QUALITY.front.fps : QUALITY.behind.fps;
+  // Covered by a chat window the map can't be seen: an event doesn't bring it back to full speed (a drag or a camera
+  // flight still do, above).
+  const fps = !ACT.covered && (ACT.focused || now < ACT.until) ? QUALITY.front.fps : QUALITY.behind.fps;
   return ACT.saver ? Math.min(fps, QUALITY.saver.fps) : fps;
 }
 document.addEventListener('visibilitychange', wake);
