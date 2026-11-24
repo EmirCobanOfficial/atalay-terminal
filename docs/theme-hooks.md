@@ -3,7 +3,7 @@
 A theme can do more than colours: its own CSS (linked from `index.html`, `messages.html` and `overlay.html`, as
 `themes/mur47.css` is) can follow what the app is doing. `app/Resources/web/hooks.js` puts it on the page's `<html>`:
 
-- **states** as `data-*` attributes, a number also as a CSS variable;
+- **states** as `data-*` attributes, a number also as a CSS variable (it follows within half a second, the attribute at once);
 - **moments** as an attribute that stays for a moment (an animation keyed on it starts over when it comes again) and an
   event on `window`;
 - the theme's own **sounds** and **terminal cursor**, as `ui` tokens in `themes.json`.
