@@ -625,7 +625,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             DispatchQueue.main.async { [weak self] in open.forEach { self?.openSession($0) } }
         }
         for c in chats.values {
-            let b = list.first(where: { $0.tab == c.id }) ?? c.sessionId.flatMap { briefs[$0] }
+            // After windows merged, several AIs are hosted by one window: the header follows the one under its own shell.
+            let b = list.first(where: { $0.tab == c.id && ChatWindowController.isUnder($0.pid, shell: c.shellPid) })
+                ?? list.first(where: { $0.tab == c.id }) ?? c.sessionId.flatMap { briefs[$0] }
             c.apply(b)
             c.applyHosted(list.filter { $0.tab == c.id && $0.live })
             WorktreeNudge.review(c, briefs: briefs)
@@ -1470,9 +1472,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     /// ⌘T / ⌥⌘T: a new tab in the window in front (from the dashboard: the folder picker).
-    func newTab() {
+    func newTab(next: Bool = false) {
         guard let c = activeChat else { return overlay.showNewTerminal() }
-        c.newTab()
+        c.newTab(next: next)
     }
 
     /// ⌘D / ⇧⌘D: splits the pane in front.
@@ -1538,6 +1540,236 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     /// ⌥⇧⌘[ / ⌥⇧⌘]: the shown tab a place left or right.
     func moveTab(step: Int) { _ = activeChat?.moveTab(step: step) }
+
+    // MARK: tabs and windows moving between windows (tear a tab off, drop it on another window, merge windows)
+    // A moved session never restarts: its view (the process's terminal) changes windows and its name is changed for its new
+    // place (Detached.rehome), so a restart still brings it back where it is. A session shows in one place only.
+
+    /// The terminal window under `p` (screen coordinates) below the window numbered `n`; nil over another app's window or the desktop.
+    func chatWindow(atScreen p: NSPoint, below n: Int) -> ChatWindowController? {
+        let num = NSWindow.windowNumber(at: p, belowWindowWithWindowNumber: n)
+        return chats.values.first { $0.window?.windowNumber == num }
+    }
+
+    /// The terminal window under `p` (screen coordinates) other than `a` itself, whatever its level (a pinned one floats above
+    /// `a`); nil over another app's window or the desktop.
+    func chatWindow(atScreen p: NSPoint, skipping a: ChatWindowController) -> ChatWindowController? {
+        var below = 0
+        for _ in 0..<12 {
+            let n = NSWindow.windowNumber(at: p, belowWindowWithWindowNumber: below)
+            if n <= 0 { return nil }
+            if n == a.window?.windowNumber {
+                below = n
+                continue
+            }
+            return chats.values.first { $0.window?.windowNumber == n }
+        }
+        return nil
+    }
+
+    /// A window other than `a` that can take tabs, with the pointer `p` on its header (or its tab bar).
+    func tabTarget(atScreen p: NSPoint, excluding a: ChatWindowController) -> ChatWindowController? {
+        guard let c = chatWindow(atScreen: p, skipping: a), c.acceptsTabs, let f = c.window?.frame,
+              p.y >= f.maxY - c.dropHeaderHeight else { return nil }
+        return c
+    }
+
+    /// The pane under the pointer `p` in a window other than `a` that can take tabs, below its header: the side a split
+    /// there would take, or nil for the middle (tabs).
+    func paneTarget(atScreen p: NSPoint, excluding a: ChatWindowController) -> (win: ChatWindowController, pane: ChatTerminalView, edge: NSRectEdge?)? {
+        guard let c = chatWindow(atScreen: p, skipping: a), c.acceptsTabs, let w = c.window, p.y < w.frame.maxY - c.dropHeaderHeight,
+              let spot = c.paneSpot(at: w.convertPoint(fromScreen: p)) else { return nil }
+        return (c, spot.0, spot.1)
+    }
+
+    /// The frame of a window made from a tab of `a` let go at `p`: `a`'s size, the pointer on its header, kept on the screen.
+    func tearFrame(like a: ChatWindowController, at p: NSPoint) -> NSRect {
+        let size = a.window?.frame.size ?? NSSize(width: 900, height: 600)
+        let screen = NSScreen.screens.first { $0.frame.contains(p) } ?? NSScreen.main
+        var origin = NSPoint(x: p.x - size.width / 2, y: p.y + 30 - size.height)
+        if let vf = screen?.visibleFrame {
+            origin.x = max(vf.minX, min(origin.x, vf.maxX - size.width))
+            origin.y = max(vf.minY, min(origin.y, vf.maxY - size.height))
+        }
+        return NSRect(origin: origin, size: size)
+    }
+
+    /// A session got a new name (it moved to another window): what is kept by name follows.
+    func sessionRenamed(_ old: String, to new: String) {
+        guard old != new else { return }
+        NotesTools.renameSession(from: old, to: new)
+        if let name = tabNames[old] { tabNames[old] = nil; setTabName(name, for: new) }
+        if standalone.remove(old) != nil { saveStandalone() }
+        pushTerminals()
+    }
+
+    /// A window of its own for the tab `cargo` took out of `a`: its first terminal is the window's, at `frame`. Pinned when
+    /// `a` is.
+    @discardableResult
+    private func openTorn(_ cargo: ChatWindowController.TabCargo, like a: ChatWindowController, frame: NSRect) -> ChatWindowController? {
+        guard let lead = cargo.items.first else { return nil }
+        let name = Detached.rehome(lead.name, parent: nil, kind: .tab) ?? lead.name
+        sessionRenamed(lead.name, to: name)
+        // The lead's place in a split is kept for it until the new window takes it back.
+        var placeholder: NSView?
+        if cargo.root !== lead.view, let sv = lead.view.superview as? PaneSplitView {
+            let ph = NSView()
+            sv.replaceArrangedSubview(lead.view, with: ph)
+            placeholder = ph
+        }
+        let args = Sessions.live[name]?.shellPid.flatMap { ChatWindowController.aiLaunch($0) }
+        let c = openWindow(cwd: lead.cwd, claudeArgs: args, sessionId: nil, title: (lead.cwd as NSString).lastPathComponent,
+                           detached: DetachedLink(name: name), show: false, frame: frame)
+        c.install(cargo, placeholder: placeholder)
+        if a.hud.onTop { c.togglePin() }
+        c.show()
+        return c
+    }
+
+    /// `a`'s own tab stays; every other tab goes to a window of its own at `a`'s place, in their order.
+    private func splitOffRest(of a: ChatWindowController, keeping own: Int) -> ChatWindowController? {
+        let others = (0..<a.tabCount).filter { $0 != own }
+        guard let frame = a.window?.frame, !others.isEmpty, others.allSatisfy({ a.canMoveOut(tab: $0) }) else { return nil }
+        var cargos: [ChatWindowController.TabCargo] = []
+        for j in others.reversed() {
+            guard let c = a.detachTab(j) else { return nil }
+            cargos.insert(c, at: 0)
+        }
+        guard let first = cargos.first, let b = openTorn(first, like: a, frame: frame) else { return nil }
+        for c in cargos.dropFirst() { b.adopt(c, select: false) }
+        return b
+    }
+
+    /// Tab `i` of `a` becomes a window at `frame`. The window's own tab does it the other way round: the other tabs go to a
+    /// new window at `a`'s place and `a` itself moves to `frame`.
+    func tearOff(tab i: Int, of a: ChatWindowController, frame: NSRect) {
+        guard a.tabCount > 1, a.canMoveOutOfWindow(tab: i) else { return NSSound.beep() }
+        if a.tabHoldsOwn(i) {
+            guard splitOffRest(of: a, keeping: i) != nil else { return NSSound.beep() }
+            a.window?.setFrameOrigin(frame.origin)
+            a.show()
+            return
+        }
+        guard let cargo = a.detachTab(i) else { return NSSound.beep() }
+        openTorn(cargo, like: a, frame: frame)
+    }
+
+    /// Tab `i` of `a` joins `c` at `slot` of its bar.
+    func moveTab(_ i: Int, of a: ChatWindowController, to c: ChatWindowController, slot: Int) {
+        guard a !== c, c.acceptsTabs, a.canMoveOutOfWindow(tab: i) else { return NSSound.beep() }
+        if a.tabHoldsOwn(i) {
+            if a.tabCount > 1, splitOffRest(of: a, keeping: i) == nil { return NSSound.beep() }
+            return merge(a, into: c, slot: slot)
+        }
+        guard let cargo = a.detachTab(i) else { return NSSound.beep() }
+        c.adopt(cargo, at: slot)
+        c.show()
+    }
+
+    /// Pane `tv` of `a` (a split's pane, by its title bar) becomes a window of its own at `frame`.
+    func tearOffPane(_ tv: ChatTerminalView, of a: ChatWindowController, frame: NSRect) {
+        guard let cargo = a.detachPane(tv) else { return NSSound.beep() }
+        openTorn(cargo, like: a, frame: frame)
+    }
+
+    func movePaneToNewWindow(_ tv: ChatTerminalView, of a: ChatWindowController) {
+        guard let f = a.window?.frame else { return }
+        tearOffPane(tv, of: a, frame: tearFrame(like: a, at: NSPoint(x: f.midX + 30, y: f.maxY - 30)))
+    }
+
+    /// The pane becomes a tab of `c` at `slot`.
+    func movePane(_ tv: ChatTerminalView, of a: ChatWindowController, to c: ChatWindowController, slot: Int) {
+        guard a !== c, c.acceptsTabs, let cargo = a.detachPane(tv) else { return NSSound.beep() }
+        c.adopt(cargo, at: slot)
+        c.show()
+    }
+
+    /// The pane becomes a split beside `target` in `c`.
+    func movePane(_ tv: ChatTerminalView, of a: ChatWindowController, to c: ChatWindowController,
+                  beside target: ChatTerminalView, edge: NSRectEdge) {
+        guard a !== c, c.acceptsTabs, let cargo = a.detachPane(tv) else { return NSSound.beep() }
+        c.adoptSplit(cargo, beside: target, edge: edge)
+        c.show()
+    }
+
+    /// Tab `i` of `a` joins `c` as a split beside `target` on `edge`'s side. `a`'s own tab goes with the window: the other
+    /// tabs stay in a new window at its place, and `a` is gone. The target's window keeps its pin.
+    func moveTabAsSplit(_ i: Int, of a: ChatWindowController, to c: ChatWindowController, beside target: ChatTerminalView, edge: NSRectEdge) {
+        guard a !== c, c.acceptsTabs, a.canMoveOutOfWindow(tab: i) else { return NSSound.beep() }
+        if a.tabHoldsOwn(i) {
+            if a.tabCount > 1, splitOffRest(of: a, keeping: i) == nil { return NSSound.beep() }
+            let (cargos, _) = a.detachAllTabs()
+            removeChat(a.id)
+            guard let cargo = cargos.first else { return }
+            c.adoptSplit(cargo, beside: target, edge: edge)
+        } else {
+            guard let cargo = a.detachTab(i) else { return NSSound.beep() }
+            c.adoptSplit(cargo, beside: target, edge: edge)
+        }
+        c.show()
+    }
+
+    /// A window dragged onto a pane's side: its tab in front joins `c` as a split there (a window of one tab dissolves into it).
+    func mergeSplit(_ a: ChatWindowController, into c: ChatWindowController, beside target: ChatTerminalView, edge: NSRectEdge) {
+        moveTabAsSplit(a.activeTabIndex, of: a, to: c, beside: target, edge: edge)
+    }
+
+    /// Every tab of `a` joins `c` (at `slot`, else the end) and `a` goes, without ending anything: the tab that was in front
+    /// in `a` is in front in `c`.
+    func merge(_ a: ChatWindowController, into c: ChatWindowController, slot: Int? = nil) {
+        guard a !== c, a.canDissolve, c.acceptsTabs else { return NSSound.beep() }
+        let (cargos, active) = a.detachAllTabs()
+        // Nothing of `a` is left to end: its sessions are loose, and the window just closes.
+        removeChat(a.id)
+        var at = slot ?? c.tabCount
+        for (n, cargo) in cargos.enumerated() {
+            c.adopt(cargo, at: at, select: n == min(active, cargos.count - 1))
+            at += 1
+        }
+        c.show()
+    }
+
+    /// The Window menu's Move Tab to New Window: the tab in front of the window in front.
+    var canMoveTabToNewWindow: Bool {
+        guard let a = activeChat, a.tabCount > 1 else { return false }
+        return a.canMoveOutOfWindow(tab: a.activeTabIndex)
+    }
+
+    func moveTabToNewWindow() {
+        guard let a = activeChat, canMoveTabToNewWindow else { return NSSound.beep() }
+        moveTabToNewWindow(tab: a.activeTabIndex, of: a)
+    }
+
+    /// A tab's chip menu: tab `i` of `a` to a window of its own, a little down and right of `a`.
+    func moveTabToNewWindow(tab i: Int, of a: ChatWindowController) {
+        guard let f = a.window?.frame, a.tabCount > 1, a.canMoveOutOfWindow(tab: i) else { return NSSound.beep() }
+        tearOff(tab: i, of: a, frame: tearFrame(like: a, at: NSPoint(x: f.midX + 30, y: f.maxY - 30)))
+    }
+
+    // The names typed for tabs (Rename Tab), by the tab's session name, kept across launches (sessions keep their names).
+    private lazy var tabNames: [String: String] = UserDefaults.standard.dictionary(forKey: "tabNames") as? [String: String] ?? [:]
+
+    func tabName(for session: String) -> String? { tabNames[session] }
+
+    func setTabName(_ name: String?, for session: String) {
+        tabNames[session] = name
+        UserDefaults.standard.set(tabNames, forKey: "tabNames")
+    }
+
+    /// The windows Merge All Windows takes into the one in front: the others on screen that can give up all their tabs.
+    private var mergeableWindows: [ChatWindowController] {
+        guard let c = activeChat, c.acceptsTabs else { return [] }
+        return shownChats.filter { $0 !== c && !$0.hud.mirror && !$0.hud.exited && $0.canDissolve }
+    }
+
+    var canMergeAll: Bool { !mergeableWindows.isEmpty }
+
+    func mergeAllWindows() {
+        guard let c = activeChat else { return NSSound.beep() }
+        let list = mergeableWindows
+        guard !list.isEmpty else { return NSSound.beep() }
+        for o in list { merge(o, into: c) }
+    }
 
     /// ⇧⌘↩: only the pane in front shows; with a single pane the window fills the screen.
     func toggleMaximize() {

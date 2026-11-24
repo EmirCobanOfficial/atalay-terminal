@@ -6027,6 +6027,24 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
     return { ok: true };
   }
 
+  // A terminal's session was renamed (its tab moved to another window, or into a split): notes pinned to it follow the new name.
+  async function renameSession(from, to) {
+    await isLoaded;
+    if (!from || !to || from === to) return { ok: true };
+    let moved = false;
+    for (const o of notes) {
+      if (o.session === from) {
+        o.session = to;
+        moved = true;
+      }
+    }
+    if (moved) {
+      write();
+      drawBoard();
+    }
+    return { ok: true };
+  }
+
   // A new note an AI made (title + Markdown), first on the board; it isn't opened or pinned (agentPin / agentWindow do that).
   async function agentCreate(req) {
     await isLoaded;
@@ -6331,6 +6349,7 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
     agentApply,
     agentUndo,
     agentSession,
+    renameSession,
     setProject,
     agentCreate,
     agentPin,

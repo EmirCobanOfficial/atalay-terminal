@@ -505,6 +505,15 @@ enum NotesTools {
         return (true, pinned ? wrap("Pinned to this terminal. notes_list where=this_terminal finds it. \(envelopeNote)", "TERMINAL: \(label)") : "Let go: the note is no longer pinned to a terminal.")
     }
 
+    /// A terminal's session was renamed (its tab moved to another window, or into a split): the notes pinned to it follow
+    /// the new name. Fire and forget, on the dashboard's page.
+    @MainActor
+    static func renameSession(from old: String, to new: String) {
+        guard let view = NoteWindow.radar?.webView else { return }
+        view.callAsyncJavaScript("const N = window.Notes; if (!N || !N.renameSession) return null; return await N.renameSession(from, to);",
+                                 arguments: ["from": old, "to": new], in: nil, in: .page) { _ in }
+    }
+
     /// "folder (AI)": what the user knows the terminal by.
     private static func terminalLabel(_ screen: String, _ caller: NotesCaller) -> String {
         let folder = Detached.shellPid(screen).flatMap { Proc.cwd($0) }.map { ($0 as NSString).lastPathComponent } ?? screen
