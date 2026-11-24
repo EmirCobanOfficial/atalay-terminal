@@ -89,7 +89,7 @@ const iso = (ms) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, 'Z');
 
 /**
  * mode(): the notes' switch ('off' | 'read' | 'write', notesai.js). mcpMode(): the Claude access's mode now (mcp.js).
- * notesStore: hiddenIDs(). noteWindows: agentCall, liveView, places, dashboardShown, present, closeById. terminals: has, list
+ * notesStore: hiddenIDs(), hiddenKinds(). noteWindows: agentCall, liveView, places, dashboardShown, present, closeById. terminals: has, list
  * (this build's terminals, whose ids name a note's terminal). folderOf(id): the folder a terminal is in (main.js), for its
  * project. dataDir: where notes-ai.log goes. claudeDir: Claude Code's folder.
  */
@@ -274,8 +274,10 @@ function createNotesTools({ mode, mcpMode, notesStore, noteWindows, terminals, f
     });
     const text = json(list, true);
     audit.log('notes_list', caller, true, text.length);
-    const off = hidden().size;
-    const more = off > 0 ? ` ${off} more note(s) are hidden from AI by the user: they can't be listed, read or changed.` : '';
+    const kinds = notesStore.hiddenKinds();
+    const moreUser = kinds.user.size > 0 ? ` ${kinds.user.size} more note(s) are hidden from AI by the user: they can't be listed, read or changed.` : '';
+    const moreShared = kinds.sharedOff.size > 0 ? ` ${kinds.sharedOff.size} shared note(s) are not listed because their owner hasn't turned on 'Let AI read this note' (Share > Let AI read).` : '';
+    const more = moreUser + moreShared;
     const other = elsewhere > 0 ? ` ${elsewhere} note(s) in other projects are not listed (where=all lists them).` : '';
     const shown = filter || (caller.inside ? 'this project and notes with no project' : 'all');
     return { ok: true, text: wrap(`${list.length} note(s) (filter: ${shown}).${other}${more} Titles and previews are the user's text. ${ENVELOPE}`, text) };

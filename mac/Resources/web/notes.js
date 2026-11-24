@@ -4749,7 +4749,7 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
   const presence = new Map(); // shared id -> the accounts in it now (note.presence)
   const friendAi = new Map(); // note id -> { at, text }: what an AI of a friend changed last
   const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-  const aiOff = (n) => !!n && (n.aiHidden === true || (!!n.shared && n.shared.ai !== true));
+  const aiOff = (n) => !!n && (n.aiHidden === true || (!!n.shared && n.shared.ai !== true && n.shared.mine !== true));
   const person = (p) => (p && typeof p === 'object' ? { id: String(p.id || ''), name: String(p.name || ''), tag: Number(p.tag) || 0 } : { id: '', name: '', tag: 0 });
   // A member's picture: only a web address as the API gives it (signed on the gated staging API), else none.
   const picOf = (u) => (typeof u === 'string' && u.length <= 1024 && /^https?:\/\//i.test(u) ? u : null);
@@ -5355,8 +5355,8 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
         '<h3>Shared note</h3>' + `<div class="sh-members">${rows}</div>` +
         (owner && room ? `<details class="sh-add"><summary>Add friends</summary>${picker}${m.chosen.size ? `<button type="button" class="sh-go" data-do="invite"${m.busy ? ' disabled' : ''}>Invite ${m.chosen.size}</button>` : ''}</details>` : '') +
         (owner
-          ? `<label class="sh-switch"><input type="checkbox" data-ai${sh.ai ? ' checked' : ''}><span><b>Let AI read this note</b><small>${sh.ai ? 'Everyone’s AI in this note can read it.' : 'No one’s AI can read this note.'}</small></span></label>`
-          : `<p class="sh-text">${sh.ai ? `AI can read this note (${esc(ownerName)} turned it on).` : `AI can’t read this note. Only ${esc(ownerName)} can allow it.`}</p>`) +
+          ? `<label class="sh-switch"><input type="checkbox" data-ai${sh.ai ? ' checked' : ''}><span><b>Let AI read this note</b><small>${sh.ai ? 'Everyone’s AI in this note can read it.' : 'Only your AI can read this note.'}</small></span></label>`
+          : `<p class="sh-text">${sh.ai ? `AI can read this note (${esc(ownerName)} turned it on).` : `Only ${esc(ownerName)}’s AI can read this note. ${esc(ownerName)} can let everyone’s AI read it.`}</p>`) +
         (m.error ? `<p class="sh-err" role="alert">${esc(m.error)}</p>` : '') +
         (m.confirm === 'stop'
           ? '<div class="sh-ask"><p><b>Stop sharing this note?</b> It stays here as a private note. Your friends’ copies are removed.</p><div class="sh-acts"><button type="button" class="sh-danger" data-do="stop">Stop sharing</button><button type="button" data-do="cancel">Cancel</button></div></div>'
@@ -5882,8 +5882,25 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
   // The blocks of a note made `next` as one step, by the fewest changes to its document (a block the same stays, one that
   // differs is changed where it is: what is typed in the others meanwhile is kept): the live editor's (⌘Z takes it back, and
   // the strip's Undo, which takes back what AI did and nothing else), or a note that isn't being written here.
-  function setBlocksOf(n, next, by) {
+  // `h`: the short-lived live document of a shared note that isn't open here (withSharedDoc); it is always written through, even
+  // if the user opens the note meanwhile. `expect`: with `h`, the hash of the text the document must still have (an Undo
+  // must not take away what others wrote after the AI's change); false is answered if it differs.
+  function setBlocksOf(n, next, by, h, expect) {
     const who = new NS.AiOrigin(by);
+    if (h) {
+      if (expect && hashOf(toText(h.m.toBlocks())) !== expect) return false;
+      return (async () => {
+        h.m.as(who, () => h.m.replaceAll(next));
+        await nap(300); // the change goes out before the line is closed
+        askApp('saveY', { id: n.id, b64: NS.b64(h.m.encodeState()) });
+        n.blocks = h.m.toBlocks();
+        n.at = Date.now();
+        write();
+        stamp();
+        drawBoard();
+        return true;
+      })();
+    }
     if (n === cur && !out.has(n.id)) {
       const was = snapFocus();
       pendingFocus = was;
@@ -5910,6 +5927,80 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
     return writing;
   }
 
+  // A shared note nobody has open here, for an AI's change: its document is opened for the moment (as runPeeks does), live,
+  // the change made and sent, and the line closed again. One at a time per note, so two changes never open two documents.
+  const sharedChain = new Map(); // note id -> the end of the changes queued for it
+  function sharedLock(id, fn) {
+    const run = (sharedChain.get(id) || Promise.resolve()).then(fn);
+    const tail = run.catch(() => {});
+    sharedChain.set(id, tail);
+    tail.then(() => sharedChain.get(id) === tail && sharedChain.delete(id));
+    return run;
+  }
+  async function openSharedDoc(n) {
+    await capsReady;
+    if (!canShare || !n.shared) return null;
+    const acct = window.Social?.state?.()?.me?.id;
+    if (acct && n.shared.me && n.shared.me !== acct) return null;
+    let r = null;
+    try {
+      r = await askApp('loadY', { id: n.id });
+    } catch {}
+    const m = new NS.NoteModel([]);
+    m.shared = true;
+    m.account = n.shared.me || ''; // the "AI edited" notes are kept for this account only
+    let prov = null;
+    let t = 0;
+    const close = () => {
+      clearTimeout(t);
+      try {
+        prov && prov.close();
+      } catch {}
+      try {
+        m.destroy();
+      } catch {}
+    };
+    try {
+      if (r && typeof r.b64 === 'string') m.applyState(NS.unb64(r.b64));
+      const live = await new Promise((res) => {
+        let done = false;
+        const end = (ok) => !done && ((done = true), res(ok));
+        prov = new NS.SharedProvider(m.doc, {
+          quiet: true,
+          ticket: ticketFor(n),
+          on: {
+            hello: (x) => (m.account = x.me.id),
+            status: (s) => s === 'live' && end(true),
+            gone: (why) => (end(false), dropShared(n.id, why)),
+            error: () => end(false),
+          },
+        });
+        t = setTimeout(() => end(false), 10000);
+        prov.connect();
+      });
+      if (!live) return (close(), null);
+      await nap(250); // what the others wrote arrives just after the line is live
+      return { m, close };
+    } catch {
+      close();
+      return null;
+    }
+  }
+  // Runs fn(h) with the shared note's live document, one change at a time per note; throws 'shared_busy' if the line didn't
+  // come up in time. The document is always closed again. fn gets `h` and passes it on, nothing reaches it any other way.
+  function withSharedDoc(n, fn) {
+    return sharedLock(n.id, async () => {
+      const h = await openSharedDoc(n);
+      if (!h) throw new Error('shared_busy');
+      try {
+        return await fn(h);
+      } finally {
+        h.close();
+      }
+    });
+  }
+  const SHARED_BUSY = { error: 'busy', message: 'This is a shared note and could not be reached right now (no connection?). Try again in a moment.' };
+
   // req: { id, op: 'append' | 'edit' | 'write', text, old, new, version, by }. Answers { ok, version, saved } or { error, message }.
   async function agentApply(req) {
     await isLoaded;
@@ -5920,8 +6011,25 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
     const op = req.op;
     if (!['append', 'edit', 'write'].includes(op)) return bad('Unknown operation.');
     const live = n === cur && !out.has(n.id);
-    // A shared note is written through its open document, so the others get the change: not one that isn't open here.
-    if (n.shared && !live) return { error: 'busy', message: 'This is a shared note and it is not open right now. Ask the user to open it, then try again.' };
+    // A shared note is written through its live document, so the others get the change. One that isn't open here is opened for
+    // the moment (withSharedDoc); in a note's own window the page that holds it is the one that writes it.
+    if (n.shared && !live) {
+      if (WINDOW) return { error: 'busy', message: 'This is a shared note and it is not open right now. Ask the user to open it, then try again.' };
+      try {
+        return await withSharedDoc(n, (h) => {
+          // What agentRead gave may be older than the document: the note's blocks are brought up to it first.
+          const bl = h.m.toBlocks();
+          if (toText(bl) !== toText(blocksOf(n))) {
+            n.blocks = bl;
+            write();
+          }
+          return applyChecked(req, n, op, bl, h);
+        });
+      } catch (e) {
+        if (e && e.message === 'shared_busy') return SHARED_BUSY;
+        throw e;
+      }
+    }
     // An addition goes in at once, at the end, wherever the cursor is. Anything that rewrites waits for a pause in typing.
     if (op !== 'append' && live) {
       for (let waited = 0; typing(); waited += 200) {
@@ -5931,7 +6039,14 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
     }
     // The user may have hidden (or deleted) it while this waited.
     if (!notes.includes(n) || aiOff(n)) return { error: 'not_found', message: 'No note has this id. List the notes again.' };
-    const have = blocksOf(n);
+    return applyChecked(req, n, op, blocksOf(n));
+  }
+
+  // The change itself, on the note's blocks as they are now (`have`): the answer, or the error that stopped it.
+  async function applyChecked(req, n, op, have, h) {
+    const bad = (message, more) => ({ error: 'bad_request', message, ...more });
+    // The user may have hidden (or deleted) it while the document was opened.
+    if (!notes.includes(n) || aiOff(n)) return { error: 'not_found', message: 'No note has this id. List the notes again.' };
     const md = toText(have);
     const version = hashOf(md);
     const base = plain(liveOf(have));
@@ -5960,15 +6075,15 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
       next = plain(fromText(String(req.text ?? '')));
     }
     if (toText(next).length > 400000) return bad('The note would be too long.');
-    return commitAi(n, next, req.by, have, op);
+    return commitAi(n, next, req.by, have, op, h);
   }
 
-  async function commitAi(n, next, by, before, op) {
+  async function commitAi(n, next, by, before, op, h) {
     const keep = plain(liveOf(before));
-    const live = n === cur && !out.has(n.id);
+    const live = !h && n === cur && !out.has(n.id);
     const steps0 = live ? aiUm.undoStack.length : 0;
-    await setBlocksOf(n, next, by);
-    const after = hashOf(toText(blocksOf(n)));
+    await setBlocksOf(n, next, by, h);
+    const after = hashOf(toText(h ? h.m.toBlocks() : blocksOf(n)));
     // `steps`: how many changes of AI the live document can take back now (the last one is this); a note that isn't live has
     // none, and its Undo writes `before` back.
     lastAi = { id: n.id, by: String(by || 'AI').slice(0, 24), at: Date.now(), before: keep, after, steps: live && aiUm.undoStack.length > steps0 ? aiUm.undoStack.length : -1 };
@@ -5996,7 +6111,18 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
       lastKind = '';
       render(null);
       save();
-    } else await setBlocksOf(n, a.before, a.by);
+    } else {
+      try {
+        if (n.shared && !WINDOW) {
+          // Through the synced document, and only while it still has the text the AI left: others' later writing isn't taken away.
+          const done = await withSharedDoc(n, (h) => setBlocksOf(n, a.before, a.by, h, a.after));
+          if (!done) return { error: 'nothing_to_undo' };
+        } else await setBlocksOf(n, a.before, a.by);
+      } catch (e) {
+        if (e && e.message === 'shared_busy') return SHARED_BUSY;
+        throw e;
+      }
+    }
     lastAi = null;
     aiLog.splice(0, aiLog.length, ...aiLog.filter((x) => x !== a));
     aiTouched();
