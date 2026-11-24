@@ -652,6 +652,9 @@ function handleInit(d) {
     $('log').innerHTML = '';
     LOGQ.length = 0;
     LOGEL.clear();
+    // What waited while hidden is in this log and state already.
+    HELD.lines.length = 0;
+    HELD.render = false;
     // The demo's log has its own lines only.
     const past = DEMO ? [] : d.log;
     for (const ev of past) {
@@ -670,7 +673,32 @@ function handleState(next) {
     if (!DEMO) transitions(next);
     RAW = next;
     STATE = view(next);
+    if (!hidden()) return renderAll();
+    // Hidden, only what shows elsewhere goes on: the window's title (the Dock, the Window menu), a collision's notice in
+    // the screen's corner, the map's state. The panels are drawn once the dashboard shows again.
+    HELD.render = true;
+    renderTitle();
+    tellClashes();
+    map('state', STATE);
+}
+
+// While the dashboard is hidden (html.paused: minimized, or under other windows altogether) its log and panels aren't
+// drawn: the newest state and the log's new lines wait, and are drawn once it shows. Laying out a page no one sees cost
+// more than drawing it (each line restyles the page, and more so in a minimized window). The sounds, the theme's moments,
+// the streak and the map go on as before.
+const HELD = { render: false, lines: [] };
+const hidden = () => document.documentElement.classList.contains('paused');
+function drawn(line) {
+  if (!hidden()) return line(true);
+  HELD.lines.push(line);
+  if (HELD.lines.length > 400) HELD.lines.shift(); // the log keeps 220 lines
+}
+function showHeld() {
+  for (const line of HELD.lines.splice(0)) line(false);
+  if (HELD.render) {
+    HELD.render = false;
     renderAll();
+  }
 }
 
 // The map's two switches: streamer mode (made-up names) and party mode (the names, and a show of made-up sessions).
@@ -723,6 +751,7 @@ function setVisibility(visible, focused, covered) {
   document.documentElement.classList.toggle('behind', visible && !focused);
   document.documentElement.classList.toggle('covered', visible && !!covered);
   map('activity', visible, focused, covered);
+  if (visible) showHeld();
 }
 // Power save (the app decides and keeps it: PowerSaver.swift, the Windows app's power.js): the switch at the map's top
 // right, on when the map draws fewer and smaller frames, with why when it came on by itself (a low battery, the
@@ -786,16 +815,16 @@ function onEvent(ev) {
   switch (ev.k) {
     case 'tool':
     case 'prompt':
-      logLine(ev, true);
+      drawn((live) => logLine(ev, live));
       marqueePush(ev);
       break;
     case 'result':
-      logResult(ev);
+      drawn(() => logResult(ev));
       setStreak(Hooks.logic.streak(streak, !!ev.ok));
       break;
     case 'say':
     case 'sys':
-      logLine(ev, true);
+      drawn((live) => logLine(ev, live));
       break;
   }
 }
@@ -1153,7 +1182,8 @@ function logResult(ev) {
   markResult(el, Streamer.event(ev));
 }
 function logState(s, text, cls) {
-  logLine({ k: 'state', t: Date.now(), s: s.id, l: text, cls }, true);
+  const ev = { k: 'state', t: Date.now(), s: s.id, l: text, cls };
+  drawn((live) => logLine(ev, live));
 }
 
 // ---------- marquee ----------
@@ -1947,14 +1977,20 @@ function renderSpend() {
   );
 }
 
+// The window's title: how many chats need you, or wait for your next prompt.
+function renderTitle() {
+  const nW = STATE.sessions.filter((s) => s.status === 'waiting').length;
+  const n = nW + STATE.sessions.filter((s) => s.status === 'idle').length;
+  const title = nW ? `⚠ ${nW} needs you · Orbiterm` : n ? `◆ ${n} your turn · Orbiterm` : 'Orbiterm';
+  if (document.title !== title) document.title = title;
+}
 function renderCall() {
   const need = STATE.sessions
     .filter((s) => s.status === 'waiting' || s.status === 'idle')
     .sort((a, b) => (a.status === 'waiting' ? 0 : 1) - (b.status === 'waiting' ? 0 : 1) || a.statusSince - b.statusSince);
   const nW = need.filter((s) => s.status === 'waiting').length;
   $('p-call').classList.toggle('hot', nW > 0);
-  const title = nW ? `⚠ ${nW} needs you · Orbiterm` : need.length ? `◆ ${need.length} your turn · Orbiterm` : 'Orbiterm';
-  if (document.title !== title) document.title = title;
+  renderTitle();
   setText($('m-call'), nW ? `${nW} blocked on you` : need.length ? `${need.length} waiting for your next prompt` : 'nothing needs you');
   const box = $('call');
   if (!need.length)
