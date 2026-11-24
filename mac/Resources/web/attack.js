@@ -16,8 +16,11 @@
 //    seconds later the centre puts itself back together, exactly as it was, and the flames die down with it. About 14 s,
 //    each sound (sounds/attack-*.m4a) at its moment; nothing is harmed, every click goes through it and it never takes
 //    the focus. The banner shows in the notices panel (messages.html), over whatever is in front, so a terminal or
-//    another app in front doesn't hide it; with the map out of sight (another view, the dashboard hidden or covered)
-//    only the banner and its alarm come. If the attacker cancels during the lock, the strip says LOCK LOST and no ship comes.
+//    another app in front doesn't hide it; with the map out of sight (the dashboard hidden, minimized, on another Space,
+//    covered, or its map under another app's window: the Mac asks, inView()) the banner and its alarm come at once and
+//    the ship waits: it flies in the first moment within 2 minutes that the map can be seen (hold(), look()); one whose
+//    blast went unseen comes again the same way. If the attacker cancels during the lock, the strip says LOCK LOST and
+//    no ship comes.
 //  · Whoever was attacked is shielded for 30 minutes (nobody can fire at them): a small "Shielded · m:ss" chip on your
 //    own card and profile (shieldChip()).
 //  · Settings › Privacy "let friends fire spaceships at me" (`social.attacks`, kept with the account): off, nobody can
@@ -221,8 +224,9 @@ window.Attack = (() => {
     if (!ev || !ev.from) return;
     // The API doesn't send it to someone on do not disturb; one already on its way when they switched is let go.
     if (Social.dnd()) return;
-    // The newest from each friend, three at most.
+    // The newest from each friend, three at most (one of theirs still waiting to be seen, hold(), gives way to it).
     queue = queue.filter((q) => q.from.id !== ev.from.id);
+    missed = missed.filter((m) => m.ev.from.id !== ev.from.id);
     queue.push(ev);
     if (queue.length > 3) queue.shift();
     next();
@@ -275,6 +279,31 @@ window.Attack = (() => {
     const space = document.getElementById('space');
     return dashboardSeen() && !!space && space.clientWidth > 0 && space.clientHeight > 0;
   }
+  // The Mac: the window "visible" isn't enough. macOS calls a window visible when any pixel of it shows, so a dashboard at
+  // the bottom of the pile, its map under another app's window, counted as seen and the ship flew where nobody saw it
+  // (iTerm2 in front, the staging dashboard under it: the flight began, unseen, the sounds came). The app looks at the
+  // windows over the map (AttackBridge, RadarView.swift): true when at least half of the map's box is clear of other
+  // apps' windows. Asked as the ship is about to come, at its blast, and while a missed one waits (hold()). Another view
+  // over the map: the whole page is asked (leave() brings the map back there). No answer within a second: seen, as before.
+  // Windows has its own (expose(), the window list at the lock's start).
+  const MAC_LOOKS = !BEHIND_HIDES && !!h.attack;
+  async function inView() {
+    if (!MAC_LOOKS) return true;
+    const space = document.getElementById('space');
+    const W = innerWidth || 1, H = innerHeight || 1;
+    let rect = { x: 0, y: 0, w: 1, h: 1 };
+    if (space && space.clientWidth > 0 && space.clientHeight > 0) {
+      const b = space.getBoundingClientRect();
+      rect = { x: b.left / W, y: b.top / H, w: b.width / W, h: b.height / H };
+    }
+    let asked;
+    try {
+      asked = Promise.resolve(h.attack.postMessage({ type: 'seen', rect })).then((r) => r !== false, () => true);
+    } catch {
+      return true;
+    }
+    return Promise.race([asked, sleep(1000).then(() => true)]);
+  }
   // Another view of the app (Settings' pages are windows over the dashboard and don't hide the map; these do) lies over the
   // map while the dashboard can be seen: the app goes back to the dashboard for the ship, then returns you (away/release).
   // Never when the window is hidden, minimized or under another window (attack.js never takes the focus or un-hides it),
@@ -311,7 +340,8 @@ window.Attack = (() => {
   // Any view opened meanwhile (the activity bar, a shortcut, the menu bar, a notification). Told after leave() and
   // release() have run, so their own switching never counts: on the dashboard then, or `away` already gone.
   if (appEl) new MutationObserver(() => away && !onDash() && (away.took = true)).observe(appEl, { attributes: true, attributeFilter: ['class'] });
-  function leave() {
+  // `dry`: only whether it would (true), nothing switched (a missed ship waiting for the map, look()).
+  function leave(dry = false) {
     const space = document.getElementById('space');
     if (!window.GitView || !window.Cloud?.current || !window.Orbit?.attack || reduced() || !dashboardSeen()) return null;
     if (!space || (space.clientWidth > 0 && space.clientHeight > 0) || onDash() || pressed || writing()) return null;
@@ -320,6 +350,7 @@ window.Attack = (() => {
     if (view && !BACK_TO.includes(view)) return null;
     if (document.getElementById('profile-view')?.classList.contains('editing')) return null;
     if (git && (window.FileEditor?.list?.() || []).some((t) => t.dirty)) return null;
+    if (dry) return true;
     // A profile comes back as it was opened: whose, where its Back goes, the leaderboard's list to step through.
     let profile = null;
     if (view === 'profile' && window.Profile?.currentId?.()) {
@@ -363,43 +394,60 @@ window.Attack = (() => {
   async function fly(ev, my) {
     busyUntil = Date.now() + 20_000; // the next one waits; set right below, once this one's length is known
     const name = nameOf(ev);
-    const lock = (playing = { id: ev.from.id, cancelled: false, wake: () => {} });
-    const woken = new Promise((ok) => (lock.wake = ok));
-    // The warning first, wherever the app is on screen (the notices panel shows it over whatever is in front), then the
-    // ship. Its sender stays unnamed until the blast.
-    banner('', 'lock');
-    // Windows: whether the dashboard can be seen is asked inside the lock's own time (it comes off the wait below), so
-    // the ship still comes when the warning says, as on the Mac.
-    let spent = 0;
-    if (BEHIND_HIDES) {
-      const asked = Date.now();
-      await expose();
-      spent = Date.now() - asked;
-    }
-    // A view of the app over the map: the dashboard first, so the ship's arrival is seen (once the layout has settled).
-    // Already there for the one before: you stay. Gone your own way meanwhile: from where you are now.
-    if (away && away.took) away = null;
-    if (!away && (away = leave())) {
-      dispatchEvent(new Event('resize'));
-      await sleep(120);
-    }
-    reticle(true);
-    await Promise.race([sleep(Math.max(0, LOCK_MS + HOLD_MS - spent)), woken]);
-    playing = null;
-    if (lock.cancelled) {
-      reticle(false);
-      banner('', 'lost');
-      back(my, 600);
-      busyUntil = Date.now() + LOST_MS;
-      clearTimeout(timer);
-      timer = setTimeout(next, LOST_MS + 300);
-      return;
+    if (ev.replay) {
+      // A missed one, now that the map can be seen (look()): the ship at once, no lock-on (that was when it came). A view
+      // of the app over the map is left first, as for a live one.
+      if (away && away.took) away = null;
+      if (!away && (away = leave())) {
+        dispatchEvent(new Event('resize'));
+        await sleep(120);
+      }
+    } else {
+      const lock = (playing = { id: ev.from.id, cancelled: false, wake: () => {} });
+      const woken = new Promise((ok) => (lock.wake = ok));
+      // The warning first, wherever the app is on screen (the notices panel shows it over whatever is in front), then the
+      // ship. Its sender stays unnamed until the blast.
+      banner('', 'lock');
+      // Windows: whether the dashboard can be seen is asked inside the lock's own time (it comes off the wait below), so
+      // the ship still comes when the warning says, as on the Mac.
+      let spent = 0;
+      if (BEHIND_HIDES) {
+        const asked = Date.now();
+        await expose();
+        spent = Date.now() - asked;
+      }
+      // A view of the app over the map: the dashboard first, so the ship's arrival is seen (once the layout has settled).
+      // Already there for the one before: you stay. Gone your own way meanwhile: from where you are now.
+      if (away && away.took) away = null;
+      if (!away && (away = leave())) {
+        dispatchEvent(new Event('resize'));
+        await sleep(120);
+      }
+      reticle(true);
+      await Promise.race([sleep(Math.max(0, LOCK_MS + HOLD_MS - spent)), woken]);
+      playing = null;
+      if (lock.cancelled) {
+        reticle(false);
+        banner('', 'lost');
+        back(my, 600);
+        busyUntil = Date.now() + LOST_MS;
+        clearTimeout(timer);
+        timer = setTimeout(next, LOST_MS + 300);
+        return;
+      }
     }
     let show = null;
-    if (mapInSight() && !reduced() && window.Orbit?.attack) {
+    // The Mac asks the app whether the map really shows (inView()); a moment at most.
+    if (mapInSight() && !reduced() && window.Orbit?.attack && (await inView())) {
       // The sounds loaded first (a moment at most, the first time), so each starts on time.
       await Promise.race([Promise.all(SOUNDS.map((s) => Sfx.preload(s))), sleep(1500)]);
       show = mapInSight() ? window.Orbit.attack() : null;
+      // The one before still on the map (its frames stopped while the map was out of sight; it ends on the first frame
+      // back): once more, a moment later.
+      if (!show && mapInSight()) {
+        await sleep(400);
+        show = mapInSight() ? window.Orbit.attack() : null;
+      }
     }
     if (show) {
       busyUntil = Date.now() + show.end;
@@ -418,23 +466,83 @@ window.Attack = (() => {
       // The ship away again: its engines once more, quieter, under the alarm.
       at(show.leave + 150, () => Sfx.sample('attack-flyby', 0.4));
       at(show.reform, () => Sfx.sample('attack-rebuild', 0.7));
-      // The banner and its alarm right after the blast, whatever is in front by then.
-      // The taunt goes on DANGER only if its bubble never showed (the map went out of sight first).
-      setTimeout(() => banner(name, 'danger', !said.seen), show.boom + 350);
+      // The blast not seen (the map went out of sight on the way: another Space, the window hidden or covered, another
+      // app's window over the map): the ship comes again once the map can be seen (hold()).
+      setTimeout(async () => {
+        if (!(mapInSight() && (await inView()))) hold(ev);
+      }, show.boom);
+      // The banner and its alarm right after the blast, whatever is in front by then (a replay's is silent: its alarm
+      // came when it was fired). The taunt goes on DANGER only if its bubble never showed (the map went out of sight first).
+      setTimeout(() => banner(name, 'danger', !said.seen, !ev.replay), show.boom + 350);
+    } else if (ev.replay) {
+      // Out of sight again just as it was to come: it waits on (its time unchanged).
+      reticle(false);
+      busyUntil = Date.now();
+      back(my, 600);
+      hold(ev);
     } else {
       reticle(false);
       busyUntil = Date.now() + BANNER_MS;
       banner(name, 'danger', true);
       back(my, 600);
+      // The ship isn't wasted: it comes when the map can be seen (hold()).
+      hold(ev);
     }
     clearTimeout(timer);
     timer = setTimeout(next, busyUntil - Date.now() + 300);
   }
-  function banner(name, kind = 'danger', taunt = false) {
+  function banner(name, kind = 'danger', taunt = false, sound = true) {
     try {
-      h.radar.postMessage({ type: 'attack', name, kind, delay: 0, sound: true, taunt });
+      h.radar.postMessage({ type: 'attack', name, kind, delay: 0, sound, taunt });
     } catch {}
   }
+
+  // ---------- a missed one comes back ----------
+  // The ship flies only where it's seen. When the map is out of sight as it comes (the window hidden, minimized, on another
+  // Space or under other windows, a chat window over it), or goes out of sight before the blast, LOCKED ON and DANGER
+  // with its alarm come as ever, and the ship waits: the first moment within REPLAY_MS that the map can be seen again
+  // (another view of the app over it is left as for a live one, leave()), it flies in and does it all, without the
+  // lock-on and with DANGER silent. The newest from each friend, three at most; on do not disturb they're let go. Looked
+  // for when the window's state changes (app.js setVisibility, the page shown) and every LOOK_MS (the Mac: another app's
+  // window moved off the map tells the page nothing). Windows: the app in front again is what brings it back (expose()'s
+  // answer was for the attack's start).
+  const REPLAY_MS = 120_000;
+  const LOOK_MS = 1500;
+  let missed = []; // { ev, until }
+  let lookTimer = 0;
+  let lookSeq = 0;
+  function hold(ev) {
+    if (reduced() || !window.Orbit?.attack || !ev || !ev.from) return;
+    const until = ev.replay ? ev.until : Date.now() + REPLAY_MS;
+    if (!(until > Date.now())) return;
+    missed = missed.filter((m) => m.ev.from.id !== ev.from.id);
+    missed.push({ ev: { ...ev, replay: true, until }, until });
+    if (missed.length > 3) missed.shift();
+    exposed = false;
+    clearTimeout(lookTimer);
+    lookTimer = setTimeout(look, LOOK_MS);
+  }
+  async function look() {
+    clearTimeout(lookTimer);
+    lookTimer = 0;
+    const my = ++lookSeq;
+    missed = missed.filter((m) => m.until > Date.now());
+    if (!missed.length) return;
+    if (Social.dnd() || reduced()) return void (missed = []);
+    const free = !playing && busyUntil <= Date.now() && !queue.length;
+    if (free && dashboardSeen() && (mapInSight() || leave(true)) && (await inView())) {
+      if (my !== lookSeq) return; // a newer look decides
+      const ready = missed.filter((m) => m.until > Date.now()).map((m) => m.ev);
+      missed = [];
+      if (!ready.length || playing || busyUntil > Date.now() || queue.length) return void ready.forEach(hold);
+      queue.push(...ready);
+      return void next();
+    }
+    if (my === lookSeq) lookTimer = setTimeout(look, LOOK_MS);
+  }
+  const lookNow = () => missed.length && look();
+  new MutationObserver(lookNow).observe(html, { attributes: true, attributeFilter: ['class'] });
+  document.addEventListener('visibilitychange', lookNow);
 
   // ---------- the reticle on the map ----------
   // With the map in sight, four brackets close onto its centre (the core) as the lock builds: orange while closing, amber

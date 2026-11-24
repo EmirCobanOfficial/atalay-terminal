@@ -15,6 +15,66 @@ final class DashboardWebView: WKWebView {
     }
 }
 
+/// Whether a friend's spaceship (web/attack.js) would really be seen on the orbit map. macOS calls a window visible
+/// (occlusionState) when any pixel of it shows, so a dashboard at the bottom of the pile, its map under another app's
+/// window, counted as seen: the ship flew there unseen and only its sounds came. attack.js asks at each attack, at its
+/// blast and while a missed one waits to fly, with the map's box as fractions of the page (`rect`). True when the window
+/// is on screen and at least half of that box is clear of other apps' windows (normal, floating and panel levels; the
+/// Dock, the menu bar and overlays above them don't count). The app's own windows don't count either: a chat window over
+/// the dashboard is the page's `covered`, and its panels (the notices, the feed, Viktoria) let everything through. Only
+/// the windows' frames are read (no screen recording permission); nothing is shown, raised or focused.
+final class AttackBridge: NSObject, WKScriptMessageHandlerWithReply {
+    func userContentController(_ ucc: WKUserContentController, didReceive message: WKScriptMessage,
+                               replyHandler: @escaping @MainActor @Sendable (Any?, String?) -> Void) {
+        let body = message.body as? [String: Any] ?? [:]
+        MainActor.assumeIsolated {
+            guard body["type"] as? String == "seen", let view = message.webView else { return replyHandler(nil, "unknown request") }
+            replyHandler(Self.seen(view, body["rect"] as? [String: Any] ?? [:]), nil)
+        }
+    }
+
+    @MainActor static func seen(_ view: NSView, _ rect: [String: Any]) -> Bool {
+        guard let win = view.window, win.isVisible, !win.isMiniaturized, win.occlusionState.contains(.visible), !NSApp.isHidden,
+              let main = NSScreen.screens.first else { return false }
+        // The dashboard, or one of its chat windows (ordered with it), has the keys: it's in front of other apps' windows.
+        if NSApp.isActive, let key = NSApp.keyWindow, key === win || key.parent === win { return true }
+        func part(_ key: String, _ fallback: CGFloat) -> CGFloat {
+            guard let n = rect[key] as? NSNumber, n.doubleValue.isFinite else { return fallback }
+            return min(max(CGFloat(n.doubleValue), 0), 1)
+        }
+        let x = part("x", 0), y = part("y", 0), w = min(part("w", 1), 1 - x), h = min(part("h", 1), 1 - y)
+        guard w > 0, h > 0 else { return false }
+        // The page's top is the view's top, whichever way the view counts.
+        let b = view.bounds
+        let box = NSRect(x: b.minX + x * b.width, y: view.isFlipped ? b.minY + y * b.height : b.maxY - (y + h) * b.height,
+                         width: w * b.width, height: h * b.height)
+        let onScreen = win.convertToScreen(view.convert(box, to: nil))
+        // Quartz's window frames count from the main display's top left, downwards.
+        let map = CGRect(x: onScreen.minX, y: main.frame.maxY - onScreen.maxY, width: onScreen.width, height: onScreen.height)
+        let me = Int(getpid()), top = Int(CGWindowLevelForKey(.dockWindow))
+        let list = CGWindowListCopyWindowInfo([.optionOnScreenAboveWindow, .excludeDesktopElements], CGWindowID(win.windowNumber)) as? [[String: Any]] ?? []
+        let over: [CGRect] = list.compactMap { info in
+            guard (info[kCGWindowOwnerPID as String] as? Int) != me,
+                  let layer = info[kCGWindowLayer as String] as? Int, layer >= 0, layer < top,
+                  (info[kCGWindowAlpha as String] as? Double ?? 1) > 0.1,
+                  let d = info[kCGWindowBounds as String] as? NSDictionary,
+                  let r = CGRect(dictionaryRepresentation: d as CFDictionary), r.intersects(map) else { return nil }
+            return r
+        }
+        if over.isEmpty { return true }
+        let n = 20
+        var clear = 0
+        for i in 0..<n {
+            for j in 0..<n {
+                let p = CGPoint(x: map.minX + (CGFloat(i) + 0.5) / CGFloat(n) * map.width,
+                                y: map.minY + (CGFloat(j) + 0.5) / CGFloat(n) * map.height)
+                if !over.contains(where: { $0.contains(p) }) { clear += 1 }
+            }
+        }
+        return clear * 2 >= n * n
+    }
+}
+
 /// The animated radar page (Resources/web) in a WKWebView, fed by the engine through `window.__radar`.
 @MainActor
 final class RadarView: NSObject, WKScriptMessageHandler, WKNavigationDelegate, WKUIDelegate {
@@ -46,6 +106,7 @@ final class RadarView: NSObject, WKScriptMessageHandler, WKNavigationDelegate, W
         ucc.addScriptMessageHandler(SaversBridge(), contentWorld: .page, name: "savers")
         ucc.addScriptMessageHandler(NotesBridge(), contentWorld: .page, name: "notes")
         ucc.addScriptMessageHandler(NotesAIBridge(), contentWorld: .page, name: "notesai")
+        ucc.addScriptMessageHandler(AttackBridge(), contentWorld: .page, name: "attack")
         webView.setValue(false, forKey: "drawsBackground")
         webView.navigationDelegate = self
         webView.uiDelegate = self
