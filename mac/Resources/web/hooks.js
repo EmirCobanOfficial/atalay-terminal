@@ -51,12 +51,31 @@ window.Hooks = (() => {
   function set(name, value) {
     if (states.get(name) === value) return;
     states.set(name, value);
-    const prop = '--' + name.replace(/[A-Z]/g, (c) => '-' + c.toLowerCase());
     if (value === null || value === undefined || value === false || value === 0) delete root.dataset[name];
     else root.dataset[name] = String(value);
-    if (typeof value === 'number' && Number.isFinite(value)) root.style.setProperty(prop, String(value));
-    else root.style.removeProperty(prop);
+    setVar(name, value);
     dispatchEvent(new CustomEvent('atalay:state', { detail: { name, value } }));
+  }
+
+  // The --<name> of a number goes on <html> at most every half second: a variable changed there makes the browser work
+  // out every element's style again, and the streak changes with every tool result. The attribute changes at once.
+  const VAR_MS = 500;
+  const pendingVars = new Map();
+  let varTimer = 0;
+  let varAt = 0;
+  function setVar(name, value) {
+    pendingVars.set(name, value);
+    if (!varTimer) varTimer = setTimeout(writeVars, Math.max(0, varAt + VAR_MS - Date.now()));
+  }
+  function writeVars() {
+    varTimer = 0;
+    varAt = Date.now();
+    for (const [name, value] of pendingVars) {
+      const prop = '--' + name.replace(/[A-Z]/g, (c) => '-' + c.toLowerCase());
+      if (typeof value === 'number' && Number.isFinite(value)) root.style.setProperty(prop, String(value));
+      else root.style.removeProperty(prop);
+    }
+    pendingVars.clear();
   }
 
   // A moment: data-<name> on <html> for `ms` (its value detail.value, else 1), for a CSS animation, which starts over

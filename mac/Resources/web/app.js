@@ -650,6 +650,7 @@ function handleInit(d) {
       lastPrompts.set(s.id, s.prompts || 0);
     }
     $('log').innerHTML = '';
+    LOGQ.length = 0;
     LOGEL.clear();
     // The demo's log has its own lines only.
     const past = DEMO ? [] : d.log;
@@ -1103,9 +1104,24 @@ function paintLine(el) {
   setText(el.querySelector('.txt'), lineParts(ev)[2]);
   if (ev.k === 'tool') markResult(el, ev);
 }
-function logLine(raw, live) {
+// New lines go into the log once a frame, and whether it was scrolled to its end is measured then, once: measured at
+// every line, the browser laid the page out again for each one.
+const LOGQ = [];
+let logFrame = 0;
+function logFlush() {
+  logFrame = 0;
   const box = $('log');
   const stick = box.scrollTop + box.clientHeight >= box.scrollHeight - 14;
+  box.append(...LOGQ.splice(0));
+  // Party mode's lines (made up) take room of their own, and go first: the real ones stay.
+  while (box.childElementCount > (Party.on ? 380 : 220)) {
+    const x = box.querySelector('.ln.fake') || box.firstElementChild;
+    if (x.__id) LOGEL.delete(x.__id);
+    x.remove();
+  }
+  if (stick) box.scrollTop = box.scrollHeight;
+}
+function logLine(raw, live) {
   const ev = Streamer.event(raw);
   const [cat, col, text] = lineParts(ev);
   const el = document.createElement('div');
@@ -1121,14 +1137,13 @@ function logLine(raw, live) {
     LOGEL.set(ev.id, el);
     markResult(el, ev);
   }
-  box.appendChild(el);
-  // Party mode's lines (made up) take room of their own, and go first: the real ones stay.
-  while (box.childElementCount > (Party.on ? 380 : 220)) {
-    const x = box.querySelector('.ln.fake') || box.firstElementChild;
+  LOGQ.push(el);
+  // No frame comes while the page is hidden: what waits is never more than the log keeps.
+  if (LOGQ.length > 380) {
+    const x = LOGQ.shift();
     if (x.__id) LOGEL.delete(x.__id);
-    x.remove();
   }
-  if (stick) box.scrollTop = box.scrollHeight;
+  if (!logFrame) logFrame = requestAnimationFrame(logFlush);
 }
 function logResult(ev) {
   const el = LOGEL.get(ev.id);
