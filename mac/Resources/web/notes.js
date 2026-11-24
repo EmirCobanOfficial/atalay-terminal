@@ -4976,43 +4976,168 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
     return [...r.getClientRects()].filter((x) => x.width > 0.5 && x.height);
   }
   let cursRaf = 0;
+  const cursSeen = new Map(); // client id -> { k, at }: when its cursor last moved (its name shows for a moment after)
+  let cursHits = []; // where each friend's caret and margin bar are now, for the hover
+  let hoverCid = null;
+  let cursTimer = 0;
   function drawCursors() {
     if (cursRaf) return;
     cursRaf = requestAnimationFrame(() => {
       cursRaf = 0;
-      if (!sync || !model) return void curs.replaceChildren();
+      if (!sync || !model) {
+        cursHits = [];
+        return void curs.replaceChildren();
+      }
       const me = sync.prov.doc.clientID;
       const eb = ed.getBoundingClientRect();
-      curs.style.cssText = `left:${ed.offsetLeft}px;top:${ed.offsetTop}px;width:${ed.clientWidth}px;height:${ed.clientHeight}px`;
+      const layerW = ed.clientWidth;
+      curs.style.cssText = `left:${ed.offsetLeft}px;top:${ed.offsetTop}px;width:${layerW}px;height:${ed.clientHeight}px`;
       const html = [];
+      const hits = [];
+      const now = Date.now();
+      const live = new Set();
+      const lhOf = new Map(); // block id -> its line height, asked once per draw
+      let wait = 0;
       for (const [cid, st] of sync.prov.awareness.getStates()) {
         if (cid === me || !st || !st.u || !st.c || !st.c.b) continue;
         const color = /^#[0-9a-f]{6}$/i.test(st.u.color) ? st.u.color : '#ff8a3d';
         const A = model.absPos(st.c.a);
-        const H = st.c.h ? model.absPos(st.c.h) : A;
+        let H = st.c.h ? model.absPos(st.c.h) : A;
         if (!A || !H) continue;
+        live.add(cid);
         const pos = (rc) => `left:${(rc.left - eb.left).toFixed(1)}px;top:${(rc.top - eb.top).toFixed(1)}px;`;
+        // The lines a rect takes, in the layer's coordinates: the line box, not just the letters' box.
+        const lineOf = (rc, id) => {
+          let lh = lhOf.get(id);
+          if (lh === undefined) {
+            const t = textEl(id);
+            lh = (t && parseFloat(getComputedStyle(t).lineHeight)) || 0;
+            lhOf.set(id, lh);
+          }
+          lh = lh || rc.height;
+          const top = rc.top - Math.max(0, (lh - rc.height) / 2) - eb.top;
+          return { top, bot: top + Math.max(lh, rc.height) };
+        };
+        let first = null;
+        let last = null;
+        const note = (rc, id) => {
+          const l = lineOf(rc, id);
+          if (!first || l.top < first.top) first = l;
+          if (!last || l.bot > last.bot) last = l;
+        };
+        let anchor = null;
         // The selection (when the two ends differ), block by block.
         const ia = idx(A.id);
         const ih = idx(H.id);
         if (ia >= 0 && ih >= 0 && (ia !== ih || A.offset !== H.offset)) {
-          const [s, z] = ia < ih || (ia === ih && A.offset <= H.offset) ? [A, H] : [H, A];
+          const [s, z0] = ia < ih || (ia === ih && A.offset <= H.offset) ? [A, H] : [H, A];
+          let z = z0;
+          // A drag that ends at the very start of the next block marks nothing in that block: the selection ends at the end of
+          // the one before, and so does the caret.
+          if (z.offset === 0 && idx(z.id) > idx(s.id)) {
+            for (let i = idx(z.id) - 1; i >= idx(s.id); i--) {
+              const b = blocks[i];
+              if (b && !textless(b)) {
+                z = { id: b.id, offset: b.text.length };
+                break;
+              }
+            }
+            if (z0 === H) H = z;
+          }
           for (let i = idx(s.id); i <= idx(z.id); i++) {
             const b = blocks[i];
             if (!b || textless(b)) continue;
             const from = b.id === s.id ? s.offset : 0;
             const to = b.id === z.id ? z.offset : null;
-            for (const rc of spanRects(b.id, from, to)) html.push(`<i class="rc-sel" style="${pos(rc)}width:${rc.width.toFixed(1)}px;height:${rc.height.toFixed(1)}px;--c:${color}"></i>`);
+            for (const rc of spanRects(b.id, from, to)) {
+              html.push(`<i class="rc-sel" style="${pos(rc)}width:${rc.width.toFixed(1)}px;height:${rc.height.toFixed(1)}px;--c:${color}"></i>`);
+              note(rc, b.id);
+              if (!anchor) anchor = rc;
+            }
           }
         }
         const cr = caretRect(H.id, H.offset);
-        if (cr) html.push(`<i class="rc-caret" style="${pos(cr)}height:${cr.height.toFixed(1)}px;--c:${color}"><b>${esc(st.u.name)}</b></i>`);
+        if (cr) {
+          html.push(`<i class="rc-caret" style="${pos(cr)}height:${cr.height.toFixed(1)}px;--c:${color}"></i>`);
+          note(cr, H.id);
+          if (!anchor) anchor = cr;
+        }
+        if (!anchor || !first || !last) continue;
+        const Y0 = first.top;
+        const Y1 = last.bot;
+        if (!cr || last.top - first.top > 1) html.push(`<i class="rc-bar" style="top:${Y0.toFixed(1)}px;height:${(Y1 - Y0).toFixed(1)}px;--c:${color}"></i>`);
+        // The name: for a moment after the cursor moves, or while the mouse is near it.
+        const k = JSON.stringify(st.c);
+        let seen = cursSeen.get(cid);
+        if (!seen || seen.k !== k) cursSeen.set(cid, (seen = { k, at: now }));
+        const el = now - seen.at;
+        const x = anchor.left - eb.left - 1;
+        const caretX = cr ? cr.left - eb.left : x;
+        const hit = { cid, x: caretX, top: cr ? cr.top - eb.top : Y0, bot: cr ? cr.top - eb.top + cr.height : Y1, Y0, Y1, tag: null };
+        hits.push(hit);
+        const on = hoverCid === cid;
+        if (on || el < 2200) {
+          let top = Y0 - 13;
+          let cls = 'rc-tag';
+          if (top < 0) {
+            top = Y1 + 1;
+            cls += ' below';
+          }
+          let side = `left:${x.toFixed(1)}px;`;
+          if (x > layerW - 100) {
+            side = `right:${(layerW - x - 2).toFixed(1)}px;`;
+            cls += ' r';
+          }
+          if (on) cls += ' on';
+          // The tag itself counts as the friend's, so the mouse can go up onto it.
+          hit.tag = { x0: cls.includes(' r') ? x - 96 : x, x1: cls.includes(' r') ? x : x + 96, y0: top, y1: top + 12 };
+          const delay = on ? '' : `animation-delay:-${Math.max(0, Math.round(el))}ms;`;
+          html.push(`<b class="${cls}" style="${side}top:${top.toFixed(1)}px;${delay}--c:${color}">${esc(st.u.name)}</b>`);
+          if (!on) wait = Math.max(wait, 2250 - el);
+        }
       }
+      for (const cid of [...cursSeen.keys()]) if (!live.has(cid)) cursSeen.delete(cid);
+      cursHits = hits;
       curs.innerHTML = html.join('');
+      clearTimeout(cursTimer);
+      // The newest cursor's name is taken off when its time is up.
+      if (wait > 0) cursTimer = setTimeout(drawCursors, Math.min(...[...cursSeen.values()].map((v) => 2250 - (Date.now() - v.at)).filter((v) => v > 0), wait));
     });
   }
   ed.addEventListener('scroll', drawCursors, { passive: true });
   new ResizeObserver(drawCursors).observe(ed);
+  // The mouse near a friend's caret or margin bar brings their name back.
+  let hoverRaf = 0;
+  let hoverAt = null;
+  ed.addEventListener(
+    'mousemove',
+    (e) => {
+      if (!cursHits.length && hoverCid == null) return;
+      hoverAt = { x: e.clientX, y: e.clientY };
+      if (hoverRaf) return;
+      hoverRaf = requestAnimationFrame(() => {
+        hoverRaf = 0;
+        if (!hoverAt) return;
+        const eb = ed.getBoundingClientRect();
+        const px = hoverAt.x - eb.left;
+        const py = hoverAt.y - eb.top;
+        const hit = cursHits.find((h) => (Math.abs(px - h.x) <= 6 && h.top - 6 <= py && py <= h.bot) || (px <= 14 && h.Y0 <= py && py <= h.Y1) || (h.cid === hoverCid && h.tag && px >= h.tag.x0 && px <= h.tag.x1 && py >= h.tag.y0 - 2 && py <= h.tag.y1 + 2));
+        const cid = hit ? hit.cid : null;
+        if (cid !== hoverCid) {
+          hoverCid = cid;
+          drawCursors();
+        }
+      });
+    },
+    { passive: true },
+  );
+  ed.addEventListener('mouseleave', () => {
+    hoverAt = null;
+    if (hoverCid != null) {
+      hoverCid = null;
+      drawCursors();
+    }
+  });
   // My own: where my selection starts and ends, as places that stay with the letters.
   function pushCursor() {
     if (!sync || !model || placeholder) return;
@@ -5027,8 +5152,9 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
       pre.setEnd(node, off);
       return { id: b.id, at: Math.min(textOf(pre.cloneContents()).length, b.text.length) };
     };
-    const a = r && ed.contains(r.startContainer) ? at(r.startContainer, r.startOffset) : null;
-    const z = a && at(r.endContainer, r.endOffset);
+    // Where the cursor really is: the anchor and the focus, not the range's start and end (the others sort them).
+    const a = r && s.anchorNode && ed.contains(s.anchorNode) ? at(s.anchorNode, s.anchorOffset) : null;
+    const z = a && s.focusNode && ed.contains(s.focusNode) ? at(s.focusNode, s.focusOffset) : null;
     if (!a || !z) return void sync.prov.setCursor(null);
     sync.prov.setCursor({ b: a.id, a: model.relPos(a.id, a.at), h: model.relPos(z.id, z.at) });
   }
@@ -5094,6 +5220,15 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
   }
 
   const initial = (p) => esc((p.name || '?').trim().charAt(0).toUpperCase() || '?');
+  // The colour a person has in the others' cursors (what their awareness says), else one made from their id.
+  const faceColors = new Map(); // person id -> the colour last seen for them (kept after they leave)
+  const faceColor = (id) => {
+    if (sync && sync.hello && sync.hello.me && sync.hello.me.id === id && /^#[0-9a-f]{6}$/i.test(sync.hello.me.color)) faceColors.set(id, sync.hello.me.color);
+    if (sync && model) {
+      for (const st of sync.prov.awareness.getStates().values()) if (st && st.u && st.u.id === id && /^#[0-9a-f]{6}$/i.test(st.u.color)) faceColors.set(id, st.u.color);
+    }
+    return faceColors.get(id) || hue(id);
+  };
   const hue = (id) => `hsl(${[...String(id)].reduce((h, c) => (h * 31 + c.charCodeAt(0)) % 360, 7)} 62% 58%)`;
   // A person's picture in the share sheet: the signed address the API gives (friends list, note members), else the initial.
   // One that doesn't load (offline, gone) gives way to the initial, and isn't asked for again while the sheet is open.
@@ -5151,7 +5286,7 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
       const s = statusLine();
       const ppl = sh.members.filter((m) => !m.invited);
       const html =
-        `<span class="sh-faces">${ppl.slice(0, 4).map((m) => `<i style="background:${hue(m.id)}" title="${esc(handleOf(m))}">${initial(m)}</i>`).join('')}${ppl.length > 4 ? `<i class="more">+${ppl.length - 4}</i>` : ''}</span>` +
+        `<span class="sh-faces">${ppl.slice(0, 4).map((m) => `<i style="background:${faceColor(m.id)}" title="${esc(handleOf(m))}">${initial(m)}</i>`).join('')}${ppl.length > 4 ? `<i class="more">+${ppl.length - 4}</i>` : ''}</span>` +
         `<span class="sh-state ${s.cls}"><i class="sh-dot"></i>${esc(s.text)}</span>` +
         (sh.ai ? '<span class="sh-ai" title="The note’s owner lets AI read it">AI can read</span>' : '');
       if (shStrip.__h !== html) {
