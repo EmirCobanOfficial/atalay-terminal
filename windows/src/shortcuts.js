@@ -8,7 +8,9 @@
 // The Mac's keys with ⌘ as Ctrl and ⌥ as Alt, as far as a terminal lets them be: one whose Ctrl key the shell or the AI
 // needs takes Shift as well (⌘D would be Ctrl+D, the end of input: Split Vertically is Ctrl+Shift+D), and its Shift
 // variant then Alt too (⇧⌘D, Split Horizontally: Ctrl+Alt+Shift+D). No Ctrl+Alt with a letter alone: that is AltGr on many
-// keyboards (AltGr+T types ₺ on a Turkish one), so ⌥⌘T, New Tab Next to Current Tab, is Ctrl+Alt+Shift+T. The tab keys act
+// keyboards (AltGr+T types ₺ on a Turkish one). ⌘T, New Tab, is Windows Terminal's Ctrl+Shift+T rather than Ctrl+T,
+// which Claude Code (its task list) and Codex (its transcript) use: Undo Close (⇧⌘T) is then Ctrl+Alt+Shift+T, and
+// ⌥⌘T, New Tab Next to Current Tab, Ctrl+Alt+Shift+N. The tab keys act
 // only in a window with two tabs or more, the pane keys only in a split tab (TAB_ACTIONS, PANE_ACTIONS): elsewhere they
 // stay the shell's, Ctrl+[ its Esc among them.
 //
@@ -23,10 +25,11 @@ const ACTIONS = [
   // Its keys (its mouse button is the card's other row). Antigravity approves its subagents' steps with Ctrl+K: in a
   // terminal it runs in, the Ring's keys stay its own (pages/terminal.js).
   { id: 'shortcutsWheel', group: 'Chats', title: 'Ring', combo: 'ctrl+k' },
-  // A tab in the terminal window in front (a browser's Ctrl+T, the Mac's ⌘T): in the app's windows it comes before Claude
-  // Code's own Ctrl+T (its task list) and Codex's (its transcript). ⌥⌘T's Ctrl+Alt+T would be AltGr+T: Shift is added.
-  { id: 'newTab', group: 'Chats', title: 'New tab', combo: 'ctrl+t' },
-  { id: 'newTabNext', group: 'Chats', title: 'New tab next to the current one', combo: 'ctrl+alt+shift+t' },
+  // A tab in the terminal window in front (the Mac's ⌘T): Windows Terminal's Ctrl+Shift+T, so Ctrl+T stays Claude Code's
+  // (its task list) and Codex's (its transcript). ⌥⌘T, beside the current tab: Ctrl+Alt+Shift+N (Ctrl+Alt+N alone would
+  // be AltGr+N on many keyboards).
+  { id: 'newTab', group: 'Chats', title: 'New tab', combo: 'ctrl+shift+t' },
+  { id: 'newTabNext', group: 'Chats', title: 'New tab next to the current one', combo: 'ctrl+alt+shift+n' },
   // ⌘D's Ctrl+D is the shell's end of input (and Claude's exit): Shift is added, and ⇧⌘D takes Alt as well.
   { id: 'splitVertically', group: 'Chats', title: 'Split vertically', combo: 'ctrl+shift+d' },
   { id: 'splitHorizontally', group: 'Chats', title: 'Split horizontally', combo: 'ctrl+alt+shift+d' },
@@ -36,9 +39,9 @@ const ACTIONS = [
   // goes on). Ctrl+Shift+W closes the whole window, as ⇧⌘W on the Mac.
   { id: 'closePane', group: 'Chats', title: 'Close the tab or pane', combo: 'ctrl+w' },
   { id: 'closeWindow', group: 'Chats', title: 'Close the terminal window', combo: 'ctrl+shift+w' },
-  // iTerm2's Undo Close (the Mac's ⇧⌘T): the terminal hidden last, still running, comes back. Ctrl+Shift+T, as a
-  // browser reopens its closed tab.
-  { id: 'undoClose', group: 'Chats', title: 'Undo close', combo: 'ctrl+shift+t' },
+  // iTerm2's Undo Close (the Mac's ⇧⌘T): the terminal hidden last, still running, comes back. Ctrl+Alt+Shift+T: it was
+  // Ctrl+Shift+T until that became New Tab, as in Windows Terminal.
+  { id: 'undoClose', group: 'Chats', title: 'Undo close', combo: 'ctrl+alt+shift+t' },
   // The Mac's tab and pane keys (iTerm2's), ⌘ as Ctrl and ⌥ as Alt. ⌃⌘ and an arrow (a divider) can't be told from ⌘ and
   // an arrow here: Ctrl+Alt+Shift and the arrow. Move to a new window and merge have no keys, as on the Mac.
   { id: 'nextTab', group: 'Tabs and panes', title: 'Next tab', combo: 'ctrl+shift+]' },

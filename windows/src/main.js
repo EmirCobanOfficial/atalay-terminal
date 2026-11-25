@@ -2509,7 +2509,7 @@ function newFrame(place) {
     const hadKeys = win.isFocused();
     win.setParentWindow(null);
     win.hide();
-    // Undo Close (Ctrl+Shift+T) brings it back, the one hidden last first.
+    // Undo Close (Ctrl+Alt+Shift+T) brings it back, the one hidden last first.
     rememberClosed(live.includes(f.focus) ? f.focus : live[0]);
     // Windows leaves the keys with the hidden window (unpinned first, nothing under it takes them): Ctrl+Shift+N, the
     // Ring's keys, anything typed next went nowhere. The dashboard takes them, as the window under a closed one does
@@ -2818,7 +2818,7 @@ function renamePane(id, name) {
 }
 
 // ---------- the actions on tabs and panes (the menus, their keys, the chips) ----------
-/** File › New Tab (Ctrl+T) and New Tab Next to Current Tab: a shell in the folder of the pane in front; from the dashboard, the folder picker. */
+/** File › New Tab (Ctrl+Shift+T) and New Tab Next to Current Tab: a shell in the folder of the pane in front; from the dashboard, the folder picker. */
 function newTab(next = false, f = focusedFrame()) {
   if (!f) return void showOverlay('Overlay.newTerminal()');
   const cwd = paneCwd(f);

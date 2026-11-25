@@ -130,14 +130,15 @@ chats run in the app, through node-pty, and end with it.
   × hides it too. What runs goes on as a planet or car on the orbit, as ⌘W and ⇧⌘W do on the Mac; a click opens it
   again, in its tab. Its End button (or Window > End This Terminal), or a chip's ×, ends it.
 - The Mac's tab and pane keys with ⌘ as Ctrl and ⌥ as Alt (Settings › Shortcuts lists them), but where a shell needs
-  the Ctrl key: ⌘D (Split Vertically) is Ctrl+Shift+D and ⇧⌘D Ctrl+Alt+Shift+D, as Ctrl+D is the end of input; ⌥⌘T
-  (New Tab Next to Current Tab) is Ctrl+Alt+Shift+T, as Ctrl+Alt+T is AltGr+T (₺ on a Turkish keyboard); ⌃⌘ and an
-  arrow (a divider) is Ctrl+Alt+Shift and the arrow. Ctrl+T (New Tab) comes before Claude Code's own Ctrl+T (its task
-  list) and Codex's (its transcript) in the app's windows. The keys between tabs (Ctrl+Shift+] and [, Ctrl+1 to 9,
+  the Ctrl key: ⌘D (Split Vertically) is Ctrl+Shift+D and ⇧⌘D Ctrl+Alt+Shift+D, as Ctrl+D is the end of input; ⌘T
+  (New Tab) is Windows Terminal's Ctrl+Shift+T, as Ctrl+T is Claude Code's (its task list) and Codex's (its
+  transcript), so ⇧⌘T (Undo Close) is Ctrl+Alt+Shift+T and ⌥⌘T (New Tab Next to Current Tab) Ctrl+Alt+Shift+N (Ctrl+Alt
+  and a letter alone is AltGr on many keyboards: AltGr+T is ₺ on a Turkish one); ⌃⌘ and an
+  arrow (a divider) is Ctrl+Alt+Shift and the arrow. The keys between tabs (Ctrl+Shift+] and [, Ctrl+1 to 9,
   Windows' Ctrl+Tab too) act only in a window with two tabs or more, and the pane keys (Ctrl+] and [, Ctrl+Alt and an
   arrow, Ctrl+Shift+Enter to maximize) only in a split tab: elsewhere they go to the shell as before (Ctrl+[ is its Esc).
 - No four-finger click (Mac trackpads only): Ctrl and the middle mouse button (or Ctrl+K) open the Ring,
-  Ctrl+N a new file in Source Control's editor, Ctrl+Shift+N a new terminal, Ctrl+T a new tab, Ctrl+W and Ctrl+Shift+W
+  Ctrl+N a new file in Source Control's editor, Ctrl+Shift+N a new terminal, Ctrl+Shift+T a new tab, Ctrl+W and Ctrl+Shift+W
   close the tab or the window, in the terminal windows too (where they'd otherwise go to the shell); Ctrl++ and Ctrl+- there are the terminals' text size,
   as ⌘+ and ⌘− on the Mac. While Antigravity runs in one, its Ctrl+K is Antigravity's, which approves its subagents'
   steps with it.

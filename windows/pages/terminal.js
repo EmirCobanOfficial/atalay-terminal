@@ -362,8 +362,9 @@
   // everything in twice).
   // The keys the app takes in a terminal (Settings › Shortcuts, the app's shortcuts.js): every action's but the
   // dashboard's own (Ctrl+B, Ctrl+R stay the shell's). As it came: Ctrl+N (a new file in Source Control's editor),
-  // Ctrl+Shift+N (a new terminal), Ctrl+K (the Ring), Ctrl+T (a new tab), Ctrl+Shift+D (a split), Ctrl+W and Ctrl+Shift+W
-  // (close the tab or pane, the window: what runs in it goes on), as ⌘N, ⇧⌘N, ⌘K, ⌘T, ⌘D, ⌘W and ⇧⌘W are on the Mac. The
+  // Ctrl+Shift+N (a new terminal), Ctrl+K (the Ring), Ctrl+Shift+T (a new tab), Ctrl+Shift+D (a split), Ctrl+W and
+  // Ctrl+Shift+W (close the tab or pane, the window: what runs in it goes on), as ⌘N, ⇧⌘N, ⌘K, ⌘T, ⌘D, ⌘W and ⇧⌘W are on
+  // the Mac. Ctrl+T stays the shell's: Claude Code's task list, Codex's transcript. The
   // keys between tabs and panes aren't here: the app takes them before this page, and only in a window that has tabs or a
   // split (main.js's paneKeys). Changes come on term:keys, and whether Esc and the close keys are swapped (below).
   let keys = window.__keys || { app: ['ctrl+shift+n', 'ctrl+n', 'ctrl+k', 'ctrl+w', 'ctrl+shift+w'] };
