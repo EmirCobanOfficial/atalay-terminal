@@ -2488,6 +2488,9 @@ function newFrame(place) {
   // Where this window is and whether it shows decide where she can stand on it.
   for (const ev of ['move', 'resize', 'show', 'hide', 'minimize', 'restore', 'closed']) win.on(ev, () => mascot.terminalsChanged());
   for (const ev of ['resize', 'maximize', 'unmaximize', 'restore', 'enter-full-screen', 'leave-full-screen']) win.on(ev, () => layoutFrame(f));
+  // Alt shows the menu bar (autoHideMenuBar) and the content area loses its height with no resize event: the window's own
+  // view says so, and the panes fit in what's left (Claude's input line isn't cut off at the bottom).
+  win.contentView.on('bounds-changed', () => layoutFrame(f));
   // A window pinned above the dashboard is its child, and Windows minimizes an owned window to a bar on the desktop
   // rather than the taskbar: it lets go of the dashboard on its way to the taskbar and pins again when it comes back,
   // as on the Mac.
@@ -2509,7 +2512,13 @@ function newFrame(place) {
     const hadKeys = win.isFocused();
     win.setParentWindow(null);
     win.hide();
-    // Undo Close (Ctrl+Alt+Shift+T) brings it back, the one hidden last first.
+    // Undo Close brings it back, the one hidden last first: by any of its terminals that still runs then (the one with the
+    // keys first). Panes closed out of other windows earlier and put here since don't go back there any more.
+    for (const id of live) {
+      const c = chats.get(id);
+      if (c) c.closedFrom = null;
+      if (id !== f.focus) rememberClosed(id);
+    }
     rememberClosed(live.includes(f.focus) ? f.focus : live[0]);
     // Windows leaves the keys with the hidden window (unpinned first, nothing under it takes them): Ctrl+Shift+N, the
     // Ring's keys, anything typed next went nowhere. The dashboard takes them, as the window under a closed one does
@@ -2626,7 +2635,7 @@ function frontOf(f, t = f.active) {
 
 /** Where the panes of the tab in front go: under the bar when there's one. */
 function areaOf(f) {
-  const [width, height] = f.win.getContentSize();
+  const { width, height } = f.win.contentView.getBounds();
   const top = f.tabs.length > 1 ? TAB_BAR : 0;
   return { x: 0, y: top, width, height: Math.max(0, height - top) };
 }
@@ -2665,6 +2674,9 @@ function focusPane(f, id) {
   if (f.win.isVisible()) f.views.get(id).webContents.focus();
   const c = chats.get(id);
   if (c) sendInfo(id, c);
+  // The menu's terminal items (Copy Claude's Last Reply…) and worktree items follow the pane with the keys.
+  syncTerminalItems();
+  syncShipMenu();
 }
 
 // A pane's page took the keys (a click, or focusPane): it's the window's own now.
@@ -2677,6 +2689,7 @@ function paneFocused(id) {
     layoutFrame(f);
     const c = chats.get(id);
     if (c) sendInfo(id, c);
+    syncTerminalItems();
     syncShipMenu();
   }
   if (chats.has(id)) touchTerminal(id);
@@ -2725,12 +2738,16 @@ ipcMain.on('term:tabs', (e, q) => {
       if (i >= 0) focusPane(f, frontOf(f, i));
       return;
     case 'close':
-      if (i >= 0) closeTabAsked(f, f.tabs[i]);
+      // Ended or kept (Cancel), the keys go back to the pane in front.
+      if (i >= 0) closeTabAsked(f, f.tabs[i]).then(() => frames.has(f) && focusPane(f, f.focus));
       return;
     case 'rename':
       if (i >= 0 && typeof q.name === 'string') renamePane(frontOf(f, i), q.name);
       return focusPane(f, f.focus);
     case 'renamed':
+      return focusPane(f, f.focus);
+    // A divider let go, a click on the bar's empty part: the keys go back to the pane that had them.
+    case 'back':
       return focusPane(f, f.focus);
     // A chip's name being typed: the keys go to the bar's page meanwhile.
     case 'renaming':
@@ -2777,7 +2794,7 @@ function tabMenu(f, i, q) {
     { label: 'Close Tab', click: () => at() >= 0 && closeTabAsked(f, node) },
     { label: 'Close Other Tabs', enabled: f.tabs.length > 1, click: () => at() >= 0 && closeOtherTabs(f, node) },
   ];
-  Menu.buildFromTemplate(items).popup({ window: f.win, ...barPoint(f, q) });
+  barMenu(f, items, q);
 }
 
 // "»": every tab, the one in front ticked, for a bar too narrow to show them all.
@@ -2787,7 +2804,17 @@ function tabList(f, q) {
     const name = `${i < 9 ? `${i + 1}  ` : ''}${clip(info.title || 'terminal', 60)}`.replace(/&/g, '&&');
     return { label: name, type: 'checkbox', checked: i === f.active, click: () => f.tabs.includes(node) && focusPane(f, frontOf(f, f.tabs.indexOf(node))) };
   });
-  Menu.buildFromTemplate(items).popup({ window: f.win, ...barPoint(f, q) });
+  barMenu(f, items, q);
+}
+
+// A menu over the bar: closed with nothing picked, the keys go back to the pane that had them (a pick sees to them).
+function barMenu(f, items, q) {
+  let picked = false;
+  const wrap = (it) => (it.click ? { ...it, click: () => ((picked = true), it.click()) } : it);
+  Menu.buildFromTemplate(items.map(wrap)).popup({
+    window: f.win, ...barPoint(f, q),
+    callback: () => setTimeout(() => !picked && !f.win.isDestroyed() && focusPane(f, f.focus), 0),
+  });
 }
 
 // Rename Tab… (the menu's, a double-click's is the page's own): the chip's name is edited in place, in the bar's page.
@@ -2908,7 +2935,7 @@ function moveDivider(f, dx, dy) {
 /**
  * The tab and pane keys as a terminal's page gets them (its before-input-event): true when window `f` acted on one, which
  * the page then never sees. The tab keys act only with two tabs or more, the pane keys only in a split tab: otherwise
- * they reach the shell as before (Ctrl+[ is Esc there, Ctrl+Tab a Tab).
+ * they reach the shell as before (Ctrl+Tab is a Tab there).
  */
 function paneKeys(f, input) {
   if (!f || f.win.isDestroyed() || input.type !== 'keyDown') return false;
@@ -3146,12 +3173,14 @@ function showFrame(f, id) {
 let layoutRestored = false, layoutTimer = null;
 function saveLayout() {
   if (!layoutRestored || quitting || layoutTimer) return;
-  layoutTimer = setTimeout(() => {
-    layoutTimer = null;
-    if (quitting) return;
-    const list = [...frames].filter((f) => f.views.size > 1).map((f) => ({ tabs: f.tabs, active: f.active }));
-    settings.set('terminalLayout', list.length ? list : undefined);
-  }, 1000);
+  layoutTimer = setTimeout(() => !quitting && writeLayout(), 1000);
+}
+/** The layout written now: a second after a change, or at once when the app quits with one waiting (leave). */
+function writeLayout() {
+  clearTimeout(layoutTimer);
+  layoutTimer = null;
+  const list = [...frames].filter((f) => f.views.size > 1).map((f) => ({ tabs: f.tabs, active: f.active }));
+  settings.set('terminalLayout', list.length ? list : undefined);
 }
 /** The sessions back from the last launch (terminals.restore), hidden, in the windows, tabs and splits they were in. */
 function restoreWindows(found, read = true) {
@@ -3181,6 +3210,8 @@ function restoreWindows(found, read = true) {
     layoutFrame(f);
   }
   for (const id of live) open(id);
+  // Not when the last launch's couldn't be read (the session host failed): the layout kept stays for the next launch.
+  if (!read) return;
   layoutRestored = true;
   saveLayout();
 }
@@ -5382,6 +5413,8 @@ app.on('before-quit', (e) => {
 
 // Quitting for good: the chats running in the session host go on, the parts stop.
 function leave() {
+  // A layout change of the last second is written before the windows go.
+  if (layoutTimer) writeLayout();
   quitting = true;
   // A clean up under way: what runs finishes, nothing more starts (its log says so).
   cleanup.quitting();

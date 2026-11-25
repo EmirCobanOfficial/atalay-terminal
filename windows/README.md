@@ -135,8 +135,10 @@ chats run in the app, through node-pty, and end with it.
   transcript), so ⇧⌘T (Undo Close) is Ctrl+Alt+Shift+T and ⌥⌘T (New Tab Next to Current Tab) Ctrl+Alt+Shift+N (Ctrl+Alt
   and a letter alone is AltGr on many keyboards: AltGr+T is ₺ on a Turkish one); ⌃⌘ and an
   arrow (a divider) is Ctrl+Alt+Shift and the arrow. The keys between tabs (Ctrl+Shift+] and [, Ctrl+1 to 9,
-  Windows' Ctrl+Tab too) act only in a window with two tabs or more, and the pane keys (Ctrl+] and [, Ctrl+Alt and an
-  arrow, Ctrl+Shift+Enter to maximize) only in a split tab: elsewhere they go to the shell as before (Ctrl+[ is its Esc).
+  Windows' Ctrl+Tab too) act only in a window with two tabs or more, and the pane keys (Ctrl+Alt and an arrow,
+  Ctrl+Shift+Enter to maximize) only in a split tab: elsewhere they go to the shell as before. ⌘] and ⌘[ (the next and
+  previous pane) have no keys as they come, as Ctrl+[ is Esc in a terminal (vim, Claude Code, less) and Ctrl+] telnet's
+  escape; Settings › Shortcuts can give them some.
 - No four-finger click (Mac trackpads only): Ctrl and the middle mouse button (or Ctrl+K) open the Ring,
   Ctrl+N a new file in Source Control's editor, Ctrl+Shift+N a new terminal, Ctrl+Shift+T a new tab, Ctrl+W and Ctrl+Shift+W
   close the tab or the window, in the terminal windows too (where they'd otherwise go to the shell); Ctrl++ and Ctrl+- there are the terminals' text size,

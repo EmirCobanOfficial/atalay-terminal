@@ -89,6 +89,10 @@
     const r = more.getBoundingClientRect();
     tell({ type: 'more', x: Math.round(r.left), y: Math.round(r.bottom + 2) });
   });
+  // The bar takes no typing: a click on its empty part gives the keys back to the pane that had them.
+  bar.addEventListener('click', (e) => {
+    if (editing < 0 && (e.target === bar || e.target === chips)) tell({ type: 'back' });
+  });
 
   // The chip's name, edited in place: Enter keeps it (empty goes back to the one it's given), Esc or a click away drops it.
   function rename(i) {
@@ -152,9 +156,11 @@
           });
         }
       });
+      // Let go, the keys go back to the pane that had them.
       const end = (e) => {
         if (g.hasPointerCapture(e.pointerId)) g.releasePointerCapture(e.pointerId);
         g.classList.remove('drag');
+        tell({ type: 'back' });
       };
       g.addEventListener('pointerup', end);
       g.addEventListener('pointercancel', end);

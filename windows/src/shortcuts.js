@@ -12,7 +12,8 @@
 // which Claude Code (its task list) and Codex (its transcript) use: Undo Close (⇧⌘T) is then Ctrl+Alt+Shift+T, and
 // ⌥⌘T, New Tab Next to Current Tab, Ctrl+Alt+Shift+N. The tab keys act
 // only in a window with two tabs or more, the pane keys only in a split tab (TAB_ACTIONS, PANE_ACTIONS): elsewhere they
-// stay the shell's, Ctrl+[ its Esc among them.
+// stay the shell's. ⌘] and ⌘[ (the next and previous pane) have no keys as they come: Ctrl+[ is Esc in a terminal (vim,
+// Claude Code, less) and Ctrl+] telnet's escape, even in a split; Ctrl+Alt and an arrow move between panes.
 //
 // The Ring opens two ways, as on the Mac: the mouse (the Mac's trackpad click; here the middle button, with Ctrl or
 // without, or not at all: "ringMouse") and keys set for it (Ctrl+K as it came). Esc and the close keys can swap places
@@ -50,8 +51,9 @@ const ACTIONS = [
   { id: 'moveTabRight', group: 'Tabs and panes', title: 'Move the tab right', combo: 'ctrl+alt+shift+]' },
   { id: 'moveTabToNewWindow', group: 'Tabs and panes', title: 'Move the tab to a new window', combo: '' },
   { id: 'mergeAllWindows', group: 'Tabs and panes', title: 'Merge all windows', combo: '' },
-  { id: 'nextPane', group: 'Tabs and panes', title: 'Next pane', combo: 'ctrl+]' },
-  { id: 'previousPane', group: 'Tabs and panes', title: 'Previous pane', combo: 'ctrl+[' },
+  // No keys as they come (Ctrl+] and Ctrl+[ are the terminal's, Ctrl+[ its Esc): Ctrl+Alt and an arrow do it.
+  { id: 'nextPane', group: 'Tabs and panes', title: 'Next pane', combo: '' },
+  { id: 'previousPane', group: 'Tabs and panes', title: 'Previous pane', combo: '' },
   { id: 'paneAbove', group: 'Tabs and panes', title: 'Pane above', combo: 'ctrl+alt+up' },
   { id: 'paneBelow', group: 'Tabs and panes', title: 'Pane below', combo: 'ctrl+alt+down' },
   { id: 'paneLeft', group: 'Tabs and panes', title: 'Pane on the left', combo: 'ctrl+alt+left' },
