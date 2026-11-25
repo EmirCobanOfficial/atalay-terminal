@@ -396,13 +396,13 @@ function createNotesAI({ settings, dialog, parent, notesStore, noteWindows, term
     asking = true;
     try {
       const write = want === 'write';
-      // The Mac's NotesAIBridge words (its list of AIs as this app has them; shared notes only with their owner's leave).
+      // The Mac's NotesAIBridge words (its list of AIs as this app has them; a shared note by its owner's AI, others' only with the owner's leave).
       const options = {
         type: write ? 'warning' : 'info',
         message: write ? 'Let AI read and edit your notes?' : 'Let AI read your notes?',
         detail: write
-          ? "AI in Orbiterm's terminals (Claude Code, Codex, Antigravity, Cursor) and Claude Desktop, if you connect it, will be able to read all your notes, add to them, change them, make new ones and pin or open them on your screen. Shared notes are read only when their owner allows it. What they read goes to their provider. Passwords and keys are hidden first, but everything else in a note is sent. Every change shows on the note with Undo. You can turn this off at any time."
-          : "AI in Orbiterm's terminals (Claude Code, Codex, Antigravity, Cursor) and Claude Desktop, if you connect it, will be able to read all your notes, never change them. Shared notes are read only when their owner allows it. What they read goes to their provider. Passwords and keys are hidden first, but everything else in a note is sent. Hide a note from AI with its eye. You can turn this off at any time.",
+          ? "AI in Orbiterm's terminals (Claude Code, Codex, Antigravity, Cursor) and Claude Desktop, if you connect it, will be able to read all your notes, add to them, change them, make new ones and pin or open them on your screen. A shared note is read by the AI of its owner, and by others' AI only when its owner allows it. What they read goes to their provider. Passwords and keys are hidden first, but everything else in a note is sent. Every change shows on the note with Undo. You can turn this off at any time."
+          : "AI in Orbiterm's terminals (Claude Code, Codex, Antigravity, Cursor) and Claude Desktop, if you connect it, will be able to read all your notes, never change them. A shared note is read by the AI of its owner, and by others' AI only when its owner allows it. What they read goes to their provider. Passwords and keys are hidden first, but everything else in a note is sent. Hide a note from AI with its eye. You can turn this off at any time.",
         buttons: ['Cancel', write ? 'Allow reading and editing' : 'Allow reading'],
         // Cancel is the one Enter presses, and Esc's.
         defaultId: 0,
