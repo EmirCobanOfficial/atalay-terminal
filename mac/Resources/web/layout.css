@@ -71,11 +71,17 @@ body:has(#app.pl-cols) { cursor: col-resize; }
 
 /* one column (a narrow window): the page's own layout, nothing to drag */
 @media (max-width: 920px) {
-  #app.lay-w, #app.lay-h { grid-template-columns: 1fr; grid-template-rows: auto; }
+  #app.lay-w, #app.lay-h { grid-template-columns: 48px minmax(0, 1fr); grid-template-rows: auto; }
+  /* a view in the dashboard's place (Source Control, friends, the board…): the window's height, beside the activity
+     bar, as in the full layout; nothing of the page to scroll past */
+  #app.git-mode, #app.cloud-mode { height: 100vh; grid-template-rows: auto minmax(0, 1fr) 22px; }
+  #app.git-mode #activity, #app.cloud-mode #activity { grid-row: 2; position: relative; top: auto; height: auto; align-self: stretch; }
+  #app.git-mode #git, #app.cloud-mode .cv { grid-row: 2; }
+  body:has(#app.git-mode, #app.cloud-mode) { overflow: hidden; }
   #right, #bottom { flex-direction: column; }
   #right > .pl-panel, #bottom > .pl-panel { flex: none !important; }
   .pl-sash, .pl-gsash { display: none !important; }
   .pl-panel > header { cursor: default; }
-  #app.no-right #mapwrap { grid-column: 1; }
+  #app.no-right #mapwrap { grid-column: 2; }
   #app.no-bottom #sessions, #app.no-bottom #mapwrap, #app.no-bottom #right { grid-row: auto; }
 }

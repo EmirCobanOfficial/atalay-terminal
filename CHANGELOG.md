@@ -12,6 +12,7 @@ Each version's lines are its release notes: the app lists them on its "what's ne
 - Orbit map: the legend's colours match the planets on every theme. Thanks to @Svobodennn on GitHub, Svoboden#8628 in the app (PR #58)
 - Dashboard: a tool result no longer restyles the whole page, so a busy dashboard uses less CPU. Thanks to @EmirCobanOfficial on GitHub, EmirMac#7124 in the app (PR #59)
 - Dashboard: nothing is drawn while it is minimized or hidden, and it catches up when you bring it back. XP, hours, sounds and notifications carry on as before. Thanks to @EmirCobanOfficial on GitHub, EmirMac#7124 in the app (PR #60)
+- Dashboard in a narrow window (on Windows, a smaller window with the chat list open): the activity bar stays a slim column on the left instead of a wide block above the map, and Source Control, friends and the other views fill the window
 
 ## 0.27.0
 

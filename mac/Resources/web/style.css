@@ -492,9 +492,12 @@ body::after {
 }
 @media (max-width: 920px) {
   body { overflow: auto; }
-  #app { height: auto; grid-template-columns: 1fr; grid-template-rows: auto; }
+  /* The page's parts in one column; the activity bar (git.css) keeps its 48px column on their left, as in the full
+     layout. Windows reaches this width often: its chat list shares the window with the dashboard. */
+  #app { height: auto; grid-template-columns: 48px minmax(0, 1fr); grid-template-rows: auto; }
   #top { flex-wrap: wrap; }
-  #sessions, #mapwrap, #right, #bottom, #ticker { grid-column: 1; grid-row: auto; }
+  #sessions, #mapwrap, #right, #bottom { grid-column: 2; grid-row: auto; }
+  #ticker { grid-column: 1 / -1; grid-row: auto; }
   #mapwrap { height: 70vh; }
   #bottom { grid-template-columns: 1fr; }
   #bottom .panel { height: 240px; }
