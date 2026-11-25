@@ -3044,9 +3044,13 @@ function closePane(id) {
     return;
   }
   const b = f.win.getBounds();
+  // As the Mac's adoptPane: a split pane comes back split the same way, a tab as a tab.
+  const t = f.tabs.findIndex((n) => panes.has(n, id));
+  const dir = t >= 0 ? panes.dirOf(f.tabs[t], id) : null;
   takePane(id);
   addPane(newFrame(b), id, 'tab');
   c.closedFrom = f;
+  c.closedAs = dir === 'row' ? 'right' : dir === 'col' ? 'down' : 'tab';
   rememberClosed(id);
   if (activeTerminalId === id) {
     activeTerminalId = null;
@@ -3232,10 +3236,17 @@ function undoClose() {
     const id = closedTerminals.pop();
     const c = chats.get(id);
     if (!(c && c.win && !c.win.isDestroyed() && !c.win.isVisible() && !c.steppedAside && terminals.has(id))) continue;
-    const back = c.closedFrom;
+    const back = c.closedFrom, as = c.closedAs;
     c.closedFrom = null;
+    c.closedAs = null;
     if (back && frames.has(back) && !back.win.isDestroyed() && back.win.isVisible() && c.frame.views.size === 1) {
-      moveTab(c.frame, 0, back, back.tabs.length, true);
+      // A split pane splits off the last pane of the tab shown there (the Mac's adoptPane); a tab comes back a tab.
+      const shown = back.tabs[back.active];
+      if ((as === 'right' || as === 'down') && shown) {
+        const last = panes.ids(shown).pop();
+        takePane(id);
+        addPane(back, id, as, last);
+      } else moveTab(c.frame, 0, back, back.tabs.length, true);
       return void showFrame(back, id);
     }
     return void showChat(id);

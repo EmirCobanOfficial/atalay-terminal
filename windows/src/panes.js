@@ -149,4 +149,15 @@ function neighbor(rects, id, dx, dy) {
   return best;
 }
 
-module.exports = { ids, has, insert, remove, clean, layout, at, setDivider, neighbor };
+/** The way the split right around terminal `id` runs ("row" or "col"), or null when `id` is a tab of its own. */
+function dirOf(node, id) {
+  if (!node || leaf(node)) return null;
+  if (node.kids.includes(id)) return node.dir;
+  for (const k of node.kids) {
+    const d = dirOf(k, id);
+    if (d) return d;
+  }
+  return null;
+}
+
+module.exports = { ids, has, insert, remove, clean, layout, at, setDivider, neighbor, dirOf };
