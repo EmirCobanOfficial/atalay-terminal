@@ -362,9 +362,10 @@
   // everything in twice).
   // The keys the app takes in a terminal (Settings › Shortcuts, the app's shortcuts.js): every action's but the
   // dashboard's own (Ctrl+B, Ctrl+R stay the shell's). As it came: Ctrl+N (a new file in Source Control's editor),
-  // Ctrl+Shift+N (a new terminal), Ctrl+K (the Ring), Ctrl+W and Ctrl+Shift+W (close the window: what runs in it goes
-  // on), as ⌘N, ⇧⌘N, ⌘K, ⌘W and ⇧⌘W are on the Mac. Changes come on term:keys, and
-  // whether Esc and the close keys are swapped (below).
+  // Ctrl+Shift+N (a new terminal), Ctrl+K (the Ring), Ctrl+T (a new tab), Ctrl+Shift+D (a split), Ctrl+W and Ctrl+Shift+W
+  // (close the tab or pane, the window: what runs in it goes on), as ⌘N, ⇧⌘N, ⌘K, ⌘T, ⌘D, ⌘W and ⇧⌘W are on the Mac. The
+  // keys between tabs and panes aren't here: the app takes them before this page, and only in a window that has tabs or a
+  // split (main.js's paneKeys). Changes come on term:keys, and whether Esc and the close keys are swapped (below).
   let keys = window.__keys || { app: ['ctrl+shift+n', 'ctrl+n', 'ctrl+k', 'ctrl+w', 'ctrl+shift+w'] };
   atl.on('term:keys', (k) => {
     if (k && Array.isArray(k.app)) keys = k;
@@ -463,7 +464,7 @@
   // Its end, said as the Mac's window says it (processTerminated): a chat's when an AI was what ran in it last, else a
   // terminal's.
   let wasAI = false;
-  atl.on('term:exit', () => term.write(`\r\n\x1b[2m[${wasAI ? 'chat' : 'terminal'} ended · close this window to remove it]\x1b[0m\r\n`));
+  atl.on('term:exit', () => term.write(`\r\n\x1b[2m[${wasAI ? 'chat' : 'terminal'} ended · close it to remove it]\x1b[0m\r\n`));
   // The bell (BEL) to the app, which rings it; a program spilling bells (binary output) rings it a few times a second.
   let bellAt = 0;
   term.onBell(() => {
@@ -860,6 +861,52 @@
     atl.ask('term:pin').then((r) => r && typeof r.pinned === 'boolean' && setPin(r.pinned), () => {});
   };
   document.getElementById('end').onclick = () => atl.send('term:end');
+  // ---------- one of several panes (the app's tabs and splits, the Mac's pane title bar) ----------
+  // The strip is the pane's title bar: in a split, the panes without the keys dim a little, as in iTerm2, and the one
+  // with them is marked. A double click on its name renames it in place (Enter keeps it, empty goes back to the one it's
+  // given, Esc drops it); a right click on the strip has Rename and the moves to a tab or a window of its own.
+  atl.on('term:pane', (p) => {
+    const several = !!p && p.panes > 1;
+    document.body.classList.toggle('pane-split', several);
+    document.body.classList.toggle('pane-off', several && !p.focused);
+  });
+  let renaming = false;
+  const renameTitle = () => {
+    if (renaming) return;
+    renaming = true;
+    const input = document.createElement('input');
+    input.id = 'rename';
+    input.value = info.title || '';
+    input.setAttribute('aria-label', 'Name');
+    titleEl.hidden = true;
+    titleEl.after(input);
+    let done = false;
+    const finish = (keep) => {
+      if (done) return;
+      done = true;
+      renaming = false;
+      if (keep) atl.send('term:rename', input.value);
+      input.remove();
+      titleEl.hidden = false;
+      term.focus();
+      fitHud();
+    };
+    input.addEventListener('keydown', (e) => {
+      if (e.isComposing) return;
+      if (e.key === 'Enter') finish(true);
+      else if (e.key === 'Escape') finish(false);
+      e.stopPropagation();
+    });
+    input.addEventListener('blur', () => finish(false));
+    input.focus();
+    input.select();
+  };
+  titleEl.addEventListener('dblclick', renameTitle);
+  atl.on('term:renameStart', renameTitle);
+  hudEl.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    atl.send('term:paneMenu');
+  });
   term.focus();
   atl.send('term:ready', size());
 })();

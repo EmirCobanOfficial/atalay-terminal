@@ -120,6 +120,7 @@ const { createDesk } = require('./deskhelper');
 const { createMascotAsset } = require('./mascotasset');
 const { createShareCard } = require('./sharecard');
 const { createShortcuts } = require('./shortcuts');
+const panes = require('./panes');
 const { createEnvBridge } = require('./envbridge');
 const { createEnvNative } = require('./envnative');
 const { createGitShip } = require('./gitship');
@@ -198,7 +199,7 @@ function shortcutsChanged() {
     b.ringMouse = shortcuts.ringMouse();
     if (b.keys) b.keys = keys;
   }
-  for (const c of chats.values()) send(c.win, 'term:keys', keys);
+  for (const c of chats.values()) send(c.page, 'term:keys', keys);
   for (const wc of webContents.getAllWebContents()) if (!wc.isDestroyed()) wc.send('atl:ringMouse', shortcuts.ringMouse());
   pushChatsKeys();
 }
@@ -216,7 +217,9 @@ let escMuteUntil = 0;
 // each page is as wide as its part of the window).
 let dash = null, dashView = null, chatsView = null;
 const boots = new Map(); // webContents id -> what its preload asks for before the page loads
-const chats = new Map(); // terminal window id -> { win, sessionId, cwd, claude, title, startedAt, steppedAside, envDirty }
+// A terminal's `page` is its own view (pages/terminal.js); `win` is the window it's a tab or a pane of (its `frame`'s),
+// and so are `steppedAside` and `pinned`: a window's tabs show, hide and pin together (openChatWindow).
+const chats = new Map(); // terminal id -> { page, frame, win, sessionId, cwd, claude, title, startedAt, steppedAside, envDirty }
 let activeTerminalId = null;
 const panels = { notices: null, chats: new Map(), showing: new Set() }; // the messages panels: the corner's notices, friends' chats
 // The dashboard's streamer mode: made-up names in the chats list, the chat windows and the notices too (streamer.js).
@@ -269,18 +272,20 @@ const savers = createSavers({
 const keptWins = new Set();
 const terminals = createTerminals({
   extraPath: savers.binDir,
-  onData: (id, data) => send(chats.get(id)?.win, 'term:data', data),
+  onData: (id, data) => send(chats.get(id)?.page, 'term:data', data),
   onExit(id) {
     const c = chats.get(id);
     if (c) {
-      send(c.win, 'term:exit');
-      // A plain terminal closes with its shell; a chat's window stays to show how it ended until it's closed. One a
-      // worktree's delete ended (keepWindow) stays too, saying ENDED, as on the Mac (spec 9.2: no window is closed).
+      send(c.page, 'term:exit');
+      // A plain terminal closes with its shell (its tab or pane, the window when it was the last); a chat's stays to show
+      // how it ended until it's closed. One a worktree's delete ended (keepWindow) stays too, saying ENDED, as on the Mac
+      // (spec 9.2: no window is closed).
       if (c.keepWindow) {
-        send(c.win, 'term:info', { ...chatInfo(id, c), status: 'ended' });
+        send(c.page, 'term:info', { ...chatInfo(id, c), status: 'ended' });
         keptWins.add(c.win);
-      } else if (!c.claude && c.win && !c.win.isDestroyed()) c.win.destroy();
+      } else if (!c.claude) dropPane(id);
       chats.delete(id);
+      if (c.frame) pushBar(c.frame);
       toDash(`terminalGone(${JSON.stringify(id)})`);
       pushWinOpen();
       pushChats();
@@ -632,9 +637,11 @@ const runaways = createRunaways({
 // and agreed to on its summary.
 const cleanup = createCleanup({
   runaways, engine, terminals, streamer, settings, shell,
+  // A terminal's window, "focused" only while that terminal is its tab and pane in front.
   chatWindow: (id) => {
     const c = chats.get(id);
-    return c && c.win && !c.win.isDestroyed() ? c.win : null;
+    const win = c && c.win && !c.win.isDestroyed() ? c.win : null;
+    return win && { isDestroyed: () => win.isDestroyed(), isFocused: () => win.isFocused() && c.frame && c.frame.focus === id };
   },
   // Env changes not saved in its window are asked about first: false when the user kept it.
   endTerminal: (id) => endTerminalAsked(id),
@@ -739,8 +746,12 @@ function mascotHideTerminal(id) {
 // The terminal windows on screen, for her to walk on: only those whose close just hides them can be closed by her.
 function mascotTerminals() {
   const out = [];
+  const seen = new Set();
   for (const [id, c] of chats) {
     if (!c.win || c.win.isDestroyed() || !c.win.isVisible() || c.win.isMinimized()) continue;
+    // A window of several tabs or panes is one for her: the terminal with its keys speaks for it.
+    if (seen.has(c.win) || (c.frame.focus !== id && chats.has(c.frame.focus))) continue;
+    seen.add(c.win);
     const live = terminals.has(id);
     const status = live ? mascotStatus(id, c) : 'ended';
     out.push({ id, sid: c.sessionId || '', canClose: live, status: status === 'idle' || status === 'busy' || status === 'waiting' ? status : 'idle', win: c.win });
@@ -826,7 +837,11 @@ const notesAI = createNotesAI({
 const mcp = createMcp({
   settings, engine, terminals, which, codexHooks, source: path.join(__dirname, 'mcpbridge.cs'),
   tag: RELEASE && !STAGING && !profileSuffix() ? '' : RELEASE || profileSuffix() ? 's' : 'd',
-  chatWindow: (id) => chats.get(id)?.win || null,
+  // The terminal's own page (its view), whatever window it's a tab or a pane of.
+  chatWindow: (id) => {
+    const wc = pageOf(chats.get(id)?.page);
+    return wc && { webContents: wc, isDestroyed: () => wc.isDestroyed() };
+  },
   parentWindow: () => dash,
   push: (json) => toDash(`mcp(${json})`),
   // Asked only once the app runs (start, refresh), after notesAI is made.
@@ -869,18 +884,20 @@ function shipTopOf(id, c) {
 
 // What a terminal window's header shows (term:ship), sent when its worktree's status changes or it comes to the front.
 function pushShipWindow(id, c) {
-  if (!c || !c.win || c.win.isDestroyed()) return;
+  const wc = c && pageOf(c.page);
+  if (!wc) return;
   const top = shipTopOf(id, c);
   const was = c.wtTop || null;
   c.wtTop = top;
-  const key = c.win.webContents.id;
+  const key = wc.id;
   if (!top) {
-    if (was) send(c.win, 'term:ship', null);
+    if (was) send(c.page, 'term:ship', null);
     shipWins.delete(key);
     return;
   }
   const w = shipWins.get(key);
-  const entry = w && w.top === top ? w : { win: c.win, id, top, sent: '' };
+  // `win`: the terminal's page (its view), and `chat`, for the window its menu opens over.
+  const entry = w && w.top === top ? w : { win: c.page, chat: c, id, top, sent: '' };
   shipWins.set(key, entry);
   if (top !== was) worktreeShip.refresh(top);
   shipSend(entry, worktreeShip.headerView(top));
@@ -1003,8 +1020,8 @@ function showSourceControl(root) {
 // Usable when that window is a worktree's and its status allows it; "Merge into develop…" names that worktree's base, and
 // a dimmed item says why in its label (menuLabel: Windows menus show no tooltip).
 function shipMenuState() {
-  const w = BrowserWindow.getFocusedWindow();
-  const c = w && [...chats.values()].find((x) => x.win === w);
+  const f = focusedChat();
+  const c = f && f[1];
   const top = c && c.wtTop;
   const st = top ? worktreeShip.status(top) : null;
   const its = st && !worktreeShip.isDeleted(top) && !worktreeShip.isBusy(top) ? worktreeShip.items(st) : [];
@@ -1041,8 +1058,7 @@ function syncShipMenu() {
 
 // A menu item or its key: the sheet of the window in front.
 function shipMenu(id) {
-  const w = BrowserWindow.getFocusedWindow();
-  const found = w && [...chats.entries()].find(([, x]) => x.win === w);
+  const found = focusedChat();
   if (!found || !found[1].wtTop) return;
   worktreeShip.handle(id, found[1].wtTop, found[0]);
 }
@@ -1127,7 +1143,7 @@ const termFontSize = () => {
 function setTermFont(size) {
   const n = Math.min(24, Math.max(9, Math.round(Number(size) || TERM_FONT)));
   settings.set('terminalFontSize', n);
-  for (const c of chats.values()) send(c.win, 'term:font', n);
+  for (const c of chats.values()) send(c.page, 'term:font', n);
 }
 // The terminals' font family (termfont.js, the Mac's TerminalFont.swift): the pick, or Windows' usual one. A pick (or ""
 // for the usual one) is set and every open terminal changes at once; the answer is what Settings shows.
@@ -1135,7 +1151,7 @@ const termFont = createTermFont({ settings });
 async function terminalFont(size, family) {
   if (typeof size === 'number' && Number.isFinite(size)) setTermFont(size);
   if ((typeof family === 'string' || family === null) && (await termFont.set(family))) {
-    for (const c of chats.values()) send(c.win, 'term:family', termFont.chosen());
+    for (const c of chats.values()) send(c.page, 'term:family', termFont.chosen());
   }
   const n = Number(settings.get('terminalFontSize'));
   return {
@@ -1148,7 +1164,7 @@ async function terminalFont(size, family) {
 function zoom(step) {
   const wc = webContents.getFocusedWebContents();
   if (!wc || wc.isDestroyed()) return;
-  if ([...chats.values()].some((c) => pageOf(c.win) === wc)) return setTermFont(step ? termFontSize() + step : TERM_FONT);
+  if ([...chats.values()].some((c) => pageOf(c.page) === wc)) return setTermFont(step ? termFontSize() + step : TERM_FONT);
   wc.setZoomLevel(step ? wc.getZoomLevel() + step * 0.5 : 0);
 }
 
@@ -1223,7 +1239,8 @@ function pageName(wc) {
   if (wc === pageOf(panels.notices)) return 'notices';
   if (wc === pageOf(over)) return 'overlay';
   if (mascot.has(wc)) return 'Viktoria';
-  for (const [id, c] of chats) if (wc === pageOf(c.win)) return `terminal ${id.slice(0, 8)}`;
+  for (const [id, c] of chats) if (wc === pageOf(c.page)) return `terminal ${id.slice(0, 8)}`;
+  for (const f of frames) if (wc === pageOf(f.win)) return 'tab bar';
   for (const w of panels.chats.values()) if (wc === pageOf(w)) return 'friends chat';
   return path.basename(String(wc.getURL()).split(/[?#]/)[0]) || 'page';
 }
@@ -1879,7 +1896,7 @@ const badgedWins = new Set(); // the windows carrying it now
 async function badge() {
   if (process.platform !== 'win32') return;
   const n = engine.live().filter((s) => s.status === 'waiting').length;
-  const wins = dash && !dash.isDestroyed() ? [dash] : [...chats.values()].map((c) => c.win).filter((w) => w && !w.isDestroyed());
+  const wins = dash && !dash.isDestroyed() ? [dash] : [...new Set([...chats.values()].map((c) => c.win))].filter((w) => w && !w.isDestroyed());
   const key = `${n}|${wins.map((w) => w.id).join(',')}`;
   if (key === badgeKey) return;
   badgeKey = key;
@@ -1897,7 +1914,7 @@ async function badge() {
   const label = n > 9 ? '9+' : String(n);
   let url = badgeIcons.get(label);
   if (!url) {
-    const wc = pageOf(dashView) || pageOf(panels.notices) || wins.map(pageOf).find(Boolean);
+    const wc = pageOf(dashView) || pageOf(panels.notices) || [...chats.values()].map((c) => pageOf(c.page)).find(Boolean);
     url = wc && (await Promise.race([
       wc.executeJavaScript(
         `(() => { const c = document.createElement('canvas'); c.width = c.height = 32; const g = c.getContext('2d');
@@ -2260,7 +2277,10 @@ function chatInfo(id, c) {
   // Streamer mode: the made-up project and folder the dashboard shows, and frosted glass over the terminal (what it
   // prints can't be swapped for made-up text).
   const on = streamer.on;
-  const title = !on ? convTitle || c.title : convTitle ? streamer.fake('title', convTitle) : streamer.name(c.title);
+  // A name typed for its tab or pane (Rename) before all that, as the Mac's tabName.
+  const named2 = tabName(id);
+  const title = named2 ? (on ? streamer.fake('title', named2) : named2)
+    : !on ? convTitle || c.title : convTitle ? streamer.fake('title', convTitle) : streamer.name(c.title);
   const folderName = path.basename(String(c.cwd || '').replace(/[\\/]+$/, '')) || c.cwd || '';
   // The AI session running in it (Claude, else Codex or Antigravity): its star in the chats list, its context and today's
   // counts on the strip, as each tab's chip shows them on the Mac. A plain terminal has neither.
@@ -2291,12 +2311,16 @@ function chatInfo(id, c) {
 function sendInfo(id, c) {
   const info = chatInfo(id, c);
   if (!c.win || c.win.isDestroyed()) return info;
+  // A window of several tabs or panes is named by the one with its keys; the tab bar shows the others (pushBar).
+  const f = c.frame;
+  f.last.set(id, info);
   const name = info.project && info.title && info.title !== info.project ? `${info.project} · ${info.title}` : info.title || info.project || 'Orbiterm';
-  if (c.win.getTitle() !== name) {
+  if (f.focus === id && c.win.getTitle() !== name) {
     c.win.setTitle(name);
     windowsChanged();
   }
-  send(c.win, 'term:info', info);
+  send(c.page, 'term:info', info);
+  if (f.views.size > 1) pushBar(f);
   return info;
 }
 
@@ -2339,8 +2363,10 @@ function matchChats() {
 const samePath = (a, b) => !!a && !!b && path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase();
 
 /**
- * A chat or terminal window. A new one starts its shell (Claude in it with `claudeArgs`); one given the `id` of a session
- * that outlived the app attaches to it instead (`claude`: whether it was started as a chat), hidden unless `show`.
+ * A chat or terminal. A new one starts its shell (Claude in it with `claudeArgs`); one given the `id` of a session that
+ * outlived the app attaches to it instead (`claude`: whether it was started as a chat). It opens in a window of its own,
+ * hidden unless `show`, or with `into` ({ frame, how, beside }) in a window that is open: a tab at the end ("tab") or
+ * right after the one in front ("next"), or beside its pane `beside`, sharing its place ("right", "down").
  */
 let chatCascade = 0;
 // How much of what's behind shows through a terminal or note window: 90% opaque, no frost, as the Mac's
@@ -2348,62 +2374,120 @@ let chatCascade = 0;
 // `transparent` needs a frameless one, which can't be resized), so the whole window is 90% opaque, its text and title bar
 // too, where the Mac keeps the text solid.
 const WINDOW_OPACITY = 0.9;
-function openChatWindow({ id = crypto.randomUUID(), cwd, claudeArgs, claude = !!claudeArgs, sessionId, title, show = true }) {
-  const home = chatHome(), area = home.workArea;
-  const cascade = (chatCascade++ % 6) * 28;
-  const place = wholeOnDisplay({ x: area.x + 120 + cascade, y: area.y + 80 + cascade, width: 960, height: 640 }, home);
-  const win = new BrowserWindow({
-    ...place, minWidth: 560, minHeight: 360, opacity: WINDOW_OPACITY,
-    title: title || 'Orbiterm', backgroundColor: themes.color('--code-bg'), show: false, autoHideMenuBar: true,
-    ...(PROBE ? { x: -32000, y: -32000, frame: false } : {}),
-    webPreferences: webPrefs(),
+function openChatWindow({ id = crypto.randomUUID(), cwd, claudeArgs, claude = !!claudeArgs, sessionId, title, show = true, into = null }) {
+  // The terminal's own page, in a view: it moves between tabs, panes and windows with its session running on.
+  const view = new WebContentsView({ webPreferences: webPrefs() });
+  view.setBackgroundColor(themes.color('--code-bg'));
+  const wc = view.webContents;
+  bootFor(wc, { termFont: termFontSize(), termFamily: termFont.chosen(), keys: shortcuts.forTerminal() });
+  const c = { page: view, frame: null, sessionId, cwd, claude, claudeArgs, title: title || path.basename(cwd || os.homedir()), startedAt: Date.now() };
+  // Its window's: the tabs and panes of a window show, hide and stay on top together.
+  Object.defineProperties(c, {
+    win: { get: () => (c.frame ? c.frame.win : null) },
+    steppedAside: { get: () => !!c.frame && c.frame.steppedAside, set: (v) => c.frame && (c.frame.steppedAside = v) },
+    pinned: { get: () => !!c.frame && c.frame.pinned, set: (v) => c.frame && (c.frame.pinned = v) },
   });
-  bootFor(win.webContents, { termFont: termFontSize(), termFamily: termFont.chosen(), keys: shortcuts.forTerminal() });
-  const c = { win, sessionId, cwd, claude, claudeArgs, title: title || path.basename(cwd || os.homedir()), startedAt: Date.now(), steppedAside: false, pinned: false };
   chats.set(id, c);
-  windowsChanged();
-  // The window's title is the app's ("project · title", sendInfo), not the page's document.title.
-  win.on('page-title-updated', (e) => e.preventDefault());
   // A renderer gone (it crashed, or Reload Dashboard ended one it shared): the page loads again and attaches to its
   // terminal, which ran on (term:ready).
-  win.webContents.on('render-process-gone', (_e, d) => {
+  wc.on('render-process-gone', (_e, d) => {
     if (d && d.reason === 'clean-exit') return;
-    setTimeout(() => !win.isDestroyed() && win.webContents.reload(), 500);
+    setTimeout(() => !wc.isDestroyed() && wc.reload(), 500);
   });
-  win.on('focus', () => {
-    touchTerminal(id);
-    // A worktree's window to the front: its status (and its pull request, at most every 20 s) is read again, and the
-    // menu's worktree items follow it.
-    if (c.wtTop) worktreeShip.refresh(c.wtTop, { pr: true });
-    syncShipMenu();
-  });
-  const wcId = win.webContents.id;
-  win.on('closed', () => shipWins.delete(wcId));
-  // Real keys only (a modifier alone isn't typing): Viktoria may notice, and may come to hide this terminal.
+  // The pane with the keys is its window's own: its title, its worktree's menu items, the tab bar's name.
+  wc.on('focus', () => paneFocused(id));
+  // Real keys only (a modifier alone isn't typing): Viktoria may notice, and may come to hide this terminal. The keys for
+  // tabs and panes act here, before the page, while the window has tabs or a split to act on (paneKeys); with one tab
+  // and one pane they go on to the shell.
   const MODIFIER_KEYS = ['Control', 'Shift', 'Alt', 'AltGraph', 'Meta', 'CapsLock', 'NumLock', 'ScrollLock', 'OS'];
-  win.webContents.on('before-input-event', (_e, input) => {
+  wc.on('before-input-event', (e, input) => {
     if (input.type === 'keyDown' && !MODIFIER_KEYS.includes(input.key)) mascot.onTyping(id);
+    if (paneKeys(frameHolding(id), input)) e.preventDefault();
   });
-  // Where this window is and whether it shows decide where she can stand on it.
-  for (const ev of ['move', 'resize', 'show', 'hide', 'minimize', 'restore', 'closed']) win.on(ev, () => mascot.terminalsChanged());
-  win.loadFile(path.join(__dirname, '..', 'pages', 'terminal.html'));
-  win.once('ready-to-show', () => {
-    if (!show) return;
-    if (PROBE) return win.showInactive();
-    if (modalOpen) {
-      c.steppedAside = true;
-      return void pushWinOpen();
-    }
-    pinToDash(win);
-    win.show();
-    win.focus();
-    touchTerminal(id);
-    pushWinOpen();
-  });
-  win.webContents.setWindowOpenHandler(({ url }) => {
+  wc.setWindowOpenHandler(({ url }) => {
     if (/^https?:/i.test(url)) shell.openExternal(url).catch(() => {});
     return { action: 'deny' };
   });
+  // Once its first seconds are over a chat says what it is even if nothing else changes (chatInfo).
+  if (claude) setTimeout(() => chats.get(id) === c && sendInfo(id, c), 15_500);
+  wc.loadFile(path.join(__dirname, '..', 'pages', 'terminal.html'));
+  const target = into && frames.has(into.frame) && !into.frame.win.isDestroyed() ? into.frame : null;
+  const f = target || newFrame();
+  addPane(f, id, target ? into.how : 'tab', target && into.beside);
+  if (target) {
+    if (f.win.isVisible()) focusPane(f, id);
+    return id;
+  }
+  wc.once('did-finish-load', () => {
+    if (!show || f.win.isDestroyed() || f.win.isVisible()) return;
+    if (PROBE) return f.win.showInactive();
+    if (modalOpen) {
+      f.steppedAside = true;
+      return void pushWinOpen();
+    }
+    pinToDash(f.win);
+    f.win.show();
+    f.win.focus();
+    focusPane(f, id);
+    touchTerminal(id);
+    pushWinOpen();
+  });
+  return id;
+}
+
+// ---------- tabs and split panes (the Mac's ChatWindow tabs and Panes.swift, iTerm2's) ----------
+// A terminal window is a frame: its tabs, each a tree of split panes (panes.js) whose leaves are terminals, each terminal
+// its own view (its page), which goes from tab to pane to window without its session starting again. The window's own
+// page is the tab bar (pages/tabs.js), under the views: it shows above them when there are two tabs or more, and in the
+// gaps between split panes, where the dividers are dragged. A window of one tab and one pane looks as it always did, and
+// that page isn't even loaded. A terminal's id never changes, so the dashboard, its notes and the session host find it
+// wherever it moves.
+const frames = new Set();
+const TAB_BAR = 30, PANE_GAP = 4;
+const frameHolding = (id) => chats.get(id)?.frame || [...frames].find((f) => f.views.has(id)) || null;
+const focusedFrame = () => [...frames].find((f) => !f.win.isDestroyed() && f.win.isFocused()) || null;
+
+function newFrame(place) {
+  if (!place) {
+    const home = chatHome(), area = home.workArea;
+    const cascade = (chatCascade++ % 6) * 28;
+    place = wholeOnDisplay({ x: area.x + 120 + cascade, y: area.y + 80 + cascade, width: 960, height: 640 }, home);
+  }
+  const win = new BrowserWindow({
+    ...place, minWidth: 560, minHeight: 360, opacity: WINDOW_OPACITY,
+    title: 'Orbiterm', backgroundColor: themes.color('--code-bg'), show: false, autoHideMenuBar: true,
+    ...(PROBE ? { x: -32000, y: -32000, frame: false } : {}),
+    webPreferences: webPrefs(),
+  });
+  // `history`: its panes by when they last had the keys (the one in front of each tab); `last`: what each said last
+  // (sendInfo), for its chip; `zoom`: the pane alone in its tab (Maximize Pane).
+  const f = {
+    win, tabs: [], active: 0, focus: null, zoom: null, views: new Map(), last: new Map(), history: [], dividers: [],
+    barLoaded: false, barTimer: null, stateKey: '', steppedAside: false, pinned: false,
+  };
+  frames.add(f);
+  windowsChanged();
+  // The window's title is the app's ("project · title" of the pane with the keys, sendInfo), not a page's.
+  win.on('page-title-updated', (e) => e.preventDefault());
+  win.webContents.on('render-process-gone', (_e, d) => {
+    if (d && d.reason === 'clean-exit') return;
+    setTimeout(() => !win.isDestroyed() && f.barLoaded && win.webContents.reload(), 500);
+  });
+  // Back in front: the pane that had the keys has them again (a click on another pane gives them to that one after), its
+  // worktree's status (and its pull request, at most every 20 s) is read again, and the menu's worktree items follow it.
+  win.on('focus', () => {
+    const view = f.views.get(f.focus);
+    if (view && ![...f.views.values()].some((v) => !v.webContents.isDestroyed() && v.webContents.isFocused())) view.webContents.focus();
+    const c = chats.get(f.focus);
+    if (c) {
+      touchTerminal(f.focus);
+      if (c.wtTop) worktreeShip.refresh(c.wtTop, { pr: true });
+    }
+    syncShipMenu();
+  });
+  // Where this window is and whether it shows decide where she can stand on it.
+  for (const ev of ['move', 'resize', 'show', 'hide', 'minimize', 'restore', 'closed']) win.on(ev, () => mascot.terminalsChanged());
+  for (const ev of ['resize', 'maximize', 'unmaximize', 'restore', 'enter-full-screen', 'leave-full-screen']) win.on(ev, () => layoutFrame(f));
   // A window pinned above the dashboard is its child, and Windows minimizes an owned window to a bar on the desktop
   // rather than the taskbar: it lets go of the dashboard on its way to the taskbar and pins again when it comes back,
   // as on the Mac.
@@ -2413,21 +2497,20 @@ function openChatWindow({ id = crypto.randomUUID(), cwd, claudeArgs, claude = !!
     });
   }
   win.on('minimize', () => win.getParentWindow() && win.setParentWindow(null));
-  win.on('restore', () => !c.steppedAside && pinToDash(win));
-  // Once its first seconds are over a chat says what it is even if nothing else changes (chatInfo).
-  if (claude) setTimeout(() => chats.get(id) === c && sendInfo(id, c), 15_500);
-  // Closing a window (Ctrl+Shift+W, its ×) only hides it, as on the Mac: what runs in it goes on, Claude as a session on the
-  // orbit and a terminal as the same car it was (no blast), and a click there brings the window back. End Session ends
-  // it. Quitting closes them all: their sessions were seen to just before (the host's go on).
+  win.on('restore', () => !f.steppedAside && pinToDash(win));
+  // Closing a window (Ctrl+Shift+W, its ×) only hides it, as on the Mac: what runs in its tabs and panes goes on, Claude as a
+  // session on the orbit and a terminal as the same car it was (no blast), and a click there brings the window back. End
+  // Session ends one. Quitting closes them all: their sessions were seen to just before (the host's go on).
   win.on('close', (e) => {
-    if (quitting || !terminals.has(id)) return;
+    const live = [...f.views.keys()].filter((id) => terminals.has(id));
+    if (quitting || !live.length) return;
     e.preventDefault();
-    c.steppedAside = false;
+    f.steppedAside = false;
     const hadKeys = win.isFocused();
     win.setParentWindow(null);
     win.hide();
     // Undo Close (Ctrl+Shift+T) brings it back, the one hidden last first.
-    rememberClosed(id);
+    rememberClosed(live.includes(f.focus) ? f.focus : live[0]);
     // Windows leaves the keys with the hidden window (unpinned first, nothing under it takes them): Ctrl+Shift+N, the
     // Ring's keys, anything typed next went nowhere. The dashboard takes them, as the window under a closed one does
     // on the Mac, when the one hidden had them and the dashboard shows.
@@ -2435,7 +2518,7 @@ function openChatWindow({ id = crypto.randomUUID(), cwd, claudeArgs, claude = !!
       dash.focus();
       if (!chatsView.webContents.isFocused()) dashView.webContents.focus();
     }
-    if (activeTerminalId === id) {
+    if (activeTerminalId && f.views.has(activeTerminalId)) {
       activeTerminalId = null;
       pushActiveSession();
     }
@@ -2444,24 +2527,668 @@ function openChatWindow({ id = crypto.randomUUID(), cwd, claudeArgs, claude = !!
     pushChats();
   });
   win.on('closed', () => {
-    if (chats.get(id)?.win === win) {
-      chats.delete(id);
-      if (activeTerminalId === id) {
-        activeTerminalId = null;
-        pushActiveSession();
+    frames.delete(f);
+    clearTimeout(f.barTimer);
+    for (const [id, view] of f.views) {
+      const wc = view.webContents;
+      if (!wc.isDestroyed()) shipWins.delete(wc.id);
+      const c = chats.get(id);
+      if (c && c.frame === f) {
+        chats.delete(id);
+        if (activeTerminalId === id) {
+          activeTerminalId = null;
+          pushActiveSession();
+        }
       }
-      pushWinOpen();
+      if (!wc.isDestroyed()) wc.close();
     }
+    f.views.clear();
+    pushWinOpen();
     windowsChanged();
+    saveLayout();
     // An ended window a worktree's delete kept was what the app stayed for (quitIfIdle).
     if (keptWins.delete(win)) quitIfIdle();
   });
-  return id;
+  return f;
+}
+
+/** Puts terminal `id` (its view) in window `f`: a new tab ("tab", "next") or a split of pane `beside` ("right", "down"). */
+function addPane(f, id, how = 'tab', beside = null) {
+  const c = chats.get(id);
+  if (!c || f.win.isDestroyed()) return;
+  f.views.set(id, c.page);
+  f.win.contentView.addChildView(c.page);
+  c.frame = f;
+  const next = beside && f.views.has(beside) ? beside : f.focus;
+  const t = next ? f.tabs.findIndex((n) => panes.has(n, next)) : -1;
+  if ((how === 'right' || how === 'down') && t >= 0) {
+    f.tabs[t] = panes.insert(f.tabs[t], next, id, how === 'right' ? 'row' : 'col');
+    f.active = t;
+  } else {
+    const at = how === 'next' ? Math.min(f.active + 1, f.tabs.length) : f.tabs.length;
+    f.tabs.splice(at, 0, id);
+    f.active = at;
+  }
+  f.zoom = null;
+  f.focus = id;
+  f.history = [...f.history.filter((x) => x !== id), id];
+  layoutFrame(f);
+  saveLayout();
+}
+
+/** Takes terminal `id`'s view out of its window, its session running on; a window left with nothing closes. */
+function takePane(id) {
+  const f = frameHolding(id);
+  if (!f) return;
+  const view = f.views.get(id);
+  f.views.delete(id);
+  f.last.delete(id);
+  f.history = f.history.filter((x) => x !== id);
+  if (view && !f.win.isDestroyed()) f.win.contentView.removeChildView(view);
+  const t = f.tabs.findIndex((n) => panes.has(n, id));
+  if (t >= 0) {
+    const rest = panes.remove(f.tabs[t], id);
+    if (rest) f.tabs[t] = rest;
+    else {
+      f.tabs.splice(t, 1);
+      if (f.active > t || f.active >= f.tabs.length) f.active = Math.max(0, f.active - 1);
+    }
+  }
+  if (f.zoom === id) f.zoom = null;
+  const c = chats.get(id);
+  if (c && c.frame === f) c.frame = null;
+  if (!f.views.size) {
+    if (!f.win.isDestroyed()) f.win.destroy();
+  } else {
+    if (f.focus === id) f.focus = frontOf(f);
+    layoutFrame(f);
+    if (f.win.isFocused()) focusPane(f, f.focus);
+  }
+  saveLayout();
+}
+
+/** Terminal `id`'s view goes for good (its session ended, or ends now): its tab or pane closes up. */
+function dropPane(id) {
+  const f = frameHolding(id);
+  const wc = f && f.views.get(id) && f.views.get(id).webContents;
+  if (!f) return;
+  if (wc && !wc.isDestroyed()) shipWins.delete(wc.id);
+  takePane(id);
+  if (wc && !wc.isDestroyed()) wc.close();
+}
+
+/** The pane in front of tab `t`: the one that had the keys last, else its first. */
+function frontOf(f, t = f.active) {
+  const ids = panes.ids(f.tabs[t]);
+  for (let k = f.history.length - 1; k >= 0; k--) if (ids.includes(f.history[k])) return f.history[k];
+  return ids[0] || null;
+}
+
+/** Where the panes of the tab in front go: under the bar when there's one. */
+function areaOf(f) {
+  const [width, height] = f.win.getContentSize();
+  const top = f.tabs.length > 1 ? TAB_BAR : 0;
+  return { x: 0, y: top, width, height: Math.max(0, height - top) };
+}
+
+/** The tab in front's panes where they go (the others' hidden), and the tab bar and each page told how things are. */
+function layoutFrame(f) {
+  if (f.win.isDestroyed()) return;
+  const shown = f.tabs[f.active];
+  const area = areaOf(f);
+  const zoomed = f.zoom && panes.has(shown, f.zoom);
+  const { rects, dividers } = zoomed ? { rects: new Map([[f.zoom, area]]), dividers: [] } : panes.layout(shown, area, PANE_GAP);
+  for (const [id, view] of f.views) {
+    const r = rects.get(id);
+    if (r) view.setBounds(r);
+    view.setVisible(!!r);
+  }
+  f.dividers = dividers;
+  // Each page: whether it's one of several (dimmed without the keys, as in iTerm2) and whether it has them.
+  const key = `${f.tabs.length}|${rects.size}|${f.focus}|${[...rects.keys()].join(',')}`;
+  if (key !== f.stateKey) {
+    f.stateKey = key;
+    for (const [id, view] of f.views) send(view, 'term:pane', { tabs: f.tabs.length, panes: rects.size, shown: rects.has(id), focused: id === f.focus });
+  }
+  pushBar(f);
+}
+
+/** Gives pane `id` of window `f` the keys: its tab comes in front, a pane maximized in it gives way. */
+function focusPane(f, id) {
+  if (!f || !id || !f.views.has(id) || f.win.isDestroyed()) return;
+  const t = f.tabs.findIndex((n) => panes.has(n, id));
+  if (t >= 0) f.active = t;
+  if (f.zoom && f.zoom !== id) f.zoom = null;
+  f.focus = id;
+  f.history = [...f.history.filter((x) => x !== id), id];
+  layoutFrame(f);
+  if (f.win.isVisible()) f.views.get(id).webContents.focus();
+  const c = chats.get(id);
+  if (c) sendInfo(id, c);
+}
+
+// A pane's page took the keys (a click, or focusPane): it's the window's own now.
+function paneFocused(id) {
+  const f = frameHolding(id);
+  if (!f) return;
+  if (f.focus !== id) {
+    f.focus = id;
+    f.history = [...f.history.filter((x) => x !== id), id];
+    layoutFrame(f);
+    const c = chats.get(id);
+    if (c) sendInfo(id, c);
+    syncShipMenu();
+  }
+  if (chats.has(id)) touchTerminal(id);
+}
+
+// The tab bar's chips and the dividers' places, a moment after a change (a burst of them sends once). The bar's page loads
+// the first time a window has two tabs or a split; until it says it's ready, nothing is sent to it.
+function pushBar(f) {
+  if (!f.barTimer) f.barTimer = setTimeout(() => sendBar(f), 60);
+}
+function sendBar(f) {
+  clearTimeout(f.barTimer);
+  f.barTimer = null;
+  if (f.win.isDestroyed()) return;
+  const bar = f.tabs.length > 1;
+  if (!f.barLoaded) {
+    if (!bar && !f.dividers.length) return;
+    f.barLoaded = true;
+    bootFor(f.win.webContents);
+    f.win.loadFile(path.join(__dirname, '..', 'pages', 'tabs.html'));
+    return;
+  }
+  // Each chip shows the pane in front of its tab: its name, whether its AI works or needs you, its context.
+  const tabs = f.tabs.map((node, i) => {
+    const id = frontOf(f, i);
+    const info = f.last.get(id) || {};
+    const status = !chats.has(id) ? 'ended' : info.tool ? info.toolStatus || '' : info.status || '';
+    return { title: info.title || chats.get(id)?.title || 'terminal', status, stats: info.stats || null, panes: panes.ids(node).length };
+  });
+  send(f.win, 'term:tabs', {
+    tabs, active: f.active, bar, height: TAB_BAR,
+    dividers: f.dividers.map(({ x, y, width, height, dir }) => ({ x, y, width, height, dir })),
+  });
+}
+
+/** The tab bar's page: its window. */
+const frameOfBar = (e) => [...frames].find((f) => !f.win.isDestroyed() && f.win.webContents === e.sender) || null;
+ipcMain.on('term:tabs', (e, q) => {
+  const f = frameOfBar(e);
+  if (!f || !q || typeof q !== 'object') return;
+  const i = Number.isInteger(q.i) && q.i >= 0 && q.i < f.tabs.length ? q.i : -1;
+  switch (q.type) {
+    case 'ready':
+      return sendBar(f);
+    case 'select':
+      if (i >= 0) focusPane(f, frontOf(f, i));
+      return;
+    case 'close':
+      if (i >= 0) closeTabAsked(f, f.tabs[i]);
+      return;
+    case 'rename':
+      if (i >= 0 && typeof q.name === 'string') renamePane(frontOf(f, i), q.name);
+      return focusPane(f, f.focus);
+    case 'renamed':
+      return focusPane(f, f.focus);
+    // A chip's name being typed: the keys go to the bar's page meanwhile.
+    case 'renaming':
+      return void f.win.webContents.focus();
+    case 'menu':
+      if (i >= 0) tabMenu(f, i, q);
+      return;
+    case 'more':
+      return tabList(f, q);
+    case 'divider': {
+      const d = Number.isInteger(q.d) ? f.dividers[q.d] : null;
+      if (!d || !Number.isFinite(q.pos)) return;
+      if (panes.setDivider(f.tabs[f.active], d, q.pos, PANE_GAP)) {
+        layoutFrame(f);
+        saveLayout();
+      }
+      return;
+    }
+  }
+});
+
+// A point the bar's page names (its pixels) as the window's, for a menu under it.
+const barPoint = (f, q) => {
+  const z = f.win.webContents.getZoomFactor() || 1;
+  return Number.isFinite(q.x) && Number.isFinite(q.y) ? { x: Math.round(q.x * z), y: Math.round(q.y * z) } : {};
+};
+
+// A chip's right-click menu (the Mac's tabMenu): what it does is for that tab, whichever moved meanwhile.
+function tabMenu(f, i, q) {
+  const node = f.tabs[i];
+  const at = () => f.tabs.indexOf(node);
+  const items = [
+    { label: 'Rename Tab…', click: () => at() >= 0 && beginRename(f, at()) },
+    {
+      label: 'New Tab to the Right',
+      click: () => {
+        if (at() < 0) return;
+        focusPane(f, frontOf(f, at()));
+        newTab(true, f);
+      },
+    },
+    { label: 'Move Tab to New Window', enabled: f.tabs.length > 1, click: () => at() >= 0 && moveTabToNewWindow(f, at()) },
+    { type: 'separator' },
+    { label: 'Close Tab', click: () => at() >= 0 && closeTabAsked(f, node) },
+    { label: 'Close Other Tabs', enabled: f.tabs.length > 1, click: () => at() >= 0 && closeOtherTabs(f, node) },
+  ];
+  Menu.buildFromTemplate(items).popup({ window: f.win, ...barPoint(f, q) });
+}
+
+// "»": every tab, the one in front ticked, for a bar too narrow to show them all.
+function tabList(f, q) {
+  const items = f.tabs.map((node, i) => {
+    const info = f.last.get(frontOf(f, i)) || {};
+    const name = `${i < 9 ? `${i + 1}  ` : ''}${clip(info.title || 'terminal', 60)}`.replace(/&/g, '&&');
+    return { label: name, type: 'checkbox', checked: i === f.active, click: () => f.tabs.includes(node) && focusPane(f, frontOf(f, f.tabs.indexOf(node))) };
+  });
+  Menu.buildFromTemplate(items).popup({ window: f.win, ...barPoint(f, q) });
+}
+
+// Rename Tab… (the menu's, a double-click's is the page's own): the chip's name is edited in place, in the bar's page.
+function beginRename(f, i) {
+  if (!f.barLoaded || f.win.isDestroyed()) return;
+  f.win.webContents.focus();
+  send(f.win, 'term:tabsRename', i);
+}
+
+// ---------- names typed for tabs and panes (the Mac's tabNames) ----------
+// By the terminal's id, which stays the same wherever it moves and after a restart; settings.json's "tabNames".
+function tabName(id) {
+  const all = settings.get('tabNames');
+  const v = all && typeof all === 'object' ? all[id] : null;
+  return typeof v === 'string' ? v : '';
+}
+/** A name typed for pane `id`: empty goes back to the one it's given (its AI's title, else its folder). */
+function renamePane(id, name) {
+  const t = String(name || '').replace(/\s+/g, ' ').trim().slice(0, 120);
+  const all = settings.get('tabNames');
+  const next = { ...(all && typeof all === 'object' ? all : {}) };
+  if (t) next[id] = t;
+  else if (id in next) delete next[id];
+  else return;
+  settings.set('tabNames', next);
+  const c = chats.get(id);
+  if (c) sendInfo(id, c);
+}
+
+// ---------- the actions on tabs and panes (the menus, their keys, the chips) ----------
+/** File › New Tab (Ctrl+T) and New Tab Next to Current Tab: a shell in the folder of the pane in front; from the dashboard, the folder picker. */
+function newTab(next = false, f = focusedFrame()) {
+  if (!f) return void showOverlay('Overlay.newTerminal()');
+  const cwd = paneCwd(f);
+  openChatWindow({ cwd, claudeArgs: null, title: path.basename(cwd) || cwd, into: { frame: f, how: next ? 'next' : 'tab' } });
+}
+/** Split Vertically / Horizontally: the pane in front gives half its place to a shell in its folder. */
+function splitPane(how, f = focusedFrame()) {
+  if (!f) return void showOverlay('Overlay.newTerminal()');
+  const cwd = paneCwd(f);
+  openChatWindow({ cwd, claudeArgs: null, title: path.basename(cwd) || cwd, into: { frame: f, how, beside: f.focus } });
+}
+// The folder the pane in front is in now (its shell may have moved), else the one it opened in.
+function paneCwd(f) {
+  const id = chats.has(f.focus) ? f.focus : [...f.views.keys()].find((x) => chats.has(x));
+  return id ? termCwd(id, chats.get(id)) : os.homedir();
+}
+
+/** A tab or pane key, from the menu or the keyboard (paneKeys), on window `f`. */
+function windowAction(f, action) {
+  if (!f || f.win.isDestroyed() || !f.tabs.length) return;
+  const n = f.tabs.length;
+  const m = /^tab([1-9])$/.exec(action);
+  if (m) return void (Number(m[1]) <= n && focusPane(f, frontOf(f, Number(m[1]) - 1)));
+  const dirs = { paneAbove: [0, 1], paneBelow: [0, -1], paneLeft: [-1, 0], paneRight: [1, 0], dividerUp: [0, 1], dividerDown: [0, -1], dividerLeft: [-1, 0], dividerRight: [1, 0] };
+  switch (action) {
+    case 'nextTab':
+    case 'previousTab':
+      return focusPane(f, frontOf(f, (f.active + (action === 'nextTab' ? 1 : -1) + n) % n));
+    case 'moveTabLeft':
+    case 'moveTabRight': {
+      const to = f.active + (action === 'moveTabRight' ? 1 : -1);
+      if (to < 0 || to >= n) return void shell.beep();
+      [f.tabs[f.active], f.tabs[to]] = [f.tabs[to], f.tabs[f.active]];
+      f.active = to;
+      layoutFrame(f);
+      return saveLayout();
+    }
+    case 'nextPane':
+    case 'previousPane': {
+      const ids = panes.ids(f.tabs[f.active]);
+      if (ids.length < 2) return;
+      const i = Math.max(0, ids.indexOf(f.focus));
+      return focusPane(f, ids[(i + (action === 'nextPane' ? 1 : -1) + ids.length) % ids.length]);
+    }
+    case 'paneAbove':
+    case 'paneBelow':
+    case 'paneLeft':
+    case 'paneRight': {
+      const { rects } = panes.layout(f.tabs[f.active], areaOf(f), PANE_GAP);
+      const to = panes.neighbor(rects, f.focus, ...dirs[action]);
+      return to ? focusPane(f, to) : undefined;
+    }
+    case 'dividerUp':
+    case 'dividerDown':
+    case 'dividerLeft':
+    case 'dividerRight':
+      return moveDivider(f, ...dirs[action]);
+    case 'maximizePane':
+      if (f.zoom) f.zoom = null;
+      else if (panes.ids(f.tabs[f.active]).length > 1) f.zoom = f.focus;
+      else return;
+      return focusPane(f, f.focus);
+  }
+}
+
+/** The nearest divider across that way from the pane in front moves 40 px (`dy` up is +1), the Mac's moveDivider. */
+function moveDivider(f, dx, dy) {
+  const shown = f.tabs[f.active];
+  const { paths, dividers } = panes.layout(shown, areaOf(f), PANE_GAP);
+  const p = paths.get(f.focus);
+  if (!p || f.zoom) return;
+  const dir = dx ? 'row' : 'col';
+  for (let depth = p.length - 1; depth >= 0; depth--) {
+    const up = p.slice(0, depth);
+    const node = panes.at(shown, up);
+    if (!node || node.dir !== dir) continue;
+    const k = p[depth] < node.kids.length - 1 ? p[depth] : p[depth] - 1;
+    const d = dividers.find((x) => x.k === k && x.path.length === up.length && x.path.every((v, j) => v === up[j]));
+    if (d && panes.setDivider(shown, d, (dx ? d.x + dx * 40 : d.y - dy * 40), PANE_GAP)) {
+      layoutFrame(f);
+      saveLayout();
+    }
+    return;
+  }
+}
+
+/**
+ * The tab and pane keys as a terminal's page gets them (its before-input-event): true when window `f` acted on one, which
+ * the page then never sees. The tab keys act only with two tabs or more, the pane keys only in a split tab: otherwise
+ * they reach the shell as before (Ctrl+[ is Esc there, Ctrl+Tab a Tab).
+ */
+function paneKeys(f, input) {
+  if (!f || f.win.isDestroyed() || input.type !== 'keyDown') return false;
+  const k = shortcuts.windowKey(shortcuts.comboOf(input));
+  if (!k) return false;
+  const split = panes.ids(f.tabs[f.active]).length > 1;
+  if (k.tabs ? f.tabs.length < 2 : !split) return false;
+  windowAction(f, k.id);
+  return true;
+}
+
+/** Moves tab `i` of `from` to window `to` at `at` (the end by default), its sessions running on; `from` closes when it's left with nothing. */
+function moveTab(from, i, to, at = to.tabs.length, select = true) {
+  const node = from.tabs[i];
+  if (!node || from === to || to.win.isDestroyed()) return;
+  const ids = panes.ids(node);
+  for (const id of ids) {
+    const view = from.views.get(id);
+    from.views.delete(id);
+    if (!view) continue;
+    if (!from.win.isDestroyed()) from.win.contentView.removeChildView(view);
+    to.views.set(id, view);
+    to.win.contentView.addChildView(view);
+    if (from.last.has(id)) to.last.set(id, from.last.get(id));
+    from.last.delete(id);
+    const c = chats.get(id);
+    if (c) c.frame = to;
+  }
+  from.tabs.splice(i, 1);
+  from.history = from.history.filter((x) => !ids.includes(x));
+  if (from.active > i || from.active >= from.tabs.length) from.active = Math.max(0, from.active - 1);
+  if (ids.includes(from.zoom)) from.zoom = null;
+  if (ids.includes(from.focus)) from.focus = from.tabs.length ? frontOf(from) : null;
+  at = Math.min(Math.max(at, 0), to.tabs.length);
+  to.tabs.splice(at, 0, node);
+  if (select || !to.focus) {
+    to.active = at;
+    to.focus = ids[0];
+    to.history = [...to.history, ...ids.slice().reverse()];
+  } else if (to.active >= at) to.active++;
+  if (!from.views.size) {
+    if (!from.win.isDestroyed()) from.win.destroy();
+  } else layoutFrame(from);
+  layoutFrame(to);
+  saveLayout();
+}
+
+/** The Window menu's Move Tab to New Window and the chip menu's: tab `i` goes to a window of its own, a little down and right. */
+function moveTabToNewWindow(f, i = f && f.active) {
+  if (!f || f.tabs.length < 2 || !f.tabs[i]) return void shell.beep();
+  const b = f.win.getBounds();
+  const g = newFrame(wholeOnDisplay({ ...b, x: b.x + 30, y: b.y + 30 }));
+  moveTab(f, i, g, 0, true);
+  if (f.pinned) setPinned(g, true);
+  showFrame(g, g.focus);
+}
+
+/** Merge All Windows: every other terminal window on screen joins the one in front as tabs, without ending anything; each one's tab in front comes in front. */
+function mergeAllWindows() {
+  const f = focusedFrame();
+  const others = f ? [...frames].filter((g) => g !== f && !g.win.isDestroyed() && g.win.isVisible() && !g.win.isMinimized()) : [];
+  if (!others.length) return void shell.beep();
+  for (const g of others) {
+    const front = g.active, base = f.tabs.length, n = g.tabs.length;
+    for (let k = 0; k < n; k++) moveTab(g, 0, f, f.tabs.length, false);
+    f.active = base + Math.min(front, n - 1);
+  }
+  showFrame(f, frontOf(f));
+}
+
+/** A split pane becomes a tab of its own, at the end. */
+function paneToTab(f, id) {
+  const t = f.tabs.findIndex((n) => panes.has(n, id));
+  if (t < 0 || panes.ids(f.tabs[t]).length < 2) return void shell.beep();
+  f.tabs[t] = panes.remove(f.tabs[t], id);
+  f.tabs.push(id);
+  if (f.zoom === id) f.zoom = null;
+  focusPane(f, id);
+  saveLayout();
+}
+
+/** A pane (or the only pane of a tab) becomes a window of its own, a little down and right, its session running on. */
+function paneToWindow(f, id) {
+  if (f.views.size < 2) return void shell.beep();
+  const b = f.win.getBounds();
+  takePane(id);
+  const g = newFrame(wholeOnDisplay({ ...b, x: b.x + 30, y: b.y + 30 }));
+  addPane(g, id, 'tab');
+  if (f.pinned) setPinned(g, true);
+  showFrame(g, id);
+}
+
+/**
+ * Ctrl+W (the Mac's ⌘W), and Esc when swapped: with several tabs or panes the one with the keys closes, as a window
+ * closes: what runs in it goes on, in a window of its own out of sight that a click in the dashboard shows, and Undo
+ * Close puts it back here. One that ended just goes. The last one closes (hides) the window.
+ */
+function closePane(id) {
+  const f = frameHolding(id);
+  if (!f) return;
+  if (f.views.size < 2) return void f.win.close();
+  const c = chats.get(id);
+  if (!c || !terminals.has(id)) {
+    dropPane(id);
+    chats.delete(id);
+    return;
+  }
+  const b = f.win.getBounds();
+  takePane(id);
+  addPane(newFrame(b), id, 'tab');
+  c.closedFrom = f;
+  rememberClosed(id);
+  if (activeTerminalId === id) {
+    activeTerminalId = null;
+    pushActiveSession();
+  }
+  pushWinOpen();
+  pushTerminals();
+  pushChats();
+}
+
+/** Whether something runs in terminal `id`: an AI, or a job in its shell. */
+function paneRuns(id) {
+  const c = chats.get(id);
+  if (!c || !terminals.has(id)) return false;
+  const info = chatInfo(id, c);
+  if (info.status !== 'terminal' || info.tool) return true;
+  const pid = terminals.list().find((t) => t.id === id)?.pid;
+  return !!pid && runaways.children(pid).length > 0;
+}
+
+/**
+ * A chip's ×, Close Tab: the tab's terminals end, as their End buttons end them (a tab of one asks as that button does;
+ * one of several asks once when something runs in it). One that ended already just goes.
+ */
+async function closeTabAsked(f, node) {
+  const ids = panes.ids(node);
+  const live = ids.filter((id) => chats.has(id) && terminals.has(id));
+  if (ids.length === 1 && live.length === 1) return endAsked(live[0]);
+  if (live.some(paneRuns)) {
+    const r = await dialog.showMessageBox(f.win, {
+      type: 'warning', noLink: true, defaultId: 0, cancelId: 1,
+      message: 'Close this tab?', detail: 'What runs in its panes stops.', buttons: ['Close Tab', 'Cancel'],
+    });
+    if (r.response !== 0) return;
+  }
+  for (const id of live) if (!(await settleEnv(id))) return;
+  for (const id of ids) {
+    if (chats.has(id) && terminals.has(id)) endTerminal(id);
+    else {
+      dropPane(id);
+      chats.delete(id);
+    }
+  }
+}
+
+/** Close Other Tabs: every tab but that one ends, asked once when something runs in them. */
+async function closeOtherTabs(f, keep) {
+  const others = f.tabs.filter((n) => n !== keep);
+  const ids = others.flatMap(panes.ids);
+  const live = ids.filter((id) => chats.has(id) && terminals.has(id));
+  if (live.some(paneRuns)) {
+    const r = await dialog.showMessageBox(f.win, {
+      type: 'warning', noLink: true, defaultId: 0, cancelId: 1,
+      message: 'Close the other tabs?', detail: 'What runs in them stops.', buttons: ['Close Tabs', 'Cancel'],
+    });
+    if (r.response !== 0) return;
+  }
+  for (const id of live) if (!(await settleEnv(id))) return;
+  for (const id of ids) {
+    if (chats.has(id) && terminals.has(id)) endTerminal(id);
+    else {
+      dropPane(id);
+      chats.delete(id);
+    }
+  }
+}
+
+// A pane's strip, right-clicked (pages/terminal.js): Rename, and moving it to a tab or a window of its own.
+ipcMain.on('term:paneMenu', (e) => {
+  const found = chatOf(e);
+  const f = found && found[1].frame;
+  if (!f) return;
+  const id = found[0];
+  const split = panes.ids(f.tabs[f.active]).length > 1;
+  Menu.buildFromTemplate([
+    { label: 'Rename…', click: () => send(found[1].page, 'term:renameStart') },
+    { label: 'Move Pane to New Tab', enabled: split, click: () => f.views.has(id) && paneToTab(f, id) },
+    { label: 'Move Pane to New Window', enabled: f.views.size > 1, click: () => f.views.has(id) && paneToWindow(f, id) },
+  ]).popup({ window: f.win });
+});
+// A name typed on a pane's strip (a double-click on its name).
+ipcMain.on('term:rename', (e, name) => {
+  const found = chatOf(e);
+  if (found && typeof name === 'string') renamePane(found[0], name);
+});
+
+/** The strip's pin (term:pin) for a window and all its tabs: on top of every app, or riding on the dashboard again. */
+function setPinned(f, on) {
+  f.pinned = on;
+  if (on) {
+    pinnedWins.add(f.win);
+    f.win.setParentWindow(null);
+    f.win.setAlwaysOnTop(true, 'floating');
+  } else {
+    pinnedWins.delete(f.win);
+    f.win.setAlwaysOnTop(false);
+    if (f.win.isVisible() && !f.win.isMinimized()) pinToDash(f.win);
+  }
+  for (const id of f.views.keys()) if (chats.has(id)) sendInfo(id, chats.get(id));
+}
+
+/** Window `f` to the front with pane `id` (its tab) in front, as a click on its session in the dashboard brings it. */
+function showFrame(f, id) {
+  if (!f || f.win.isDestroyed()) return false;
+  f.steppedAside = false;
+  if (!f.win.isVisible() && !PROBE) f.win.setBounds(wholeOnDisplay(f.win.getBounds(), chatHome()));
+  if (f.win.isMinimized()) f.win.restore();
+  pinToDash(f.win);
+  f.win.show();
+  f.win.focus();
+  focusPane(f, id || f.focus);
+  if (chats.has(f.focus)) touchTerminal(f.focus);
+  pushWinOpen();
+  // The chats list's terminal rows say which windows show.
+  pushTerminals();
+  pushChats();
+  return true;
+}
+
+// ---------- the windows' layouts across launches ----------
+// Which terminals share a window, as tabs and splits: settings.json's "terminalLayout", for the sessions the host keeps
+// (terminals.restore), which come back hidden in the same windows. Only windows of more than one; not before the last
+// launch's have been read back, nor while quitting.
+let layoutRestored = false, layoutTimer = null;
+function saveLayout() {
+  if (!layoutRestored || quitting || layoutTimer) return;
+  layoutTimer = setTimeout(() => {
+    layoutTimer = null;
+    if (quitting) return;
+    const list = [...frames].filter((f) => f.views.size > 1).map((f) => ({ tabs: f.tabs, active: f.active }));
+    settings.set('terminalLayout', list.length ? list : undefined);
+  }, 1000);
+}
+/** The sessions back from the last launch (terminals.restore), hidden, in the windows, tabs and splits they were in. */
+function restoreWindows(found, read = true) {
+  const byId = new Map(found.map((s) => [s.id, s]));
+  const live = new Set(byId.keys());
+  // The names typed for terminals that didn't come back go with them.
+  const names = settings.get('tabNames');
+  if (read && names && typeof names === 'object') {
+    const kept = Object.entries(names).filter(([id]) => live.has(id));
+    if (kept.length !== Object.keys(names).length) settings.set('tabNames', kept.length ? Object.fromEntries(kept) : undefined);
+  }
+  const open = (id, into) => {
+    const s = byId.get(id);
+    return openChatWindow({ id, cwd: s.cwd, claude: s.claude, title: s.title, show: false, into });
+  };
+  const saved = settings.get('terminalLayout');
+  for (const w of Array.isArray(saved) ? saved : []) {
+    const tabs = (w && Array.isArray(w.tabs) ? w.tabs : []).map((n) => panes.clean(n, live)).filter(Boolean);
+    const ids = tabs.flatMap(panes.ids);
+    if (!ids.length) continue;
+    open(ids[0]);
+    const f = chats.get(ids[0]).frame;
+    for (const id of ids.slice(1)) open(id, { frame: f, how: 'tab' });
+    f.tabs = tabs;
+    f.active = Math.min(Math.max(0, Number(w.active) || 0), tabs.length - 1);
+    f.focus = frontOf(f);
+    layoutFrame(f);
+  }
+  for (const id of live) open(id);
+  layoutRestored = true;
+  saveLayout();
 }
 
 // ---------- Undo Close (the Mac's ⇧⌘T, iTerm2's) ----------
-// The terminal windows hidden by the close keys, the swapped Esc or their ×, the last one last: Undo Close shows the most
-// recent one that still runs and is still hidden (one opened again since, or ended, is passed over).
+// The terminal windows hidden by the close keys, the swapped Esc or their ×, and the tabs and panes closed out of a window,
+// the last one last: Undo Close shows the most recent one that still runs and is still hidden (one opened again since, or
+// ended, is passed over); a tab or pane goes back into the window it was closed from, while that one shows.
 const closedTerminals = [];
 function rememberClosed(id) {
   const at = closedTerminals.indexOf(id);
@@ -2473,26 +3200,22 @@ function undoClose() {
   while (closedTerminals.length) {
     const id = closedTerminals.pop();
     const c = chats.get(id);
-    if (c && c.win && !c.win.isDestroyed() && !c.win.isVisible() && !c.steppedAside && terminals.has(id)) return void showChat(id);
+    if (!(c && c.win && !c.win.isDestroyed() && !c.win.isVisible() && !c.steppedAside && terminals.has(id))) continue;
+    const back = c.closedFrom;
+    c.closedFrom = null;
+    if (back && frames.has(back) && !back.win.isDestroyed() && back.win.isVisible() && c.frame.views.size === 1) {
+      moveTab(c.frame, 0, back, back.tabs.length, true);
+      return void showFrame(back, id);
+    }
+    return void showChat(id);
   }
   shell.beep();
 }
 
 function showChat(id) {
   const c = chats.get(id);
-  if (!c || c.win.isDestroyed()) return false;
-  c.steppedAside = false;
-  if (!c.win.isVisible() && !PROBE) c.win.setBounds(wholeOnDisplay(c.win.getBounds(), chatHome()));
-  if (c.win.isMinimized()) c.win.restore();
-  pinToDash(c.win);
-  c.win.show();
-  c.win.focus();
-  touchTerminal(id);
-  pushWinOpen();
-  // The chats list's terminal rows say which windows show.
-  pushTerminals();
-  pushChats();
-  return true;
+  if (!c || !c.win || c.win.isDestroyed()) return false;
+  return showFrame(c.frame, id);
 }
 
 /** The window of a process running outside the app, to the front: its own or the first of its parents' that has one. */
@@ -2597,7 +3320,9 @@ function endTerminal(id) {
   }
   toDash(`terminalGone(${JSON.stringify(id)})`);
   if (c) {
-    if (c.win && !c.win.isDestroyed()) c.win.destroy();
+    // Its tab or pane goes; its window with it when it was the last.
+    dropPane(id);
+    renamePane(id, '');
     chats.delete(id);
     pushWinOpen();
     pushChats();
@@ -2691,7 +3416,7 @@ function commandLabel(cmd) {
 
 // The terminal pages' lines to their shells.
 // Viktoria's window has no line to any of these (the preload gives it none either, but it is refused here too).
-const chatOf = (e) => !mascot.has(e.sender) && [...chats.entries()].find(([, c]) => c.win && !c.win.isDestroyed() && c.win.webContents === e.sender);
+const chatOf = (e) => !mascot.has(e.sender) && [...chats.entries()].find(([, c]) => pageOf(c.page) === e.sender);
 // The env button's files (pages/env.js ↔ envbridge.js, envfiles.js): the env files under the terminal's folder (where its
 // shell is when the view opens, termCwd), read and written by the app, named by the page only by their path below it.
 // Copies stay out of Clipboard History and saves keep a file's permissions through the env helper (envnative.js), built
@@ -2709,15 +3434,15 @@ createEnvBridge({
 let envSettled = false; // the quit under way has asked already (Don't Save leaves the page's changes as they are)
 let envAsking = false;
 let envDeclinedAt = 0; // when Cancel last kept a forced update's restart from going ahead
-const envUnsaved = () => !PROBE && [...chats.values()].some((c) => c.envDirty && c.win && !c.win.isDestroyed());
+const envUnsaved = () => !PROBE && [...chats.values()].some((c) => c.envDirty && pageOf(c.page));
 /** A page's answer, or `fallback` when it has none in time (a page that hangs never holds the app) or is gone. */
 const askPage = (wc, js, ms, fallback) =>
   Promise.race([wc.executeJavaScript(js, true), new Promise((r) => setTimeout(() => r(fallback), ms))]).catch(() => fallback);
 /** True when terminal `id` may end: nothing unsaved, saved, or the user chose not to save. Its window comes to the front. */
 async function settleEnv(id) {
   const c = chats.get(id);
-  if (!c || !c.envDirty || !c.win || c.win.isDestroyed()) return true;
-  const wc = c.win.webContents;
+  const wc = c && pageOf(c.page);
+  if (!c || !c.envDirty || !wc) return true;
   if (!(await askPage(wc, 'window.EnvView ? EnvView.dirty() : false', 2000, false))) {
     c.envDirty = false;
     return true;
@@ -2750,12 +3475,17 @@ ipcMain.on('term:ready', (e, { cols, rows }) => {
   else {
     terminals
       .spawn({ id, cwd: c.cwd, claudeArgs: c.claudeArgs, cols, rows, title: c.title })
-      .catch((err) => send(c.win, 'term:data', `\r\n\x1b[31m${err.message}\x1b[0m\r\n`));
+      .catch((err) => send(c.page, 'term:data', `\r\n\x1b[31m${err.message}\x1b[0m\r\n`));
   }
   sendInfo(id, c);
+  // A page loaded again learns where it is among its window's tabs and panes.
+  if (c.frame) {
+    c.frame.stateKey = '';
+    layoutFrame(c.frame);
+  }
   // A worktree's chip and button, drawn again after a reload too.
   c.wtTop = null;
-  shipWins.delete(c.win.webContents.id);
+  shipWins.delete(e.sender.id);
   pushShipWindow(id, c);
 });
 ipcMain.on('term:input', (e, data) => {
@@ -2772,13 +3502,14 @@ ipcMain.on('term:input', (e, data) => {
   }
 });
 // Esc and the close keys swapped (Settings › Shortcuts, the Mac's EscClose.swift): the terminal itself had the keys and
-// Esc was pressed (pages/terminal.js), so its window hides as Ctrl+W does, whatever runs in it. An Esc held or pressed
-// again in the next half second doesn't reach the window Windows puts in front next.
+// Esc was pressed (pages/terminal.js), so it closes as Ctrl+W closes it, whatever runs in it: its tab or pane, or its
+// window when it's the only one. An Esc held or pressed again in the next half second doesn't reach the window Windows
+// puts in front next.
 ipcMain.on('term:escClose', (e) => {
   const found = chatOf(e);
   if (!found || !shortcuts.escCloses()) return;
   escMuteUntil = Date.now() + 500;
-  found[1].win.close();
+  closePane(found[0]);
 });
 ipcMain.on('term:resize', (e, { cols, rows }) => {
   const found = chatOf(e);
@@ -2852,7 +3583,7 @@ ipcMain.on('term:contextMenu', (e, q) => {
   if (!found) return;
   const [id, c] = found;
   const info = chatInfo(id, c);
-  const act = (action) => () => send(c.win, 'term:do', { action });
+  const act = (action) => () => send(c.page, 'term:do', { action });
   const items = [
     // With an AI in it, Copy also works with nothing selected here: Claude's full-screen view keeps its own selection,
     // and the page asks it to copy that (terminal.js copyAction).
@@ -2958,19 +3689,10 @@ function dropListFiles() {
 ipcMain.handle('term:pin', (e, q) => {
   const found = chatOf(e);
   if (!found) return { pinned: false };
-  const [id, c] = found;
+  const c = found[1];
   const on = q && typeof q.pinned === 'boolean' ? q.pinned : !c.pinned;
-  c.pinned = on;
-  if (on) {
-    pinnedWins.add(c.win);
-    c.win.setParentWindow(null);
-    c.win.setAlwaysOnTop(true, 'floating');
-  } else {
-    pinnedWins.delete(c.win);
-    c.win.setAlwaysOnTop(false);
-    if (c.win.isVisible() && !c.win.isMinimized()) pinToDash(c.win);
-  }
-  sendInfo(id, c);
+  // The whole window, every tab and pane of it (setPinned).
+  if (c.frame) setPinned(c.frame, on);
   return { pinned: on };
 });
 
@@ -2984,7 +3706,8 @@ ipcMain.on('term:bell', (e) => {
     bellAt = Date.now();
     shell.beep();
   }
-  if (!found[1].win.isFocused()) attend(found[1].win);
+  const w = found[1].win;
+  if (w && !w.isFocused()) attend(w);
 });
 
 // A program setting the clipboard (OSC 52, as Windows Terminal allows): its text, 1 MB at most.
@@ -3041,7 +3764,10 @@ ipcMain.on('term:shipChip', (e) => {
 // ▾: every action for the worktree, as a system menu under the button (`at`: its bottom left, in the page's pixels).
 ipcMain.on('term:shipMore', (e, at) => {
   const w = shipWinOf(e);
-  if (!w || w.win.isDestroyed()) return;
+  const page = w && pageOf(w.win);
+  // The window the terminal is a tab or pane of now.
+  const win = w && w.chat && w.chat.win;
+  if (!page || !win || win.isDestroyed()) return;
   const top = w.top;
   const deleted = worktreeShip.isDeleted(top);
   const its = worktreeShip.items(worktreeShip.status(top), deleted || worktreeShip.isBusy(top));
@@ -3053,10 +3779,12 @@ ipcMain.on('term:shipMore', (e, at) => {
     template.push({ label: menuLabel(it), enabled: it.enabled, accelerator: it.id === 'create' ? shortcuts.accel('createPR') : undefined, registerAccelerator: false,
       click: () => worktreeShip.handle(it.id, top, chats.has(w.id) ? w.id : null) });
   }
-  const z = w.win.webContents.getZoomFactor() || 1;
-  const pos = at && Number.isFinite(at.x) && Number.isFinite(at.y) ? { x: Math.round(at.x * z), y: Math.round(at.y * z) } : {};
+  // The page's pixels, from its own corner: its view's place in the window comes first.
+  const z = page.getZoomFactor() || 1;
+  const v = w.win.getBounds();
+  const pos = at && Number.isFinite(at.x) && Number.isFinite(at.y) ? { x: v.x + Math.round(at.x * z), y: v.y + Math.round(at.y * z) } : {};
   send(w.win, 'term:shipMenu', true);
-  Menu.buildFromTemplate(template).popup({ window: w.win, ...pos, callback: () => send(w.win, 'term:shipMenu', false) });
+  Menu.buildFromTemplate(template).popup({ window: win, ...pos, callback: () => send(w.win, 'term:shipMenu', false) });
 });
 
 // ---------- the overlay: the Ring and the new-terminal folder picker, over the whole screen ----------
@@ -4124,8 +4852,11 @@ ipcMain.handle('atl:post', async (e, name, body) => {
 });
 
 // ---------- menu and keys ----------
-// The terminal window with the keys, as [id, chat], or undefined.
-const focusedChat = () => [...chats.entries()].find(([, c]) => c.win && !c.win.isDestroyed() && c.win.isFocused());
+// The terminal with the keys (the tab and pane in front of the window that has them), as [id, chat], or undefined.
+const focusedChat = () => {
+  const f = focusedFrame();
+  return f && chats.has(f.focus) ? [f.focus, chats.get(f.focus)] : undefined;
+};
 // The menu's items that act on the terminal in front (the Mac's Edit and View items for it): its page does them
 // (term:do). Their keys are Settings › Shortcuts' (shortcuts.js), kept out of the shell by the page (window.__keys).
 const TERMINAL_ITEMS = [
@@ -4136,7 +4867,7 @@ const TERMINAL_ITEMS = [
 const TERM_DO = { findSelection: 'useSelectionForFind' };
 function terminalDo(id) {
   const f = focusedChat();
-  if (f) send(f[1].win, 'term:do', { action: TERM_DO[id] || id });
+  if (f) send(f[1].page, 'term:do', { action: TERM_DO[id] || id });
 }
 // On only while a terminal window has the keys: a disabled item's keys go on to the page (the dashboard's editor keeps
 // Ctrl+Shift+Up, F3…).
@@ -4156,11 +4887,15 @@ function syncTerminalItems() {
   }
 }
 
-// The Window menu's list: the dashboard and every terminal window by its title, hidden ones too. The menu is built again
-// when that list changes (a window opened, closed or renamed), a moment later so a burst of changes builds it once.
+// The Window menu's list: the dashboard and every terminal window by its title (its pane with the keys'), hidden ones
+// too. The menu is built again when that list changes (a window opened, closed or renamed), a moment later so a burst of
+// changes builds it once.
 const windowList = () => [
   { id: 'dash', title: 'Dashboard' },
-  ...[...chats.entries()].filter(([, c]) => c.win && !c.win.isDestroyed()).map(([id, c]) => ({ id, title: c.win.getTitle() || c.title || 'terminal' })),
+  ...[...frames].filter((f) => !f.win.isDestroyed()).map((f) => {
+    const id = [...f.views.keys()].find((x) => chats.has(x));
+    return id && { id, title: f.win.getTitle() || chats.get(id).title || 'terminal' };
+  }).filter(Boolean),
 ];
 const windowsKeyOf = (list) => list.map((w) => `${w.id}\u0001${w.title}`).join('\u0002');
 let windowsKey = '', windowsTimer = null;
@@ -4174,7 +4909,7 @@ function windowsChanged() {
 // Bring All to Front (the Mac's arrangeInFront): the app's windows on screen above other apps', the one in front staying so.
 function bringAllToFront() {
   const front = BaseWindow.getFocusedWindow();
-  const wins = [dash, ...[...chats.values()].map((c) => c.win), ...panels.chats.values()];
+  const wins = [dash, ...[...frames].map((f) => f.win), ...panels.chats.values()];
   for (const w of wins) if (w && !w.isDestroyed() && w.isVisible() && !w.isMinimized()) w.moveTop();
   const back = front && !front.isDestroyed() ? front : dash;
   if (back && !back.isDestroyed()) back.focus();
@@ -4204,13 +4939,19 @@ function reloadDashboard() {
 
 function buildMenu() {
   // The window in front closes: a terminal's only hides (what runs in it goes on), the messages and the overlay theirs.
-  const closeFocused = () => {
+  // `pane`: the close keys (Ctrl+W) close a terminal window's tab or pane with the keys first, while it has several.
+  const closeFocused = (pane) => {
     const w = BrowserWindow.getFocusedWindow();
     if (!w || w === dash || w === panels.notices) return;
     if (w === over) return hideOverlay(true);
     if ([...panels.chats.values()].includes(w)) return runPanel(w, 'window.__messages && __messages.close && __messages.close()');
+    const f = pane && [...frames].find((x) => x.win === w);
+    if (f && f.views.size > 1 && f.focus) return closePane(f.focus);
     w.close();
   };
+  // A tab or pane item on the terminal window in front (windowAction); its keys are taken by the terminal's page itself
+  // (paneKeys), so they stay the shell's in a window with nothing to act on.
+  const paneItem = (id, label) => ({ label, accelerator: shortcuts.accel(id), registerAccelerator: false, click: () => windowAction(focusedFrame(), id) });
   const focused = focusedChat();
   const termOn = !!focused;
   // Copy Claude's Last Reply only where there's a reply to copy (an AI runs in the terminal in front), as its button.
@@ -4230,6 +4971,12 @@ function buildMenu() {
         // Mac's ⌘N and ⇧⌘N.
         { label: 'New File', accelerator: shortcuts.accel('newFile'), click: () => newFile() },
         { label: 'New Terminal…', accelerator: shortcuts.accel('newTerminal'), click: () => showOverlay('Overlay.newTerminal()') },
+        // The Mac's File items for tabs and splits (iTerm2's): a shell in the folder of the pane in front; with no
+        // terminal window in front, the folder picker.
+        { label: 'New Tab', accelerator: shortcuts.accel('newTab'), click: () => newTab(false) },
+        { label: 'New Tab Next to Current Tab', accelerator: shortcuts.accel('newTabNext'), click: () => newTab(true) },
+        { label: 'Split Vertically', accelerator: shortcuts.accel('splitVertically'), click: () => splitPane('right') },
+        { label: 'Split Horizontally', accelerator: shortcuts.accel('splitHorizontally'), click: () => splitPane('down') },
         { label: 'Ring', accelerator: shortcuts.accel('shortcutsWheel'), click: () => showShortcuts() },
         // No key of its own: Ctrl+0 is Actual Size's (the text size, ⌘0 on the Mac), and two items on one key leave only
         // one of them working.
@@ -4247,14 +4994,14 @@ function buildMenu() {
         { id: 'shipMerge', label: ship.shipMerge.label, enabled: false, click: () => shipMenu('merge') },
         { id: 'shipDelete', label: ship.shipDelete.label, enabled: false, click: () => shipMenu('delete') },
         { type: 'separator' },
-        // Ctrl+W (the Mac's ⌘W, which hides again since the Mac's d7e69be): the window in front closes, and a terminal's
-        // only hides: what runs in it (Claude, Codex, Antigravity, a shell) goes on as a planet or car on the orbit, and a
-        // click brings it back. A terminal ends with its End button or Window > End This Terminal.
-        { label: 'Close Window', accelerator: shortcuts.accel('closePane'), click: () => closeFocused() },
-        // Ctrl+Shift+W (the Mac's ⇧⌘W) does the same. Hidden, as one item on the menu is enough: on Windows a hidden
-        // item's key still works (acceleratorWorksWhenHidden is the Mac's).
-        { label: 'Close Window', accelerator: shortcuts.accel('closeWindow'), visible: false, click: () => closeFocused() },
-        // The Mac's Chat › Undo Close (⇧⌘T): the terminal hidden last comes back.
+        // Ctrl+W (the Mac's ⌘W, which hides again since the Mac's d7e69be): the tab or pane with the keys closes, or with
+        // only one the window in front, and a terminal's only hides: what runs in it (Claude, Codex, Antigravity, a shell)
+        // goes on as a planet or car on the orbit, and a click brings it back. A terminal ends with its End button or
+        // Window > End This Terminal.
+        { label: 'Close', accelerator: shortcuts.accel('closePane'), click: () => closeFocused(true) },
+        // Ctrl+Shift+W (the Mac's ⇧⌘W): the whole window, all its tabs.
+        { label: 'Close Terminal Window', accelerator: shortcuts.accel('closeWindow'), click: () => closeFocused(false) },
+        // The Mac's Chat › Undo Close (⇧⌘T): the terminal hidden last comes back, a tab or pane into its window.
         { label: 'Undo Close', accelerator: shortcuts.accel('undoClose'), click: () => undoClose() },
         { type: 'separator' },
         { role: 'quit', label: 'Quit', accelerator: 'CmdOrCtrl+Q' },
@@ -4338,9 +5085,30 @@ function buildMenu() {
           },
         },
         // The env files of the terminal in front (pages/env.js), the Mac's Env Files: the same keys close the view again.
-        { label: 'Env Files', accelerator: shortcuts.accel('envFiles'), click: () => { const f = focusedChat(); if (f) send(f[1].win, 'term:env'); } },
+        { label: 'Env Files', accelerator: shortcuts.accel('envFiles'), click: () => { const f = focusedChat(); if (f) send(f[1].page, 'term:env'); } },
         // Asked first, as its End button (env changes not saved, then confirmEnd).
         { label: 'End This Terminal', click: () => { const f = focusedChat(); if (f) endAsked(f[0]); } },
+        // The Mac's Window items for tabs and panes (iTerm2's), on the terminal window in front.
+        { type: 'separator' },
+        paneItem('nextTab', 'Select Next Tab'),
+        paneItem('previousTab', 'Select Previous Tab'),
+        paneItem('moveTabLeft', 'Move Tab Left'),
+        paneItem('moveTabRight', 'Move Tab Right'),
+        // No keys of their own, as on the Mac; they can be set in Settings › Shortcuts.
+        { label: 'Move Tab to New Window', accelerator: shortcuts.accel('moveTabToNewWindow'), click: () => moveTabToNewWindow(focusedFrame()) },
+        { label: 'Merge All Windows', accelerator: shortcuts.accel('mergeAllWindows'), click: () => mergeAllWindows() },
+        { type: 'separator' },
+        paneItem('nextPane', 'Select Next Pane'),
+        paneItem('previousPane', 'Select Previous Pane'),
+        paneItem('paneAbove', 'Select Pane Above'),
+        paneItem('paneBelow', 'Select Pane Below'),
+        paneItem('paneLeft', 'Select Pane on the Left'),
+        paneItem('paneRight', 'Select Pane on the Right'),
+        paneItem('dividerUp', 'Move Divider Up'),
+        paneItem('dividerDown', 'Move Divider Down'),
+        paneItem('dividerLeft', 'Move Divider Left'),
+        paneItem('dividerRight', 'Move Divider Right'),
+        paneItem('maximizePane', 'Maximize Active Pane'),
         { type: 'separator' },
         { label: 'Bring All to Front', click: () => bringAllToFront() },
         // Every window of the app, as the Mac's Window menu lists them: picked, it shows (a hidden terminal too) and has
@@ -4348,7 +5116,7 @@ function buildMenu() {
         { type: 'separator' },
         ...listed.map((w) => ({
           label: clip(w.title, 60).replace(/&/g, '&&'),
-          click: () => (w.id === 'dash' ? showDashboard() : chats.has(w.id) && showChat(w.id)),
+          click: () => (w.id === 'dash' ? showDashboard() : chats.has(w.id) && showFrame(chats.get(w.id).frame)),
         })),
       ],
     },
@@ -4529,9 +5297,10 @@ app.whenReady().then(() => {
   powerMonitor.on('on-battery', () => power.update());
   powerMonitor.on('on-ac', () => power.update());
   // Chats and terminals that outlived the last launch come back hidden, as on the Mac, so a launch doesn't throw windows
-  // on screen: a chat is on the orbit, a terminal a car, and a click opens its window.
-  terminals.restore().then((found) => {
-    for (const s of found) openChatWindow({ id: s.id, cwd: s.cwd, claude: s.claude, title: s.title, show: false });
+  // on screen: a chat is on the orbit, a terminal a car, and a click opens its window, with the tabs and splits it had.
+  terminals.restore().then(restoreWindows, (e) => {
+    console.error('terminals: restore:', e.message);
+    restoreWindows([], false);
   });
   if (PROBE) probe();
   if (DEMO && process.env.ORBITERM_DEMO_SHOT) demoShots(process.env.ORBITERM_DEMO_SHOT);
@@ -4680,7 +5449,7 @@ async function probe() {
     await wait(3000);
     terminals.write(id, process.platform === 'win32' ? 'echo hello from the probe\r' : 'echo hello from the probe\r');
     await wait(2000);
-    await shot(chats.get(id)?.win, 'terminal');
+    await shot(chats.get(id)?.page, 'terminal');
   }
   quitting = true;
   app.quit();

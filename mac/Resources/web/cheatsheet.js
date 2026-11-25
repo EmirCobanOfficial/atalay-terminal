@@ -13,9 +13,12 @@ window.CheatSheet = (() => {
   // The filter finds them as Settings › Shortcuts' search does (cloud.js keyFind: "cmd t" finds ⌘T).
   const finder = () => window.Cloud?.keyFind;
   // The ones nobody changes (Shortcuts.swift's reserved), each with the group it belongs to.
-  // Windows has no tabs; its rewind, swapped, is the close keys twice, whatever they are now (swapLabel null).
+  // Windows' tabs go by Ctrl+1 … Ctrl+9, and by its own Ctrl+Tab too (its shortcuts.js TAB_KEYS); its rewind, swapped, is
+  // the close keys twice, whatever they are now (swapLabel null).
   const WIN = window.__platform === 'win32';
   const FIXED = WIN ? [
+    { group: 'Tabs and panes', title: 'Tab 1 to 9 of the window', label: 'Ctrl+1 … Ctrl+9' },
+    { group: 'Tabs and panes', title: 'Next and previous tab', label: 'Ctrl+Tab · Ctrl+Shift+Tab' },
     { group: 'Chats', title: 'Rewind a chat (Claude Code, Antigravity)', label: 'Esc Esc', swapLabel: null },
   ] : [
     { group: 'Tabs and panes', title: 'Tab 1 to 9 of the window', label: '⌘1 … ⌘9' },

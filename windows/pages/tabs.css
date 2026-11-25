@@ -1,0 +1,45 @@
+/* A terminal window's tab bar and the gaps between its split panes, in the theme's colours (the app inserts the theme's
+   tokens), as the Mac's PaneTabBar and its chips. */
+html, body { height: 100%; margin: 0; }
+body { overflow: hidden; background: var(--code-bg, #251200); color: var(--txt, #f5ebe0); font: 11px "Cascadia Mono", Consolas, monospace; user-select: none; }
+#bar { position: fixed; inset: 0 0 auto; display: flex; align-items: center; gap: 4px; height: var(--bar-h, 30px); box-sizing: border-box; padding: 3px 6px; background: linear-gradient(rgba(var(--accent-rgb, 248, 128, 8), 0.08), transparent); }
+#bar[hidden] { display: none; }
+/* The chips share the bar; at their least width it scrolls sideways (the wheel too), its scrollbar hidden: » lists them all. */
+#chips { display: flex; flex: 1; gap: 4px; min-width: 0; height: 100%; overflow-x: auto; scrollbar-width: none; }
+#chips::-webkit-scrollbar { display: none; }
+.chip { position: relative; display: flex; flex: 1 1 0; align-items: center; gap: 6px; min-width: 124px; box-sizing: border-box; padding: 0 4px 0 8px;
+  border: 1px solid rgba(var(--accent-rgb, 248, 128, 8), 0.22); border-radius: 6px; background: rgba(0, 0, 0, 0.28); color: var(--dim, #8f7a66); cursor: default; }
+.chip.on { border-color: rgba(var(--accent-rgb, 248, 128, 8), 0.75); background: rgba(var(--accent-rgb, 248, 128, 8), 0.2); color: var(--accent-soft, #ffb057); font-weight: 600; }
+.chip:hover:not(.on) { border-color: rgba(var(--accent-rgb, 248, 128, 8), 0.45); color: var(--txt, #f5ebe0); }
+.chip .n { flex: none; opacity: 0.7; }
+/* Working (the accent) or needs you (the warning colour, pulsing), as the strip's status. */
+.chip .dot { flex: none; width: 7px; height: 7px; border-radius: 50%; }
+.chip .dot.busy { background: var(--accent, #f88008); }
+.chip .dot.waiting { background: var(--warn, #ffb000); animation: tab-pulse 1.6s ease-in-out infinite alternate; }
+@keyframes tab-pulse { to { opacity: 0.3; } }
+@media (prefers-reduced-motion: reduce) { .chip .dot.waiting { animation: none; } }
+.chip .name { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.chip.ended .name { opacity: 0.55; text-decoration: line-through; }
+/* The AI's context: a small bar and its size, when the chip has room. */
+.chip .ctx { display: inline-flex; flex: none; align-items: center; gap: 5px; color: var(--txt, #f5ebe0); font-size: 10px; font-weight: 400; }
+.chip .ctx .bar { position: relative; width: 36px; height: 5px; background: rgba(255, 255, 255, 0.08); }
+.chip .ctx .bar span { position: absolute; inset: 0 auto 0 0; background: linear-gradient(90deg, var(--accent, #f88008), var(--amber, #ffc040)); }
+.chip { container-type: inline-size; }
+@container (max-width: 180px) { .chip .ctx { display: none; } }
+.chip .x { flex: none; width: 18px; height: 18px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: inherit; font: 13px/1 "Cascadia Mono", Consolas, monospace; cursor: pointer; opacity: 0.7; }
+.chip .x:hover { background: rgba(var(--accent-rgb, 248, 128, 8), 0.25); color: var(--hi, #fff8f0); opacity: 1; }
+.chip input { flex: 1; min-width: 40px; height: 18px; padding: 0 4px; border: 1px solid var(--accent, #f88008); border-radius: 3px; outline: none; background: rgba(0, 0, 0, 0.55); color: var(--txt, #f5ebe0); font: inherit; }
+#more { flex: none; width: 22px; height: 22px; padding: 0; border: 0; background: transparent; color: var(--accent-soft, #ffb057); font: 600 14px "Cascadia Mono", Consolas, monospace; cursor: pointer; }
+#more[hidden] { display: none; }
+#more:hover { color: var(--hi, #fff8f0); }
+#chips:focus-visible, .chip:focus-visible, #more:focus-visible { outline: 2px solid var(--accent-soft, #ffb057); outline-offset: -2px; }
+/* A gap between two panes: a faint line in it, the accent while it's dragged or under the pointer. */
+.gap { position: fixed; display: flex; align-items: center; justify-content: center; }
+.gap.row { cursor: col-resize; }
+.gap.col { cursor: row-resize; }
+.gap::after { content: ''; background: rgba(var(--accent-rgb, 248, 128, 8), 0.2); }
+.gap.row::after { width: 1px; height: 100%; }
+.gap.col::after { width: 100%; height: 1px; }
+.gap:hover::after, .gap.drag::after { background: var(--accent, #f88008); }
+.gap.row:hover::after, .gap.row.drag::after { width: 2px; }
+.gap.col:hover::after, .gap.col.drag::after { height: 2px; }

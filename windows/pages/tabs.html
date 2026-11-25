@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Orbiterm</title>
+<link rel="stylesheet" href="tabs.css">
+</head>
+<body>
+<!-- A terminal window's tabs (main.js's frames), the Mac's PaneTabBar: shown with two tabs or more. -->
+<nav id="bar" hidden>
+  <div id="chips" role="tablist" aria-label="Tabs"></div>
+  <button id="more" type="button" title="All tabs" aria-label="All tabs" hidden>»</button>
+</nav>
+<!-- The gaps between split panes, where a divider is dragged; the terminals are views over the rest of the page. -->
+<div id="gaps"></div>
+<script src="tabs.js"></script>
+</body>
+</html>
