@@ -2120,6 +2120,35 @@ function raidJolt() {
   for (const k of CATS) STATIONS[k].hitAt = now;
   for (const n of NODES.values()) n.kick = Math.min(1.5, n.kick + 1);
 }
+// A friend's nudge (messages.js, nudge.ts) while the dashboard is full screen: the core, the circle at the map's centre, shakes
+// for 560 ms through the nudge's jolt (the chat window's table, messages.css ndg-jolt), a little wider since it is a picture, not a
+// window. In the page only; nothing else on the map moves. Reduce Motion: nothing.
+const NUDGE_STOPS = [[0, 0, 0], [45, 8, -5], [106, -7, 4], [168, 6, 5], [230, -8, -3], [291, 5, -4], [353, -4, 3], [414, 3, 2], [476, -2, -1], [560, 0, 0]];
+const NUDGE = { t0: 0 };
+function nudgeCore() {
+  // Only while the map itself can be seen: not out of the layout behind a full view, not under a chat window, not hidden.
+  if (!SIZE.w || !ACT.visible || !ACT.shown || ACT.covered || document.hidden) return false;
+  if (window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches) return false;
+  NUDGE.t0 = performance.now();
+  poke(700);
+  return true;
+}
+function updateNudge(now) {
+  if (!NUDGE.t0) return;
+  const t = now - NUDGE.t0;
+  let dx = 0, dy = 0;
+  if (t < 560) {
+    let i = 1;
+    while (NUDGE_STOPS[i][0] < t) i++;
+    const [t0, x0, y0] = NUDGE_STOPS[i - 1], [t1, x1, y1] = NUDGE_STOPS[i];
+    const k = (1 - Math.cos(Math.PI * ((t - t0) / (t1 - t0)))) / 2; // ease-in-out on every leg
+    dx = x0 + (x1 - x0) * k;
+    dy = y0 + (y1 - y0) * k;
+    poke(120);
+  } else NUDGE.t0 = 0;
+  const unit = 1.25 / (pxPerUnit(tmp.p.set(0, 0, 0)) || 1); // px on screen -> world units at the core
+  core.group.position.set(0, 0, 0).addScaledVector(CAM.right, dx * unit).addScaledVector(CAM.up, -dy * unit);
+}
 const raid = makeRaid({
   scene, camera, CAM, VIEW0, SIZE, ACT, glow, lines, glowTex, poke, reflections, core, coreR: K.CORE_R,
   sun: sunLight, shake: shakeCamera, stage: raidStage, jolt: raidJolt,
@@ -2214,6 +2243,7 @@ function frame(now) {
   updateShips(dt, now);
   updateBoxes(dt, now);
   raid.update(dt, now);
+  updateNudge(now);
   coreObj.position.set(0, 0, 0).addScaledVector(CAM.up, -K.CORE_R * 1.7);
 
   glow.begin();
@@ -2280,5 +2310,5 @@ function focusRunaway(pid) {
 setCinematic(cineOn);
 if (SOLAR.on) applySolar();
 // QUALITY too: the power save switch's tooltip (app.js) gives its numbers.
-window.Orbit = { quality: QUALITY, state: onState, event: onEvent, status: onStatus, seed, activity, power, terminals: syncShips, terminalGone: shipGone, cinematic: startCinematic, idle: systemIdle, runaways: syncBoxes, focusRunaway, blowUp, relabel, attack: raid.start, corePoint, shipPoint, solar, solarOn: () => SOLAR.on };
+window.Orbit = { quality: QUALITY, state: onState, event: onEvent, status: onStatus, seed, activity, power, terminals: syncShips, terminalGone: shipGone, cinematic: startCinematic, idle: systemIdle, runaways: syncBoxes, focusRunaway, blowUp, relabel, attack: raid.start, corePoint, shipPoint, solar, solarOn: () => SOLAR.on, nudge: nudgeCore };
 for (const [fn, args] of R.MAPQ.splice(0)) window.Orbit[fn](...args);

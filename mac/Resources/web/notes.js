@@ -406,13 +406,17 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
   // The last change an AI made (agentApply): while the note is still as it left it, the strip says so and offers Undo.
   let lastAi = null; // { id, by, at, before (blocks), after (version) }
   const aiLog = [];
+  // The AI in the note: the capsule's AI face, the AI bar, the marks in the text (the share section below has the painting).
+  let aiBar = null; // the bar that floats over the note's foot
+  let aiPres = null; // { id, by, label, key, state, since, last, ttl }: an AI that works in a note now (Notes.aiHere)
+  let aiWait = null; // { id, by, until, ids }: its change waits for the user's pause in typing
+  let aiFlash = null; // { id, text, until }: a line the bar says for a moment ("Undone")
   const hashOf = (s) => {
     let h = 2166136261;
     for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619);
     return (h >>> 0).toString(36);
   };
   const aiTag = (n) => (lastAi && n && lastAi.id === n.id && Date.now() - lastAi.at < 600000 && hashOf(toText(blocksOf(n))) === lastAi.after ? lastAi : null);
-  const aiText = (a) => `${a.by} ${a.kind === 'create' ? 'created' : a.kind === 'pin' ? 'pinned' : 'edited'} · ${new Date(a.at).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })} · Undo`;
   // An AI changed a note (or its change was undone): the board's marks and the popover's last line follow.
   function aiTouched() {
     if (WINDOW) return;
@@ -422,15 +426,14 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
   function stamp() {
     if (!cur) return;
     paintAi();
+    paintAiBar(); // a note typed in since the AI's change is no longer as it left it: its bar and marks go
     const edited = (n) => (n.at && blocksOf(n).some((b) => b.text || b.type !== 'p') ? `edited ${ago(n.at)}` : '');
     const p = pinnedNote();
     if (meta && p) {
-      const ai = aiTag(p);
-      // The project, when the note has one, after its name (words, not colour).
+      // The project, when the note has one, after its name (words, not colour). What an AI did is the AI bar's to say.
       const named = p.project ? `${nameOf(p)} · ${p.project.name}` : nameOf(p);
-      meta.textContent = ai ? aiText(ai) : (unsaved ? 'not saved · ' : '') + (edited(p) ? `${named} · ${edited(p)}` : named);
-      meta.title = ai ? 'Put the note back as it was before' : unsaved ? `Not saved on this computer: ${unsaved}` : '';
-      meta.dataset.undo = ai ? p.id : '';
+      meta.textContent = (unsaved ? 'not saved · ' : '') + (edited(p) ? `${named} · ${edited(p)}` : named);
+      meta.title = unsaved ? `Not saved on this computer: ${unsaved}` : '';
     }
     if (WINDOW) {
       // The note's own window: its strip, and its name for the app (Mission Control, the Window menu).
@@ -440,10 +443,8 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
       tag.textContent = name;
       tag.title = name === cur.name ? NAME_HINT : name;
       const m = panel.querySelector('.npw-meta');
-      const ai = aiTag(cur);
-      m.textContent = ai ? aiText(ai) : (unsaved ? 'not saved · ' : '') + edited(cur);
-      m.title = ai ? 'Put the note back as it was before' : unsaved ? `Not saved on this computer: ${unsaved}` : '';
-      m.dataset.undo = ai ? cur.id : '';
+      m.textContent = (unsaved ? 'not saved · ' : '') + edited(cur);
+      m.title = unsaved ? `Not saved on this computer: ${unsaved}` : '';
       // On stream the app's window list shows a plain name, not the note's first line.
       const shown = document.documentElement.classList.contains('streamer') ? 'Note' : name;
       if (shown !== titled) STORE?.postMessage({ type: 'title', name: (titled = shown) }).catch(() => {});
@@ -776,7 +777,7 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
     if (focus) place(textEl(focus.id), focus.at);
     if (canFiles && blocks.some((b) => b.type === 'file')) refreshHave();
     liveName();
-    if (sync) drawCursors();
+    if (sync || aiShowing()) drawCursors();
   }
 
   function blockEl(b, num, blank) {
@@ -2893,12 +2894,15 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
       const on = !!n.aiHidden;
       // The eye only means something while AI has access; a hidden note keeps it so it can be shown again.
       b.hidden = AI.mode === 'off' && !on;
-      if (b.dataset.ai === String(on)) return;
-      b.dataset.ai = String(on);
+      // A shared note says whose AI can read it too (the owner's switch in the share sheet).
+      const seen = n.shared ? `AI can read this note (everyone\u2019s AI: ${n.shared.ai ? 'on' : 'off'}) \u00b7 Click to hide it from AI` : AI_TIP_SEEN;
+      const key = `${on}|${on ? '' : seen}`;
+      if (b.dataset.ai === key) return;
+      b.dataset.ai = key;
       b.classList.toggle('on', on);
       b.removeAttribute('aria-pressed');
       b.removeAttribute('title');
-      b.dataset.tip = on ? AI_TIP_HIDDEN : AI_TIP_SEEN;
+      b.dataset.tip = on ? AI_TIP_HIDDEN : seen;
       b.setAttribute('aria-label', b.dataset.tip);
       b.innerHTML = on ? EYE_OFF : EYE;
       if (tipAt === b || b.matches(':hover')) showTip(b);
@@ -3352,7 +3356,7 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
     // The Mac's app windows: the panel writes the pinned note unless it's out in its window (then: where it is).
     if (NATIVE) {
       if (out.has(pinned)) host.replaceChildren(away);
-      else if (ed.parentNode !== host) host.replaceChildren(shStrip, ed, curs, toast);
+      else if (ed.parentNode !== host) host.replaceChildren(ed, curs, aiBar, toast);
       return;
     }
     if (!win || win.hidden) return;
@@ -3466,7 +3470,7 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
     keepWindow();
     closeMenu();
     save();
-    host.replaceChildren(shStrip, ed, curs, toast);
+    host.replaceChildren(ed, curs, aiBar, toast);
     win.hidden = true;
     pop.classList.remove('on');
     pop.title = 'Open in a window';
@@ -4548,7 +4552,7 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
     const f = friendAi.get(n.id);
     if (f && Date.now() - f.at < 600000) return `<span class="nai-mark" role="img" data-tip="${esc(f.text)}" aria-label="${esc(f.text)}">${cg('sparkle')}</span>`;
     const a = AI.mode !== 'off' ? aiTag(n) : null;
-    if (!a) return '';
+    if (!a || a.kept) return '';
     const tip = `${a.by} ${a.kind === 'create' ? 'made' : a.kind === 'pin' ? 'pinned' : 'edited'} this ${ago(a.at)} · Open the note to undo it`;
     return `<span class="nai-mark" role="img" data-tip="${esc(tip)}" aria-label="${esc(tip)}">${cg('sparkle')}</span>`;
   }
@@ -4759,7 +4763,7 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
           shared: {
             id: String(s.id),
             owner: person(s.owner),
-            members: (Array.isArray(s.members) ? s.members : []).slice(0, 8).map((m) => ({ ...person(m), avatar: picOf(m && m.avatar), owner: !!m.owner, invited: !!m.invited })),
+            members: (Array.isArray(s.members) ? s.members : []).slice(0, 8).map((m) => ({ ...person(m), avatar: picOf(m && m.avatar), color: /^#[0-9a-f]{6}$/i.test(m && m.color) ? m.color : '', owner: !!m.owner, invited: !!m.invited })),
             ai: s.ai === true,
             mine: s.mine === true,
             me: typeof s.me === 'string' ? s.me : '',
@@ -4825,11 +4829,18 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
     // Another account is signed in: this account's note stays as it is (no line, no visit).
     const acct = window.Social?.state?.()?.me?.id;
     if (acct && n.shared.me && n.shared.me !== acct) return;
-    const s = { n, prov: null, status: 'connecting', hello: null, aiNote: null, aiSeen: 0 };
+    const s = { n, prov: null, status: 'connecting', since: Date.now(), hello: null, aiSeen: 0, lastHere: null, aSent: '' };
     s.prov = new NS.SharedProvider(model.doc, {
       ticket: ticketFor(n),
       on: {
         status: (st) => {
+          if (s.status !== st) s.since = Date.now();
+          if (s.status === 'live' && st !== 'live') {
+            // The line dropped: who was here is the list from before this moment (a drop clears the cursors first).
+            s.wasLive = true;
+            const before = (s.hereLog || []).filter((e) => e.t < Date.now() - 80);
+            s.lastHere = before.length ? before[before.length - 1].list : [];
+          } else if (st === 'live') s.lastHere = null;
           s.status = st;
           paintShare();
           if (st === 'live') {
@@ -4852,9 +4863,10 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
           dropShared(n.id, why);
         },
         error: (code) => {
-          // Too big: the strip says so and the line stops trying; anything else is a short pause.
+          // Too big: the status chip says so and the line stops trying; anything else is a short pause.
           if (code === 'too_big') {
             s.status = 'big';
+            s.since = Date.now();
             paintShare();
           } else if (!s.slowSaid) {
             s.slowSaid = true;
@@ -4896,7 +4908,8 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
   }
 
   // ---------- what an AI of the others changed ----------
-  // The note's `edits` map (written by an AI's change, in the same step as the change): "Claude Code (Atalay) edited".
+  // The note's `edits` map (written by an AI's change, in the same step as the change): the friend's AI bar and the marks
+  // on the blocks it touched (drawCursors), until OK or ten minutes.
   function watchEdits(s) {
     const show = () => {
       const mine = myId();
@@ -4904,17 +4917,15 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
       if (!e) return;
       s.aiSeen = e.at;
       const who = (s.n.shared.members.find((m) => m.id === e.for) || {}).name;
-      const text = `${String(e.by || 'AI').slice(0, 24)}${who ? ` (${who})` : ''} edited · ${aiTime(e.at)}`;
-      s.aiNote = { text, at: Date.now() };
-      friendAi.set(s.n.id, { at: e.at, text });
-      for (const id of Array.isArray(e.blocks) ? e.blocks.slice(0, 50) : []) {
-        const el = ed.querySelector(`.nb[data-id="${CSS.escape(String(id))}"]`);
-        if (!el) continue;
-        el.classList.add('sh-glow');
-        setTimeout(() => el.classList.remove('sh-glow'), 2000);
-      }
+      const by = String(e.by || 'AI').slice(0, 24);
+      const ids = (Array.isArray(e.blocks) ? e.blocks.slice(0, 50) : []).map(String);
+      const whose = who ? `${who}\u2019s ${by}` : by;
+      const sum = `changed ${ids.length} line${ids.length === 1 ? '' : 's'}`;
+      // The same change seen again (the note opened anew): an OK it got, and its one sweep, stay.
+      const was = friendAi.get(s.n.id);
+      const again = !!was && was.at === e.at;
+      friendAi.set(s.n.id, { at: e.at, text: `${whose} ${sum} \u00b7 ${aiTime(e.at)}`, sum, by, who: who || '', whose, color: faceColor(e.for), ids, ok: again && !!was.ok, landed: again && !!was.landed });
       paintShare();
-      setTimeout(paintShare, 9000);
       if (!WINDOW) drawBoard();
     };
     model.edits.observe(() => setTimeout(show, 30));
@@ -4986,7 +4997,10 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
       cursRaf = 0;
       if (!sync || !model) {
         cursHits = [];
-        return void curs.replaceChildren();
+        // No line (a private note): the AI's marks are all this layer draws.
+        const e0 = ed.getBoundingClientRect();
+        curs.style.cssText = `left:${ed.offsetLeft}px;top:${ed.offsetTop}px;width:${ed.clientWidth}px;height:${ed.clientHeight}px`;
+        return void (curs.innerHTML = aiMarks(e0));
       }
       const me = sync.prov.doc.clientID;
       const eb = ed.getBoundingClientRect();
@@ -5098,7 +5112,7 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
       }
       for (const cid of [...cursSeen.keys()]) if (!live.has(cid)) cursSeen.delete(cid);
       cursHits = hits;
-      curs.innerHTML = html.join('');
+      curs.innerHTML = html.join('') + aiMarks(eb);
       clearTimeout(cursTimer);
       // The newest cursor's name is taken off when its time is up.
       if (wait > 0) cursTimer = setTimeout(drawCursors, Math.min(...[...cursSeen.values()].map((v) => 2250 - (Date.now() - v.at)).filter((v) => v > 0), wait));
@@ -5192,25 +5206,41 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
   }
   ed.addEventListener('compositionend', () => sync && setTimeout(renderKeep, 0));
 
-  // ---------- the strip, the share button and the sheet ----------
+  // ---------- the capsule, the status chip, the AI bar and the sheet ----------
   const PEOPLE =
     '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="3.2"/><path d="M3 19c.6-3.3 3-5 6-5s5.4 1.7 6 5"/><path d="M16 5.2a3 3 0 0 1 0 5.6M18 14.4c1.7.5 2.7 2 3 4.6"/></svg>';
-  const shStrip = document.createElement('div');
-  shStrip.className = 'sh-strip';
-  shStrip.hidden = true;
-  host.insertBefore(shStrip, ed);
+  // The header's people: one capsule (who is here now, and the door to the share sheet), the status chip before it (only when
+  // the line is not fine), a hairline after it, then the window's own buttons.
+  const shStat = document.createElement('span');
+  shStat.className = 'np-stat';
+  shStat.setAttribute('role', 'status');
+  shStat.hidden = true;
   const shBtn = document.createElement('button');
   shBtn.type = 'button';
-  shBtn.className = 'np-share';
+  shBtn.className = 'np-cap solo';
   shBtn.hidden = true;
-  shBtn.innerHTML = PEOPLE;
-  if (WINDOW) panel.querySelector('.npw-bar')?.insertBefore(shBtn, panel.querySelector('.npw-ai'));
-  else panel.querySelector('header')?.appendChild(shBtn);
+  shBtn.setAttribute('aria-haspopup', 'dialog');
+  shBtn.setAttribute('aria-expanded', 'false');
+  const shSep = document.createElement('i');
+  shSep.className = 'np-sep';
+  shSep.hidden = true;
+  {
+    const bar = WINDOW ? panel.querySelector('.npw-bar') : panel.querySelector(':scope > header');
+    const before = WINDOW ? panel.querySelector('.npw-ai') : aiBtn;
+    if (bar && before && before.parentNode === bar) for (const el of [shStat, shBtn, shSep]) bar.insertBefore(el, before);
+  }
   const toast = document.createElement('div');
   toast.className = 'sh-toast';
   toast.hidden = true;
   toast.setAttribute('role', 'status');
   host.appendChild(toast);
+  // The AI bar: floats over the note's foot while an AI works in it, and holds what it did until Keep or Undo.
+  aiBar = document.createElement('div');
+  aiBar.className = 'np-aibar';
+  aiBar.hidden = true;
+  aiBar.setAttribute('role', 'status');
+  aiBar.setAttribute('aria-live', 'polite');
+  host.appendChild(aiBar);
   let toastTimer = 0;
   function tellUser(text) {
     toast.textContent = text;
@@ -5227,6 +5257,10 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
     if (sync && model) {
       for (const st of sync.prov.awareness.getStates().values()) if (st && st.u && st.u.id === id && /^#[0-9a-f]{6}$/i.test(st.u.color)) faceColors.set(id, st.u.color);
     }
+    if (!faceColors.has(id) && cur && cur.shared) {
+      const m = cur.shared.members.find((x) => x.id === id);
+      if (m && m.color) faceColors.set(id, m.color);
+    }
     return faceColors.get(id) || hue(id);
   };
   const hue = (id) => `hsl(${[...String(id)].reduce((h, c) => (h * 31 + c.charCodeAt(0)) % 360, 7)} 62% 58%)`;
@@ -5235,7 +5269,7 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
   const avFailed = new Set();
   const shAv = (p) => {
     const pic = picOf(p.avatar);
-    return `<i class="sh-av" style="background:${hue(p.id)}" data-i="${initial(p)}">${pic && !avFailed.has(pic) ? `<img alt="" src="${esc(pic)}" draggable="false">` : initial(p)}</i>`;
+    return `<i class="sh-av" style="background:${faceColor(p.id)}" data-i="${initial(p)}">${pic && !avFailed.has(pic) ? `<img alt="" src="${esc(pic)}" draggable="false">` : initial(p)}</i>`;
   };
   document.addEventListener('error', (e) => {
     const img = e.target;
@@ -5244,29 +5278,174 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
     avFailed.add(img.getAttribute('src'));
     av.textContent = av.dataset.i || '?';
   }, true);
-  // Who else is in the note right now (their cursor's account), by name.
-  function hereNames() {
+  const joinNames = (a) => (a.length < 2 ? a.join('') : `${a.slice(0, -1).join(', ')} and ${a[a.length - 1]}`);
+  const okColor = (c) => typeof c === 'string' && /^#[0-9a-f]{6}$/i.test(c);
+  const colorOfUser = (u) => (okColor(u.color) ? u.color : faceColor(u.id));
+  const plural = (n, one, many) => `${n} ${n === 1 ? one : many || `${one}s`}`;
+  // Who else is in the note now (their cursor's account), in the order they came, each in their cursor colour. While the line
+  // is down the last ones seen stay (greyed), so a dropped line doesn't look like everyone left.
+  function hereList() {
     if (!sync) return [];
+    if (sync.status !== 'live' && sync.lastHere) return sync.lastHere;
+    if (sync.status !== 'live' && sync.wasLive) return [];
     const mine = myId();
     const seen = new Map();
-    for (const st of sync.prov.awareness.getStates().values()) if (st && st.u && st.u.id !== mine) seen.set(st.u.id, st.u.name);
-    return [...seen.values()];
-  }
-  const joinNames = (a) => (a.length < 2 ? a.join('') : `${a.slice(0, -1).join(', ')} and ${a[a.length - 1]}`);
-  function statusLine() {
-    const acct = window.Social?.state?.()?.me?.id;
-    if (cur && cur.shared && acct && cur.shared.me && cur.shared.me !== acct) return { cls: 'off', text: 'Belongs to another account' };
-    const cant = placeholder ? ' · you can’t edit yet' : '';
-    if (!sync) return { cls: 'off', text: `Offline${cant || ' · changes will sync when you’re back online'}` };
-    if (sync.status === 'big') return { cls: 'off', text: 'Too big to sync (2 MB) · shorten it' };
-    if (sync.aiNote && Date.now() - sync.aiNote.at < 9000) return { cls: 'ai', text: sync.aiNote.text };
-    if (sync.status === 'live') {
-      const h = hereNames();
-      return { cls: 'live', text: h.length ? `Live · ${joinNames(h.slice(0, 3))}${h.length > 3 ? ` and ${h.length - 3} more` : ''} ${h.length === 1 ? 'is' : 'are'} here` : 'Live' };
+    for (const st of sync.prov.awareness.getStates().values()) {
+      if (!st || !st.u || !st.u.id || st.u.id === mine || seen.has(st.u.id)) continue;
+      const m = (cur && cur.shared && cur.shared.members.find((x) => x.id === st.u.id)) || {};
+      seen.set(st.u.id, { id: String(st.u.id), name: String(st.u.name || m.name || '?'), tag: m.tag || 0, avatar: m.avatar || null, color: colorOfUser(st.u) });
     }
-    if (sync.status === 'connecting') return { cls: 'wait', text: `Connecting…${placeholder ? ' you can edit once the note arrives' : ''}` };
-    if (sync.status === 'busy') return { cls: 'off', text: 'Busy · trying again in a moment' };
-    return { cls: 'off', text: `Offline${cant || ' · changes will sync when you’re back online'}` };
+    const list = [...seen.values()];
+    // Remembered, so a line that drops (it clears everyone's cursor in the same breath) can show who was here just before.
+    const log = sync.hereLog || (sync.hereLog = []);
+    const prev = log[log.length - 1];
+    if (!prev || prev.list.map((p) => p.id).join() !== list.map((p) => p.id).join()) log.push({ t: Date.now(), list });
+    if (log.length > 12) log.shift();
+    return list;
+  }
+  // The AIs of the others that work in this note now (their page says so in its awareness: `a`).
+  function friendAis() {
+    if (!sync || sync.status !== 'live') return [];
+    const mine = myId();
+    const out = [];
+    for (const [cid, st] of sync.prov.awareness.getStates()) {
+      if (cid === sync.prov.doc.clientID || !st || !st.u || st.u.id === mine || !st.a || typeof st.a.by !== 'string') continue;
+      out.push({ cid, by: st.a.by.slice(0, 24), s: st.a.s === 'waiting' ? 'waiting' : 'working', who: String(st.u.name || '?'), color: colorOfUser(st.u) });
+    }
+    return out;
+  }
+  // My own AI, while it works in the note that is shown.
+  const aiHereNow = () => (aiPres && cur && aiPres.id === cur.id && Date.now() - aiPres.last < aiPres.ttl ? aiPres : null);
+  const aiWaiting = () => (aiWait && cur && aiWait.id === cur.id ? aiWait : null);
+
+  // The line's health, in words, only when it is not fine (null while live). A line down for less than 1.5 s says nothing, so a
+  // quick reconnect never flickers; "Reconnecting" turns into "Offline" after 15 s, or at once when the computer has no network.
+  let chipAgain = 0;
+  let noSyncSince = 0;
+  function chipState() {
+    chipAgain = 0;
+    const acct = window.Social?.state?.()?.me?.id;
+    if (cur && cur.shared && acct && cur.shared.me && cur.shared.me !== acct) return { cls: 'off', text: 'Other account', tip: 'This note belongs to another account' };
+    const now = Date.now();
+    const offline = (since) => ({ cls: 'off', text: 'Offline', saved: true, tip: `Offline · your changes are kept on this ${MACHINE} and sync when you’re back online` });
+    if (!sync) {
+      noSyncSince = noSyncSince || now;
+      if (now - noSyncSince < 1500) return void (chipAgain = 1500 - (now - noSyncSince) + 20);
+      return offline();
+    }
+    noSyncSince = 0;
+    if (sync.status === 'live') return null;
+    if (sync.status === 'big') return { cls: 'big', text: 'Too big to sync', tip: 'Too big to sync (2 MB) · shorten it' };
+    const down = now - (sync.since || now);
+    if (down < 1500) return void (chipAgain = 1500 - down + 20);
+    if (sync.status === 'connecting') return { cls: 'wait', text: 'Connecting…', tip: placeholder ? 'You can edit once the note arrives' : 'Connecting…' };
+    if (navigator.onLine === false || down >= 15000) return offline();
+    chipAgain = 15000 - down + 20;
+    return { cls: 'wait', text: 'Reconnecting…', tip: `Your changes are kept on this ${MACHINE} and go out when the line is back` };
+  }
+  function paintChip(c) {
+    if (!c) {
+      shStat.hidden = true;
+      return;
+    }
+    const html = `<i></i><span>${esc(c.text)}</span>${c.saved ? `<small>· saved on this ${MACHINE}</small>` : ''}`;
+    shStat.className = `np-stat ${c.cls}`;
+    if (shStat.__h !== html) {
+      shStat.__h = html;
+      shStat.innerHTML = html;
+    }
+    shStat.title = c.tip;
+    shStat.setAttribute('aria-label', c.tip);
+    shStat.hidden = false;
+  }
+
+  // A face: the person's colour and initial (or their picture), the same colour as their cursor everywhere.
+  const faceHtml = (p) => {
+    const pic = picOf(p.avatar);
+    return `<i class="np-face" style="--c:${p.color}" title="${esc(handleOf(p))}" data-i="${initial(p)}">${pic && !avFailed.has(pic) ? `<img alt="" src="${esc(pic)}" draggable="false">` : initial(p)}</i>`;
+  };
+  // The AI as a member of the note: a molten squircle with a spark, its owner's colour as a dot; an ember circles it while it
+  // works, a ring runs out while it waits for the user's pause.
+  const aiFace = (owner, o = {}) =>
+    `<i class="np-aiface" style="--owner:${owner}" role="img" aria-label="${esc(o.label || 'AI')}"><span class="g">${G.sparkleF}</span>${o.orbit ? '<span class="np-orbit"></span>' : ''}${o.wait ? '<span class="np-wait" style="--p:1"></span>' : ''}</i>`;
+  // How many faces fit: 3 on the panel, 4 in the window, 2 when narrow or zoomed (the AI's face counts).
+  function faceRoom() {
+    const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+    const w = panel.clientWidth;
+    return WINDOW ? (w <= 25 * rem ? 2 : 4) : w < 19 * rem ? 2 : 3;
+  }
+  function paintCapsule(sh, chip) {
+    let cls = 'np-cap';
+    let html;
+    let tip;
+    if (!sh) {
+      cls += ' solo';
+      html = `${PEOPLE}<span>Share</span>`;
+      tip = 'Share this note with friends';
+    } else {
+      const mineId = myId();
+      const others = sh.members.filter((m) => !m.invited && m.id !== mineId).length;
+      const shared = `shared with ${plural(others, 'friend')}`;
+      if (chip && chip.cls === 'off') {
+        cls += ' solo dim';
+        html = `${PEOPLE}<span>Shared</span>`;
+        tip = `Shared with ${plural(others, 'friend')} · who is here shows once you’re back online`;
+      } else {
+        const here = hereList();
+        const me = aiHereNow();
+        const fr = friendAis();
+        const wait = !!aiWaiting();
+        const ais = [];
+        const said = [];
+        if (me) {
+          ais.push(aiFace(faceColor(mineId), { orbit: !wait, wait, label: `${me.by} (yours) is working` }));
+          said.push(`your ${me.by} is working`);
+        }
+        for (const f of fr) {
+          ais.push(aiFace(f.color, { orbit: f.s === 'working', wait: f.s === 'waiting', label: `${f.who}’s ${f.by} is working` }));
+          said.push(`${f.who}’s ${f.by} is working`);
+        }
+        const stale = !!chip && chip.cls === 'wait';
+        if (stale) cls += ' stale';
+        const who = here.length ? `${joinNames(here.map((p) => p.name))} ${here.length === 1 ? 'is' : 'are'} here` : '';
+        if (!here.length && !ais.length) {
+          cls += ' solo';
+          html = `${PEOPLE}<span>Only you</span>`;
+          tip = others ? `Shared with ${plural(others, 'friend')} · no one else is here now` : 'Shared note · no one else is in it yet';
+        } else if (here.length === 1 && !ais.length) {
+          cls += ' one';
+          tip = `${who} · ${shared}`;
+          html = `<span class="np-faces">${faceHtml(here[0])}</span><span class="who">${esc(here[0].name)}</span>`;
+        } else {
+          const max = Math.max(1, faceRoom() - ais.length);
+          const shown = here.length > max ? here.slice(0, max - 1) : here;
+          const more = here.length - shown.length;
+          tip = `${[who, ...said].filter(Boolean).join(' · ')} · ${shared}`;
+          html = `<span class="np-faces">${ais.join('')}${shown.map(faceHtml).join('')}${more ? `<i class="np-face more">+${more}</i>` : ''}</span>`;
+        }
+      }
+    }
+    const key = `${cls}|${html}|${tip}`;
+    if (shBtn.__h !== key) {
+      shBtn.__h = key;
+      shBtn.className = cls;
+      shBtn.innerHTML = html;
+      shBtn.title = tip;
+      shBtn.setAttribute('aria-label', `${tip} · opens sharing`);
+    }
+  }
+  // My own AI as a member of the note for the others: its name and what it is doing, in my awareness; null when it is done.
+  function pushAiAwareness() {
+    if (!sync || !sync.prov || !cur) return;
+    const me = aiHereNow();
+    const a = me ? { by: me.by, s: aiWaiting() ? 'waiting' : 'working' } : null;
+    const key = a ? `${a.by}|${a.s}` : '';
+    if (sync.aSent === key) return;
+    const aw = sync.prov.awareness;
+    const st = aw.getLocalState();
+    if (!st) return;
+    sync.aSent = key;
+    aw.setLocalState({ ...st, a });
   }
   function paintShare() {
     const n = cur;
@@ -5274,33 +5453,326 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
     const on = SHARE_UI && canShare && !!n && (WINDOW || !out.has(n.id));
     const sh = on && n.shared;
     host.classList.toggle('sh-on', !!sh);
-    shBtn.hidden = !on;
-    shBtn.classList.toggle('on', !!sh);
-    const tip = sh ? 'Who’s in this note' : 'Share this note with friends';
-    shBtn.title = tip;
-    shBtn.setAttribute('aria-label', tip);
-    if (!sh) {
-      shStrip.hidden = true;
-      shStrip.innerHTML = '';
-    } else {
-      const s = statusLine();
-      const ppl = sh.members.filter((m) => !m.invited);
-      const html =
-        `<span class="sh-faces">${ppl.slice(0, 4).map((m) => `<i style="background:${faceColor(m.id)}" title="${esc(handleOf(m))}">${initial(m)}</i>`).join('')}${ppl.length > 4 ? `<i class="more">+${ppl.length - 4}</i>` : ''}</span>` +
-        `<span class="sh-state ${s.cls}"><i class="sh-dot"></i>${esc(s.text)}</span>` +
-        (sh.ai ? '<span class="sh-ai" title="The note’s owner lets AI read it">AI can read</span>' : '');
-      if (shStrip.__h !== html) {
-        shStrip.innerHTML = html;
-        shStrip.__h = html;
+    shBtn.hidden = shSep.hidden = !on;
+    clearTimeout(chipTimer);
+    if (!on) shStat.hidden = true;
+    else {
+      const chip = sh ? chipState() : null;
+      if (chipAgain) chipTimer = setTimeout(paintShare, chipAgain);
+      paintChip(chip);
+      paintCapsule(sh, chip);
+      if (sh) pushAiAwareness();
+      // A colour seen in the note stays with the note (a face keeps its colour offline too).
+      if (sh && n === cur && sync && sync.status === 'live') {
+        const members = sh.members.map((m) => (faceColors.has(m.id) && okColor(faceColors.get(m.id)) && m.color !== faceColors.get(m.id) ? { ...m, color: faceColors.get(m.id) } : m));
+        if (members.some((m, i) => m !== sh.members[i])) setMeta(n, { members });
       }
-      shStrip.hidden = false;
     }
     if (sheetEl) paintSheet();
     placeholder && setEditable(false);
+    paintAi();
+    paintAiBar();
   }
-  shStrip.addEventListener('click', () => openSheet());
+  let chipTimer = 0;
   shBtn.addEventListener('click', () => (sheetEl ? closeSheet() : openSheet()));
   setInterval(() => sync && paintShare(), 10000);
+  addEventListener('online', () => paintShare());
+  addEventListener('offline', () => paintShare());
+  new ResizeObserver(() => {
+    shBtn.__h = '';
+    cur && paintShare();
+  }).observe(panel);
+  // A picture that doesn't load gives way to the initial.
+  document.addEventListener('error', (e) => {
+    const img = e.target;
+    const f = img instanceof HTMLImageElement ? img.parentElement : null;
+    if (!f || !f.classList.contains('np-face')) return;
+    avFailed.add(img.getAttribute('src'));
+    f.textContent = f.dataset.i || '?';
+  }, true);
+
+  // ---------- an AI that works in the note ----------
+  // The app tells the page when an AI session touches a note (NotesTools: it reads it, or is about to change it) and when that
+  // session goes idle. msg: { id, by, label, key, state: 'reading' | 'writing' | 'idle', ttl }. Its face joins the faces and the
+  // bar says so, until its change lands, it goes idle, or 90 s (30 s for callers outside Orbiterm) pass without a tool call.
+  function aiHere(msg) {
+    if (!msg || typeof msg !== 'object') return false;
+    const key = typeof msg.key === 'string' ? msg.key.slice(0, 24) : '';
+    if (msg.state === 'idle') {
+      if (aiPres && (!msg.id || aiPres.id === msg.id) && (!key || aiPres.key === key)) {
+        aiPres = null;
+        aiWait = null;
+        paintShare();
+      }
+      return true;
+    }
+    if (msg.state !== 'reading' && msg.state !== 'writing') return false;
+    const n = notes.find((x) => x.id === msg.id);
+    if (!n || aiOff(n)) return false;
+    const by = String(msg.by || 'AI').slice(0, 24);
+    const now = Date.now();
+    const same = aiPres && aiPres.id === n.id && aiPres.by === by;
+    aiPres = { id: n.id, by, label: String(msg.label || '').slice(0, 40), key, state: msg.state, since: same ? aiPres.since : now, last: now, ttl: Math.min(90000, Math.max(5000, Number(msg.ttl) || 90000)) };
+    paintShare();
+    return true;
+  }
+  // The change landed (or the AI made / pinned a note): it no longer "works" there.
+  function aiLanded(id, by) {
+    if (aiPres && aiPres.id === id && aiPres.by === by) aiPres = null;
+    if (aiWait && aiWait.id === id) aiWait = null;
+  }
+  // What an AI's change touched: the blocks that are new, or whose text, kind or tick differ (their ids), and how many.
+  const blockSig = (b) => `${b.type}|${b.text}|${b.checked ? 1 : 0}|${b.indent || 0}`;
+  function changedIds(before, after) {
+    const was = new Map(before.map((b) => [b.id, blockSig(b)]));
+    const c = { ids: [], fresh: [], added: 0, changed: 0, todos: 0 };
+    for (const b of after) {
+      if (!b.text && b.type === 'p') continue;
+      const s = was.get(b.id);
+      if (s === undefined) {
+        c.added++;
+        c.ids.push(b.id);
+        c.fresh.push(b.id);
+        if (b.type === 'todo') c.todos++;
+      } else if (s !== blockSig(b)) {
+        c.changed++;
+        c.ids.push(b.id);
+      }
+    }
+    return c;
+  }
+  function changeText(op, c) {
+    if (op === 'write') return 'rewrote the note';
+    if (c.added && !c.changed) return c.todos === c.added ? `added ${plural(c.added, 'to-do')}` : `added ${plural(c.added, 'line')}`;
+    if (c.changed && !c.added) return `changed ${plural(c.changed, 'line')}`;
+    if (c.added) return `added ${c.added} and changed ${plural(c.changed, 'line')}`;
+    return 'made no change';
+  }
+
+  // What the bar is about now (and which blocks are marked), for the note that is shown:
+  // flash (a word said for a moment), work / wait (my AI), done (my AI's change, Undo or Keep), fwork / fdone (a friend's AI).
+  function aiView() {
+    const n = cur;
+    if (!n || (!WINDOW && out.has(n.id))) return null;
+    const now = Date.now();
+    if (aiFlash && aiFlash.id === n.id && now < aiFlash.until) return { k: 'flash', ids: [] };
+    const me = aiHereNow();
+    if (me) {
+      const w = aiWaiting();
+      return w ? { k: 'wait', me, ids: w.ids || [], soon: true } : { k: 'work', me, ids: [] };
+    }
+    const a = AI.mode !== 'off' ? aiTag(n) : null;
+    if (a && !a.kept) return { k: 'done', a, ids: a.ids || [], by: a.by, at: a.at, rec: a };
+    const fa = friendAis()[0];
+    if (fa) return { k: 'fwork', fa, ids: [] };
+    const f = friendAi.get(n.id);
+    if (f && !f.ok && now - f.at < 600000) return { k: 'fdone', f, ids: f.ids || [], by: f.whose, at: f.at, rec: f };
+    return null;
+  }
+  const aiShowing = () => !!aiView();
+
+  // The marks in the text, in the cursors' layer: a molten bar in the margin beside each block the AI touched (where a friend's
+  // bar sits), a warm wash on the block, one light sweeping across it as it lands. Waiting: a dashed bar and the target underlined.
+  let aiHits = [];
+  let aiHover = -1;
+  let aiMarked = false;
+  function aiMarks(eb) {
+    const v = aiView();
+    const want = new Set(v ? v.ids : []);
+    const soon = !!(v && v.soon);
+    const rec = v && v.rec && !v.rec.landed ? v.rec : null;
+    const fresh = new Set(rec && rec.fresh ? rec.fresh : []);
+    const html = [];
+    const hits = [];
+    let k = 0;
+    let swept = 0;
+    for (const el of ed.children) {
+      const id = el.dataset && el.dataset.id;
+      if (!id) continue;
+      const on = want.has(id);
+      el.classList.toggle('ai-mark', on && !soon);
+      const tx = el.querySelector(':scope > .nb-text');
+      if (tx) tx.classList.toggle('ai-target', on && soon);
+      if (on && !soon) el.setAttribute('aria-description', `Changed by ${v.by} at ${aiTime(v.at)}`);
+      else el.removeAttribute('aria-description');
+      if (!on) continue;
+      if (rec && !soon && swept < 10 && document.visibilityState !== 'hidden') {
+        const d = swept++ * 0.06;
+        el.style.setProperty('--d', `${d.toFixed(2)}s`);
+        el.classList.add('ai-sweep');
+        if (fresh.has(id)) el.classList.add('ai-new');
+        setTimeout(() => el.classList.remove('ai-sweep', 'ai-new'), 1300 + d * 1000);
+      }
+      if (k >= 80) continue;
+      const r = el.getBoundingClientRect();
+      const top = r.top - eb.top;
+      hits.push({ y0: top, y1: top + r.height, top });
+      html.push(`<i class="ai-bar${soon ? ' soon' : ''}${k === 0 ? ' first' : ''}" style="top:${top.toFixed(1)}px;height:${r.height.toFixed(1)}px"></i>`);
+      k++;
+    }
+    if (rec && swept) rec.landed = true;
+    aiMarked = want.size > 0;
+    aiHits = hits;
+    // Its name, only while the mouse is on a bar (never on its own: the bar at the foot has it).
+    const h = hits[aiHover];
+    if (h && v) {
+      let top = h.top - 13;
+      let cls = 'ai-tag' + (soon ? ' soon' : '');
+      if (top < 0) {
+        top = h.y1 + 1;
+        cls += ' below';
+      }
+      const name = v.k === 'wait' ? `${v.me.by} will edit here` : `${v.by} · ${aiTime(v.at)}`;
+      html.push(`<b class="${cls}" style="left:1px;top:${top.toFixed(1)}px"><span class="g">${G.sparkleF}</span>${esc(name)}</b>`);
+    }
+    return html.join('');
+  }
+  ed.addEventListener(
+    'mousemove',
+    (e) => {
+      if (!aiHits.length && aiHover < 0) return;
+      const eb = ed.getBoundingClientRect();
+      const px = e.clientX - eb.left;
+      const py = e.clientY - eb.top;
+      const k = px <= 14 ? aiHits.findIndex((h) => h.y0 <= py && py <= h.y1) : -1;
+      if (k !== aiHover) {
+        aiHover = k;
+        drawCursors();
+      }
+    },
+    { passive: true },
+  );
+  ed.addEventListener('mouseleave', () => {
+    if (aiHover >= 0) {
+      aiHover = -1;
+      drawCursors();
+    }
+  });
+
+  // The bar: what the AI is doing, then what it did. One at a time; the newest event wins, my own result over a friend's.
+  let barKey = '';
+  let barHide = 0;
+  let barTick = 0;
+  const secs = (ms) => {
+    const s = Math.max(0, Math.floor(ms / 1000));
+    return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`;
+  };
+  function barContent(v) {
+    const mineCol = faceColor(myId());
+    switch (v.k) {
+      case 'flash':
+        return { html: `<span class="t"><b>${esc(aiFlash.text)}</b></span>`, cls: ' text-only' };
+      case 'work':
+        return {
+          html: `${aiFace(mineCol, { orbit: true, label: `${v.me.by} is working` })}<span class="t"><b>${esc(v.me.by)}</b> <span class="np-shim">is working in this note</span></span>${v.me.label ? `<small class="where">${esc(v.me.label)} ·</small>` : ''}<small class="el"></small>`,
+          cls: ' text-only',
+        };
+      case 'wait':
+        return {
+          html: `${aiFace(mineCol, { wait: true, label: `${v.me.by} is waiting` })}<span class="t"><b>${esc(v.me.by)}</b> will edit when you stop typing</span><small class="el"></small>`,
+          cls: ' text-only',
+        };
+      case 'done': {
+        const a = v.a;
+        const what = a.kind === 'create' ? 'created this note' : a.kind === 'pin' ? 'pinned this note' : a.sum || 'changed the note';
+        const lead = a.ids && a.ids.length ? `<button type="button" class="t" data-a="show" title="Show the change"><b>${esc(a.by)}</b> ${esc(what)}</button>` : `<span class="t"><b>${esc(a.by)}</b> ${esc(what)}</span>`;
+        return {
+          html: `${aiFace(mineCol, { label: a.by })}${lead}<small class="when">${esc(aiTime(a.at))}</small><span class="np-acts"><button type="button" class="np-btn glass" data-a="undo">Undo</button><button type="button" class="np-btn primary" data-a="keep">Keep</button></span>`,
+          cls: '',
+        };
+      }
+      case 'fwork':
+        return {
+          html: `${aiFace(v.fa.color, { orbit: true, label: `${v.fa.who}’s ${v.fa.by} is working` })}<span class="t"><b>${esc(v.fa.who)}’s ${esc(v.fa.by)}</b> <span class="np-shim">is working in this note</span></span>`,
+          cls: ' text-only',
+        };
+      default: {
+        const f = v.f;
+        const lead = f.ids && f.ids.length ? `<button type="button" class="t" data-a="show" title="Show the change"><b>${esc(f.whose)}</b> ${esc(f.sum)}</button>` : `<span class="t"><b>${esc(f.whose)}</b> ${esc(f.sum)}</span>`;
+        return { html: `${aiFace(f.color, { label: f.whose })}${lead}<small class="when">${esc(aiTime(f.at))}</small><span class="np-acts"><button type="button" class="np-btn glass" data-a="ok">OK</button></span>`, cls: '' };
+      }
+    }
+  }
+  function paintAiBar() {
+    if (!aiBar) return;
+    const v = aiView();
+    host.classList.toggle('has-bar', !!v);
+    if (!v) {
+      clearInterval(barTick);
+      barTick = 0;
+      if (!aiBar.hidden && !aiBar.classList.contains('out')) {
+        aiBar.classList.add('out');
+        clearTimeout(barHide);
+        barHide = setTimeout(() => {
+          aiBar.hidden = true;
+          aiBar.classList.remove('out');
+          aiBar.innerHTML = '';
+          barKey = '';
+        }, 170);
+      }
+    } else {
+      clearTimeout(barHide);
+      aiBar.classList.remove('out');
+      const c = barContent(v);
+      const key = `${v.k}|${c.html}`;
+      if (key !== barKey) {
+        barKey = key;
+        aiBar.className = `np-aibar${c.cls}`;
+        aiBar.innerHTML = c.html;
+      }
+      aiBar.hidden = false;
+      const ticking = v.k === 'work' || v.k === 'wait';
+      if (ticking && !barTick) barTick = setInterval(aiTick, 250);
+      if (!ticking) {
+        clearInterval(barTick);
+        barTick = 0;
+      } else aiTick(true);
+      if (v.k === 'flash') setTimeout(paintShare, Math.max(0, aiFlash.until - Date.now()) + 30);
+    }
+    if (aiMarked || v) drawCursors();
+  }
+  // Once a second-ish while it works: the seconds, the waiting ring; and the end of an AI that went quiet.
+  function aiTick(quiet) {
+    const now = Date.now();
+    if (aiPres && now - aiPres.last >= aiPres.ttl) {
+      aiPres = null;
+      aiWait = null;
+      return void (quiet || paintShare());
+    }
+    const w = aiWaiting();
+    const me = aiHereNow();
+    if (!me) return void (quiet || paintShare());
+    const p = w ? Math.max(0, (w.until - now) / Math.max(1, w.until - w.start)) : 1;
+    for (const el of document.querySelectorAll('.np-wait')) el.style.setProperty('--p', p.toFixed(3));
+    const text = w ? `${Math.max(0, Math.ceil((w.until - now) / 1000))}s` : secs(now - me.since);
+    for (const el of aiBar.querySelectorAll('.el')) if (el.textContent !== text) el.textContent = text;
+  }
+  aiBar.addEventListener('click', async (e) => {
+    const b = e.target.closest && e.target.closest('[data-a]');
+    if (!b || !cur) return;
+    const id = cur.id;
+    const act = b.dataset.a;
+    if (act === 'show') {
+      const v = aiView();
+      const first = v && v.ids.map((x) => ed.querySelector(`.nb[data-id="${CSS.escape(String(x))}"]`)).find(Boolean);
+      if (first) first.scrollIntoView({ block: 'center', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+    } else if (act === 'keep') {
+      // Keep ends the review (the bar and the marks go); the note stays as the AI left it, and the cmd-Z of the document still works.
+      const a = aiTag(cur);
+      if (a) a.kept = true;
+      paintShare();
+      if (!WINDOW) drawBoard();
+    } else if (act === 'undo') {
+      const r = await agentUndo(id);
+      if (r && r.ok) aiFlash = { id, text: 'Undone', until: Date.now() + 1500 };
+      paintShare();
+    } else if (act === 'ok') {
+      const f = friendAi.get(id);
+      if (f) f.ok = true;
+      paintShare();
+      if (!WINDOW) drawBoard();
+    }
+  });
 
   // ---------- signing in, where a shared note asks for it ----------
   // Shared notes live on Orbiterm's server, so they need an account (GitHub or an e-mailed code); what stays on this computer
@@ -5426,7 +5898,7 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
     sheetEl = sheetMode = null;
     shBtn.setAttribute('aria-expanded', 'false');
   }
-  document.addEventListener('mousedown', (e) => sheetEl && !sheetEl.contains(e.target) && !shBtn.contains(e.target) && !shStrip.contains(e.target) && closeSheet());
+  document.addEventListener('mousedown', (e) => sheetEl && !sheetEl.contains(e.target) && !shBtn.contains(e.target) && closeSheet());
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && sheetEl) {
       e.stopPropagation();
@@ -5486,8 +5958,26 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
         .join('');
       const ownerName = (sh.members.find((p) => p.owner) || sh.owner).name || 'the owner';
       const room = sh.members.length < 8;
+      // Who is here now, and where: a click goes there and brings their name tag back.
+      const chip = chipState();
+      const hereRows = [];
+      if (sync && sync.status === 'live') {
+        const got = new Set();
+        for (const [cid, st] of sync.prov.awareness.getStates()) {
+          if (cid === sync.prov.doc.clientID || !st || !st.u || st.u.id === mine || got.has(st.u.id)) continue;
+          got.add(st.u.id);
+          const mem = sh.members.find((x) => x.id === st.u.id) || {};
+          const at = st.c && st.c.b ? blocks[idx(st.c.b)] : null;
+          const words = at && at.text ? at.text.replace(/\s+/g, ' ').trim() : '';
+          const where = words ? `on \u201c${esc(words.length > 34 ? `${words.slice(0, 34).trim()}\u2026` : words)}\u201d` : 'in the note';
+          hereRows.push(`<button type="button" class="sh-row sh-jump" data-jump="${cid}"${at ? '' : ' disabled'}>${shAv({ ...mem, id: st.u.id, name: st.u.name || mem.name })}<span>${esc(st.u.name || mem.name || '?')}<small>${where}</small></span></button>`);
+        }
+      }
       html =
-        '<h3>Shared note</h3>' + `<div class="sh-members">${rows}</div>` +
+        '<h3>Shared note</h3>' +
+        (chip ? `<p class="sh-text sh-line">${esc(chip.cls === 'big' ? 'Too big to sync. Shorten it to under 2 MB to share it again.' : chip.tip)}</p>` : '') +
+        (hereRows.length ? `<div class="sh-hereNow"><h4>Here now</h4>${hereRows.join('')}</div>` : '') +
+        `<div class="sh-members">${rows}</div>` +
         (owner && room ? `<details class="sh-add"><summary>Add friends</summary>${picker}${m.chosen.size ? `<button type="button" class="sh-go" data-do="invite"${m.busy ? ' disabled' : ''}>Invite ${m.chosen.size}</button>` : ''}</details>` : '') +
         (owner
           ? `<label class="sh-switch"><input type="checkbox" data-ai${sh.ai ? ' checked' : ''}><span><b>Let AI read this note</b><small>${sh.ai ? 'Everyone’s AI in this note can read it.' : 'Only your AI can read this note.'}</small></span></label>`
@@ -5536,6 +6026,21 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
   });
   document.addEventListener('click', async (e) => {
     if (!sheetEl || !sheetEl.contains(e.target) || !sheetMode) return;
+    const jump = e.target.closest('[data-jump]');
+    if (jump && sync) {
+      const cid = Number(jump.dataset.jump);
+      const st = sync.prov.awareness.getStates().get(cid);
+      const el = st && st.c && st.c.b ? ed.querySelector(`.nb[data-id="${CSS.escape(String(st.c.b))}"]`) : null;
+      closeSheet();
+      if (el) {
+        el.scrollIntoView({ block: 'center', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+        // Their name shows again, as when they move.
+        const k = JSON.stringify(st.c);
+        cursSeen.set(cid, { k, at: Date.now() });
+        setTimeout(drawCursors, 60);
+      }
+      return;
+    }
     const rm = e.target.closest('[data-remove]');
     if (rm) return void ((sheetMode.removing = rm.dataset.remove), paintSheet());
     const doRm = e.target.closest('[data-doremove]');
@@ -6167,9 +6672,27 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
     }
     // An addition goes in at once, at the end, wherever the cursor is. Anything that rewrites waits for a pause in typing.
     if (op !== 'append' && live) {
-      for (let waited = 0; typing(); waited += 200) {
-        if (waited >= 10000) return { error: 'busy', message: 'The user is typing in this note right now. Try again in a few seconds.' };
-        await nap(200);
+      // While it waits, the note says so (the AI bar's ring) and outlines what it will change: nothing lands by surprise.
+      const start = Date.now();
+      try {
+        for (let waited = 0; typing(); waited += 200) {
+          if (waited >= 10000) return { error: 'busy', message: 'The user is typing in this note right now. Try again in a few seconds.' };
+          if (!aiWait) {
+            const old = String(req.old ?? '');
+            const base = plain(liveOf(blocksOf(n)));
+            const ids = op === 'edit' ? base.filter((b) => TYPES[b.type] && old && b.text.includes(old)).map((b) => b.id) : base.map((b) => b.id);
+            const was = aiPres && aiPres.id === n.id ? aiPres : null;
+            aiHere({ id: n.id, by: String(req.by || 'AI'), state: 'writing', key: was ? was.key : '', label: was ? was.label : '', ttl: was ? was.ttl : 30000 });
+            aiWait = { id: n.id, by: String(req.by || 'AI').slice(0, 24), start, until: start + 10000, ids };
+            paintShare();
+          }
+          await nap(200);
+        }
+      } finally {
+        if (aiWait) {
+          aiWait = null;
+          paintShare();
+        }
       }
     }
     // The user may have hidden (or deleted) it while this waited.
@@ -6218,14 +6741,18 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
     const live = !h && n === cur && !out.has(n.id);
     const steps0 = live ? aiUm.undoStack.length : 0;
     await setBlocksOf(n, next, by, h);
-    const after = hashOf(toText(h ? h.m.toBlocks() : blocksOf(n)));
+    const now = h ? h.m.toBlocks() : blocksOf(n);
+    const after = hashOf(toText(now));
+    const c = changedIds(keep, now);
     // `steps`: how many changes of AI the live document can take back now (the last one is this); a note that isn't live has
     // none, and its Undo writes `before` back.
-    lastAi = { id: n.id, by: String(by || 'AI').slice(0, 24), at: Date.now(), before: keep, after, steps: live && aiUm.undoStack.length > steps0 ? aiUm.undoStack.length : -1 };
+    lastAi = { id: n.id, by: String(by || 'AI').slice(0, 24), at: Date.now(), before: keep, after, steps: live && aiUm.undoStack.length > steps0 ? aiUm.undoStack.length : -1, ids: c.ids, fresh: c.fresh, sum: changeText(op, c) };
     aiLog.push(lastAi);
     if (aiLog.length > 10) aiLog.shift();
+    aiLanded(n.id, lastAi.by);
     aiTouched();
     stamp();
+    paintShare();
     return { ok: true, op, version: after, title: nameOf(n), saved: !unsaved };
   }
 
@@ -6262,6 +6789,7 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
     aiLog.splice(0, aiLog.length, ...aiLog.filter((x) => x !== a));
     aiTouched();
     stamp();
+    paintShare();
     return { ok: true };
   }
   document.addEventListener('click', (e) => {
@@ -6325,6 +6853,7 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
     lastAi = { id: n.id, by: String(req.by || 'AI').slice(0, 24), at: Date.now(), kind: 'create', after: hashOf(toText(blocksOf(n))) };
     aiLog.push(lastAi);
     if (aiLog.length > 10) aiLog.shift();
+    aiLanded(n.id, lastAi.by);
     aiTouched();
     const saving = write();
     stamp();
@@ -6353,6 +6882,7 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
     lastAi = { id: n.id, by, at: Date.now(), kind: 'pin', prev: prev ? prev.id : null, after: hashOf(toText(blocksOf(n))) };
     aiLog.push(lastAi);
     if (aiLog.length > 10) aiLog.shift();
+    aiLanded(n.id, by);
     aiTouched();
     stamp();
     return { ok: true, id: n.id, title: nameOf(n) };
@@ -6608,6 +7138,7 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
     agentList,
     agentRead,
     agentApply,
+    aiHere,
     agentUndo,
     agentSession,
     renameSession,

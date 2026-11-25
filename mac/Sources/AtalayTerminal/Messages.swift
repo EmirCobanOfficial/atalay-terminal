@@ -50,6 +50,17 @@ final class MessagePanel: NSObject, WKScriptMessageHandler, WKNavigationDelegate
     static var onOpenWait: ((String) -> Void)?
     /// The "same file" notice was clicked: the dashboard in front.
     static var onOpenClash: (() -> Void)?
+    /// "Fire back" or its Cancel, pressed on the who-fired-at-me card or in a chat (the page can't fire, only the dashboard does):
+    /// the friend's id, relayed to the dashboard page's Attack.press / Attack.cancelFor (MainWindowController).
+    static var onAttackFire: ((String) -> Void)?
+    static var onAttackCancel: ((String) -> Void)?
+    /// A friend's nudge while their chat isn't on screen (the notices page says, "nudgeShake"): the dashboard's own state decides what
+    /// shakes (MainWindowController.nudgeDashboard): the map's centre circle in full screen, the whole window otherwise, nothing when
+    /// it can't be seen.
+    static var onNudgeDashboard: (() -> Void)?
+    /// The notices panel holds the screen (the level-up takeover, the flames, DANGER's banner, the alarm in the middle): no window
+    /// shakes then, as the page queues the nudge's card to show quietly after.
+    private(set) static var noticesHoldScreen = false
     /// Until when keys do nothing (the level-up takeover; AppDelegate drops them).
     private static var keysLockedUntil: TimeInterval = 0
     static var keysLocked: Bool { ProcessInfo.processInfo.systemUptime < keysLockedUntil }
@@ -131,6 +142,16 @@ final class MessagePanel: NSObject, WKScriptMessageHandler, WKNavigationDelegate
             // The see-through ring around the box takes the mouse too: it's where the window is made larger or smaller.
             panel.ignoresMouseEvents = false
             Self.watchScreens()
+            // Whether the chat is really on screen (the nudge shakes it only then; else its card comes): hidden, minimized with the
+            // dashboard, on another Space, covered, or the app hidden. The notices page is told with `showing`.
+            NotificationCenter.default.addObserver(forName: NSWindow.didChangeOcclusionStateNotification, object: panel, queue: .main) { _ in
+                MainActor.assumeIsolated { Self.tellShowing() }
+            }
+            for name in [NSApplication.didHideNotification, NSApplication.didUnhideNotification] {
+                NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { _ in
+                    MainActor.assumeIsolated { Self.tellShowing() }
+                }
+            }
         }
         let root = NSView(frame: webView.frame)
         glass.material = .hudWindow
@@ -267,6 +288,18 @@ final class MessagePanel: NSObject, WKScriptMessageHandler, WKNavigationDelegate
         run("window.Attack && Attack.banner && Attack.banner(\(json))")
     }
 
+    /// The dashboard's 🚀 button for a friend changed (locking on, in flight, idle): the card in the corner and every chat page
+    /// draw their Fire back from it (attack.js). `msg`: id, state ("locking", "flight", "idle") and, for a flight, `until` (ms).
+    static func attackBtn(_ msg: [String: Any]) {
+        guard let id = msg["id"] as? String, !id.isEmpty, id.count <= 64,
+              let state = msg["state"] as? String, ["locking", "flight", "idle"].contains(state) else { return }
+        let body: [String: Any] = ["id": id, "state": state, "until": (msg["until"] as? NSNumber)?.doubleValue ?? 0]
+        guard let data = try? JSONSerialization.data(withJSONObject: body), let json = String(data: data, encoding: .utf8) else { return }
+        let js = "window.__messages && __messages.attackBtn && __messages.attackBtn(\(json))"
+        notices.run(js)
+        chats.forEach { $0.run(js) }
+    }
+
     /// Your XP as the last heartbeat or live event had it: a new level plays the fanfare (once, the page keeps count).
     func xp(_ x: Cloud.XP) {
         guard let data = try? JSONEncoder().encode(x), let json = String(data: data, encoding: .utf8) else { return }
@@ -390,6 +423,7 @@ final class MessagePanel: NSObject, WKScriptMessageHandler, WKNavigationDelegate
         for p in chats {
             if aside, p.panel.isVisible {
                 p.steppedAside = true
+                WindowShake.stop(p.panel)
                 p.panel.parent?.removeChildWindow(p.panel)
                 p.panel.orderOut(nil)
             } else if !aside, p.steppedAside {
@@ -404,14 +438,22 @@ final class MessagePanel: NSObject, WKScriptMessageHandler, WKNavigationDelegate
     /// (live events keep them current), so the next open just shows it.
     private func closed() {
         guard role == .chat, Self.chatPanel === self else { return }
+        WindowShake.stop(panel)
         guard !Self.showing.isEmpty else { return }
         Self.showing = []
         Self.tellShowing()
     }
 
+    /// Whether the chat window is really on screen: shown, any pixel of it visible (not minimized, on another Space or covered)
+    /// and the app not hidden.
+    private static var chatSeen: Bool {
+        guard let p = chatPanel?.panel else { return false }
+        return p.isVisible && p.occlusionState.contains(.visible) && !NSApp.isHidden
+    }
+
     private static func tellShowing() {
         guard let data = try? JSONSerialization.data(withJSONObject: Array(showing)), let json = String(data: data, encoding: .utf8) else { return }
-        notices.run("window.__messages && __messages.showing(\(json))")
+        notices.run("window.__messages && __messages.showing(\(json), \(chatSeen))")
     }
 
     private static func literal(_ value: String?) -> String {
@@ -445,9 +487,13 @@ final class MessagePanel: NSObject, WKScriptMessageHandler, WKNavigationDelegate
                 if let x = Cloud.shared.state.xp { xp(x) }
             }
         case "layout":
+            if role == .chat { WindowShake.stop(panel) }
             let size = CGSize(width: number("w"), height: number("h"))
             guard size.width >= 1, size.height >= 1 else {
-                if role == .notices { endTakeover() }
+                if role == .notices {
+                    Self.noticesHoldScreen = false
+                    endTakeover()
+                }
                 glass.alphaValue = 0
                 panel.ignoresMouseEvents = false
                 panel.parent?.removeChildWindow(panel)
@@ -469,14 +515,26 @@ final class MessagePanel: NSObject, WKScriptMessageHandler, WKNavigationDelegate
         case "leaving":
             // The box plays its way out: the frost goes with it.
             frost(false, duration: 0.18)
+        case "shake":
+            // A nudge (nudge.ts, messages.js): the chat window's own frame moves for 0.56 s, the frost and the page with it. Only
+            // when it is on screen and nothing holds the screen, no button is down and Reduce Motion is off; never a focus or a raise.
+            guard role == .chat, panel.isVisible, panel.occlusionState.contains(.visible), !NSApp.isHidden, !Self.noticesHoldScreen,
+                  NSEvent.pressedMouseButtons == 0, number("amp") > 0 else { return }
+            WindowShake.run(panel, amp: min(number("amp"), 1))
+        case "nudgeShake":
+            // The nudge's card came up (the chat isn't on screen): the dashboard shakes by its own state (MainWindowController).
+            guard role == .notices, !Self.noticesHoldScreen else { return }
+            Self.onNudgeDashboard?()
         case "drag":
             guard role == .chat else { return }
+            WindowShake.stop(panel)
             var origin = panel.frame.origin
             origin.x += number("dx")
             origin.y -= number("dy")
             panel.setFrameOrigin(origin)
         case "dragEnd":
             guard role == .chat else { return }
+            WindowShake.stop(panel)
             panel.setFrame(Self.whole(panel.frame), display: true)
             UserDefaults.standard.set([panel.frame.minX, panel.frame.maxY], forKey: Self.originKey)
             // Its size too, after the page made it larger or smaller from an edge (the same message ends that).
@@ -501,6 +559,10 @@ final class MessagePanel: NSObject, WKScriptMessageHandler, WKNavigationDelegate
             Self.onOpenWait?(sid)
         case "openClash":
             Self.onOpenClash?()
+        case "attackFire", "attackCancel":
+            // Fire back (or its Cancel) from the who-fired-at-me card or a chat: the dashboard fires.
+            guard let id = body["id"] as? String, !id.isEmpty, id.count <= 64 else { return }
+            if type == "attackFire" { Self.onAttackFire?(id) } else { Self.onAttackCancel?(id) }
         case "restartNow":
             // The forced update's notice: "restart now" is "update now" (the quit still asks about running chats).
             guard role == .notices else { return }
@@ -541,6 +603,7 @@ final class MessagePanel: NSObject, WKScriptMessageHandler, WKNavigationDelegate
     /// day past five hours have it short of the menu bar and the Dock, letting every click through to the windows.
     private func placeNotice(_ size: CGSize, place: String?) {
         let s = NSScreen.main ?? NSScreen.screens[0]
+        Self.noticesHoldScreen = place == "screen" || place == "fire" || place == "center"
         panel.ignoresMouseEvents = place == "fire"
         if place == "screen" {
             panel.level = .screenSaver
@@ -628,5 +691,74 @@ final class MessagePanel: NSObject, WKScriptMessageHandler, WKNavigationDelegate
             panel.orderOut(nil)
         }
         webView.reload()
+    }
+}
+
+/// The nudge's shake of a window (nudge.ts, messages.js; the same on Windows, main.js shakeWin): one jolt, two-dimensional and dying
+/// out so it reads as a buzz, not as the Mac's side-to-side "wrong password" shake. Eight legs, ease-in-out, 560 ms, the offsets of
+/// messages.css `ndg-jolt` (x right, y down), times `amp` (1 = the chat window, .5 the sender's own, the dashboard 1), rounded to
+/// whole points, driven at about 120 Hz in the common run-loop modes (so it runs during menu tracking). The start origin is taken
+/// once and put back exactly at the end (or on `stop`); a window being dragged, resized, full screen or zoomed, or one that went off
+/// screen, ends it at once. Child windows move with their parent, as any move. The position is never saved by it. Reduce Motion
+/// (the system's setting): nothing moves.
+@MainActor
+final class WindowShake {
+    private static var running: [ObjectIdentifier: WindowShake] = [:]
+    private static let stops: [(t: Double, x: Double, y: Double)] = [
+        (0, 0, 0), (45, 8, -5), (106, -7, 4), (168, 6, 5), (230, -8, -3), (291, 5, -4), (353, -4, 3), (414, 3, 2), (476, -2, -1), (560, 0, 0),
+    ]
+    private weak var window: NSWindow?
+    /// Its key in `running`, kept apart from the window: a window that went away mid-shake still leaves the table.
+    private let key: ObjectIdentifier
+    private let start: NSPoint
+    private let amp: Double
+    private let began = ProcessInfo.processInfo.systemUptime
+    private var timer: Timer?
+
+    private init(_ window: NSWindow, amp: Double) {
+        self.window = window
+        key = ObjectIdentifier(window)
+        start = window.frame.origin
+        self.amp = amp
+    }
+
+    /// Starts one (none while one runs on that window, or with Reduce Motion on).
+    static func run(_ window: NSWindow, amp: Double) {
+        guard amp > 0, running[ObjectIdentifier(window)] == nil, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
+              !window.styleMask.contains(.fullScreen), !window.isZoomed, !window.inLiveResize else { return }
+        let shake = WindowShake(window, amp: amp)
+        running[ObjectIdentifier(window)] = shake
+        let timer = Timer(timeInterval: 1.0 / 120.0, repeats: true) { [weak shake] _ in
+            MainActor.assumeIsolated { shake?.step() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        shake.timer = timer
+    }
+
+    /// Ends the shake on that window now, the frame back where it started.
+    static func stop(_ window: NSWindow) {
+        running[ObjectIdentifier(window)]?.finish()
+    }
+
+    private func step() {
+        guard let w = window else { return finish() }
+        let t = (ProcessInfo.processInfo.systemUptime - began) * 1000
+        guard t < 560, w.isVisible, !w.isMiniaturized, !w.styleMask.contains(.fullScreen), !w.isZoomed, !w.inLiveResize,
+              NSEvent.pressedMouseButtons == 0, !MessagePanel.noticesHoldScreen else { return finish() }
+        var i = 1
+        while i < Self.stops.count - 1, Self.stops[i].t < t { i += 1 }
+        let a = Self.stops[i - 1], b = Self.stops[i]
+        let k = (1 - cos(Double.pi * min(max((t - a.t) / (b.t - a.t), 0), 1))) / 2
+        let dx = ((a.x + (b.x - a.x) * k) * amp).rounded(), dy = ((a.y + (b.y - a.y) * k) * amp).rounded()
+        // AppKit's y points up.
+        w.setFrameOrigin(NSPoint(x: start.x + dx, y: start.y - dy))
+    }
+
+    private func finish() {
+        timer?.invalidate()
+        timer = nil
+        if Self.running[key] === self { Self.running[key] = nil }
+        // Back to the exact start, unless it went full screen or was zoomed meanwhile: that frame is AppKit's now, never moved.
+        if let w = window, !w.styleMask.contains(.fullScreen), !w.isZoomed { w.setFrameOrigin(start) }
     }
 }

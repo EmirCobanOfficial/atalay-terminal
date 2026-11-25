@@ -51,6 +51,8 @@ window.Settings = (() => {
   const last = () => (panes.some((p) => p.id === stored('settings.pane')) ? stored('settings.pane') : 'account');
   let current = last();
   let page = null;
+  let ndgOff = null; // the "let friends nudge me" switch's Social listener (the same)
+  let hitOff = null; // the "show who fired at me" switch's Social listener, one at a time (mount() runs at every opening)
 
   // ---------- the pieces: a group, a row, a switch, the advanced fold ----------
   const group = (title, body, cls = '') => `<section class="st-group${cls ? ` ${cls}` : ''}">${title ? `<h3 class="st-h">${title}</h3>` : ''}<div class="st-box">${body}</div></section>`;
@@ -177,7 +179,10 @@ window.Settings = (() => {
         // A friend's spaceship attack (attack.js): the switch's clicks and its state are attack.js's; its words too.
         (window.Attack?.on
           ? row(window.Attack.text.setting.title, window.Attack.text.setting.hint, sw(`atk-on${window.Attack.on() ? ' on' : ''}`, window.Attack.text.setting.aria, window.Attack.on()))
-          : '')) +
+          : '') +
+        // A friend's nudge (messages.js, nudge.ts): `social.nudges`, kept with the account like the others; mutual, so off stops you sending too.
+        row('let friends nudge me', "a friend's nudge shakes your chat with them for half a second and buzzes once \u00b7 off: nobody can nudge you, and you can't nudge them either", sw('ndg-on on', 'Let friends nudge me', true))) +
+      '<p class="st-note">Do not disturb stops nudges too: friends see the button greyed out until it\u2019s off.</p>' +
       (c.notesai
         ? group('notes and AI',
             row('what AI can do with my notes', { cls: 'na-note', text: '…' },
@@ -201,7 +206,10 @@ window.Settings = (() => {
       // notices off (Atalay, 2026-11-15; it used to sit in Privacy as "community feed").
       (window.Community
         ? group('notifications',
-            row('announcements', "a friend on fire, a friend's rare badge, a new #1 this week, the weekly goal · short lines at the top left of the screen and in the bell", sw('cf-feed', 'Show announcements', true)))
+            row('announcements', "a friend on fire, a friend's rare badge, a new #1 this week, the weekly goal · short lines at the top left of the screen and in the bell", sw('cf-feed', 'Show announcements', true)) +
+            // Who fired at me (messages.js, attack.js): the card in the corner that waits until it's seen.
+            row('show who fired at me', "when a friend's spaceship hits you, a card in the corner says who, until you close it \u00b7 off: only the alarm and the line in your chat with them", sw('cf-hit', 'Show who fired at me', true)) +
+            '<p class="st-note">Attacks themselves are in <button type="button" class="st-ln st-atk-priv">Privacy \u203a let friends fire spaceships at me</button>.</p>')
         : '') +
       group('updates', '<div class="hk-info"></div>') +
       (pw
@@ -385,6 +393,54 @@ window.Settings = (() => {
       window.dispatchEvent(new Event('mascotchange'));
       window.webkit?.messageHandlers?.radar?.postMessage({ type: 'mascotMischief', level });
     };
+    // Who fired at me: its switch, kept with the account (`social.hitCard`) and synced like the others.
+    const hit = page.querySelector('.hk-sw.cf-hit');
+    const paintHit = () => {
+      if (!hit || !hit.isConnected) return;
+      const v = Social.prefs().hitCard !== false;
+      hit.classList.toggle('on', v);
+      hit.setAttribute('aria-checked', String(v));
+      hit.disabled = !Social.state();
+    };
+    if (hit) {
+      hit.onclick = async () => {
+        const v = Social.prefs().hitCard === false;
+        hit.disabled = true;
+        const r = await Social.setPref('hitCard', v);
+        hit.disabled = false;
+        if (r.error) return typeof window.toast === 'function' && window.toast(r.error === 'offline' ? "can't reach the server" : "couldn't change it");
+        paintHit();
+        if (typeof window.toast === 'function') window.toast(v ? 'the card for who fired at you is on' : 'the card for who fired at you is off');
+      };
+      if (hitOff) hitOff();
+      hitOff = Social.on((ev) => ['prefs', 'settings', 'snapshot'].includes(ev.type) && paintHit());
+      paintHit();
+    }
+    // Let friends nudge me: its switch, kept with the account (`social.nudges`) and synced like the others.
+    const ndg = page.querySelector('.hk-sw.ndg-on');
+    const paintNdg = () => {
+      if (!ndg || !ndg.isConnected) return;
+      const v = Social.nudgeOn();
+      ndg.classList.toggle('on', v);
+      ndg.setAttribute('aria-checked', String(v));
+      ndg.disabled = !Social.state();
+    };
+    if (ndg) {
+      ndg.onclick = async () => {
+        const v = !Social.nudgeOn();
+        ndg.disabled = true;
+        const r = await Social.setNudges(v);
+        ndg.disabled = false;
+        if (r.error) return typeof window.toast === 'function' && window.toast(r.error === 'offline' ? "can't reach the server" : "couldn't change it");
+        paintNdg();
+        if (typeof window.toast === 'function') window.toast(v ? 'friends can nudge you' : 'nudges are off · nobody can nudge you, and you can\u2019t nudge them');
+      };
+      if (ndgOff) ndgOff();
+      ndgOff = Social.on((ev) => ['prefs', 'settings', 'snapshot'].includes(ev.type) && paintNdg());
+      paintNdg();
+    }
+    const toPriv = page.querySelector('.st-atk-priv');
+    if (toPriv) toPriv.onclick = () => show('privacy');
     const mcpMode = page.querySelector('.st-mcp-mode');
     if (mcpMode) mcpMode.onclick = (e) => {
       const b = e.target.closest('button[data-mode]');

@@ -168,6 +168,32 @@ function createNotesTools({ mode, mcpMode, notesStore, noteWindows, terminals, f
   // The note's own window, if it is out: its id (the page to ask).
   const ownerOf = (id) => (noteWindows.liveView(id) ? id : null);
 
+  // ---------- the AI shows up in the note (web/notes.js `Notes.aiHere`; the Mac's NotesTools.here) ----------
+
+  // An AI reached for a note (reads it, or is about to change it): the page that holds the note shows it as a member of the note.
+  // Fire and forget. `key` is the AI's process, so the engine can say it went idle (sessionIdle); a caller outside Orbiterm
+  // (Claude Desktop) has none and ends 30 s after its last call.
+  function here(id, state, caller) {
+    const msg = { id, by: ownerAI(caller), state };
+    const pid = ownerAIPid(caller);
+    if (pid) msg.key = String(pid);
+    else msg.ttl = 30_000;
+    let folder = null;
+    try {
+      folder = caller.inside && folderOf ? folderOf(caller.inside) : null;
+    } catch {}
+    if (folder) msg.label = path.basename(folder);
+    page(ownerOf(id), 'if (N.aiHere) N.aiHere(msg); return { ok: true };', { msg }, 5000).catch(() => {});
+  }
+
+  // The engine saw an AI session leave "busy" (engine.js publishState): every page that shows it working in a note lets it go.
+  function sessionIdle(pid) {
+    const body = "if (N.aiHere) N.aiHere({ state: 'idle', key }); return { ok: true };";
+    const args = { key: String(pid) };
+    page(null, body, args, 5000).catch(() => {});
+    for (const id of Object.keys(noteWindows.places() || {})) page(id, body, args, 5000).catch(() => {});
+  }
+
   // ---------- listing ----------
 
   // Every note not hidden from AI, with where it is and its project; null (and why) when the page couldn't be asked.
@@ -288,6 +314,7 @@ function createNotesTools({ mode, mcpMode, notesStore, noteWindows, terminals, f
   async function readNote(id, caller) {
     if (typeof id !== 'string' || !NAME.test(id)) return { ok: false, text: GIVE_ID };
     if (hidden().has(id)) return { ok: false, text: NO_NOTE };
+    here(id, 'reading', caller);
     const note = await page(ownerOf(id), 'return await N.agentRead(id);', { id });
     if (note && note.error === 'not_found') return { ok: false, text: NO_NOTE };
     if (!note || typeof note.markdown !== 'string') return failed(note);
@@ -360,6 +387,7 @@ function createNotesTools({ mode, mcpMode, notesStore, noteWindows, terminals, f
     const owner = ownerOf(id);
     const why = refusal('write', caller);
     if (why) return { ok: false, text: why };
+    here(id, 'writing', caller);
     const answer = await page(owner, 'return await N.agentApply(req);', { req: full }, 30_000);
     if (missed(answer)) return failed(answer);
     const ok = answer.ok === true;
@@ -516,6 +544,28 @@ function createNotesTools({ mode, mcpMode, notesStore, noteWindows, terminals, f
       folder = t && t.cwd;
     }
     return `${(folder && path.basename(folder)) || screen} (${ownerAI(caller)})`;
+  }
+
+  // The AI's own process (what the engine lists as a session's pid): the first process up the chain ownerAI would name, 0 for
+  // Claude Desktop or when none is found.
+  function ownerAIPid(caller) {
+    const chain = caller.chain.slice(0, 12);
+    for (const [i, p] of chain.entries()) {
+      const name = String((p && p.name) || '').toLowerCase().replace(/\.exe$/, '');
+      const exe = String((p && p.exe) || '');
+      if (CLAUDE_DESKTOP.test(exe)) return 0;
+      const pid = Number.isInteger(p && p.pid) && p.pid > 0 ? p.pid : 0;
+      if (name.startsWith('claude') || /[\\/]claude[\\/]versions[\\/]/i.test(exe)) return pid;
+      if (pid && fs.existsSync(path.join(claudeDir, 'sessions', `${pid}.json`))) return pid;
+      if (/[\\/]cursor-agent[\\/]versions[\\/]/i.test(exe)) return pid;
+      if (Object.prototype.hasOwnProperty.call(OTHER_AIS, name)) {
+        // A launcher's child is the same session, and the engine lists the launcher (runaways.js ais: Codex's Node script).
+        const up = chain[i + 1];
+        const upName = String((up && up.name) || '').toLowerCase().replace(/\.exe$/, '');
+        return /^(node|bun|deno)$/.test(upName) && Number.isInteger(up.pid) && up.pid > 0 ? up.pid : pid;
+      }
+    }
+    return 0;
   }
 
   // Which AI runs the bridge: Claude Code, Codex or Antigravity, or Claude Desktop, found up the caller's process chain
@@ -715,7 +765,7 @@ function createNotesTools({ mode, mcpMode, notesStore, noteWindows, terminals, f
     },
   }));
 
-  return { tools, ownerAI };
+  return { tools, ownerAI, sessionIdle };
 }
 
 module.exports = { createNotesTools };

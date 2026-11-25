@@ -976,8 +976,9 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
         w.hasShadow = true
         w.appearance = NSAppearance(named: .darkAqua)
         w.tabbingMode = .disallowed
-        // Opens over a full-screen dashboard in the same Space instead of switching to the desktop.
-        w.collectionBehavior = [.fullScreenAuxiliary, .moveToActiveSpace, .participatesInCycle]
+        // Shows over a full-screen dashboard as its child (show). No .moveToActiveSpace: macOS doesn't count such a window
+        // as the front one of its Space, so coming back to the desktop it brought the app behind it (Chrome) over it.
+        w.collectionBehavior = [.fullScreenAuxiliary, .participatesInCycle]
         w.minSize = NSSize(width: 640, height: 420)
         w.isReleasedWhenClosed = false
         super.init(window: w)
@@ -1289,7 +1290,7 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
         // or while another app owns the foreground. Reclaim and repin it before ordering it front; otherwise the click
         // reaches openSession successfully yet appears to do nothing.
         steppedAside = false
-        if hud.attached, let parent = manager?.window, parent.isVisible, w.parent != parent {
+        if hud.attached, let parent = showOnDashboard(for: w), w.parent != parent {
             w.parent?.removeChildWindow(w)
             parent.addChildWindow(w, ordered: .above)
         }
@@ -1316,7 +1317,7 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
         // A window that attached while hidden takes over the session size now.
         fitSession()
         extras.forEach { $0.fit() }
-        if hud.attached, let parent = manager?.window, parent.isVisible { parent.addChildWindow(w, ordered: .above) }
+        if hud.attached, let parent = showOnDashboard(for: w) { parent.addChildWindow(w, ordered: .above) }
         w.layoutIfNeeded()
         setButtonsHidden(true)
         container.layer?.sublayerTransform = squeeze(0.003, 0.003)
@@ -1475,11 +1476,18 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
             w.styleMask.remove(.nonactivatingPanel)
             Self.preventActivation(w, false)
             w.level = .normal
-            w.collectionBehavior = [.fullScreenAuxiliary, .moveToActiveSpace, .participatesInCycle]
+            w.collectionBehavior = [.fullScreenAuxiliary, .participatesInCycle]
             w.canHide = true
             // Only while the dashboard is on this Space: a child window drags its parent's Space along (as NoteWindow.attach).
             if let parent = rideableDashboard(for: w) {
                 parent.addChildWindow(w, ordered: .above)
+            }
+            // Unpinned while Orbiterm is in the background (the click hit a nonactivating panel): keys go to it from now on,
+            // as to any window clicked. Key and front first, so the activation lands on this Space, not on a full-screen
+            // dashboard's.
+            if isShown, !w.isMiniaturized, w.isOnActiveSpace {
+                w.makeKeyAndOrderFront(nil)
+                NSApp.activate(ignoringOtherApps: true)
             }
         }
         manager?.dashboardVisibilityChanged()
@@ -2534,6 +2542,20 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
         let folder = ts.first.flatMap { extra(of: $0) }?.currentFolder ?? cwd
         if let b = briefForTab(i), !b.title.isEmpty { return hud.streamer ? Streamer.fake("title", b.title) : b.title }
         return hud.streamer ? Streamer.project(folder) : (folder as NSString).lastPathComponent
+    }
+
+    /// A chat was renamed in the dashboard: the hand-typed names of the tab holding the AI under `pid` (its first pane's) and of
+    /// its own pane go, so the new name shows.
+    func clearTabNames(hosting pid: Int32) {
+        for i in tabs.indices {
+            for tv in terminals(in: i) {
+                let shell = tv === terminal ? shellPid : extra(of: tv)?.shellPid ?? 0
+                guard Self.isUnder(pid, shell: shell) else { continue }
+                if let key = tabKey(i) { manager?.setTabName(nil, for: key) }
+                if let key = sessionName(of: tv) { manager?.setTabName(nil, for: key) }
+            }
+        }
+        refreshPanes()
     }
 
     /// The session a name typed for the tab is kept under: the first terminal's (names survive a restart).
@@ -3599,6 +3621,15 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
         _ = (w as? TerminalWindow)?.moveToUsersScreen()
         guard hud.attached, let parent = rideableDashboard(for: w) else { return }
         parent.addChildWindow(w, ordered: .above)
+    }
+
+    /// The dashboard show() puts this window on as its child: wherever the window is when the user is on the dashboard (a card
+    /// or its menu was clicked, so it is key), else only as rideableDashboard allows. A tab torn off, a merge or ⌘] on the
+    /// desktop pulled the window onto a full-screen dashboard's Space elsewhere. Key but off the active Space (swiped to an
+    /// empty desktop, the app still in front) isn't "on the dashboard".
+    private func showOnDashboard(for w: NSWindow) -> NSWindow? {
+        if let parent = manager?.window, parent.isKeyWindow, parent.isVisible, !parent.isMiniaturized, parent.isOnActiveSpace { return parent }
+        return rideableDashboard(for: w)
     }
 
     /// The dashboard this window may ride on as its child right now, or nil to stay free where it is. A child is pulled

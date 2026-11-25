@@ -86,11 +86,15 @@ window.BadgeArt = (() => {
     );
   }
 
-  // The catalog (badges.ts): { base, art: { "<badge>-<tier>": file }, names, tiers, grand, serviceYears }. Every season's
+  // The catalog (badges.ts): { base, art: { "<badge>-<tier>": file }, reached, names, tiered, tierNames, grand, serviceYears }
+  // (`art` only for the tiers somebody holds; `tiers` is there only for apps up to 0.27.x). Every season's
   // medal shares one set (season-<tier>); each year's Service Medal has its own (service-<year>-<tier>), a year not drawn
   // yet shows the latest before it. Kept for the next start, so pictures show at once; the files stay in the web view's
   // HTTP cache (they never change: a new picture is a new file name).
-  const KEY = 'badgeCatalog';
+  // `badgeCatalog2`: the first catalog kept every tier's picture address; a catalog now holds only the tiers somebody has
+  // earned (picture and name go out once a person holds the tier), so the old one is never read, and is dropped.
+  const KEY = 'badgeCatalog2';
+  try { localStorage.removeItem('badgeCatalog'); } catch { /* nothing to drop */ }
   // Where badge pictures may come from: the files bucket's badges folder, nowhere else, and only a file named by its
   // hash. Whatever a catalog says (one kept from before too), a picture outside these is drawn instead: a picture's
   // address goes into the page's HTML, and a host of anyone's choosing would see who looks at which badge.
@@ -114,18 +118,25 @@ window.BadgeArt = (() => {
   /** Whether the catalog knows the badge (its name, its pictures). */
   const known = (id) => !!cat && (id.startsWith('season-') || id.startsWith('service-') || !!cat.names?.[id]);
 
+  /** The key a badge's pictures go by: its id, `season` for every season, `service-<year of the picture>` for a Service Medal. */
+  function artKey(id) {
+    if (id.startsWith('season-')) return 'season';
+    if (id.startsWith('service-')) {
+      const years = cat?.serviceYears || [];
+      const y = Number(id.slice(8));
+      return `service-${[...years].reverse().find((x) => x <= y) ?? years[0]}`;
+    }
+    return id;
+  }
+  /** Whether somebody holds this tier, so its picture may show (the catalog's `reached`); tier 0 (grey, not earned) always. */
+  const revealed = (id, tier) => !!cat && cleanTier(tier) <= (cat.reached?.[artKey(cleanId(id))] ?? 0);
+
   /** The badge's picture (its address in the files bucket), or '' when it's drawn. */
   function src(id, tier) {
     if (!cat) return '';
     id = cleanId(id);
     tier = cleanTier(tier);
-    let key = id;
-    if (id.startsWith('season-')) key = 'season';
-    else if (id.startsWith('service-')) {
-      const years = cat.serviceYears || [];
-      const y = Number(id.slice(8));
-      key = `service-${[...years].reverse().find((x) => x <= y) ?? years[0]}`;
-    }
+    const key = artKey(id);
     const t = Math.max(1, tier || 1);
     const file = cat.art?.[`${key}-${t}`] || (!tier && cat.art?.[`${key}-1`]);
     if (typeof file !== 'string' || !ART_FILE.test(file) || !ART_BASES.includes(cat.base)) return '';
@@ -138,22 +149,28 @@ window.BadgeArt = (() => {
   const cleanTier = (tier) => Math.max(0, Math.min(99, Math.trunc(Number(tier)) || 0));
   const cleanSize = (size) => Math.max(1, Math.min(1024, Math.trunc(Number(size)) || 48));
 
-  /** The badge `id` at `tier` (0: not earned, grey), `size` px square: its picture, or drawn when it has none. */
-  function svg(id, tier, size = 48) {
+  /** The badge `id` at `tier` (0: not earned, grey), `size` px square: its picture, or drawn when it has none. With
+   *  `opts.veil`, a tier nobody holds yet is a dark silhouette (no emblem) and never its picture. */
+  function svg(id, tier, size = 48, opts) {
     id = cleanId(id);
     tier = cleanTier(tier);
     size = cleanSize(size);
+    if (opts?.veil && !revealed(id, tier)) {
+      ask(id, tier);
+      return draw(id, tier, size, true);
+    }
     const pic = src(id, tier);
     if (pic) return img(pic, tier, size);
-    ask(id);
+    ask(id, tier);
     return draw(id, tier, size);
   }
   // A badge this page's catalog doesn't name: one that came out after the page opened (the catalog is fetched when it
   // opens, and the window stays open all day), seen on a profile or in a list. Asked for again, at most once a minute;
-  // the coin drawn meanwhile turns into its picture when the catalog is here (upgrade).
+  // the coin drawn meanwhile turns into its picture when the catalog is here (upgrade). The same for a tier somebody
+  // earned after the catalog was kept (the first to reach it): the catalog is stale until it is asked for again.
   let askedAt = 0;
-  function ask(id) {
-    if (known(id) || Date.now() - askedAt < 60_000) return;
+  function ask(id, tier) {
+    if ((known(id) && revealed(id, tier)) || Date.now() - askedAt < 60_000) return;
     askedAt = Date.now();
     setTimeout(refresh, 0);
   }
@@ -177,22 +194,26 @@ window.BadgeArt = (() => {
     return pic ? `<img class="gleam ${attr(cls)}" src="${attr(pic)}" alt="" draggable="false">` : '';
   }
 
-  function draw(id, tier, size) {
+  /** `veiled`: a tier nobody holds yet, a dark coin or medal with no emblem, no text and no sparkle (the real one stays a surprise). */
+  function draw(id, tier, size, veiled) {
     const uid = `bg${++n}`;
     const grey = !tier;
     const m = metal(id, tier);
     let body;
     if (id.startsWith('service-')) {
-      body = medal(String(tier || 1), id.slice(8), m, [shade(m[1], -0.15), shade(m[1], -0.4)], uid);
+      body = veiled ? medal('', '', m, [shade(m[1], -0.15), shade(m[1], -0.4)], uid)
+        : medal(String(tier || 1), id.slice(8), m, [shade(m[1], -0.15), shade(m[1], -0.4)], uid);
     } else if (id.startsWith('season-')) {
       const [y, q] = id.slice(7).split('-');
-      body = medal(`Q${q}`, y, m, ['#c2410c', '#7c2d12'], uid);
+      body = veiled ? medal('', '', m, ['#c2410c', '#7c2d12'], uid) : medal(`Q${q}`, y, m, ['#c2410c', '#7c2d12'], uid);
+    } else if (veiled) {
+      body = coin('', m, uid, false);
     } else {
       body = coin(P[id] || '<circle cx="12" cy="12" r="6" class="s"/>', m, uid, tier >= 4 && !SOLO[id]);
     }
     const style = `<style>#${uid} .s{fill:none;stroke:url(#${uid}e);stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}#${uid} .f{fill:url(#${uid}e)}</style>`;
     return (
-      `<svg id="${uid}" class="badge-art${grey ? ' locked' : ''}" data-bid="${String(id).replace(/[^a-z0-9-]/g, '')}" data-bt="${tier || 0}" width="${size}" height="${size}" viewBox="0 0 100 100" aria-hidden="true">` +
+      `<svg id="${uid}" class="badge-art${grey ? ' locked' : ''}${veiled ? ' veiled' : ''}" data-bid="${String(id).replace(/[^a-z0-9-]/g, '')}" data-bt="${tier || 0}" width="${size}" height="${size}" viewBox="0 0 100 100" aria-hidden="true">` +
       `<defs>${stops(m, uid)}</defs>${style}${body}</svg>`
     );
   }
@@ -220,21 +241,28 @@ window.BadgeArt = (() => {
     return `#${ch.map((c) => c.toString(16).padStart(2, '0')).join('')}`;
   }
 
-  // Names and how many tiers each has come with the catalog (the notices panel only has ids).
-  const TIER = ['', 'Bronze', 'Silver', 'Gold', 'Diamond', 'Legend'];
-  const NAMED = { tenure: ['', '1 month', '6 months', '1 year', '2 years', '5 years'], idea: ['', 'Planned', 'Shipped'] };
+  // Names come with the catalog (the notices panel only has ids). How many tiers a badge has is never in the app: only
+  // whether it has several (`cat.tiered`), and the names of the steps whose names aren't metals (Veteran, Idea Maker)
+  // only for the tiers somebody holds (`cat.tierNames`; the first one always, never one nobody reached).
+  const TIER = ['', 'Bronze', 'Silver', 'Gold', 'Diamond'];
+  const NAMED_IDS = new Set(['tenure', 'idea']);
   const name = (id) => cat?.names?.[id] || (id.startsWith('season-') ? 'Season Medal' : id.startsWith('service-') ? 'Service Medal' : '');
-  /** "Gold", a medal's level, a named step ("1 year"), or nothing for a one-off. */
-  function tierName(id, tier, tiers) {
+  /** Whether the badge has more than one tier: the catalog's list, or what the caller knows (`hint`: true, or a count above 1).
+   *  `cat.tiers` too: an API before `tiered` (api-staging until it is updated) sends only that map (above 1: tiered). */
+  const isTiered = (id, hint) => !!cat?.tiered?.includes(cleanId(id)) || Number(cat?.tiers?.[cleanId(id)]) > 1 || hint === true || Number(hint) > 1;
+  /** A metal's name ("Gold"), for a tier of the badges that go by metals. */
+  const metalName = (tier) => TIER[cleanTier(tier)] || '';
+  /** "Gold", a medal's level, a named step ("1 year"), or nothing for a one-off. `hint`: whether the badge is tiered, as the caller knows it. */
+  function tierName(id, tier, hint) {
     id = cleanId(id);
     tier = cleanTier(tier);
     if (id.startsWith('service-')) return `Level ${tier} · ${id.slice(8)}`;
     if (id.startsWith('season-')) return `${TIER[tier] || ''} · ${id.slice(7, 11)} Q${id.slice(12)}`;
-    if (NAMED[id]) return NAMED[id][tier] || '';
-    if ((cat?.tiers?.[id] || tiers || 1) <= 1) return '';
+    if (NAMED_IDS.has(id)) return cat?.tierNames?.[id]?.[tier - 1] || '';
+    if (!isTiered(id, hint)) return '';
     return TIER[tier] || `Tier ${tier}`;
   }
 
   refresh();
-  return { svg, src, gleam, name, tierName, glow, grand, known, refresh };
+  return { svg, src, gleam, name, tierName, metalName, isTiered, revealed, glow, grand, known, refresh };
 })();

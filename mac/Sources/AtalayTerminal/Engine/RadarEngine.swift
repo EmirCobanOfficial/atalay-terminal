@@ -624,7 +624,10 @@ final class RadarEngine {
 
         switch rec["type"] as? String {
         case "ai-title":
-            if let t = rec["aiTitle"] as? String { S.title = clip(redact(t), 90) }
+            if !S.titleIsCustom, let t = rec["aiTitle"] as? String { S.title = clip(redact(t), 90) }
+        case "custom-title":
+            // Claude's own /rename: it becomes the chat's title (a name given in the sidebar still wins: ChatNames).
+            if let t = rec["customTitle"] as? String, !t.isEmpty { S.title = clip(redact(t), 90); S.titleIsCustom = true }
         case "last-prompt":
             if A == nil, let p = rec["lastPrompt"] as? String { S.lastPrompt = clip(redact(p), 220) }
         case "api-request":
@@ -2852,7 +2855,7 @@ final class RadarEngine {
             // hears that it ended, and it comes back if the conversation is resumed.
             if !S.live, S.endedAt > 0 {
                 guard now - S.lastTs < 30 * Self.MIN else { continue }
-                var brief = SessionBrief(id: S.id, name: S.name.isEmpty ? String(S.id.prefix(8)) : S.name, title: S.title.isEmpty ? S.lastPrompt : S.title,
+                var brief = SessionBrief(id: S.id, name: S.name.isEmpty ? String(S.id.prefix(8)) : S.name, title: ChatNames.resolve(S.id, S.title.isEmpty ? S.lastPrompt : S.title),
                                          status: "ended", waitingFor: nil, cwd: S.cwd, live: false, pid: S.pid, host: nil, tab: nil)
                 brief.model = shortModel(S.model)
                 brief.effort = S.effort
@@ -2898,7 +2901,7 @@ final class RadarEngine {
             var item: [String: Any] = [
                 "id": S.id, "name": displayName(S),
                 "tool": "Claude Code",
-                "title": S.title, "lastPrompt": S.lastPrompt, "cwd": cwdLabel(S.cwd), "branch": S.branch,
+                "title": ChatNames.resolve(S.id, S.title), "lastPrompt": S.lastPrompt, "cwd": cwdLabel(S.cwd), "branch": S.branch,
                 "wt": orNull(Worktrees.info(of: S.cwd).flatMap { $0.linked ? $0.json : nil }),
                 "model": shortModel(S.model), "effort": S.effort, "status": status, "live": S.live,
                 "statusSince": S.live ? S.statusSince : (S.endedAt > 0 ? S.endedAt : S.lastTs),
@@ -2916,7 +2919,7 @@ final class RadarEngine {
             if let last = S.last { item["last"] = last.dict }
             list.append(item)
 
-            var brief = SessionBrief(id: S.id, name: S.name.isEmpty ? String(S.id.prefix(8)) : S.name, title: S.title.isEmpty ? S.lastPrompt : S.title,
+            var brief = SessionBrief(id: S.id, name: S.name.isEmpty ? String(S.id.prefix(8)) : S.name, title: ChatNames.resolve(S.id, S.title.isEmpty ? S.lastPrompt : S.title),
                                      status: status, waitingFor: S.waitingFor, cwd: S.cwd, live: S.live, pid: S.pid, host: host, tab: S.hostTab)
             brief.model = shortModel(S.model)
             brief.effort = S.effort
@@ -2962,7 +2965,7 @@ final class RadarEngine {
             let spark = ((k0 - 29)...k0).map { O.spark[$0] ?? 0 }
             let flags = O.ctxMax > 0 && Double(O.ctx) / O.ctxMax > 0.8 ? ["ctx 80%+"] : [String]()
             var item: [String: Any] = [
-                "id": O.id, "name": O.tool, "title": O.title.isEmpty ? folder : O.title, "lastPrompt": O.prompt, "cwd": cwdLabel(O.cwd), "branch": Worktrees.info(of: O.cwd)?.branch ?? "",
+                "id": O.id, "name": O.tool, "title": ChatNames.resolve(O.id, O.convId ?? (O.tool == "Codex" ? O.log.flatMap(CodexHooks.session(ofLog:)) : nil), O.title.isEmpty ? folder : O.title), "lastPrompt": O.prompt, "cwd": cwdLabel(O.cwd), "branch": Worktrees.info(of: O.cwd)?.branch ?? "",
                 "wt": orNull(Worktrees.info(of: O.cwd).flatMap { $0.linked ? $0.json : nil }),
                 "tool": O.tool,
                 "model": O.model.isEmpty ? O.tool : O.model, "effort": O.effort, "status": status, "live": live,
@@ -2985,7 +2988,7 @@ final class RadarEngine {
             if live { list.append(item) }
             // A Codex's conversation is its log's: the chats list shows a running one once, as that saved conversation.
             let conv = O.convId ?? (O.tool == "Codex" ? O.log.flatMap(CodexHooks.session(ofLog:)) : nil)
-            var brief = SessionBrief(id: O.id, name: O.tool, title: !O.title.isEmpty ? O.title : O.prompt.isEmpty ? folder : O.prompt, status: status, waitingFor: waiting,
+            var brief = SessionBrief(id: O.id, name: O.tool, title: ChatNames.resolve(O.id, conv, !O.title.isEmpty ? O.title : O.prompt.isEmpty ? folder : O.prompt), status: status, waitingFor: waiting,
                                      cwd: O.cwd, live: live, pid: O.pid, host: host, tab: O.hostTab, convId: conv)
             brief.model = O.model.isEmpty ? O.tool : O.model
             brief.effort = O.effort
@@ -3124,6 +3127,8 @@ final class RadarEngine {
         }
     }
 
+    private var lastBusyPids = Set<Int32>()
+
     /// Builds and sends the state when something changed (and every few seconds for the time-based
     /// figures), and skips the main thread and the page entirely when the result is identical.
     private func publishState() {
@@ -3132,6 +3137,10 @@ final class RadarEngine {
         stateDirty = false
         lastStateAt = now
         let snap = snapshot()
+        // An AI session that was busy and no longer is: the notes drop it from the notes it was working in.
+        let busyNow = Set(snap.briefs.filter { $0.status == "busy" }.compactMap { $0.pid })
+        for pid in lastBusyPids.subtracting(busyNow) { NotesTools.sessionIdle(pid: pid) }
+        lastBusyPids = busyNow
         guard let js = encode(snap.json), js != lastStateJSON else { return }
         lastStateJSON = js
         DispatchQueue.main.async { self.onState?(js, snap.briefs) }
@@ -3177,11 +3186,11 @@ final class RadarEngine {
         queue.async {
             let now = nowMs()
             var list = self.sessions.values.filter { !$0.cwd.isEmpty && ($0.live || $0.lastTs >= self.day0) }.map { S in
-                GitSession(id: S.id, name: self.displayName(S), title: S.title, status: self.statusOf(S, now), live: S.live, cwd: S.cwd)
+                GitSession(id: S.id, name: self.displayName(S), title: ChatNames.resolve(S.id, S.title), status: self.statusOf(S, now), live: S.live, cwd: S.cwd)
             }
             // Cursor's too: its hooks name the files it writes, so its repo shows with its chip and its files carry its mark.
             for O in self.others.values where O.tool == "Cursor" && !O.cwd.isEmpty && (O.endedAt == 0 || O.lastTs >= self.day0) {
-                list.append(GitSession(id: O.id, name: O.tool, title: O.title.isEmpty ? O.prompt : O.title, status: self.otherStatus(O, now).status,
+                list.append(GitSession(id: O.id, name: O.tool, title: ChatNames.resolve(O.id, O.convId, O.title.isEmpty ? O.prompt : O.title), status: self.otherStatus(O, now).status,
                                        live: O.endedAt == 0, cwd: O.cwd))
             }
             var written: [String: [String]] = [:]
@@ -3229,10 +3238,31 @@ final class RadarEngine {
         // And Cursor's.
         changed = scanCursorHistory() || changed
         guard changed else { return }
+        publishHistory()
+    }
+
+    /// The saved chats for the sidebar, with the names given to them (Rename) in place of their own titles.
+    private func publishHistory() {
         let items = history.values
             .filter { !$0.cwd.isEmpty && (!$0.title.isEmpty || !$0.lastPrompt.isEmpty) }
             .sorted { $0.mtime > $1.mtime }
+            .map { item -> ChatItem in
+                var i = item
+                i.origTitle = item.title
+                i.title = ChatNames.resolve(item.id, item.title)
+                return i
+            }
         DispatchQueue.main.async { self.onHistory?(items) }
+    }
+
+    /// A chat was renamed (or its name cleared): the state and the saved chats go out again with the new names.
+    func republishNames() {
+        queue.async {
+            self.stateDirty = true
+            self.lastStateJSON = ""   // the page's JSON may be unchanged (ended chats aren't in it): the windows still need the names
+            self.publishState()
+            self.publishHistory()
+        }
     }
 
     /// Reads Antigravity's conversation_summaries.db and upserts items into `history`.
@@ -3433,15 +3463,23 @@ final class RadarEngine {
             if from > 0, !parts.isEmpty { parts.removeFirst() }
             return parts.map { Data($0) }
         }
+        var customSeen = false
         func scan(_ ls: [Data]) {
             for line in ls.reversed() {
-                if !item.title.isEmpty, !item.lastPrompt.isEmpty, !item.cwd.isEmpty { return }
+                if !item.title.isEmpty, !item.lastPrompt.isEmpty, !item.cwd.isEmpty, customSeen { return }
                 let head = line.prefix(800)
-                let isTitle = head.range(of: Data("\"type\":\"ai-title\"".utf8)) != nil
-                let isPrompt = head.range(of: Data("\"type\":\"last-prompt\"".utf8)) != nil
+                let isCustom = head.range(of: Data("\"type\":\"custom-title\"".utf8)) != nil
+                if isCustom, !customSeen, let rec = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
+                   let t = rec["customTitle"] as? String, !t.isEmpty {
+                    item.title = clip(t, 90)
+                    customSeen = true
+                    continue
+                }
+                let isTitle = item.title.isEmpty && head.range(of: Data("\"type\":\"ai-title\"".utf8)) != nil
+                let isPrompt = item.lastPrompt.isEmpty && head.range(of: Data("\"type\":\"last-prompt\"".utf8)) != nil
                 let hasCwd = item.cwd.isEmpty && head.range(of: Data("\"cwd\":\"".utf8)) != nil
                 guard isTitle || isPrompt || hasCwd, let rec = try? JSONSerialization.jsonObject(with: line) as? [String: Any] else { continue }
-                if isTitle, item.title.isEmpty, let t = rec["aiTitle"] as? String { item.title = clip(t, 90) }
+                if isTitle, item.title.isEmpty, !customSeen, let t = rec["aiTitle"] as? String { item.title = clip(t, 90) }
                 if isPrompt, item.lastPrompt.isEmpty, let p = rec["lastPrompt"] as? String { item.lastPrompt = clip(p, 160) }
                 if item.cwd.isEmpty, let c = rec["cwd"] as? String { item.cwd = c }
             }

@@ -427,6 +427,8 @@ function createNotesAI({ settings, dialog, parent, notesStore, noteWindows, term
     mode,
     // For mcp.js (deps.notesAccess): the pipe stays open while this is on, even with the Claude access off.
     access: () => mode() !== 'off',
+    // The engine's "this AI session went idle": the notes it was working in let it go (notestools.js).
+    sessionIdle: (pid) => notesTools.sessionIdle(pid),
   };
 }
 

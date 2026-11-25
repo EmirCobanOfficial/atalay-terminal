@@ -117,7 +117,7 @@ window.Inbox = (() => {
   const metal = (id, tier) => (Art() ? Art().glow(id, tier)[0] : WARM);
   const art = (id, tier, size) => (Art() ? Art().svg(id, tier, size) : '');
   const badgeName = (b) => (Art() ? Art().name(b.id) : '') || b.name || 'a badge';
-  const tierName = (b) => (Art() ? Art().tierName(b.id, b.tier, b.tiers) : '');
+  const tierName = (b) => (Art() ? Art().tierName(b.id, b.tier, b.tiered ?? b.tiers) : '');
   const rare = (r) => r != null && r <= 5; // stricter than Xbox's and Steam's 10%: with rarity per tier, 9% made it common
   // A release's line: its topic (before the ":") and the rest.
   function parts(text) {
@@ -128,11 +128,7 @@ window.Inbox = (() => {
   const shortVer = (v) => String(v || '').replace(/^v/i, '').split('.').slice(0, 2).join('.');
   const names = (list) => (list.length < 2 ? list.join('') : `${list.slice(0, -1).join(', ')} and ${list[list.length - 1]}`);
 
-  // A badge's tiers and what each takes (badges.ts DEFS says the same; the app only gets the next one's).
-  const H4 = [[1, 25, 250, 1000], 'h'];
-  const STEPS = { week: [[10, 20, 30], 'h'], streak: [[4, 12, 26, 52], 'week'], fire: [[1, 5, 25, 100], 'day'], hours: [[10, 100, 500, 1000], 'h'],
-    claude: H4, codex: H4, gemini: H4, antigravity: H4, cursor: H4, squad: [[1, 5, 15], 'friend'], voice: [[1, 10, 30], 'vote'], season: [[50, 150, 300, 450], 'h'] };
-  const TIERS = ['Bronze', 'Silver', 'Gold', 'Diamond', 'Legend'];
+  // What a tier takes comes from the API (`ladder`: only the tiers you hold): the app never lists the rest.
   const amount = (n, unit) => (unit === 'h' ? `${num(n)}h` : `${num(n)} ${unit}${n === 1 ? '' : 's'}`);
 
   // Who a friend's moment is about: what's known of them (their picture, level, presence), else the line's name.
@@ -431,26 +427,30 @@ window.Inbox = (() => {
 
   function badgeSheet(it) {
     const b = it.b, tn = tierName(b), key = b.id.startsWith('season-') ? 'season' : b.id;
-    const steps = STEPS[key];
-    const track = b.tiers > 1 && !b.id.startsWith('service-')
-      ? `<div class="nf-h">Tiers</div><div class="nf-track" style="--n:${b.tiers}">` +
-        Array.from({ length: b.tiers }, (_, i) => {
-          const name = key === 'season' ? TIERS[i] : Art() ? Art().tierName(b.id, i + 1, b.tiers) : '';
-          const need = steps && steps[0][i] != null ? amount(steps[0][i], steps[1]) : '';
+    const tiered = b.tiered ?? b.tiers > 1;
+    const top = b.top ?? b.tier >= b.tiers;
+    // Only the tiers you hold (the API's `ladder`), never the next one or the whole staircase, as CS:GO's medals: Veteran and
+    // Idea Maker's names are their thresholds already, so those say no more.
+    const n = b.ladder ? Math.min(b.ladder.length, b.tier) : b.tier;
+    const thr = (i) => {
+      const v = b.ladder?.[i], u = b.unit;
+      if (v == null || !u || key === 'tenure' || key === 'idea') return '';
+      if (u === 'h') return amount(v / 3600, 'h');
+      if (u === 'days' && v >= 86400) return amount(Math.round(v / 86400), 'day');
+      return amount(v, u.replace(/s$/, ''));
+    };
+    const track = tiered && !b.id.startsWith('service-') && n > 0
+      ? `<div class="nf-h">Your tiers</div><div class="nf-track" style="--n:${n}">` +
+        Array.from({ length: n }, (_, i) => {
+          const name = !Art() ? '' : key === 'season' ? Art().metalName(i + 1) : Art().tierName(b.id, i + 1, true);
+          const need = thr(i);
           return `<div class="nf-step${i < b.tier ? ' got' : ''}${i === b.tier - 1 ? ' now' : ''}" style="--m:${metal(b.id, i + 1)}"><span class="nf-coin"></span>${esc(name)}${need ? `<small>${need}</small>` : ''}</div>`;
         }).join('') + '</div>'
       : '';
-    // How far the next tier is (badges.js amount: hours come in seconds, Veteran's days too).
+    // The next tier of a badge you hold is never shown; at the top, just that.
     let next = '';
-    const p = b.progress;
-    if (p && p.unit && b.tier < b.tiers) {
-      const hours = p.unit === 'h', days = p.unit === 'days' && p.next >= 86400;
-      const have = hours ? Math.floor(p.value / 3600) : days ? Math.floor(p.value / 86400) : p.value;
-      const need = hours ? Math.round(p.next / 3600) : days ? Math.round(p.next / 86400) : p.next;
-      const unit = hours ? 'h' : p.unit.replace(/s$/, '');
-      const nextName = key === 'season' ? TIERS[b.tier] : Art() ? Art().tierName(b.id, b.tier + 1, b.tiers) : '';
-      next = `<div class="nf-next">Next: <b>${esc(nextName || 'the next tier')}</b> at ${amount(need, unit)}. You have ${hours ? `${num(have)}h` : num(have)}.` +
-        `<div class="nf-bar-xp" style="--m:${metal(b.id, b.tier + 1)}"><i style="width:${Math.max(0, Math.min(100, (100 * p.value) / p.next)).toFixed(0)}%"></i></div></div>`;
+    if (tiered && top && !b.id.startsWith('service-')) {
+      next = '<div class="nf-next">Top tier for now</div>';
     }
     const shown = window.Badges?.mine()?.featured === b.id;
     return eyebrow(it, 'Badge earned') +

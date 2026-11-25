@@ -77,8 +77,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         WorktreeShip.shared.manager = self
         buildLayout()
         wireEngine()
-        WaitNotifier.shared.titleOf = { [weak self] b in self?.sidebar.customTitles[b.id] ?? b.title }
-        MessagePanel.onOpenWait = { [weak self] sid in self?.openFromNotice(sid) }
+        sidebar.onRenamed = { [weak self] id in self?.chatRenamed(id) }
+                MessagePanel.onOpenWait = { [weak self] sid in self?.openFromNotice(sid) }
         runaways.onChange = { [weak self] json in
             self?.radar.push("runaways", json)
             MessagePanel.notices.runaways(json)
@@ -198,6 +198,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             Mascot.shared.onSocialJSON(json)
             if json.contains(#""type":"xp""#) { Cloud.shared.apply(xpEvent: json) }
         }
+        // A friend's nudge while their chat isn't on screen (the card came): the dashboard shakes by its own state.
+        MessagePanel.onNudgeDashboard = { [weak self] in self?.nudgeDashboard() }
         // The "update available" notice was clicked: the dashboard in front, on its "what's new" screen.
         MessagePanel.onOpenUpdate = { [weak self] in
             self?.showDashboard()
@@ -237,6 +239,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             self?.radar.push("openDanger", "null")
         }
         MessagePanel.onEndRunaway = { [weak self] pid, started in self?.runaways.end(pid: pid, started: started) }
+        // Fire back (or its Cancel) pressed on the card or in a chat: the dashboard page presses its own 🚀 for that friend.
+        MessagePanel.onAttackFire = { [weak self] id in
+            self?.radar.callNotes("window.Attack && Attack.press && Attack.press(id); return true", ["id": id])
+        }
+        MessagePanel.onAttackCancel = { [weak self] id in
+            self?.radar.callNotes("window.Attack && Attack.cancelFor && Attack.cancelFor(id); return true", ["id": id])
+        }
         if UserDefaults.standard.bool(forKey: "sidebarHidden") { side.isHidden = true }
     }
 
@@ -348,6 +357,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         case "clashOver": if let key = msg["key"] as? String { MessagePanel.notices.clashOver(key) }
         // A friend's spaceship attack (attack.js): its DANGER banner, over whatever is in front.
         case "attack": MessagePanel.notices.attack(msg)
+        // The 🚀 button's state for a friend (attack.js): the who-fired-at-me card and the chats draw Fire back from it.
+        case "attackBtn": MessagePanel.attackBtn(msg)
         // The community feed's lines (community.js decides; the panel at the screen's corner draws).
         case "feedLine":
             guard let id = msg["id"] as? String, let kind = msg["kind"] as? String, let html = msg["html"] as? String else { return }
@@ -615,7 +626,22 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// Status of each live AI session by its process id (AgyRewind asks whether Antigravity is idle).
     static var aiStatus: [Int32: String] = [:]
 
-    private func apply(_ list: [SessionBrief]) {
+    /// A chat renamed in the sidebar: its windows (header, tab chips, pane bars, Window menu) take the name at once, and a
+    /// name typed by hand for that session's tab gives way to it (the newest rename wins).
+    private func chatRenamed(_ id: String) {
+        // Before the engine's first state there's nothing to show it on (and apply would run pendingOpen on an empty list).
+        guard hasState else { return }
+        // Hand-typed names are kept by the terminal's session name, not the brief's: the AI's own pane, and the tab's first pane.
+        if let b = briefs.values.first(where: { $0.id == id || $0.convId == id }), let pid = b.pid {
+            if let s = Detached.sessionName(hosting: pid) { setTabName(nil, for: s) }
+            for c in chats.values { c.clearTabNames(hosting: pid) }
+        }
+        engine.republishNames()
+        radar.webView.evaluateJavaScript("window.GitView && window.GitView.refresh && window.GitView.refresh(); true", completionHandler: nil)
+    }
+
+    private func apply(_ raw: [SessionBrief]) {
+        let list = raw   // titles already carry the names given in the sidebar (the engine resolves them: ChatNames)
         Self.aiStatus = Dictionary(list.filter(\.live).compactMap { b in b.pid.map { ($0, b.status) } }, uniquingKeysWith: { a, _ in a })
         briefs = Dictionary(list.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         if !hasState {
@@ -876,6 +902,23 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
+    /// A friend's nudge and their chat isn't on screen (MessagePanel "nudgeShake"; the corner card came as well). By the dashboard's
+    /// state: full screen (or zoomed) and on screen -> the map's centre circle shakes (in the page, no window moves); a window on the current
+    /// Space, on screen and not full screen or zoomed -> the whole window shakes like MSN's (WindowShake: about half a second, the
+    /// exact frame put back, its child windows riding on it); minimized, hidden, on another Space or covered -> nothing (the card and
+    /// the buzz are all). Never a focus change or a raise; nothing while a mouse button is down or Reduce Motion is on.
+    func nudgeDashboard() {
+        guard let w = window, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion, !MessagePanel.noticesHoldScreen,
+              w.isVisible, !w.isMiniaturized, !NSApp.isHidden, w.isOnActiveSpace, w.occlusionState.contains(.visible),
+              NSEvent.pressedMouseButtons == 0 else { return }
+        // A full-screen or zoomed (maximized) window is never moved: the map's circle shakes instead.
+        if w.styleMask.contains(.fullScreen) || w.isZoomed {
+            radar.push("nudgeCore", "null")
+        } else {
+            WindowShake.run(w, amp: 1)
+        }
+    }
+
     @objc func dashboardVisibilityChanged() {
         guard let w = window else { return }
         let visible = w.isVisible && w.occlusionState.contains(.visible) && !w.isMiniaturized && !NSApp.isHidden
@@ -1065,7 +1108,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                   let name = Detached.sessionName(hosting: pid) else { continue }
             let win = chats.values.first { $0.detached?.name == name || $0.extras.contains { $0.link?.name == name } }
             if win?.hud.mirror == true { continue }
-            let title = sidebar.customTitles[b.id] ?? (b.title.isEmpty ? (b.cwd as NSString).lastPathComponent : b.title)
+            let title = (b.title.isEmpty ? (b.cwd as NSString).lastPathComponent : b.title)
             out.append(CleanupChat(brief: b, title: title, lastInput: win?.lastInputAt(session: name) ?? 0,
                                    inFront: win?.window?.isKeyWindow == true, ai: kind, aiName: WorktreeNudge.name(b),
                                    blocker: win?.detached?.name == name ? win?.cleanupBlocker() : nil))

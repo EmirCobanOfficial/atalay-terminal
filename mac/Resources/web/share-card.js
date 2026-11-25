@@ -623,7 +623,7 @@ const Card = (() => {
   }
 
   async function data(weekArg) {
-    const S = (window.Cloud && Cloud.S && Cloud.S()) || {};
+    const S = (window.Cloud && Cloud.state && Cloud.state()) || {};
     const xp = S.xp || {};
     const A = (window.Account && Account.state && Account.state()) || {};
     const W = await Social.weeks('xp').catch(() => null);

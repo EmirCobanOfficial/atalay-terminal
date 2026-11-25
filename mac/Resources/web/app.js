@@ -804,6 +804,8 @@ function setDiscord(s) {
 // follows it.
 function connect() {
   window.__radar = { init: handleInit, state: handleState, events: (list) => list.forEach(onEvent), visibility: setVisibility, power: (on) => map('power', on), powerSave: setPowerSave, discord: setDiscord, mcp: (s) => { window.__mcp = s; window.dispatchEvent(new Event('mcpchange')); }, activeSession: () => {}, cloud: (c) => window.Cloud?.render(c), social: (ev) => window.Social?.event(ev), terminals: (list) => { TERMS = list; map('terminals', Streamer.terminals(list)); }, terminalGone: (id) => map('terminalGone', id), idle: (s) => { map('idle', s); setIdle(Number(s)); }, openUpdate: () => window.Cloud?.openUpdate(), openProfile: () => window.Cloud?.openProfile(), openFriend: (id) => window.Cloud?.openFriend(id), openView: (v) => window.GitView?.view(v), runaways: (list) => { RUNS = list; const runs = Streamer.runaways(list); window.Danger?.update(runs); map('runaways', runs); }, openDanger: () => window.Danger?.open(), memory: (m) => window.Cleanup?.memory(m), cleanup: (j) => window.Cleanup?.update(j), cleanupStep: (s) => window.Cleanup?.step(s), cleanupPrefs: (p) => window.Cleanup?.prefs(p), openCleanup: () => window.GitView?.view('cleanup') };
+  // A friend's nudge while the dashboard is full screen (messages.js, Swift/main.js "nudgeShake"): the map's centre circle shakes.
+  window.__radar.nudgeCore = () => window.Orbit?.nudge?.();
   native({ type: 'ready' });
   // A reloaded page in streamer mode: the app's chats list and windows stay in it too.
   native({ type: 'streamer', on: Streamer.on });

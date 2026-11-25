@@ -1,6 +1,21 @@
 import SwiftUI
 import WebKit
 
+/// The one place a chat's shown name is decided: the name given to it (Rename) if any, else the engine's own title. The engine
+/// applies it to everything it hands out (the page's state, the briefs, the saved chats), so no screen reads a raw title.
+/// Names stay on this Mac: nothing here goes to the cloud.
+nonisolated enum ChatNames {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var map = UserDefaults.standard.dictionary(forKey: "chatTitles") as? [String: String] ?? [:]
+    static func set(_ new: [String: String]) { lock.lock(); map = new; lock.unlock() }
+    static func resolve(_ id: String, _ raw: String) -> String { resolve(id, nil, raw) }
+    static func resolve(_ id: String, _ alt: String?, _ raw: String) -> String {
+        lock.lock(); defer { lock.unlock() }
+        if let t = map[id] ?? alt.flatMap({ map[$0] }), !t.isEmpty { return t }
+        return raw
+    }
+}
+
 @MainActor
 final class SidebarModel: ObservableObject {
     @Published var items: [ChatItem] = []
@@ -28,10 +43,15 @@ final class SidebarModel: ObservableObject {
     }
     /// Names given to chats (right-click → Rename), over Claude's own titles; kept across launches.
     @Published var customTitles = UserDefaults.standard.dictionary(forKey: "chatTitles") as? [String: String] ?? [:] {
-        didSet { UserDefaults.standard.set(customTitles, forKey: "chatTitles") }
+        didSet {
+            UserDefaults.standard.set(customTitles, forKey: "chatTitles")
+            ChatNames.set(customTitles)
+        }
     }
     /// The chat whose name is being edited in its row.
     @Published var renaming: String?
+    /// Called after a rename, so the terminal windows show the new name too.
+    var onRenamed: ((String) -> Void)?
     /// The app's terminals with no Claude in them, each in the folder it was opened in (MainWindowController.pushTerminals).
     @Published var terminals: [TermRow] = []
     /// Folders opened from the list (its open folder button), the newest first: they stay at its top, chats or none, until
@@ -95,6 +115,7 @@ final class SidebarModel: ObservableObject {
         let clean = name.trimmingCharacters(in: .whitespacesAndNewlines)
         customTitles[id] = clean.isEmpty ? nil : String(clean.prefix(120))
         renaming = nil
+        onRenamed?(id)
     }
 
     /// Folders picked with a click on their header, for archiving (or unarchiving) them all at once.
@@ -426,7 +447,7 @@ final class SidebarModel: ObservableObject {
         var all = everything
         let q = query.trimmingCharacters(in: .whitespaces).lowercased()
         if !q.isEmpty {
-            all = all.filter { "\(customTitles[$0.id] ?? "") \($0.title) \($0.lastPrompt) \($0.cwd)".lowercased().contains(q) }
+            all = all.filter { "\(customTitles[$0.id] ?? "") \($0.title) \($0.origTitle) \($0.lastPrompt) \($0.cwd)".lowercased().contains(q) }
         }
         var order: [String] = []
         var map: [String: [ChatItem]] = [:]

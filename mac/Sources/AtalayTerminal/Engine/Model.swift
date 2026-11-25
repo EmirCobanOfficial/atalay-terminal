@@ -43,6 +43,8 @@ class Track {
 final class Session: Track {
     let id: String
     var name = "", title = "", lastPrompt = "", cwd = "", branch = "", effort = ""
+    /// The title came from Claude's /rename (a custom-title record): a later AI-written one doesn't replace it.
+    var titleIsCustom = false
     var live = false
     var reg: String?
     var waitingFor: String?
@@ -247,7 +249,7 @@ final class Globals {
 struct SessionBrief: Equatable {
     let id: String
     let name: String
-    let title: String
+    var title: String
     let status: String
     let waitingFor: String?
     let cwd: String
@@ -300,6 +302,8 @@ struct ChatItem: Identifiable, Equatable {
     var mtime: Double
     var size: Int
     var title: String
+    /// The chat's own title, kept when a name given in the sidebar takes its place in `title` (search still finds it).
+    var origTitle = ""
     var lastPrompt: String
     /// "claude" for Claude Code transcripts, "antigravity" for Antigravity conversations. Defaults to "claude".
     var tool: String = "claude"

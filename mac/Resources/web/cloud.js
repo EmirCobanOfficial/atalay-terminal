@@ -33,6 +33,8 @@ window.Cloud = (() => {
     person: FR_SVG('<circle cx="8" cy="8" r="6.25"/><circle cx="8" cy="6.3" r="2.1"/><path d="M3.7 12.7c.9-2 2.4-2.9 4.3-2.9s3.4.9 4.3 2.9"/>'),
     bubble: FR_SVG('<path d="M3.5 2.75h9a1.75 1.75 0 0 1 1.75 1.75v5a1.75 1.75 0 0 1-1.75 1.75H7.2L4.4 13.75v-2.5h-.9A1.75 1.75 0 0 1 1.75 9.5v-5A1.75 1.75 0 0 1 3.5 2.75z"/>'),
   };
+  // The nudge's mark (messages.js GLYPH): a chat bubble with two buzz lines, before "nudged you" in a friend's row.
+  const FR_NDG = '<svg class="ndg-g" viewBox="0 0 16 16" aria-hidden="true"><path d="M5 3.6h6a1.6 1.6 0 0 1 1.6 1.6v4.2A1.6 1.6 0 0 1 11 11H8.2L6 12.8V11H5a1.6 1.6 0 0 1-1.6-1.6V5.2A1.6 1.6 0 0 1 5 3.6z"/><path d="M1.6 5.8c-.6 1-.6 2.6 0 3.6M14.4 5.8c.6 1 .6 2.6 0 3.6"/></svg>';
 
   let S = null; // latest state
   let modal = null; // 'first' | 'menu' | 'update' | 'feedback'
@@ -46,9 +48,17 @@ window.Cloud = (() => {
   document.body.appendChild(root);
   const q = (sel) => root.querySelector(sel);
   const brand = document.querySelector('.brand');
-  const stack = brand.querySelector('.stack');
-  // The logo shows your status. Unread messages and friend requests count on the friends icon on the left edge.
-  brand.insertAdjacentHTML('afterbegin', '<i class="pdot bme" hidden></i>');
+  // The identity corner (renderId): your picture with your status, name, rank, badge and ORB. Unread messages and friend
+  // requests count on the friends icon on the left edge.
+  const live = document.getElementById('id-live');
+  const SKELETON =
+    '<button class="id-me" type="button" aria-haspopup="menu" aria-expanded="false">' +
+    '<span class="id-av"><span class="id-face"></span><i class="id-st" hidden></i></span>' +
+    '<span class="id-txt"><span class="id-name"><b></b><i class="id-tag"></i></span>' +
+    '<span class="id-rank"><span class="id-rk"><span class="id-rn"></span><span class="id-lv"></span></span><i class="id-xp" aria-hidden="true"><i></i></i></span></span>' +
+    '</button><span class="id-bdg"></span>';
+  const BRAND = '<img class="id-logo" src="logo.png" alt=""><b class="id-word">ORBITERM</b>';
+  const $id = (sel) => brand.querySelector(sel);
 
   // Your ORB in the top bar (CONTRACT v3: units of 1/10000 ORB, shown floored to 2 decimals, tabular). Social keeps it:
   // /v1/orb/me, every `orb` push, `orb_settings` for the shared numbers, and the heartbeat's copy (render()). Nothing
@@ -73,20 +83,7 @@ window.Cloud = (() => {
     if (!s) return;
     S = s;
     liveSeen(s);
-    // Long names get tighter letters so the top bar still fits. Over the name: your rank and level once the API told
-    // them; under it, how far into the level you are.
-    const long = s.hackerName && s.hackerName.length > 11 ? ' class="long"' : '';
-    const x = s.xp, r = x && Xp.rank(x.level);
-    const title = r ? `<small class="rk" style="--rc:${r.color}">${esc(r.name.toUpperCase())} · LV ${x.level}</small>` : '<small>HACKER</small>';
-    const bar = r ? `<i class="xpb" style="--rc:${r.color}"><i style="width:${Xp.pct(x).toFixed(1)}%"></i></i>` : '';
-    // After the name: the badge you display (badges.js paints it in), then your Orb, the app's money (orb.png), and
-    // how many you have, once the API has said (the chip is a button: its popover has the rest).
-    const ob = orbNow();
-    if (ob) orbShown = ob.balance;
-    const orb = ob
-      ? `<span class="orb-chip" role="button" tabindex="0" aria-haspopup="dialog" aria-expanded="${orbPopEl ? 'true' : 'false'}" aria-label="${esc(`Your ORB: ${Social.orbText(ob.balance)}. Details`)}" title="Your ORB"><img src="orb.png" alt=""><span class="orb-n">${orbNum(ob.balance)}</span><i class="orb-tick" aria-hidden="true"></i></span>`
-      : '';
-    setHTML(stack, s.hackerName ? `${title}<b${long}>${esc(s.hackerName)}<i class="htag">${tagText(s.tag)}</i>${orb}</b>${bar}` : '<b>ORBITERM</b>');
+    renderId(s);
     // A heartbeat brought a new `orb`: the chip and the fire buttons take it (Social skips it when a push was newer).
     const beat = s.orb && typeof s.orb === 'object' && Number.isFinite(s.orb.balance) ? JSON.stringify(s.orb) : '';
     if (beat && beat !== orbBeat) {
@@ -95,9 +92,6 @@ window.Cloud = (() => {
     }
     // The badge you display, beside your name (badges.js).
     window.Badges?.paintTop();
-    brand.title = r
-      ? `Your profile · level ${x.level} · ${r.name} · ${x.to ? `${Xp.num(x.xp - x.from)} / ${Xp.num(x.to - x.from)} XP` : `${Xp.num(x.xp)} XP`} · today ${Xp.dur(x.today)}`
-      : 'Your profile';
     if (waitFor && (Date.now() > waitFor.until || waitFor.test(s))) {
       const w = waitFor;
       waitFor = null;
@@ -129,6 +123,82 @@ window.Cloud = (() => {
     // Friends and messages need a signed-in Mac, with its name.
     if (s.registered && s.hackerName && s.reachable && !Social.state()) Social.load();
     badges();
+  }
+
+  // The top-left corner. No name yet (the welcome): the app's logo and name, still. Else built once, then updated in place:
+  // a heartbeat must never rebuild the picture (it would flash) or the ORB capsule (it would cut its animation short).
+  function renderId(s) {
+    if (!s) return;
+    if (!s.hackerName) {
+      if (!$id('.id-logo')) brand.innerHTML = BRAND;
+      brand.title = 'Your profile';
+      return;
+    }
+    brand.removeAttribute('title');
+    if (!$id('.id-me')) {
+      orbPopClose();
+      brand.innerHTML = SKELETON;
+    }
+    const x = s.xp, r = Xp.rank(x ? x.level : 1);
+    const A = window.Account?.state();
+    // Your picture only once signed in with it, else your name's first letter on your rank's colour.
+    const pic = A && A.signedIn && A.avatar;
+    const letter = s.hackerName.trim().charAt(0).toUpperCase();
+    const face = pic ? `pic:${pic}` : `mono:${letter}`;
+    const f = $id('.id-face');
+    if (f.dataset.k !== face) {
+      f.dataset.k = face;
+      if (pic) {
+        f.innerHTML = `<img class="id-pic" alt="" src="${esc(pic)}">`;
+        // A picture that can't load (offline, gone): the letter again.
+        f.firstChild.onerror = () => {
+          f.dataset.k = `mono:${letter}`;
+          f.innerHTML = `<b class="id-mono" aria-hidden="true">${esc(letter)}</b>`;
+        };
+      } else f.innerHTML = `<b class="id-mono" aria-hidden="true">${esc(letter)}</b>`;
+    }
+    $id('.id-av').style.setProperty('--rc', r.color);
+    $id('.id-rank').style.setProperty('--rc', r.color);
+    $id('.id-name b').textContent = s.hackerName;
+    $id('.id-tag').textContent = tagText(s.tag);
+    $id('.id-rn').textContent = x ? `${r.name} · ` : '';
+    $id('.id-lv').textContent = x ? `Lv ${x.level}` : '';
+    const bar = $id('.id-xp');
+    bar.hidden = !x;
+    if (x) bar.firstChild.style.width = `${Xp.pct(x).toFixed(1)}%`;
+    paintStatus();
+    ensureOrb();
+  }
+
+  // Your status, cut into the picture's corner (the same classes the dot has everywhere: p-online, p-idle, p-dnd,
+  // p-invisible; p-offline = this app can't reach the server). Not known yet: no dot and no hole, never green by default.
+  function paintStatus() {
+    const me = $id('.id-me');
+    if (!me || !S) return;
+    const st = S.reachable === false ? 'offline' : (Social.state()?.me?.status || '');
+    const dot = $id('.id-st'), av = $id('.id-av');
+    dot.hidden = !st;
+    dot.className = `id-st${st ? ` p-${st}` : ''}`;
+    av.classList.toggle('has-st', !!st);
+    const word = st === 'offline' ? "Offline · can't reach the server" : st && Social.PRESENCE[st] ? Social.PRESENCE[st].label : st;
+    const x = S.xp, r = Xp.rank(x ? x.level : 1);
+    const xpTip = !x ? '' : x.to ? `${Xp.num(x.xp - x.from)} / ${Xp.num(x.to - x.from)} XP` : `${Xp.num(x.xp)} XP`;
+    const xpSay = !x ? '' : x.to ? `${Xp.num(x.xp - x.from)} of ${Xp.num(x.to - x.from)} XP` : `${Xp.num(x.xp)} XP`;
+    me.title = `Account menu${word ? ` · ${word}` : ''}${x ? ` · level ${x.level} · ${r.name} · ${xpTip} · today ${Xp.dur(x.today)}` : ''}`;
+    me.setAttribute('aria-label', `${S.hackerName}${tagText(S.tag)}${word ? `, ${word}` : ''}.${x ? ` Level ${x.level}, ${r.name}, ${xpSay}.` : ''} Account menu`);
+  }
+
+  // Your ORB capsule: added once the balance is known, after the badge slot, and never removed (the economy can be off
+  // on a server: then it never appears). No placeholder. paintOrb keeps its number.
+  function ensureOrb() {
+    const o = orbNow();
+    if (!o || $id('.orb-chip') || !$id('.id-bdg')) return;
+    orbShown = o.balance;
+    $id('.id-bdg').insertAdjacentHTML(
+      'afterend',
+      `<button class="orb-chip" type="button" aria-haspopup="dialog" aria-expanded="${orbPopEl ? 'true' : 'false'}" aria-label="${esc(`ORB balance ${Social.orbText(o.balance)}. Details`)}" title="Your ORB">` +
+        `<img src="orb.png" alt=""><span class="orb-v"><span class="orb-n">${orbNum(o.balance)}</span><i class="orb-tick" aria-hidden="true"></i></span></button>`,
+    );
   }
 
   // How much of the update has downloaded, " 42%" (nothing when it isn't downloading).
@@ -1337,6 +1407,26 @@ window.Cloud = (() => {
       const x = f.xp;
       const r = Xp.rank(x ? x.level : 1);
       const line = f.last ? `${f.last.mine ? 'you: ' : ''}${esc(Social.preview(f.last))}` : `${esc(Social.PRESENCE[f.presence].label)}${x ? ` · Lv ${x.level} · ${esc(r.name)}` : ''}`;
+      // Who fired at me (messages.js, attack.js): whichever is newer, the last message or the last attack between you, as in a
+      // chat's own order; theirs counts as unread until you open the chat. Short ages (2m, 3h, 2d).
+      // A nudge (messages.js, nudge.ts) the same way: the newest of the three says it.
+      const atk = f.attack && f.attack.last;
+      const atkAt = atk ? new Date(atk.at).getTime() : 0;
+      const ndg = f.nudge && f.nudge.last;
+      const ndgAt = ndg ? new Date(ndg.at).getTime() : 0;
+      const msgAt = f.last ? new Date(f.last.at).getTime() : 0;
+      const ndgNew = !!ndg && ndgAt > msgAt && ndgAt > atkAt;
+      const atkNew = !ndgNew && !!atk && atkAt > msgAt;
+      const ageShort = (t) => {
+        const m = Math.max(1, Math.floor((Date.now() - t) / 60000));
+        return m < 60 ? `${m}m` : m < 1440 ? `${Math.floor(m / 60)}h` : `${Math.floor(m / 1440)}d`;
+      };
+      const sub = ndgNew
+        ? `<span class="fr-ndg">${FR_NDG}${ndg.mine ? 'you nudged' : 'nudged you'} \u00b7 ${ageShort(ndgAt)}</span>`
+        : atkNew ? `<span class="fr-atk"><i aria-hidden="true">\u{1F680}</i>${atk.mine ? 'you fired' : 'fired at you'} \u00b7 ${ageShort(atkAt)}</span>` : line;
+      const unseen = (f.attack && f.attack.unseen) || 0;
+      const nudges = (f.nudge && f.nudge.unread) || 0;
+      const count = (f.unread || 0) + unseen + nudges;
       // Their last 24 hours, not their today: that ends at their own midnight, wherever they live.
       const last24 = x && x.last24;
       const today = last24 ? `<span class="mn-today" title="Active in the last 24 hours"><b>${Xp.dur(last24)}</b><small>24h</small></span>` : '';
@@ -1351,8 +1441,8 @@ window.Cloud = (() => {
       return `<div class="mn-row fr-row${fire.cls}" data-id="${esc(f.id)}"${fire.tip}>` +
         `${fire.canvas}<span class="fr-av st-${esc(f.presence || 'offline')}" style="--rc:${r.color}">${pic}${Social.dot(f.presence)}</span>` +
         `<div class="mn-main" title="${esc(hover)}Click for their profile"><span class="lb-l1">${name}` +
-        `${window.Badges && f.badge ? window.Badges.small(f.badge, 24, f.id) : ''}${fire.mark}</span><small${f.last && f.unread ? ' class="fr-new"' : ''}>${line}</small></div>` +
-        `${today}${f.unread ? `<i class="cnt hot">${f.unread}</i>` : ''}<span class="fr-btns">${window.Attack?.button ? window.Attack.button(f, 'row') : ''}<button class="mn-btn mn-ic" type="button" data-act="profile" aria-label="Profile" title="Profile">${FR_IC.person}</button>` +
+        `${window.Badges && f.badge ? window.Badges.small(f.badge, 24, f.id) : ''}${fire.mark}</span><small${(ndgNew && nudges) || (atkNew && unseen) || (f.last && f.unread) ? ' class="fr-new"' : ''}>${sub}</small></div>` +
+        `${today}${count ? `<i class="cnt hot">${count}</i>` : ''}<span class="fr-btns">${window.Attack?.button ? window.Attack.button(f, 'row') : ''}<button class="mn-btn mn-ic" type="button" data-act="profile" aria-label="Profile" title="Profile">${FR_IC.person}</button>` +
         `<button class="mn-btn mn-ic" type="button" data-act="chat" aria-label="Message" title="Message (right-click for more)">${FR_IC.bubble}</button></span></div>`;
     };
     const on = s.friends.filter((f) => f.presence && f.presence !== 'offline');
@@ -2666,40 +2756,56 @@ window.Cloud = (() => {
 
   // ---------- your ORB: the chip's number and its popover ----------
   const orbReduced = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
-  // The chip follows the balance: a quiet count-up (0.5 s) when it grows, a "+0.21" that fades beside it, nothing louder.
-  // `delta`: the push's signed change (units), for the tick; none for a plain refresh.
-  function paintOrb(delta) {
+  // The capsule follows the balance. The minute's pay (kind `earn`), a change too small to read, or a refresh with no
+  // change: the number counts up quietly (0.5 s), nothing else. Any other change (a refund, a grant, an attack's cost)
+  // shows in the number's place, signed, for 1.1 s (amber and a light for a gain, red for a spend), then the old balance
+  // counts to the new one. `delta`: the push's signed change (units); `kind`: its ledger kind.
+  let orbT1 = 0, orbT2 = 0;
+  function orbCount(n, from, to) {
+    cancelAnimationFrame(orbAnim);
+    if (from === to || orbReduced()) return void (n.textContent = orbNum(to));
+    const t0 = performance.now();
+    const step = (t) => {
+      const k = Math.min(1, (t - t0) / 500);
+      n.textContent = orbNum(from + (to - from) * (1 - (1 - k) ** 3));
+      if (k < 1 && n.isConnected) orbAnim = requestAnimationFrame(step);
+    };
+    orbAnim = requestAnimationFrame(step);
+  }
+  function paintOrb(delta, kind) {
     const o = orbNow();
     const chip = brand.querySelector('.orb-chip');
     if (!o || !chip) {
-      if (o) render(S);
+      if (o) ensureOrb();
       return;
     }
-    const n = chip.querySelector('.orb-n');
+    const n = chip.querySelector('.orb-n'), tick = chip.querySelector('.orb-tick');
+    // a change still showing: the new one starts from the number shown now
     const from = orbShown == null ? o.balance : orbShown;
-    orbShown = o.balance;
-    chip.setAttribute('aria-label', `Your ORB: ${Social.orbText(o.balance)}. Details`);
-    cancelAnimationFrame(orbAnim);
-    if (from === o.balance || orbReduced()) n.textContent = orbNum(o.balance);
-    else {
-      const t0 = performance.now();
-      const step = (t) => {
-        const k = Math.min(1, (t - t0) / 500);
-        n.textContent = orbNum(from + (o.balance - from) * (1 - (1 - k) ** 3));
-        if (k < 1 && n.isConnected) orbAnim = requestAnimationFrame(step);
-      };
-      orbAnim = requestAnimationFrame(step);
-    }
-    const tick = chip.querySelector('.orb-tick');
-    // (a change under 0.01 ORB, a second or two of pay, would read +0.00: no tick)
-    if (tick && delta && Math.abs(delta) >= 100) {
-      tick.textContent = Social.orbText(delta, true);
-      tick.classList.toggle('neg', delta < 0);
-      tick.classList.remove('go');
-      void tick.offsetWidth;
-      tick.classList.add('go');
-    }
+    chip.setAttribute('aria-label', `ORB balance ${Social.orbText(o.balance)}. Details`);
     if (orbPopEl) orbPopFill();
+    // A refresh that brings no new balance (a fire's or a cancel's answer right after its push, the friends list, the
+    // popover's reload): nothing to show, and a change still on screen plays to its end instead of being cut short.
+    if (!delta && o.balance === from) return;
+    orbShown = o.balance;
+    clearTimeout(orbT1);
+    clearTimeout(orbT2);
+    chip.classList.remove('delta', 'gain');
+    if (kind === 'earn' || !delta || Math.abs(delta) < 100) return orbCount(n, from, o.balance);
+    if (live) live.textContent = `ORB ${Social.orbText(delta, true)}. Balance ${Social.orbText(o.balance)}`;
+    cancelAnimationFrame(orbAnim);
+    n.textContent = orbNum(from);
+    // In the number's own format (+42.32, +123.45K): a long full figure would run over the icon. The live region says it whole.
+    tick.textContent = `${delta < 0 ? '−' : '+'}${orbNum(Math.abs(delta))}`;
+    tick.classList.toggle('neg', delta < 0);
+    void chip.offsetWidth;
+    chip.classList.add('delta');
+    if (delta > 0) chip.classList.add('gain');
+    orbT1 = setTimeout(() => {
+      chip.classList.remove('delta');
+      orbCount(n, from, o.balance);
+    }, 1100);
+    orbT2 = setTimeout(() => chip.classList.remove('gain'), 1300);
   }
 
   function orbPopFill() {
@@ -2747,14 +2853,14 @@ window.Cloud = (() => {
     orbPopFill();
     const r = chip.getBoundingClientRect();
     orbPopEl.style.top = `${Math.round(r.bottom + 8)}px`;
-    orbPopEl.style.left = `${Math.max(8, Math.min(innerWidth - orbPopEl.offsetWidth - 8, Math.round(r.left - 12)))}px`;
+    orbPopEl.style.left = `${Math.max(8, Math.min(innerWidth - orbPopEl.offsetWidth - 8, Math.round(r.left)))}px`;
     chip.setAttribute('aria-expanded', 'true');
     Social.loadOrb();
     document.addEventListener('pointerdown', orbPopOutside, true);
     document.addEventListener('keydown', orbPopKey, true);
   }
   Social.on((ev) => {
-    if (ev.type === 'orb') paintOrb(ev.delta);
+    if (ev.type === 'orb') paintOrb(ev.delta, ev.kind);
     else if (ev.type === 'orb_settings' || ev.type === 'orb_state' || ev.type === 'snapshot') paintOrb();
   });
 
@@ -2778,10 +2884,7 @@ window.Cloud = (() => {
     };
     show(document.querySelector('#activity [data-view=friends] .vs-badge'), n);
     show(document.querySelector('#activity [data-view=notifications] .vs-badge'), notes);
-    const me = brand.querySelector('.bme');
-    const st = Social.state()?.me?.status;
-    me.hidden = !st;
-    if (st) me.className = `pdot bme p-${st}`;
+    paintStatus();
   }
   Social.on(() => renderSocial());
 
@@ -3010,34 +3113,26 @@ window.Cloud = (() => {
     );
   }
 
-  // The themes view: each theme as a small picture of the app in its own colours. Pointing at one, or moving to it with
-  // the arrow keys, shows the whole app in it at once; a click (or ↩) keeps it; leaving the cards or the view goes back
-  // to the kept one.
+  // The themes view: each theme as a small picture of the app in its own colours. Pointing at one or moving to it with
+  // the arrow keys only highlights it (a live preview of the whole app made it lag); a click (or ↩) applies and keeps it.
   async function openThemes() {
     const el = views.themes;
     const list = await themeList();
     if (shown !== 'themes') return;
     if (!list || !list.themes) return setHTML(el, `<section class="panel cv-themes"><header><span class="tag">themes</span></header><div class="mn-empty">themes didn't load</div></section>`);
     el.innerHTML =
-      `<section class="panel cv-themes"><header><span class="tag">themes</span><span class="meta">${list.themes.length} themes · point to try · click to keep${MACHINE === 'PC' ? ' · the orbit map keeps its colours' : ''}</span></header>` +
+      `<section class="panel cv-themes"><header><span class="tag">themes</span><span class="meta">${list.themes.length} themes · click to keep${MACHINE === 'PC' ? ' · the orbit map keeps its colours' : ''}</span></header>` +
       mascotRow() +
       `<div class="body th-grid">${list.themes.map((t) => themeCard(t, list.chosen)).join('')}</div></section>`;
     const cards = [...el.querySelectorAll('.th-card')];
-    let timer = 0;
     themeAt = -1;
-    const show = (id) => {
-      clearTimeout(timer);
-      timer = setTimeout(() => theme(id === list.chosen ? 'revert' : 'preview', { id }), 90);
-    };
     const mark = (i) => {
       themeAt = i;
       cards.forEach((c, j) => c.classList.toggle('hot', j === i));
     };
     const keep = (card) => {
       list.chosen = card.dataset.id;
-      clearTimeout(timer);
-      // Kept, not only pointed at (themechange comes with every preview, and not at all for the one already showing): a
-      // theme can play its intro now.
+      // Kept (themechange doesn't come for the one already showing): a theme can play its intro now.
       theme('choose', { id: list.chosen }).then(() => {
         Hooks.pulse('theme-kept', { value: card.dataset.id }, { ms: 1500 });
         Sfx.play('theme-kept');
@@ -3050,13 +3145,11 @@ window.Cloud = (() => {
     cards.forEach((card, i) => {
       card.onmouseenter = () => {
         mark(i);
-        show(card.dataset.id);
       };
       card.onclick = () => keep(card);
     });
     el.querySelector('.th-grid').onmouseleave = () => {
       mark(-1);
-      show(list.chosen);
     };
     el.__keys = (e) => {
       const cols = getComputedStyle(el.querySelector('.th-grid')).gridTemplateColumns.split(' ').length;
@@ -3066,7 +3159,6 @@ window.Cloud = (() => {
         const i = Math.max(0, Math.min(cards.length - 1, themeAt < 0 ? cards.findIndex((c) => c.dataset.id === list.chosen) : themeAt + step));
         mark(i);
         cards[i].scrollIntoView({ block: 'nearest' });
-        show(cards[i].dataset.id);
       } else if (e.key === 'Enter' && themeAt >= 0) {
         e.preventDefault();
         keep(cards[themeAt]);
@@ -3324,16 +3416,14 @@ window.Cloud = (() => {
 
   $('update').addEventListener('click', openUpdate);
   $('settings').addEventListener('click', () => openMenu('settings'));
-  // The ORB chip is a button of its own (its popover); the rest of the logo opens your profile.
+  // The ORB capsule is a button of its own (its popover). Your picture and name open the account menu (account.js menu:
+  // status, profile, settings, sign in or out), under the card; the badge and the logo open your profile.
   brand.addEventListener('click', (e) => {
     if (e.target.closest('.orb-chip')) return orbPop();
-    openProfile();
-  });
-  brand.addEventListener('keydown', (e) => {
-    if ((e.key === 'Enter' || e.key === ' ') && e.target.closest && e.target.closest('.orb-chip')) {
-      e.preventDefault();
-      orbPop();
-    }
+    const me = e.target.closest('.id-me');
+    // (from the keys, e.detail 0: the menu takes the focus, as a menu button's does)
+    if (me) return window.Account?.menu ? Account.menu(me, e.detail === 0) : openProfile();
+    if (e.target.closest('.id-bdg, .id-logo, .id-word')) openProfile();
   });
   addEventListener('keydown', (e) => {
     if (!modal && shown === 'themes' && e.key !== 'Escape' && !e.target.closest('input, textarea')) return views.themes.__keys?.(e);
@@ -3399,5 +3489,5 @@ window.Cloud = (() => {
     // Opened for a purpose (the account menu's Settings…, a badge's sign in, the shortcut list's "Change shortcuts…"):
     // that category, Account unless another is named, whatever was open last time. The gear and the app menu open the last one.
     openMenu(pane);
-  }, openProfile, openPerson, openFriend, openUpdate, openFeedback, openWhatsNew, openTips, showView, current: () => shown, renderPower, renderCleanup, renderDiscord, close, copyHandle, statusMenu, keyFind };
+  }, openProfile, openPerson, openFriend, openUpdate, openFeedback, openWhatsNew, openTips, showView, current: () => shown, renderPower, renderCleanup, renderDiscord, close, copyHandle, statusMenu, keyFind, paintMe: () => S && renderId(S) };
 })();

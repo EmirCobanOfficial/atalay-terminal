@@ -290,7 +290,8 @@ final class NoteWindow: NSObject, NSWindowDelegate, WKNavigationDelegate {
             window.canHide = false
         } else {
             window.level = .normal
-            window.collectionBehavior = [.fullScreenAuxiliary, .moveToActiveSpace]
+            // No .moveToActiveSpace (as ChatWindow): coming back to the desktop, the app behind the note came over it.
+            window.collectionBehavior = [.fullScreenAuxiliary]
             window.canHide = true
             attach()
         }

@@ -1616,7 +1616,8 @@ class RadarEngine {
     this.isAppPid = typeof opts.isAppPid === 'function' ? opts.isAppPid : null;
     // What an AI's whole tree holds, as Clean Up measured it (cleanup.js): { bytes, top: [[name, bytes]] } or null.
     this.memTree = typeof opts.memTree === 'function' ? opts.memTree : null;
-    this.handlers = { onInit: opts.onInit, onState: opts.onState, onEvents: opts.onEvents, onHistory: opts.onHistory };
+    this.handlers = { onInit: opts.onInit, onState: opts.onState, onEvents: opts.onEvents, onHistory: opts.onHistory, onSessionIdle: opts.onSessionIdle };
+    this.busyPids = new Set(); // the AI sessions busy at the last state: the notes hear when one leaves
 
     this.started = false;
     this.stopped = false;
@@ -5117,7 +5118,12 @@ class RadarEngine {
     if (!this.stateDirty && now - this.lastStateAt <= 5000) return;
     this.stateDirty = false;
     this.lastStateAt = now;
-    const js = JSON.stringify(this.snapshot());
+    const snap = this.snapshot();
+    // An AI session that was busy and no longer is: the notes drop it from the notes it was working in.
+    const busyNow = new Set(snap.sessions.filter((s) => s.status === 'busy' && Number.isInteger(s.pid)).map((s) => s.pid));
+    for (const pid of this.busyPids) if (!busyNow.has(pid)) this.call('onSessionIdle', pid);
+    this.busyPids = busyNow;
+    const js = JSON.stringify(snap);
     if (js === this.lastStateJSON) return;
     this.lastStateJSON = js;
     this.call('onState', js);

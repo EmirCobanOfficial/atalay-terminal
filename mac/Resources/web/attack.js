@@ -95,6 +95,9 @@ window.Attack = (() => {
     // The firing buttons.
     fire: 'Fire',
     fireAria: (n) => `Fire at ${n}`,
+    // Who fired at me (messages.js): the card's and the chat's button.
+    fireBack: 'Fire back',
+    fireBackAria: (n, p) => `Fire back at ${n}${p ? `, ${p} ORB` : ''}`,
     fireTip: (n, p, cd) => `Fire a little spaceship at ${n}${p ? ` · ${p} ORB` : ''}${cd > 0 ? ` · once every ${cd === 1 ? 'minute' : `${cd} minutes`}` : ''}`,
     firePrice: (p) => (p ? ` · ${p} ORB` : ''),
     menuFire: (n) => `🚀 fire at ${n}`,
@@ -140,6 +143,125 @@ window.Attack = (() => {
     offlineNote: "can't reach the server",
   };
 
+  // ======================= shared by every page =======================
+  // Your switch (Settings › Privacy), and why a friend can't be fired at right now: the dashboard's buttons and the Fire back
+  // on the who-fired-at-me card and in a chat (the notices and chat pages) all say the same words.
+  const me = () => (window.Social && Social.state() && Social.state().me) || null;
+  let takes = null; // your switch, once known; on until then
+  const on = () => (takes !== null ? takes !== false : !me() || me().attacks !== false);
+  // Why a friend can't be fired at right now, or null: from the presence the app has live (away, do not disturb, offline,
+  // which is also how invisible looks) and the state the API sent (`f.attack`, kept live by social.js: their switch, their
+  // shield's end, your cooldown's end), plus your own switch. { why, label, tip }: the label sits on the item, the tip is
+  // the tooltip and the note a click gives.
+  // A friend hit as often as a day allows (`target_daily_max`), until their next local midnight: id -> ms (API clock). Kept
+  // here, not in f.attack: the friends list doesn't carry it (CONTRACT v3), so a reload of the list would forget it.
+  const dailyMax = new Map();
+  function status(f) {
+    if (!f) return null;
+    const n = f.nick || f.name;
+    const a = f.attack || {};
+    const now = serverNow();
+    const p = f.presence || 'offline';
+    let why = null;
+    let until = 0;
+    if (!on()) why = 'mine_off';
+    else if (p === 'offline') why = 'offline';
+    else if (p === 'dnd') why = 'dnd';
+    else if (p === 'idle') why = 'away';
+    else if (a.off) why = 'off';
+    else if (a.shieldUntil > now) (why = 'shield'), (until = a.shieldUntil);
+    else if (a.cooldownUntil > now) (why = 'cooldown'), (until = a.cooldownUntil);
+    else if ((dailyMax.get(f.id) || 0) > now) (why = 'target_daily_max'), (until = dailyMax.get(f.id));
+    // Your ORB (known once the API has sent it): not enough for the price.
+    const o = ORB();
+    if (!why && o && Number.isFinite(o.attackPrice) && Number.isFinite(o.balance) && o.balance < o.attackPrice) why = 'funds';
+    if (!why) return null;
+    const t = until ? (why === 'cooldown' ? clock(until - now) : wait(until - now)) : '';
+    return { why, until, label: TEXT.blocked[why].label(t), tip: TEXT.blocked[why].tip(n, t, o || {}) };
+  }
+
+  // ---------- Fire back: the card in the corner and the chat ----------
+  // Only the dashboard fires (press, cancel and the hit feel are below). The notices and chat pages draw the button, post
+  // `attackFire` / `attackCancel` (messages.js, Swift relays) and learn the 🚀's state from the dashboard (`attackBtn`):
+  // locking on, in flight, or idle; `until` is when the blast comes (ms, this computer's clock).
+  const btn = new Map(); // friend id -> { state, until }
+  function cardButton(f, mini = false) {
+    if (!f) return '';
+    const n = f.nick || f.name;
+    const b = btn.get(f.id);
+    const state = b && b.state !== 'idle' ? b.state : '';
+    const s = !state ? status(f) : null;
+    const price = ORB() && Number.isFinite(ORB().attackPrice) ? orbT(ORB().attackPrice) : '';
+    const attrs = `type="button" class="fd-fire${mini ? ' mini' : ''}${s ? ' atk-off' : ''}${state ? ' locking' : ''}" data-act="fire" data-atk="${esc(f.id)}"${state ? ` data-state="${state}"` : ''}${mini ? ' data-mini="1"' : ''}${s ? ' aria-disabled="true"' : ''}`;
+    if (state) {
+      const text = state === 'locking' ? `${TEXT.locking} \u00b7 ${TEXT.cancel}` : `${TEXT.inFlight} \u00b7 ${clock(b.until - Date.now())}`;
+      const aria = state === 'locking' ? TEXT.lockingAria(n) : `${TEXT.inFlight}, ${n}`;
+      return `<button ${attrs} title="${esc(text)}" aria-label="${esc(aria)}">\u{1F680}${mini ? '' : ` ${esc(text)}`}</button>`;
+    }
+    const tip = s ? s.tip : TEXT.fireTip(n, price, (ORB() || {}).cooldownMin ?? 2);
+    const aria = s ? `${TEXT.fireBackAria(n, price)}: ${s.label}` : TEXT.fireBackAria(n, price);
+    const small = s ? ` <small>\u00b7 ${esc(s.label)}</small>` : price ? ` <small>\u00b7 ${esc(price)} ORB</small>` : '';
+    return `<button ${attrs} title="${esc(tip)}" aria-label="${esc(aria)}">\u{1F680}${mini ? '' : ` ${TEXT.fireBack}${small}`}</button>`;
+  }
+  // Your own shield on the card and in the chat: hidden without one; the clock fills it in (tick()).
+  const SHIELD_SVG = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.5 13.5 3.5v4c0 3.2-2.3 5.6-5.5 7-3.2-1.4-5.5-3.8-5.5-7v-4z"/></svg>';
+  const shieldLeftMs = () => {
+    const u = me() && me().shieldUntil;
+    const now = serverNow();
+    return u && u > now ? u - now : 0;
+  };
+  const cardShield = () => {
+    const left = shieldLeftMs();
+    return `<span class="fd-shield" title="${esc(TEXT.shieldTip())}"${left ? '' : ' hidden'}>${SHIELD_SVG}<b>${left ? esc(TEXT.shielded(clock(left))) : ''}</b></span>`;
+  };
+  // Once a second, only while something shows them: the buttons and the shield redrawn in place (focus stays).
+  function tick() {
+    document.querySelectorAll('.fd-fire[data-atk]').forEach((el) => {
+      const f = Social.friend(el.dataset.atk);
+      if (!f) return;
+      const t = document.createElement('template');
+      t.innerHTML = cardButton(f, !!el.dataset.mini);
+      const nu = t.content.firstElementChild;
+      if (!nu || nu.outerHTML === el.outerHTML) return;
+      const focused = document.activeElement === el;
+      el.replaceWith(nu);
+      if (focused) nu.focus();
+    });
+    const left = shieldLeftMs();
+    document.querySelectorAll('.fd-shield').forEach((el) => {
+      el.hidden = !left;
+      const b = el.querySelector('b');
+      const text = left ? TEXT.shielded(clock(left)) : '';
+      if (b && b.textContent !== text) b.textContent = text;
+    });
+  }
+  // The dashboard's 🚀 changed state for a friend (messages.js attackBtn). A fired one counts here as it does there: that
+  // friend's cooldown and shield start, so the button doesn't light up again before they could be fired at.
+  function setBtn(m) {
+    if (!m || !m.id) return;
+    const was = btn.get(m.id);
+    if (m.state === 'idle') btn.delete(m.id);
+    else btn.set(m.id, { state: m.state, until: Number(m.until) || 0 });
+    const f = Social.friend(m.id);
+    if (f && m.state === 'flight' && (!was || was.state !== 'flight')) {
+      const o = ORB() || {};
+      f.attack = { ...(f.attack || {}), cooldownUntil: serverNow() + (o.cooldownMin ?? 2) * 60000, shieldUntil: serverNow() + (o.shieldMin ?? 30) * 60000 };
+    }
+    tick();
+  }
+  if (ROLE !== 'dashboard') {
+    setInterval(() => document.querySelector('.fd-fire[data-atk], .fd-shield') && tick(), 1000);
+    window.Social && Social.on((ev, S) => {
+      // The API's clock with the friends list; your switch changed on another computer (or here, in Settings).
+      if (ev.type === 'snapshot') sync(S);
+      if (ev.type === 'settings' && ev.set && 'social.attacks' in ev.set) {
+        takes = ev.set['social.attacks'] !== false;
+        if (me()) me().attacks = takes;
+      }
+      if (['presence', 'attack_state', 'friend', 'orb', 'orb_settings', 'orb_state', 'snapshot'].includes(ev.type)) tick();
+    });
+  }
+
   // ======================= the notices panel: the banner =======================
   if (ROLE === 'notices') {
     let box = null;
@@ -148,6 +270,7 @@ window.Attack = (() => {
     let up = false;
     let timers = [];
     let cur = null; // the kind up or on its way, until it's gone
+    let dangerEnd = 0; // when the last DANGER banner ended (the who-fired-at-me card waits for it, messages.js afterDanger)
     function banner(b) {
       if (!b) return;
       const kind = b.kind === 'lock' || b.kind === 'lost' || b.kind === 'hit' ? b.kind : 'danger';
@@ -199,13 +322,18 @@ window.Attack = (() => {
         up = false;
         cur = null;
         window.Messages?.layout?.();
+        // DANGER is over: the card that says who fired comes now (never over the banner, never before the blast).
+        if (kind === 'danger') {
+          dangerEnd = Date.now();
+          window.Messages?.afterDanger?.();
+        }
       }, ms));
     }
     // The alarm ready before it's needed.
     setTimeout(() => Sfx.preload('attack-alarm'), 8000);
-    return { banner, wide: () => up, text: TEXT };
+    return { banner, wide: () => up, text: TEXT, button: cardButton, shield: cardShield, shieldLeft: shieldLeftMs, clock, setBtn, tick, dangerUp: () => cur === 'danger', dangerEnd: () => dangerEnd };
   }
-  if (ROLE !== 'dashboard') return { wide: () => false, text: TEXT };
+  if (ROLE !== 'dashboard') return { wide: () => false, text: TEXT, button: cardButton, shield: cardShield, shieldLeft: shieldLeftMs, clock, setBtn, tick, dangerUp: () => false, dangerEnd: () => 0 };
 
   // ======================= the dashboard =======================
   const h = window.webkit.messageHandlers;
@@ -1013,9 +1141,7 @@ window.Attack = (() => {
   };
 
   // ---------- your switch (Settings › Privacy) ----------
-  const me = () => (window.Social && Social.state() && Social.state().me) || null;
-  let takes = null; // your switch, once known; on until then
-  const on = () => (takes !== null ? takes !== false : !me() || me().attacks !== false);
+  // (`me`, `takes`, `on`: above, shared with the notices and chat pages)
   const setTakes = (v) => {
     takes = v;
     if (me()) me().attacks = v;
@@ -1044,36 +1170,7 @@ window.Attack = (() => {
   }
 
   // ---------- who can be fired at ----------
-  // Why a friend can't be fired at right now, or null: from the presence the app has live (away, do not disturb, offline,
-  // which is also how invisible looks) and the state the API sent (`f.attack`, kept live by social.js: their switch, their
-  // shield's end, your cooldown's end), plus your own switch. { why, label, tip }: the label sits on the item, the tip is
-  // the tooltip and the note a click gives.
-  // A friend hit as often as a day allows (`target_daily_max`), until their next local midnight: id -> ms (API clock). Kept
-  // here, not in f.attack: the friends list doesn't carry it (CONTRACT v3), so a reload of the list would forget it.
-  const dailyMax = new Map();
-  function status(f) {
-    if (!f) return null;
-    const n = f.nick || f.name;
-    const a = f.attack || {};
-    const now = serverNow();
-    const p = f.presence || 'offline';
-    let why = null;
-    let until = 0;
-    if (!on()) why = 'mine_off';
-    else if (p === 'offline') why = 'offline';
-    else if (p === 'dnd') why = 'dnd';
-    else if (p === 'idle') why = 'away';
-    else if (a.off) why = 'off';
-    else if (a.shieldUntil > now) (why = 'shield'), (until = a.shieldUntil);
-    else if (a.cooldownUntil > now) (why = 'cooldown'), (until = a.cooldownUntil);
-    else if ((dailyMax.get(f.id) || 0) > now) (why = 'target_daily_max'), (until = dailyMax.get(f.id));
-    // Your ORB (known once the API has sent it): not enough for the price.
-    const o = ORB();
-    if (!why && o && Number.isFinite(o.attackPrice) && Number.isFinite(o.balance) && o.balance < o.attackPrice) why = 'funds';
-    if (!why) return null;
-    const t = until ? (why === 'cooldown' ? clock(until - now) : wait(until - now)) : '';
-    return { why, until, label: TEXT.blocked[why].label(t), tip: TEXT.blocked[why].tip(n, t, o || {}) };
-  }
+  // (`status()` is above, shared with the notices and chat pages)
   // The same words for the old callers (cloud.js's menu asked these two).
   const blocked = (f) => (status(f) ? status(f).why : '');
 
@@ -1103,7 +1200,26 @@ window.Attack = (() => {
     return `<button ${attrs} class="mn-btn atk-fire${dim}${lk ? ' locking' : ''}" title="${esc(tip)}" aria-label="${esc(aria)}">${lk ? body : '🚀'}</button>`;
   }
   // Redraws every attack button in place (a state changed, a second passed, the lock began or ended); focus stays.
+  // The card in the corner and the chats draw their Fire back from this (messages.js attackBtn; Swift relays): each friend's 🚀
+  // as locking on, in flight (with the blast's time) or idle, sent only when it changes.
+  const sent = new Map();
+  function relay() {
+    const ids = new Set([...sent.keys(), ...flights.keys()]);
+    if (locking) ids.add(locking.id);
+    for (const id of ids) {
+      const state = locking && locking.id === id ? 'locking' : inFlight(id) ? 'flight' : 'idle';
+      const until = state === 'flight' ? flights.get(id).t0 + HIT.boom : 0;
+      const key = `${state}|${until}`;
+      if ((sent.get(id) || 'idle|0') === key) continue;
+      if (state === 'idle') sent.delete(id);
+      else sent.set(id, key);
+      try {
+        h.radar.postMessage({ type: 'attackBtn', id, state, until });
+      } catch {}
+    }
+  }
   function paintAll() {
+    relay();
     document.querySelectorAll('[data-atk]').forEach((el) => {
       const f = Social.friend(el.dataset.atk);
       if (!f) return;
@@ -1204,6 +1320,11 @@ window.Attack = (() => {
       explain(f, r);
     });
   }
+  // Fire back from the card or a chat (messages.js, Swift relays): the same press and cancel as the 🚀 on a friend's row, kept
+  // apart. A fire relayed while that friend's lock already runs (a double click that beat the `attackBtn` echo) does nothing:
+  // only Cancel cancels, so a double click can't fire and cancel at once.
+  const fireFor = (id) => (locking && locking.id === id ? undefined : press(id));
+  const cancelFor = (id) => locking && locking.id === id && cancel(locking);
   async function settle(lk, f) {
     const r = await lk.req;
     if (locking !== lk) return;
@@ -1299,5 +1420,5 @@ window.Attack = (() => {
     }
   });
 
-  return { on, button, blocked, status, shieldChip, test, reset, text: TEXT, wide: () => false };
+  return { on, button, blocked, status, shieldChip, test, reset, press: fireFor, cancelFor, text: TEXT, wide: () => false };
 })();

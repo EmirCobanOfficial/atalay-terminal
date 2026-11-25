@@ -108,8 +108,6 @@ window.GitView = (() => {
     `<a class="vs-ab" data-view="board" title="Leaderboard">${ci('trophy')}</a>` +
     `<a class="vs-ab" data-view="themes" title="Themes">${ci('symbol-color')}</a>` +
     `<a class="vs-ab" data-view="notifications" title="Notifications">${ci('bell')}<b class="vs-badge" hidden></b></a>` +
-    // The account (account.js), as in VS Code above its gear: sign in or out, and delete your data.
-    (window.Account ? `<a class="vs-ab vs-ab-acct" data-view="account" title="Account">${ci('account')}<i class="acct-dot" hidden></i></a>` : '') +
     `<a class="vs-ab vs-ab-foot" data-view="feedback" title="Send feedback to the developer">${ci('feedback')}</a>`;
   app.appendChild(bar);
   const view = document.createElement('section');
@@ -1273,7 +1271,6 @@ window.GitView = (() => {
   // in cloud.js.
   function switchTo(v) {
     if (v === 'feedback') return window.Cloud?.openFeedback();
-    if (v === 'account') return window.Account?.menu();
     // Source Control's icon while it shows: its side bar goes (the editor takes the whole width) or comes back, as in
     // VS Code; opened from elsewhere, it comes with its side bar.
     if (v === 'git' && open) {
@@ -1339,5 +1336,5 @@ window.GitView = (() => {
     await pick(FE.newFile());
   }
 
-  return { show, view: switchTo, open: () => setOpen(true), close: () => setOpen(false), openFile: openFileTab, newFile };
+  return { refresh: () => { if (shown()) load(); }, show, view: switchTo, open: () => setOpen(true), close: () => setOpen(false), openFile: openFileTab, newFile };
 })();

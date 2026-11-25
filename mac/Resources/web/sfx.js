@@ -127,7 +127,7 @@ window.Sfx = (() => {
 
   // How long the longer sounds ring, so the audio doesn't rest before they end.
   let slotGain = 1; // the relative level of the attack feedback synths (slot())
-  const LENGTH = { 'attack-launch': 1100, 'attack-hitmark': 200, 'attack-confirm': 1400, levelup: 3000, rankup: 4200, glitch: 1200, fire: 3200, alarm: 2800, lockon: 1700, locktick: 300, hit: 800, boom: 2000 };
+  const LENGTH = { 'attack-launch': 1100, 'attack-hitmark': 200, 'attack-confirm': 1400, levelup: 3000, rankup: 4200, glitch: 1200, fire: 3200, alarm: 2800, lockon: 1700, locktick: 300, hit: 800, boom: 2000, nudge: 600 };
 
   const SOUNDS = {
     // A chat needs you (an approval): two short even beeps and a higher one, like a console asking for a key.
@@ -140,6 +140,32 @@ window.Sfx = (() => {
     message() {
       note(880, 0, { dur: 0.32 });
       note(1318.5, 0.085, { dur: 0.5 });
+    },
+    // A friend's nudge (nudge.ts): a double buzz, like a phone vibrating on a desk. Two 120 ms bursts 70 ms apart of a 150 Hz
+    // square wave through a 900 Hz low-pass, its gain trembling at 30 Hz, the second burst a step higher (175 Hz). Low and
+    // buzzy, so it's unlike the message's two rising pings, the request arpeggio and every attack sound.
+    nudge() {
+      const c = ctx;
+      [[0, 150], [0.19, 175]].forEach(([at, freq]) => {
+        const t = c.currentTime + at;
+        const o = c.createOscillator(), f = c.createBiquadFilter(), g = c.createGain(), lfo = c.createOscillator(), depth = c.createGain();
+        o.type = 'square';
+        o.frequency.value = freq;
+        f.type = 'lowpass';
+        f.frequency.value = 900;
+        g.gain.setValueAtTime(0.0001, t);
+        g.gain.linearRampToValueAtTime(0.09, t + 0.012);
+        g.gain.setValueAtTime(0.09, t + 0.1);
+        g.gain.linearRampToValueAtTime(0.0001, t + 0.12);
+        lfo.frequency.value = 30;
+        depth.gain.value = 0.035;
+        lfo.connect(depth).connect(g.gain);
+        o.connect(f).connect(g).connect(out);
+        o.start(t);
+        lfo.start(t);
+        o.stop(t + 0.14);
+        lfo.stop(t + 0.14);
+      });
     },
     // Friend request: a rising arpeggio.
     request() {
@@ -514,7 +540,7 @@ window.Sfx = (() => {
 
   // A sound that is another's unless the theme gives it one of its own (hooks.js): two chats writing the same file sound
   // as a chat that needs you.
-  const SAME = { clash: 'wait' };
+  const SAME = { clash: 'wait', nudgeOut: 'nudge' };
   // Moments the app marks without a sound of its own (hooks.js): only a theme's file plays for them.
   const THEMED = ['streak', 'streak-break', 'back', 'theme-kept'];
 
@@ -597,7 +623,7 @@ window.Sfx = (() => {
       });
     },
     play(name) {
-      const yours = ['send', 'accept', 'decline', 'levelup', 'rankup', 'glitch', 'fire', 'hit', 'boom', 'theme-kept', 'locktick', 'attack-launch', 'attack-hitmark', 'attack-confirm'].includes(name);
+      const yours = ['send', 'accept', 'decline', 'levelup', 'rankup', 'glitch', 'fire', 'hit', 'boom', 'theme-kept', 'locktick', 'attack-launch', 'attack-hitmark', 'attack-confirm', 'nudgeOut'].includes(name);
       const base = SOUNDS[name] ? name : SAME[name];
       if ((!base && !THEMED.includes(name)) || (window.Social && window.Social.dnd() && !yours)) return;
       // The theme's own sound, or its silence, instead of the app's (a theme-only one has nothing else).

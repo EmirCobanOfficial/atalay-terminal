@@ -27,6 +27,10 @@ window.Messages = (() => {
     return `${Social.dot(p.presence)}<span${nick ? ` title="${esc(Social.handle(p))}"` : ''}>${esc(nick || Social.handle(p))}</span>${xp ? Xp.badge(xp.level) : ''}`;
   };
   const PEEK_MS = 12_000;
+  // The nudge (nudge.ts): its mark, a chat bubble with two buzz lines, and Reduce Motion (the page's CSS and the native shake
+  // both follow the system's setting; nothing moves, only the sound, the line and the card come).
+  const GLYPH = '<svg class="ndg-g" viewBox="0 0 16 16" aria-hidden="true"><path d="M5 3.6h6a1.6 1.6 0 0 1 1.6 1.6v4.2A1.6 1.6 0 0 1 11 11H8.2L6 12.8V11H5a1.6 1.6 0 0 1-1.6-1.6V5.2A1.6 1.6 0 0 1 5 3.6z"/><path d="M1.6 5.8c-.6 1-.6 2.6 0 3.6M14.4 5.8c.6 1 .6 2.6 0 3.6"/></svg>';
+  const reducedMotion = () => !!(window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches);
   const STRIP_MS = 6000; // a strip (the daily bonus, a friend online) goes sooner
   const NOTE_MS = 30_000; // a notification from the developer stays longer: it's rare, and it's for reading
   // A friend back after less than this offline isn't news: a dropped connection, a short sleep, the app restarting for
@@ -52,6 +56,9 @@ window.Messages = (() => {
 
   // Friends whose chat window is open: no pop-ups for them, their chat shows their messages.
   let showing = new Set();
+  // Whether that chat window is really on screen (not minimized, on another Space, covered or the app hidden): the native side
+  // says, with `showing`. A nudge shakes the chat only when it is seen; else the card comes (and the dashboard may shake).
+  let chatSeen = true;
 
   // ======================= notices =======================
   const notes = NOTICES ? mount('msgbox') : null;
@@ -65,6 +72,11 @@ window.Messages = (() => {
   const clashes = new Map(); // files two chats are writing (below), path -> { key, file, path, chats }, the newest last
   const clashShut = new Set(); // collisions put away with ×: they don't pop up again until they're over
   let restartDue = null; // a required update's restart over running chats (below), { version, at }, until it's put away
+  // Who fired at me (below): the attacks on you not seen yet, as the one card in the corner shows them.
+  const hits = []; // { id, fid, from: { id, name, tag }, nick, at (ms), shieldUntil }
+  const firedPeek = { kind: 'fired' }; // the card; drawn from `hits`, so it comes back as it stands then
+  let waitingHits = []; // landed, but the DANGER banner is still up (or yet to come): the card follows it (afterDanger)
+  let hitTimer = 0;
 
   function sizeNotes() {
     if (ROLE !== 'notices') return;
@@ -91,14 +103,18 @@ window.Messages = (() => {
   const autoHide = () => (replying() ? (peekTimer = setTimeout(autoHide, 3000)) : hidePeek());
 
   function showPeek(p) {
+    // The who-fired-at-me card with nothing left to show (seen elsewhere meanwhile): nothing to put up, and what waited
+    // behind it in the queue comes now instead of staying stuck.
+    if (p.kind === 'fired' && !hits.length) return void (!peek && nextPeek());
     // A chat that needs you stays on top: the other notices wait behind it. Only a required update's restart goes over
     // it, and nothing goes over that one.
     const held = peek && ((peek.kind === 'wait' && p.kind !== 'wait' && p.kind !== 'restart') || (peek.kind === 'restart' && p.kind !== 'restart'));
-    if ((peek && p !== peek && replying()) || alertOn || held) return void queue.push(p);
+    // (The card is one object: queued once.)
+    if ((peek && p !== peek && replying()) || alertOn || held) return void (queue.includes(p) || queue.push(p));
     clearTimeout(peekTimer);
     const again = !!peek;
-    // The "updated" note stays until it's closed: whatever comes over it, it comes back after.
-    if (peek && peek.kind === 'updated' && peek !== p && !queue.includes(peek)) queue.unshift(peek);
+    // The "updated" note and the who-fired-at-me card stay until they're closed: whatever comes over them, they come back after.
+    if (peek && (peek.kind === 'updated' || peek.kind === 'fired') && peek !== p && !queue.includes(peek)) queue.unshift(peek);
     peek = p;
     notes.innerHTML = peekHTML(p);
     if (again) notes.firstElementChild.classList.remove('in');
@@ -109,7 +125,7 @@ window.Messages = (() => {
     }
     // A chat that needs you, or two writing the same file, has no time: it goes when that's over or it's put away; nor
     // has the "updated" note, nor the restart of a required update.
-    if (!['wait', 'clash', 'updated', 'restart'].includes(p.kind)) peekTimer = setTimeout(autoHide, ['xp', 'online', 'rare'].includes(p.kind) ? STRIP_MS : p.kind === 'fire' ? FIRE_MS + 3000 : p.kind === 'note' ? NOTE_MS : PEEK_MS);
+    if (!['wait', 'clash', 'updated', 'restart', 'fired'].includes(p.kind)) peekTimer = setTimeout(autoHide, ['xp', 'online', 'rare'].includes(p.kind) ? STRIP_MS : p.kind === 'fire' ? FIRE_MS + 3000 : p.kind === 'note' ? NOTE_MS : PEEK_MS);
   }
 
   // What comes after a notice: a required update's restart first, then a chat that needs you, then two chats writing
@@ -154,6 +170,10 @@ window.Messages = (() => {
         head('SHARED NOTE', n.owner, p.at) +
         `<div class="mb-text"><em>${esc(Social.handle(n.owner))}</em> wants to write “${esc(n.title || 'a note')}” with you</div>` +
         `<div class="mb-actions"><button class="go" data-act="noteOpen">accept</button><button data-act="noteDecline">decline</button></div>`;
+    } else if (p.kind === 'nudge') {
+      return nudgeHTML(p);
+    } else if (p.kind === 'fired') {
+      return firedHTML();
     } else if (p.kind === 'update') {
       return (
         `<div class="mb peek update in" data-act="update" title="See what's new"><div class="mb-border"></div>` +
@@ -199,7 +219,7 @@ window.Messages = (() => {
       // the chat.
       const b = p.line.badge || {};
       const name = (window.BadgeArt && BadgeArt.name(b.id)) || b.name || 'a badge';
-      const tier = window.BadgeArt ? BadgeArt.tierName(b.id, b.tier, b.tiers) : '';
+      const tier = window.BadgeArt ? BadgeArt.tierName(b.id, b.tier, b.tiered ?? b.tiers) : '';
       const f = Social.friend(p.line.who.id) || p.line.who;
       return (
         `<div class="mb peek rare in" data-act="open" title="Open the chat"><div class="mb-border"></div>` +
@@ -254,9 +274,31 @@ window.Messages = (() => {
     return `<div class="mb peek in"><div class="mb-border"></div>${body}</div>`;
   }
 
+  // A friend's nudge while their chat isn't on screen (nudge.ts): the message card's frame with its own tag, the friend's
+  // picture with the mark on its corner and their last words for context. A reply goes out as a message, as on INCOMING.
+  function nudgeHTML(p) {
+    const id = p.from.id;
+    const per = person(id) || { id, name: p.from.name, short: p.from.name, presence: 'online' };
+    const f = Social.friend(id);
+    const said = f && f.last && Social.preview(f.last);
+    const meta = said ? `${f.last.mine ? 'you said' : 'last said'} <q>${esc(said)}</q> \u00b7 ${esc(ago(new Date(f.last.at).getTime()))}` : 'no messages yet';
+    const line = `${per.short} sent you a nudge`;
+    return (
+      `<div class="mb peek nudge in${p.quiet ? ' quiet' : ''}" role="group" aria-label="${esc(`${line} just now.${said ? ` Their last message: ${said}` : ''}`)}"><div class="mb-border"></div>` +
+      `<div class="mb-head"><span class="mb-tag">${GLYPH}NUDGE</span><span class="mb-who">${who(f || p.from)}</span>` +
+      `<time class="mb-time" datetime="${esc(new Date(p.at).toISOString())}" title="${esc(new Date(p.at).toLocaleString())}">${time(p.at)}</time>` +
+      '<button class="mb-x mb-expand" data-act="open" aria-label="Open the chat" title="Open the chat"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9.5 2.75h3.75v3.75M13.25 2.75 9 7M6.5 13.25H2.75V9.5M2.75 13.25 7 9"/></svg></button>' +
+      '<button class="mb-x" data-act="close" title="Close" aria-label="Close">\u00d7</button></div>' +
+      `<div class="nd-one" data-act="open" title="Open the chat"><span class="nd-pic">${pic(per, 'fc-pic')}<i class="nd-mark" aria-hidden="true">${GLYPH}</i></span>` +
+      `<span><b class="nd-line">${esc(line)}</b><small class="nd-meta">${meta}</small></span></div>` +
+      `${inputHTML('reply\u2026', '\u23ce')}</div>`
+    );
+  }
+
   const peekFriend = () => {
     if (!peek) return null;
     if (peek.kind === 'message') return peek.from && peek.from.id;
+    if (peek.kind === 'nudge') return peek.from && peek.from.id;
     if (peek.kind === 'friend') return peek.friend.id;
     if (peek.kind === 'online') return peek.friends[peek.friends.length - 1].id;
     if (peek.kind === 'rare') return peek.line.who.id;
@@ -268,6 +310,17 @@ window.Messages = (() => {
       const el = e.target.closest('[data-act]');
       if (!el || !peek) return;
       const act = el.dataset.act;
+      // Who fired at me: Fire back (or its Cancel) is the dashboard's press; × sees them all; a click on the card or a row opens that chat.
+      if (peek.kind === 'fired') {
+        if (act === 'fire') return fireBack(el);
+        if (act === 'close') return seenAll();
+        if (act === 'open') {
+          const fid = (el.closest('[data-fid]') || {}).dataset?.fid || firedList()[0]?.fid;
+          if (!fid) return;
+          seenFrom(fid);
+          return Social.openChat(fid);
+        }
+      }
       if (act === 'close') {
         // Put away: the chats waiting now don't pop up again (another question in one of them does).
         if (peek.kind === 'wait') waits.clear();
@@ -342,6 +395,16 @@ window.Messages = (() => {
         if (act === 'accept') Social.openChat(r.friend.id);
       }
     });
+    // Who fired at me: Esc closes the card while the panel has the keys; Return on a row of the stack opens its chat.
+    notes.addEventListener('keydown', (e) => {
+      if (!peek || peek.kind !== 'fired') return;
+      if (e.key === 'Escape') return void seenAll();
+      const row = e.key === 'Enter' && e.target.closest && e.target.closest('.fd-row');
+      if (row && e.target === row) {
+        e.preventDefault();
+        row.click();
+      }
+    });
     notes.addEventListener('input', (e) => e.target.matches('textarea') && grow(e.target));
     notes.addEventListener('keydown', (e) => {
       if (!e.target.matches('textarea')) return;
@@ -363,7 +426,7 @@ window.Messages = (() => {
     hidePeek();
     Sfx.play('send');
     // Answering it means it was read: the unread count (the friends badge) goes with it, here and on the server.
-    if (Social.friend(to)?.unread) Social.read(to);
+    if (Social.unreadOf(Social.friend(to))) Social.read(to);
     const r = await Social.send(to, text);
     if (r.error) say(r.error === 'offline' ? "not sent · you're offline" : "not sent · you're not friends anymore");
   }
@@ -372,7 +435,7 @@ window.Messages = (() => {
   function updateNotice(u) {
     if (!NOTICES || !u || Social.dnd()) return;
     const p = { kind: 'update', version: u.version };
-    if (takeover || (peek && peek.kind !== 'update' && peek.kind !== 'updated')) queue.push(p);
+    if (takeover || (peek && peek.kind !== 'update' && peek.kind !== 'updated' && peek.kind !== 'fired')) queue.push(p);
     else showPeek(p);
   }
 
@@ -395,6 +458,187 @@ window.Messages = (() => {
         sizeNotes();
       });
     fill(false);
+  }
+
+  // ======================= who fired at me =======================
+  // A friend's spaceship leaves a trace that waits for you: a card in the corner (here), a line in your chat with them (the
+  // chat part), and their row in Friends. The card comes after the DANGER banner has ended (afterDanger, called by attack.js),
+  // or after 20 s if no DANGER showed, and has no timer: it goes when it's closed, that chat is opened, you fire back (once
+  // the lock is over), another computer of yours saw it, or the setting is turned off. A message goes over it and it comes
+  // back. No sound, no INCOMING pop-up, no focus: the alarm already sounded. The name never shows during LOCKED ON: the API's
+  // `attack_landed` comes 10 s after the fire, once the blast has come.
+  const HIT_WAIT_MS = 20_000; // no DANGER by then: the card comes anyway
+  const HIT_AFTER_MS = 30_000; // a DANGER that ended this recently was this attack's
+  const hitName = (h) => Social.nick(h.fid) || h.nick || (h.from && h.from.name) || 'a friend';
+  const ago = (t) => {
+    const m = Math.floor((Date.now() - t) / 60000);
+    return m < 1 ? 'just now' : m < 60 ? `${m} min ago` : `${Math.floor(m / 60)} h${m % 60 ? ` ${m % 60} min` : ''} ago`;
+  };
+  const fullTime = (t) => new Date(t).toLocaleString('en-US', { weekday: 'long', day: 'numeric', month: 'long', hour: 'numeric', minute: '2-digit' });
+  const firedList = () => [...hits].sort((a, b) => b.at - a.at);
+
+  function firedHTML() {
+    const list = firedList();
+    const A = window.Attack;
+    const left = A && A.shieldLeft ? A.shieldLeft() : 0;
+    const shieldSay = left ? ` Shielded for ${A.clock(left)}.` : '';
+    const shield = A && A.shield ? A.shield() : '';
+    const friendOf = (h) => Social.friend(h.fid);
+    const fire = (h, mini) => {
+      const f = friendOf(h);
+      if (A && A.button && f) return A.button(f, mini);
+      return `<button type="button" class="fd-fire${mini ? ' mini' : ''} atk-off" aria-disabled="true" title="${esc(hitName(h))} isn't your friend anymore">\u{1F680}${mini ? '' : ' Fire back <small>· not friends</small>'}</button>`;
+    };
+    const picOf = (h) => {
+      const f = friendOf(h);
+      return pic({ short: hitName(h), avatar: f && f.avatar, xp: f && f.xp }, 'fc-pic');
+    };
+    const timeEl = (t, cls) => `<time ${cls ? `class="${cls}" ` : ''}data-t="${t}" datetime="${new Date(t).toISOString()}" title="${esc(fullTime(t))}">${ago(t)}</time>`;
+    const expand = '<button class="mb-x mb-expand" data-act="open" aria-label="Open the chat" title="Open the chat"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9.5 2.75h3.75v3.75M13.25 2.75 9 7M6.5 13.25H2.75V9.5M2.75 13.25 7 9"/></svg></button>';
+    if (list.length === 1) {
+      const h = list[0];
+      const f = friendOf(h) || { ...h.from, presence: 'offline' };
+      const name = hitName(h);
+      return `<div class="mb peek fired in" data-act="open" role="group" aria-label="${esc(`${name} fired at you ${ago(h.at)}. Nothing lost.${shieldSay}`)}" title="Open the chat"><div class="mb-border"></div>` +
+        `<div class="mb-head"><span class="mb-tag">\u{1F680} ATTACK</span><span class="mb-who">${who(f)}</span>${timeEl(h.at, 'mb-time')}` +
+        `${expand}<button class="mb-x" data-act="close" title="Close" aria-label="Close">×</button></div>` +
+        `<div class="fd-one"><span class="fd-pic">${picOf(h)}<i class="fd-mark" aria-hidden="true">\u{1F680}</i></span>` +
+        `<span><b class="fd-line">${esc(name)} fired at you</b><small class="fd-meta">at ${esc(clock(h.at))} · <b>nothing lost</b></small></span></div>` +
+        `<div class="fd-foot">${shield}${fire(h, false)}</div></div>`;
+    }
+    const names = list.map(hitName);
+    const who2 = names.length === 2 ? `${names[0]} and ${names[1]}` : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+    return `<div class="mb peek fired in" role="group" aria-label="${esc(`${list.length} attacks: ${who2}. Nothing lost.${shieldSay}`)}"><div class="mb-border"></div>` +
+      `<div class="mb-head"><span class="mb-tag">\u{1F680} ${list.length} ATTACKS</span><span class="mb-who"><small>since ${esc(clock(list[list.length - 1].at))}</small></span>` +
+      `<button class="mb-x" data-act="close" title="Close" aria-label="Close" style="margin-left:auto">×</button></div>` +
+      '<ul class="fd-list">' + list.map((h) =>
+        `<li class="fd-row" tabindex="0" data-act="open" data-fid="${esc(h.fid)}" title="Open the chat with ${esc(hitName(h))}" aria-label="${esc(`${hitName(h)} fired at you ${ago(h.at)}`)}">` +
+        `<span class="fd-pic">${picOf(h)}<i class="fd-mark" aria-hidden="true">\u{1F680}</i></span>` +
+        `<span class="fd-line">${esc(hitName(h))} fired at you</span>${timeEl(h.at)}${fire(h, true)}</li>`).join('') +
+      `</ul><div class="fd-foot">${shield}<small class="fd-meta"><b>nothing lost</b></small></div></div>`;
+  }
+
+  // The card as it stands now: put up, drawn again in place, or taken down. Behind something that is on screen it waits its turn.
+  function showFired() {
+    if (!hits.length) return void (peek && peek.kind === 'fired' && hidePeek());
+    if (peek === firedPeek) {
+      notes.innerHTML = firedHTML();
+      notes.firstElementChild.classList.remove('in');
+      sizeNotes();
+      return;
+    }
+    if (takeover || (peek && peek !== firedPeek)) {
+      if (!queue.includes(firedPeek)) queue.push(firedPeek);
+      return;
+    }
+    showPeek(firedPeek);
+  }
+
+  function addHit(h) {
+    if (hits.some((x) => x.id === h.id)) return;
+    hits.push(h);
+    hits.sort((a, b) => b.at - a.at);
+    if (hits.length > 8) hits.length = 8;
+    showFired();
+  }
+
+  function attackLanded(a) {
+    if (!NOTICES || !a || a.mine || !a.from) return;
+    // Your own shield on the card: this attack's end, if later than the one known.
+    const me = Social.state()?.me;
+    if (me && a.shieldUntil && !(me.shieldUntil >= a.shieldUntil)) me.shieldUntil = a.shieldUntil;
+    // Off in Settings, or do not disturb: only the line in the chat. Their chat open: that is where it shows.
+    if (Social.prefs().hitCard === false || Social.dnd() || showing.has(a.with)) return;
+    const h = { id: a.id, fid: a.with, from: a.from, nick: a.nick || null, at: new Date(a.at).getTime() || Date.now(), shieldUntil: a.shieldUntil || 0 };
+    if (hitGone.has(h.id) || hits.some((x) => x.id === h.id) || waitingHits.some((x) => x.id === h.id)) return;
+    const A = window.Attack;
+    // The banner is up now: the card follows it (afterDanger). Its banner ended a moment ago: now. None showed (the ship may
+    // yet wait for the map, DANGER already came, or an old app): after 20 s anyway. The 20 s also stands behind a banner
+    // that is up: one replaced by another never calls afterDanger.
+    if (A && A.dangerUp && A.dangerUp()) return waitHit(h);
+    if (A && A.dangerEnd && Date.now() - A.dangerEnd() < HIT_AFTER_MS) return addHit(h);
+    waitHit(h);
+  }
+  function waitHit(h) {
+    waitingHits.push(h);
+    if (!hitTimer) hitTimer = setTimeout(afterDanger, HIT_WAIT_MS);
+  }
+
+  // attack.js: a DANGER banner just ended.
+  function afterDanger() {
+    clearTimeout(hitTimer);
+    hitTimer = 0;
+    const list = waitingHits;
+    waitingHits = [];
+    list.forEach((h) => !(Social.prefs().hitCard === false || Social.dnd() || showing.has(h.fid)) && addHit(h));
+  }
+
+  // The friends list came with the attacks not seen yet (the last 12 hours, five at most): the card after a restart or an update.
+  function restoreHits() {
+    const list = (Social.state()?.me?.attacksUnseen) || [];
+    if (!NOTICES || !list.length || Social.prefs().hitCard === false || Social.dnd()) return;
+    for (const a of list) {
+      if (!a || !a.from || hitGone.has(a.id) || showing.has(a.from.id) || hits.some((x) => x.id === a.id) || waitingHits.some((x) => x.id === a.id)) continue;
+      const h = { id: a.id, fid: a.from.id, from: a.from, nick: a.nick || null, at: new Date(a.at).getTime() || Date.now(), shieldUntil: a.shieldUntil || 0 };
+      if (window.Attack?.dangerUp?.()) waitHit(h);
+      else addHit(h);
+    }
+  }
+
+  // Seen: those attacks leave the card (and the API, so your other computers follow). Kept in `hitGone`, so a friends list
+  // loaded before the API took it (its `attacksUnseen`) doesn't bring the card back.
+  const hitGone = new Set();
+  function seenIds(ids) {
+    if (!ids.length) return;
+    ids.forEach((id) => hitGone.add(id));
+    Social.attacksSeen(ids);
+    showFired();
+  }
+  // The card's × (or Esc): the ones on it. One that landed meanwhile and waits for its DANGER to end still comes after.
+  function seenAll() {
+    const ids = hits.map((h) => h.id);
+    hits.length = 0;
+    seenIds(ids);
+    if (peek && peek.kind === 'fired') hidePeek();
+  }
+  function seenFrom(fid) {
+    const ids = hits.filter((h) => h.fid === fid).map((h) => h.id);
+    for (let i = hits.length - 1; i >= 0; i--) if (hits[i].fid === fid) hits.splice(i, 1);
+    waitingHits = waitingHits.filter((h) => h.fid !== fid);
+    if (!hits.length && peek && peek.kind === 'fired') hidePeek();
+    seenIds(ids);
+  }
+  function attackSeen(ids) {
+    if (!NOTICES || !Array.isArray(ids)) return;
+    ids.forEach((id) => hitGone.add(id));
+    const n = hits.length;
+    for (let i = hits.length - 1; i >= 0; i--) if (ids.includes(hits[i].id)) hits.splice(i, 1);
+    waitingHits = waitingHits.filter((h) => !ids.includes(h.id));
+    if (hits.length !== n) showFired();
+  }
+
+  // Fire back from the card or the chat: the dashboard fires (it holds the hit feel and the ship); this only asks.
+  function fireBack(btn) {
+    if (btn.getAttribute('aria-disabled') === 'true' || btn.dataset.state === 'flight') return;
+    post({ type: btn.dataset.state === 'locking' ? 'attackCancel' : 'attackFire', id: btn.dataset.atk });
+  }
+
+  // The dashboard's 🚀 for a friend changed state: the buttons here follow; once the lock is over and it fired, their card goes.
+  function attackBtn(s) {
+    if (!s || !s.id || !window.Attack || !Attack.setBtn) return;
+    Attack.setBtn(s);
+    if (NOTICES && s.state === 'flight') seenFrom(s.id);
+  }
+
+  // The ages on the card, once a minute.
+  if (NOTICES) {
+    setInterval(() => {
+      if (!peek || peek.kind !== 'fired') return;
+      notes.querySelectorAll('time[data-t]').forEach((t) => {
+        const v = ago(Number(t.dataset.t));
+        if (t.textContent !== v) t.textContent = v;
+      });
+    }, 20_000);
   }
 
   // ======================= a chat needs you =======================
@@ -557,7 +801,7 @@ window.Messages = (() => {
     }
     if (ev.reason === 'daily' && ev.gained > 0 && !Social.dnd()) {
       const p = { kind: 'xp', gained: ev.gained, level: x ? x.level : 0 };
-      if (takeover || (peek && peek.kind !== 'online' && peek.kind !== 'updated')) queue.push(p);
+      if (takeover || (peek && peek.kind !== 'online' && peek.kind !== 'updated' && peek.kind !== 'fired')) queue.push(p);
       else showPeek(p);
     }
   }
@@ -581,7 +825,7 @@ window.Messages = (() => {
     fire = Fire.burn(canvas, { reach: () => [innerHeight * 0.11, innerWidth * 0.028, 0], scale: 34, life: FIRE_MS, res: 1, look: fireOf.look });
     // A message or a request on screen keeps its place; the notice comes right after it.
     const p = { kind: 'fire', tier: fireOf.tier, look: fireOf.look };
-    if (peek && !['online', 'xp', 'update', 'updated'].includes(peek.kind)) queue.unshift(p);
+    if (peek && !['online', 'xp', 'update', 'updated', 'fired'].includes(peek.kind)) queue.unshift(p);
     else showPeek(p);
     sizeNotes();
     Sfx.play('fire');
@@ -736,7 +980,7 @@ window.Messages = (() => {
   }
 
   // The next badge waiting, one at a time, each with its own reveal (a key or a click after it lands brings the next),
-  // the grandest last; the count (3 of 9) runs across the ones that came together. `cont`: straight on from the one
+  // the grandest last; how many are still to come ("2 more") runs across the ones that came together. `cont`: straight on from the one
   // before, the screen staying dark.
   function revealNext(cont) {
     const c = badgesWaiting;
@@ -771,7 +1015,7 @@ window.Messages = (() => {
   // in; on the sound's burst the badge itself appears with a flash, a shockwave and a burst of sparks in its own colours,
   // under turning rays, a shine crossing it; its name and tier rise under it. A gold one and up (a medal, a hidden one)
   // gets more of everything. Several that came together (a sign-in counting what was done before) come one by one,
-  // `c.n` of `c.of`.
+  // `c.n` of `c.of`: the hint says how many are left, never "2 of 3" (it would read as a badge's tiers).
   function showReveal(c) {
     const Art = window.BadgeArt;
     const main = c.badge;
@@ -779,8 +1023,8 @@ window.Messages = (() => {
     const [rc, rs] = Art.glow(main.id, main.tier);
     // Founder tells its number ("#4 of the first 1,000"; badges.ts sends it).
     const tier = main.no ? `#${main.no} of the first 1,000` : Art.tierName(main.id, main.tier);
-    const kicker = (main.id.startsWith('service-') ? 'MEDAL EARNED' : main.tier > 1 ? 'BADGE UPGRADED' : 'BADGE UNLOCKED') +
-      (c.of > 1 ? ` · ${c.n} OF ${c.of}` : '');
+    const kicker = main.id.startsWith('service-') ? 'MEDAL EARNED' : main.tier > 1 ? 'BADGE UPGRADED' : 'BADGE UNLOCKED';
+    const left = c.of - c.n;
     // The moment the badge shows: the impact's burst.
     const IMPACT = Sfx.hit('badge-impact');
     const readMs = IMPACT + (grand ? 6000 : 5000);
@@ -800,7 +1044,7 @@ window.Messages = (() => {
       `<div class="rv-kicker">${esc(kicker)}</div><div class="rv-name">${esc(Art.name(main.id))}</div>` +
       (tier ? `<div class="rv-tier">${esc(tier)}</div>` : '') +
       (c.quiet ? '<div class="rv-note">from what you\'ve done so far · right click one in your profile to display it</div>' : '') +
-      `</div><div class="tk-hint">${c.n < c.of ? 'press any key for the next one' : 'press any key to continue'}</div>`;
+      `</div><div class="tk-hint">${left > 0 ? `press any key for the next badge · ${left} more` : 'press any key to continue'}</div>`;
     Hooks.pulse('badge-reveal', { value: main.id, tier: main.tier, n: c.n, of: c.of });
     // Straight on from the one before: under it, already dark, while it fades away on top.
     const prev = c.cont && takeover && takeover.el.isConnected ? takeover.el : null;
@@ -1032,13 +1276,29 @@ window.Messages = (() => {
   function rareIn(line) {
     if (!NOTICES || !line || line.kind !== 'badge' || !line.who || !Social.prefs().feed || Social.dnd()) return;
     if (!line.dev && !Social.friend(line.who.id)) return;
-    if (peek && !['online', 'xp', 'update', 'updated', 'rare'].includes(peek.kind)) return;
+    if (peek && !['online', 'xp', 'update', 'updated', 'rare', 'fired'].includes(peek.kind)) return;
     showPeek({ kind: 'rare', line });
   }
 
   function say(msg) {
     if (typeof window.toast === 'function') return window.toast(msg);
     post({ type: 'log', msg });
+  }
+
+  // The nudge's card, put up when nothing else holds the screen (a takeover, the flames, DANGER's banner, the alarm): then it waits
+  // and comes quietly (no jolt, no buzz, no shake), at most 30 s later.
+  const screenHeld = () => !!(takeover || fire || (window.Attack && Attack.wide && Attack.wide()) || alertOn);
+  function nudgeCard(p, tries = 0) {
+    if (screenHeld()) {
+      p.quiet = true;
+      if (tries < 75) setTimeout(() => nudgeCard(p, tries + 1), 400);
+      return;
+    }
+    if (!p.quiet) {
+      Sfx.play('nudge');
+      post({ type: 'nudgeShake', with: p.from.id });
+    }
+    showPeek(p);
   }
 
   function notice(ev) {
@@ -1057,6 +1317,19 @@ window.Messages = (() => {
         }
         showPeek({ kind: 'message', from: ev.from || Social.friend(ev.with), body: Social.preview(ev.message), at: ev.message.at });
         return;
+      // A friend's nudge (nudge.ts): the buzz plays here, once per computer. With their chat on screen the chat page shakes
+      // itself and nothing comes up; else the card does, and (the dashboard's state decides) the map's centre or the
+      // dashboard window shakes (Swift: "nudgeShake"). Never a focus, a raise or a window opened. A second one within a
+      // minute (`floored`, social.js) and the ones that wait under a takeover, the flames, DANGER or the alarm come without
+      // buzz, shake or jolt.
+      case 'nudge': {
+        const n = ev.nudge;
+        if (!n || n.mine || !n.with || n.floored || Social.dnd()) return;
+        // (No buzz either while a takeover, the flames, DANGER or the alarm holds the screen: the chat's line is enough then.)
+        if (showing.has(n.with) && chatSeen) return void (screenHeld() || Sfx.play('nudge'));
+        nudgeCard({ kind: 'nudge', from: n.from || Social.friend(n.with), at: n.at, quiet: false });
+        return;
+      }
       case 'request':
         Sfx.play('request');
         if (!Social.dnd()) showPeek({ kind: 'request', request: ev.request });
@@ -1083,6 +1356,19 @@ window.Messages = (() => {
         return;
       case 'xp':
         return progress(ev);
+      // Who fired at me: the blast came (10 s after the fire; a cancelled lock never sends it), or one was seen (on this or
+      // another of your computers), or the friends list came with the ones not seen yet (after a restart).
+      case 'attack_landed':
+        return attackLanded(ev.attack);
+      case 'attack_seen':
+        return attackSeen(ev.ids);
+      case 'snapshot':
+        return restoreHits();
+      case 'prefs':
+      case 'settings':
+        // Switched off: the card goes (the line in the chat stays).
+        if (hits.length && Social.prefs().hitCard === false) hits.length = 0, waitingHits = [], showFired();
+        return;
       case 'feed':
         return rareIn(ev.line);
       case 'fire_test':
@@ -1102,7 +1388,8 @@ window.Messages = (() => {
         for (const b of came) if (!all.has(b.id) || all.get(b.id).tier < b.tier) all.set(b.id, b);
         badgesWaiting = { badges: [...all.values()], quiet: (!badgesWaiting || badgesWaiting.quiet) && !!ev.quiet, seen: badgesWaiting?.seen || 0 };
         // One the catalog doesn't know yet (a hidden one nobody had, a new one): its name and picture first.
-        if (came.some((b) => !window.BadgeArt.known(b.id))) window.BadgeArt.refresh().then(play);
+        // Or a tier nobody held before: its picture only goes out once somebody has it, so the kept catalog is stale for the first to reach it.
+        if (came.some((b) => !window.BadgeArt.known(b.id) || !window.BadgeArt.revealed(b.id, b.tier))) window.BadgeArt.refresh().then(play);
         else play();
         return;
       }
@@ -1116,7 +1403,7 @@ window.Messages = (() => {
         // is open, nor over a message or request on screen.
         const f = Social.friend(ev.id);
         if (!f || ev.was !== 'offline' || Date.now() - (offlineAt.get(ev.id) || 0) < BACK_MS || showing.has(ev.id)) return;
-        if (peek && peek.kind !== 'online' && peek.kind !== 'updated') return;
+        if (peek && peek.kind !== 'online' && peek.kind !== 'updated' && peek.kind !== 'fired') return;
         if (Social.dnd()) return;
         Sfx.play('online');
         const others = peek && peek.kind === 'online' ? peek.friends.filter((x) => x.id !== f.id) : [];
@@ -1148,7 +1435,7 @@ window.Messages = (() => {
   const convs = new Map(); // friend id -> { list, more, loaded, loading, failed, name, text, newKey }
   let meId = null; // the account the kept conversations belong to
   const conv = (id) => {
-    if (!convs.has(id)) convs.set(id, { list: [], more: false, loaded: false, loading: null, name: '', text: '', newKey: null });
+    if (!convs.has(id)) convs.set(id, { list: [], attacks: [], nudges: [], more: false, loaded: false, loading: null, name: '', text: '', newKey: null });
     return convs.get(id);
   };
   const keyOf = (m) => m.uuid || `id:${m.id}`;
@@ -1212,7 +1499,8 @@ window.Messages = (() => {
       `<div class="fc-input"><div class="fc-box"><textarea rows="1" maxlength="${TEXT_MAX}" spellcheck="false"></textarea>` +
       `<button class="fc-send" data-act="send" title="Send (↩)" aria-label="Send" disabled>${ICON_SEND}</button></div>` +
       `<div class="fc-well"><button class="mb-tool" data-act="emoji" title="Emoji (type : and a name, too)" aria-label="Emoji">${ICON_EMOJI}</button>` +
-      `<button class="mb-tool" data-act="code" title="Code: kept as it is, coloured, with a Copy button" aria-label="Code">${ICON_CODE}</button></div></div></div>` +
+      `<button class="mb-tool" data-act="code" title="Code: kept as it is, coloured, with a Copy button" aria-label="Code">${ICON_CODE}</button>` +
+      `<button type="button" class="mb-tool ndg-btn" data-act="nudge" aria-label="Nudge" title="Nudge: their chat shakes for a moment \u00b7 or type /nudge">${GLYPH}</button></div></div></div>` +
       `<div class="mb-menu" hidden></div><div class="mb-toast" hidden></div><div class="fc-card" hidden></div><div class="fc-ask" hidden></div></div>` +
       GRIPS.map((g) => `<i class="fc-grip ${g}" data-grip="${g}"></i>`).join('');
   }
@@ -1297,7 +1585,7 @@ window.Messages = (() => {
       if (waited && !Social.friend(id)) return close();
     }
     const s = Social.state();
-    id = id || FRIEND || current || (s && (s.friends.find((f) => f.unread) || s.friends[0])?.id);
+    id = id || FRIEND || current || (s && (s.friends.find((f) => Social.unreadOf(f)) || s.friends[0])?.id);
     if (!id || (!Social.friend(id) && !(isOpen && tabs.includes(id)))) return;
     if (!isOpen || !q('.mb.open')) {
       win.innerHTML = frameHTML();
@@ -1338,6 +1626,9 @@ window.Messages = (() => {
       }
     }
     const unread = Social.friend(id)?.unread || 0;
+    // Attacks on you not seen yet count for the marker too.
+    const unseen = (Social.friend(id)?.attack?.unseen || 0) + (Social.friend(id)?.nudge?.unread || 0);
+    nudged.delete(id);
     hideCard();
     paint(true);
     tellShowing();
@@ -1345,19 +1636,44 @@ window.Messages = (() => {
     if (!isOpen || current !== id) return;
     const c = conv(id);
     // "New messages" above the first of the ones that came while it wasn't in front.
-    if (unread) c.newKey = firstUnread(c.list, unread);
+    if (unread || unseen) c.newKey = firstUnread(c, unread, unseen);
     paintList({ stick: true });
-    if (Social.friend(id)?.unread) Social.read(id);
+    if (Social.unreadOf(Social.friend(id))) Social.read(id);
     if (!ta.disabled) setTimeout(() => ta.focus(), 30);
   }
 
-  const firstUnread = (list, n) => {
-    for (let i = list.length - 1, left = n; i >= 0; i--) {
-      if (list[i].mine) continue;
-      if (--left === 0) return keyOf(list[i]);
-    }
+  // The lines between messages (system lines, quieter than people's messages): the attacks, and the nudges (nudge.ts), by
+  // time. A nudge's `k` is its row's key (the one you just sent keeps it when the API gives its real id).
+  const lineKey = (a) => (a.ndg ? `ndg:${a.k}` : `atk:${a.id}`);
+  const lineItems = (c) =>
+    [...c.attacks, ...(c.nudges || []).map((n) => ({ ...n, ndg: true, k: n.k || n.id }))].sort((x, y) => new Date(x.at) - new Date(y.at));
+
+  // The key of the first of the `n` newest messages and the `u` newest attacks from them (the line fired at you), the
+  // "new messages" marker's place.
+  const firstUnread = (c, n, u) => {
+    const theirs = timeline(c).filter((x) => !x.mine);
+    let left = n + u;
+    for (let i = theirs.length - 1; i >= 0; i--) if (--left === 0) return theirs[i].key;
     return null;
   };
+  // The conversation in time order, messages and attacks together, as paintList lays it out: { key, mine, at, m | a }.
+  // Messages keep their own order; an attack goes before the first message that is later than it.
+  function timeline(c) {
+    const out = [];
+    const atks = lineItems(c);
+    let i = 0;
+    const flush = (until) => {
+      for (; i < atks.length && (until == null || new Date(atks[i].at).getTime() <= until); i++) {
+        out.push({ key: lineKey(atks[i]), mine: !!atks[i].mine, at: atks[i].at, a: atks[i] });
+      }
+    };
+    for (const m of c.list) {
+      flush(new Date(m.at).getTime());
+      out.push({ key: keyOf(m), mine: !!m.mine, at: m.at, m });
+    }
+    flush(null);
+    return out;
+  }
 
   // A tab's ×, ⌘W, Esc or a middle click on the tab: that conversation leaves the window; the last one closes it.
   function closeTab(id) {
@@ -1394,6 +1710,116 @@ window.Messages = (() => {
     }, 190);
   }
 
+  // ---------- the Nudge button and the nudge itself (nudge.ts) ----------
+  // Tabs whose friend nudged them while another tab was in front (their subtitle says so until selected), and whether a mouse
+  // button is down in the chat (no window moving under a click).
+  const nudged = new Set();
+  let pointerDown = false;
+  if (CHAT) {
+    addEventListener('pointerdown', () => (pointerDown = true), true);
+    for (const t of ['pointerup', 'pointercancel', 'blur']) addEventListener(t, () => (pointerDown = false), true);
+  }
+  const NDG_WHY = {
+    offline: (n) => `${n} is offline. You can nudge when they're online.`,
+    dnd: (n) => `${n} is on do not disturb. You can nudge when it's off.`,
+    off: (n) => `${n} turned nudges off.`,
+    mine_off: () => "Nudges are off for you, so you can't send one either. Turn them on in Settings > Privacy.",
+    down: () => "Can't reach the server.",
+    not_friends: () => "You're not friends anymore.",
+  };
+  const mmss = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+  // What the button can do now: ready, wait (the minute after a nudge; `left` seconds), streak (three with no answer: ten
+  // minutes or until they write), or a reason. Times are the API's clock (Social.now).
+  function ndgState(f) {
+    const st = Social.state();
+    if (!st) return { k: 'down' };
+    if (st.me && st.me.nudges === false) return { k: 'mine_off' };
+    if (!f.presence || f.presence === 'offline') return { k: 'offline' };
+    if (f.presence === 'dnd') return { k: 'dnd' };
+    const n = f.nudge || {};
+    if (n.off) return { k: 'off' };
+    const left = Math.ceil(((n.readyAt || 0) - Social.now()) / 1000);
+    if (left > 0) return { k: n.why === 'unanswered' ? 'streak' : 'wait', left };
+    return { k: 'ready' };
+  }
+  const ndgText = (s, name) =>
+    s.k === 'streak' ? `${name} hasn't answered your last 3 nudges. You can nudge again when they write, or in ${mmss(s.left)}.`
+      : s.k === 'wait' ? `You can nudge ${name} again in ${mmss(s.left)}.`
+      : NDG_WHY[s.k] ? NDG_WHY[s.k](name) : '';
+  let ndgTimer = 0;
+  let ndgBusy = false; // a nudge on its way to the API
+  function paintNudge() {
+    clearTimeout(ndgTimer);
+    const b = isOpen && q('.ndg-btn');
+    if (!b) return;
+    const f = Social.friend(current);
+    // Not friends anymore: nothing to nudge (the box says so).
+    b.hidden = !f;
+    if (!f) return;
+    const name = person(current).short;
+    const s = ndgState(f);
+    const wait = s.k === 'wait' || s.k === 'streak';
+    const html = GLYPH + (wait ? `<span class="ndg-cd" aria-hidden="true">${s.k === 'streak' ? `${Math.ceil(s.left / 60)}m` : s.left}</span>` : '');
+    if (b.__html !== html) b.innerHTML = b.__html = html;
+    b.classList.toggle('wait', wait);
+    if (wait) b.style.setProperty('--left', `${Math.max(0, Math.min(100, Math.round((s.left / (s.k === 'streak' ? 600 : 60)) * 100)))}%`);
+    const ready = s.k === 'ready';
+    if (ready) b.removeAttribute('aria-disabled');
+    else b.setAttribute('aria-disabled', 'true');
+    b.setAttribute('aria-label', ready ? `Nudge ${name}` : `Nudge ${name}: ${s.k === 'wait' ? `you can again in ${s.left} seconds` : s.k === 'streak' ? `no answer to your last 3 yet, you can again in ${Math.ceil(s.left / 60)} minutes` : ndgText(s, name).replace(/\.$/, '')}`);
+    b.title = ready ? `Nudge ${name}: their chat shakes for a moment \u00b7 or type /nudge` : ndgText(s, name);
+    if (wait) ndgTimer = setTimeout(paintNudge, 1000);
+  }
+  // Send one: your line at once, your own window's half jolt, the buzz; then the API. False when it didn't go (the reason is in
+  // the chat's toast). The API's refusals answer 200 with `sent: false` and `why` (nudge.ts).
+  async function nudge() {
+    const id = current;
+    const f = id && Social.friend(id);
+    if (!isOpen || !f) return false;
+    const name = person(id).short;
+    const s = ndgState(f);
+    if (s.k !== 'ready') {
+      flash(ndgText(s, name));
+      return false;
+    }
+    // One at a time: a double click (or Return held) sends one, jolts once and buzzes once.
+    if (ndgBusy) return false;
+    ndgBusy = true;
+    const c = conv(id);
+    const temp = { id: `tmp${Date.now()}`, k: `tmp${Date.now()}`, temp: true, mine: true, at: new Date().toISOString() };
+    c.nudges.push(temp);
+    paintList({ stick: true, fresh: new Set([`ndg:${temp.k}`]) });
+    if (!reducedMotion()) post({ type: 'shake', amp: 0.5 });
+    Sfx.play('nudgeOut');
+    const r = await Social.nudge(id).finally(() => (ndgBusy = false));
+    const undo = () => {
+      c.nudges = c.nudges.filter((x) => x !== temp);
+      if (isOpen && current === id) paintList();
+    };
+    if (r.error || r.sent === false) {
+      undo();
+      const fr = Social.friend(id);
+      if (fr && (r.why === 'cooldown' || r.why === 'unanswered') && r.readyAt) fr.nudge = { ...(fr.nudge || {}), readyAt: r.readyAt, why: r.why };
+      // Their switch, or yours, as the API has it now: the button greys out with it.
+      if (fr && r.why === 'off') fr.nudge = { ...(fr.nudge || {}), off: true };
+      if (r.why === 'mine_off' && Social.state()?.me) Social.state().me.nudges = false;
+      const why = r.error ? (r.error === 'not_friends' ? 'not_friends' : 'down') : r.why;
+      if (isOpen && current === id) {
+        paintNudge();
+        const st = fr ? ndgState(fr) : { k: why };
+        flash(ndgText(st.k === 'ready' ? { k: why } : st, name) || "Couldn't send it.");
+      }
+      return false;
+    }
+    // The live echo (the same nudge, from the API) may have come first: then it's the one kept.
+    if (c.nudges.some((x) => x !== temp && x.id === r.nudge.id)) undo();
+    else Object.assign(temp, { id: r.nudge.id, at: r.nudge.at, settled: true });
+    const fr = Social.friend(id);
+    if (fr) fr.nudge = { ...(fr.nudge || {}), readyAt: r.readyAt, why: r.why === 'unanswered' ? 'unanswered' : 'cooldown', last: { mine: true, at: r.nudge.at } };
+    if (isOpen && current === id) paintNudge();
+    return true;
+  }
+
   const holder = (f) => (!f ? 'not friends anymore' : draft.code ? 'paste or write code…' : `message ${f.nick || f.name}…`);
 
   function paint(stick) {
@@ -1411,14 +1837,15 @@ window.Messages = (() => {
     ta.placeholder = holder(f);
     growChat(ta);
     // Other friends' unread messages, one click away (their chat opens as a tab).
-    const others = (Social.state()?.friends || []).filter((x) => !tabs.includes(x.id) && x.unread);
+    const others = (Social.state()?.friends || []).filter((x) => !tabs.includes(x.id) && Social.unreadOf(x));
     const sw = others.length
       ? '<span class="mb-switch-t">new messages from</span>' +
-        others.map((x) => `<button data-act="switch" data-id="${esc(x.id)}">${Social.dot(x.presence)}${esc(x.nick || x.name)} <i class="cnt hot">${x.unread}</i></button>`).join('')
+        others.map((x) => `<button data-act="switch" data-id="${esc(x.id)}">${Social.dot(x.presence)}${esc(x.nick || x.name)} <i class="cnt hot">${Social.unreadOf(x)}</i></button>`).join('')
       : '';
     const switcher = q('.mb-switch');
     if (switcher.__html !== sw) switcher.innerHTML = switcher.__html = sw;
     paintList({ stick });
+    paintNudge();
   }
 
   // The tabs: as many as fit, the open one always among them; the rest behind ▾, whose arrow lights up when one of them
@@ -1428,9 +1855,10 @@ window.Messages = (() => {
     const p = person(id);
     const on = id === current;
     const f = Social.friend(id);
-    const unread = !on && f && f.unread;
-    const line = p.gone ? 'not friends anymore' : `${stateLabel(p)}${p.xp ? ` · Lv ${p.xp.level}` : ''}`;
-    return `<div class="fc-tab${on ? ' on' : ''}${unread ? ' unread' : ''}" role="tab" aria-selected="${on}" data-st="${esc(p.presence)}" data-act="tab" data-tab="${esc(id)}" data-who="${esc(id)}">` +
+    const unread = !on && f && Social.unreadOf(f);
+    const hasNudge = !on && nudged.has(id);
+    const line = p.gone ? 'not friends anymore' : hasNudge ? 'sent you a nudge' : `${stateLabel(p)}${p.xp ? ` · Lv ${p.xp.level}` : ''}`;
+    return `<div class="fc-tab${on ? ' on' : ''}${unread ? ' unread' : ''}${hasNudge ? ' ndg' : ''}" role="tab" aria-selected="${on}" data-st="${esc(p.presence)}" data-act="tab" data-tab="${esc(id)}" data-who="${esc(id)}">` +
       `<span class="fc-tav" data-act="who">${pic(p, 'fc-pic')}<i class="fc-bar"></i></span>` +
       `<span class="fc-tl"><b data-act="who">${esc(p.short)}</b><small>${esc(line)}</small></span>` +
       `<button class="fc-tx" data-act="tabclose" title="Close this chat (⌘W)" aria-label="Close this chat">×</button></div>`;
@@ -1452,7 +1880,7 @@ window.Messages = (() => {
     const hidden = tabs.filter((id) => !shown.includes(id));
     const more = q('.fc-more');
     more.hidden = !hidden.length;
-    more.classList.toggle('unread', hidden.some((id) => Social.friend(id)?.unread));
+    more.classList.toggle('unread', hidden.some((id) => Social.unreadOf(Social.friend(id))));
     more.__hidden = hidden;
   }
 
@@ -1464,7 +1892,7 @@ window.Messages = (() => {
       .map((id) => {
         const p = person(id);
         const f = Social.friend(id);
-        return `<button data-act="tabpick" data-tab="${esc(id)}">${Social.dot(p.presence)} ${esc(p.short)}${f && f.unread ? ` <i class="cnt hot">${f.unread}</i>` : ''}</button>`;
+        return `<button data-act="tabpick" data-tab="${esc(id)}">${Social.dot(p.presence)} ${esc(p.short)}${f && Social.unreadOf(f) ? ` <i class="cnt hot">${Social.unreadOf(f)}</i>` : ''}</button>`;
       })
       .join('');
     placeMenu(menu, btn.getBoundingClientRect().left, btn.getBoundingClientRect().bottom + 2);
@@ -1683,6 +2111,40 @@ window.Messages = (() => {
   // What a row shows: a different one (opened now, edited by the server's answer) means a new row.
   const contentOf = (m) => `${m.mine ? 1 : 0}|${Social.sealed(m) ? 1 : 0}|${m.body}|${m.reply ? `${m.reply.uuid}|${m.reply.who}|${m.reply.text}` : ''}`;
 
+  // The attack's line, kept in the history (a system line, quieter than people's messages): "kerem fired at you · nothing lost ·
+  // 12:41 AM", and on the other side "You fired at kerem · −42.32 ORB · 9:14 PM".
+  function atkRow(a, name) {
+    const mine = !!a.mine;
+    const price = mine && Number(a.price) > 0 ? `\u2212${Social.orbText(a.price)} ORB` : '';
+    const r = mine ? price : 'nothing lost';
+    const words = mine ? `<b>You</b> fired at <b>${esc(name)}</b>` : `<b>${esc(name)}</b> fired at you`;
+    const row = el('div', `fc-atk${mine ? ' mine' : ''}`);
+    row.setAttribute('role', 'note');
+    row.setAttribute('aria-label', `${mine ? `You fired at ${name}` : `${name} fired at you`}${r ? `, ${r}` : ''}, ${new Date(a.at).toLocaleString('en-US', { weekday: 'long', day: 'numeric', month: 'long', hour: 'numeric', minute: '2-digit' })}`);
+    row.innerHTML = '<i></i>' +
+      `<span class="fc-atk-plate"><span class="fc-atk-t"><i class="rk" aria-hidden="true">\u{1F680}</i>${words}</span>${r ? `<span class="fc-atk-r">${esc(r)}</span>` : ''}` +
+      `<time datetime="${new Date(a.at).toISOString()}" title="${esc(new Date(a.at).toLocaleString())}">${esc(clock(a.at))}</time></span><i></i>`;
+    return row;
+  }
+  // The nudge's line, kept in the history, in the messages' own columns: "kerem sent you a nudge" / "You sent kerem a nudge".
+  function ndgRow(n, name) {
+    const mine = !!n.mine;
+    const say = mine ? `You sent ${name} a nudge` : `${name} sent you a nudge`;
+    const row = el('div', `fc-ndg${mine ? ' mine' : ''}`);
+    row.setAttribute('role', 'note');
+    row.setAttribute('aria-label', `${say}, ${fullTime(n.at)}`);
+    row.innerHTML = `<span class="fc-ndg-i">${GLYPH}</span><span class="fc-ndg-t">${mine ? `<b>You</b> sent <b>${esc(name)}</b> a nudge` : `<b>${esc(name)}</b> sent you a nudge`}</span>` +
+      `<time datetime="${new Date(n.at).toISOString()}" title="${esc(new Date(n.at).toLocaleString())}">${esc(clock(n.at))}</time>`;
+    return row;
+  }
+  // Under the newest line fired at you: your shield and Fire back (attack.js draws both; it keeps their clock).
+  function atkAct(id) {
+    const row = el('div', 'fc-atk-act');
+    const f = Social.friend(id);
+    row.innerHTML = `${Attack.shield()}${f ? Attack.button(f, false) : ''}`;
+    return row;
+  }
+
   /**
    * Draws the conversation: rows already on screen stay, new ones go in, gone ones go out. `stick` keeps the newest in
    * view; `fresh` names the messages that just arrived (they slide in).
@@ -1711,10 +2173,12 @@ window.Messages = (() => {
     const near = list.scrollHeight - list.scrollTop - list.clientHeight < 60;
     const items = [];
     if (c.more) items.push({ key: 'more', make: () => Object.assign(el('button', 'mb-more', 'earlier messages'), { title: 'Show earlier messages' }), sig: 'more' });
-    if (c.loaded && !c.list.length) {
+    // Nothing written yet: the line says so, under any attack's line there is (it can be the first thing in the chat).
+    const empty = () => {
       const name = Social.friend(current)?.name || '';
-      items.push({ key: 'empty', make: () => el('div', 'mb-empty', `no messages yet · say hi to ${name}`), sig: name });
-    }
+      return { key: 'empty', make: () => el('div', 'mb-empty', `no messages yet · say hi to ${name}`), sig: name };
+    };
+    if (c.loaded && !c.list.length && !c.attacks.length && !c.nudges.length) items.push(empty());
     // Not here yet: placeholder blocks in the shape of the real ones, or a line saying why nothing came.
     if (!c.loaded && !c.list.length) {
       if (c.failed) items.push({ key: 'failed', make: () => el('div', 'mb-empty', "couldn't load messages · they'll show when you're back online"), sig: 'failed' });
@@ -1724,8 +2188,38 @@ window.Messages = (() => {
     const me = person('me') || { short: 'you', presence: 'online' };
     let day = '';
     let prev = null;
+    // Fired attacks go in among the messages by time: a line of their own that ends the block (the next message starts a
+    // new one with its header), the day line and the "new messages" marker as for a message.
+    const atks = lineItems(c);
+    let ai = 0;
+    const lastIn = atks.filter((x) => !x.mine && !x.ndg).pop();
+    const atkItem = (a) => {
+      const t = new Date(a.at).getTime();
+      const d = new Date(a.at).toDateString();
+      if (d !== day) {
+        day = d;
+        items.push({ key: `day:${d}`, make: () => dayRow(a.at), sig: dayLine(a.at) });
+      }
+      if (c.newKey && c.newKey === lineKey(a)) items.push({ key: 'new', make: () => el('div', 'fc-new', 'new messages'), sig: 'new' });
+      const name = them.short;
+      if (a.ndg) {
+        items.push({ key: lineKey(a), make: () => ndgRow(a, name), sig: `${a.mine ? 1 : 0}|${name}|${t}`, ndg: a });
+        prev = null;
+        return;
+      }
+      items.push({ key: `atk:${a.id}`, make: () => atkRow(a, name), sig: `${a.mine ? 1 : 0}|${name}|${a.price || 0}|${t}`, atk: a });
+      // Under the newest one fired at you, while your shield runs: the shield and Fire back.
+      if (lastIn === a && window.Attack && Attack.shieldLeft && Attack.shieldLeft() > 0) {
+        items.push({ key: `act:${a.id}`, make: () => atkAct(current), sig: `act|${current}` });
+      }
+      prev = null;
+    };
+    const flushAtks = (until) => {
+      for (; ai < atks.length && (until == null || new Date(atks[ai].at).getTime() <= until); ai++) atkItem(atks[ai]);
+    };
     for (const m of c.list) {
       const at = new Date(m.at).getTime();
+      flushAtks(at);
       const d = new Date(m.at).toDateString();
       let block = !prev || !!prev.mine !== !!m.mine || at - new Date(prev.at).getTime() > GROUP_GAP;
       if (d !== day) {
@@ -1746,6 +2240,8 @@ window.Messages = (() => {
       items.push({ key: keyOf(m), make: () => messageRow(m), sig: contentOf(m), m });
       prev = m;
     }
+    flushAtks(null);
+    if (c.loaded && !c.list.length && (c.attacks.length || c.nudges.length)) items.push(empty());
     const want2 = new Set(items.map((i) => i.key));
     for (const [k, n] of rows) {
       if (want2.has(k)) continue;
@@ -1761,9 +2257,17 @@ window.Messages = (() => {
         made.dataset.key = it.key;
         if (it.key === 'more') made.dataset.act = 'more';
         if (n) n.replaceWith(made);
-        else if (it.m && fresh && fresh.has(it.key)) {
+        else if ((it.m || it.atk || it.ndg) && fresh && fresh.has(it.key)) {
           made.classList.add('new');
-          made.addEventListener('animationend', () => made.classList.remove('new'), { once: true });
+          // An attack's line has two (the slide, then the light across its plate): it keeps `new` until the light is over.
+          // A nudge's too (the slide, then its mark's jolt or, with Reduce Motion, its ring).
+          const done = (e) => {
+            if (it.atk && e.animationName !== 'fc-atk-sweep') return;
+            if (it.ndg && e.animationName !== 'ndg-jolt' && e.animationName !== 'ndg-ring') return;
+            made.classList.remove('new');
+            made.removeEventListener('animationend', done);
+          };
+          made.addEventListener('animationend', done);
         }
         rows.set(it.key, made);
         n = made;
@@ -1790,6 +2294,11 @@ window.Messages = (() => {
     const pending = c.list.filter((m) => m.state);
     c.list = [...r.messages, ...pending.filter((p) => !r.messages.some((m) => keyOf(m) === keyOf(p)))];
     c.more = r.more;
+    // The fired attacks between you in this page's span (an older API sends none).
+    c.attacks = Array.isArray(r.attacks) ? r.attacks : [];
+    // The nudges in the same span (an older API sends none); one just sent and not in the history yet stays.
+    const theirNudges = Array.isArray(r.nudges) ? r.nudges : [];
+    c.nudges = [...theirNudges, ...(c.nudges || []).filter((n) => !theirNudges.some((x) => x.id === n.id))];
     c.loaded = true;
   }
 
@@ -1804,6 +2313,14 @@ window.Messages = (() => {
     const have = new Set(c.list.map(keyOf));
     c.list = [...r.messages.filter((m) => !have.has(keyOf(m))), ...c.list];
     c.more = r.more;
+    if (Array.isArray(r.attacks)) {
+      const known = new Set(c.attacks.map((a) => a.id));
+      c.attacks = [...r.attacks.filter((a) => !known.has(a.id)), ...c.attacks];
+    }
+    if (Array.isArray(r.nudges)) {
+      const known = new Set(c.nudges.map((n) => n.id));
+      c.nudges = [...r.nudges.filter((n) => !known.has(n.id)), ...c.nudges];
+    }
     paintList();
     list.scrollTop = list.scrollHeight - from;
     return true;
@@ -1887,6 +2404,17 @@ window.Messages = (() => {
     if (!ta || !current || ta.disabled) return;
     let text = ta.value;
     if (!text.trim()) return;
+    // `/nudge` alone in the box is the Nudge button (not in code mode); the box clears only if it went.
+    if (!draft.code && /^\/nudge$/i.test(text.trim())) {
+      nudge().then((went) => {
+        // Cleared only if it went and the box still says just that (nothing typed meanwhile).
+        if (!went || !/^\/nudge$/i.test(ta.value.trim())) return;
+        ta.value = '';
+        growChat(ta);
+        hideSuggest();
+      });
+      return;
+    }
     if (draft.code) {
       const code = text.replace(/\s+$/, '').replace(/^\n+/, '');
       text = '```' + (draft.lang || guessLang(code)) + '\n' + code + '\n```';
@@ -2318,6 +2846,66 @@ window.Messages = (() => {
         }
         return;
       }
+      // A fired attack's line, live (the API sends it 10 s after the fire; a cancelled lock never does): it slides in, and in the
+      // chat in front it is seen at once. Another tab lights up.
+      case 'attack_landed': {
+        const a = ev.attack;
+        if (!a || !a.with) return;
+        const c = convs.get(a.with);
+        let fresh = null;
+        if (c && c.loaded && !c.attacks.some((x) => x.id === a.id)) {
+          c.attacks.push({ id: a.id, mine: !!a.mine, at: a.at, ...(a.mine && a.price != null ? { price: a.price } : {}) });
+          fresh = new Set([`atk:${a.id}`]);
+        }
+        const me = Social.state()?.me;
+        if (me && a.shieldUntil && !(me.shieldUntil >= a.shieldUntil)) me.shieldUntil = a.shieldUntil;
+        if (!isOpen) return;
+        if (current === a.with) {
+          paintList({ fresh });
+          if (!a.mine) Social.read(a.with);
+        } else paint();
+        return;
+      }
+      // A friend's nudge, live (nudge.ts), or yours from another of your computers: its line slides in (read at once in the chat
+      // in front). Theirs shakes that chat window (native "shake", only when it is on screen and nothing holds the screen) unless
+      // a pointer is down in it or it is a second one within a minute (`floored`); another tab's friend: only that tab jolts.
+      // The buzz is the notices page's. Reduce Motion: nothing moves, the line's mark and the tab swell a ring instead (CSS).
+      case 'nudge': {
+        const n = ev.nudge;
+        if (!n || !n.with) return;
+        const c = convs.get(n.with);
+        let fresh = null;
+        if (c && c.loaded && !c.nudges.some((x) => x.id === n.id)) {
+          const temp = n.mine && c.nudges.find((x) => x.temp && !x.settled);
+          if (temp) Object.assign(temp, { id: n.id, at: n.at, settled: true });
+          else c.nudges.push({ id: n.id, mine: !!n.mine, at: n.at });
+          fresh = new Set([`ndg:${temp ? temp.k : n.id}`]);
+        }
+        if (!isOpen) return;
+        if (current === n.with) {
+          paintList({ fresh, stick: true });
+          paintNudge();
+          if (!n.mine) {
+            Social.read(n.with);
+            if (!n.floored && !pointerDown && !reducedMotion() && !Social.dnd()) post({ type: 'shake', amp: 1 });
+          }
+        } else {
+          if (!n.mine && tabs.includes(n.with)) {
+            nudged.add(n.with);
+            paint();
+            const tab = q(`.fc-tab[data-tab="${CSS.escape(n.with)}"]`);
+            if (tab && !n.floored) {
+              tab.classList.add('jolt');
+              setTimeout(() => tab.classList.remove('jolt'), 700);
+            }
+          } else paint();
+        }
+        return;
+      }
+      case 'attack_seen':
+      case 'prefs':
+        if (isOpen) paint();
+        return;
       case 'unsealed':
         // Older encrypted messages of this conversation opened (a Mac that still had their keys): asked for again.
         if (convs.has(ev.with)) conv(ev.with).loaded = false;
@@ -2501,6 +3089,9 @@ window.Messages = (() => {
           return closeTab(el2.dataset.tab || el2.closest('[data-tab]')?.dataset.tab);
         case 'tabmore':
           return moreMenu(el2);
+        // Fire back, under the attack's line: the dashboard fires.
+        case 'fire':
+          return fireBack(el2);
         case 'who': {
           // On a tab in the back, the click only brings that conversation forward.
           const tab = el2.closest('.fc-tab');
@@ -2548,6 +3139,8 @@ window.Messages = (() => {
           return setCode(!draft.code, draft.code ? null : ta.value.trim() ? ta.value : null);
         case 'astext':
           return setCode(false);
+        case 'nudge':
+          return void nudge();
         case 'emoji':
           return hideEmoji() || showEmoji();
         case 'emojiclose':
@@ -2712,7 +3305,8 @@ window.Messages = (() => {
       if (draft.code) return setCode(false);
       if (draft.reply) return clearReply();
       closeTab(current);
-    } else if (NOTICES && peek) hidePeek();
+    // The who-fired-at-me card: Esc closes it as its × does (seen), wherever the focus is in the panel.
+    } else if (NOTICES && peek) peek.kind === 'fired' ? seenAll() : hidePeek();
   });
 
   Social.on((ev) => {
@@ -2827,7 +3421,13 @@ window.Messages = (() => {
     },
     // ⌘W: the tab in front (the last one closes the window).
     close: () => (isOpen ? closeTab(current) : undefined),
-    showing: (ids) => (showing = new Set(ids || [])),
+    showing: (ids, seen) => {
+      showing = new Set(ids || []);
+      chatSeen = seen !== false;
+      // Their chat is open now: the attack's card has done its job. (Only while the chat is on screen: this is also called when it
+      // gets covered, minimized or hidden, now that the nudge asks whether it is seen.)
+      if (NOTICES && chatSeen) for (const id of showing) if (hits.some((h) => h.fid === id)) seenFrom(id);
+    },
     paste: (text) => pasteText(text),
     copy: (cut) => copyText(cut),
     selectAll: () => selectAll(),
@@ -2844,9 +3444,11 @@ window.Messages = (() => {
     clashOver: (key) => clashOver(key),
     restart: (r) => addRestart(r),
     restartOver: () => restartOver(),
+    // The dashboard's 🚀 for a friend changed (attack.js): Fire back here follows it.
+    attackBtn: (s) => attackBtn(s),
   };
   Social.load();
   post({ type: 'ready' });
 
-  return { open, close, canChat: CHAT, peek: () => peek, isOpen: () => isOpen, update: updateNotice, progress, focus: setFocus, layout: sizeNotes };
+  return { afterDanger: () => NOTICES && afterDanger(), open, close, canChat: CHAT, peek: () => peek, isOpen: () => isOpen, update: updateNotice, progress, focus: setFocus, layout: sizeNotes };
 })();

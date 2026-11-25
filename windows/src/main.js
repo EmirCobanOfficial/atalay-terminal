@@ -364,6 +364,12 @@ const engine = createEngine({
   memTree: (pid) => memTrees.get(pid) || null,
   // A Claude process under one of the app's terminals belongs to that window (its id becomes the session's `tab`).
   isAppPid: (pid) => (terminals.list().find((t) => t.pid === pid) || {}).id || false,
+  // An AI session left "busy": the notes it was working in let it go (notesai.js; the Mac's NotesTools.sessionIdle).
+  onSessionIdle(pid) {
+    try {
+      notesAI.sessionIdle(pid);
+    } catch {}
+  },
   onInit(json) {
     toDash(`init(${json})`);
     pushSide(true);
@@ -4062,6 +4068,8 @@ function tellFocus() {
   // list (dashExposed), so its helper starts here, up by the time one comes (its first compile takes a few seconds).
   if (!focused && process.platform === 'win32') attackDesk.start();
   toNotices(`focus(${focused})`);
+  // Whether a chat is on screen depends on it too (the nudge: tellShowing).
+  if (panels.chats.size) tellShowing();
   if (dash && !dash.isDestroyed()) toDash(`visibility(${dash.isVisible() && !dash.isMinimized()}, ${focused})`);
 }
 app.on('browser-window-focus', tellFocus);
@@ -4151,8 +4159,63 @@ function openWait(sid) {
   return openSession(sid, false);
 }
 
+// Whether the chat window is really on screen: shown, not minimized, and an Orbiterm window has the keys (Electron has no
+// occlusion state, so "the app is in front" stands in for "not covered"). A nudge shakes the chat only then; else its card comes.
+function chatSeen() {
+  const w = panels.chats.get('chat');
+  return !!w && !w.isDestroyed() && w.isVisible() && !w.isMinimized() && !!BaseWindow.getFocusedWindow();
+}
 function tellShowing() {
-  toNotices(`showing && __messages.showing(${JSON.stringify([...panels.showing])})`);
+  toNotices(`showing && __messages.showing(${JSON.stringify([...panels.showing])}, ${chatSeen()})`);
+}
+
+// ---------- the nudge's window shake (nudge.ts, messages.js; the Mac's WindowShake in Messages.swift) ----------
+// One jolt, two-dimensional and dying out so it reads as a buzz: eight legs, ease-in-out, 560 ms, the offsets of messages.css
+// `ndg-jolt` (x right, y down) times `amp`, whole DIPs, a main-process timer at about 120 Hz. The start bounds are taken once
+// (the panel's own copy, never read back) and every step sets all four values, so a scaled display doesn't drift; the end puts the
+// exact start back. Never on a maximized or full-screen window, nor with Reduce Motion; never a focus, a raise or a show.
+const SHAKE_STOPS = [[0, 0, 0], [45, 8, -5], [106, -7, 4], [168, 6, 5], [230, -8, -3], [291, 5, -4], [353, -4, 3], [414, 3, 2], [476, -2, -1], [560, 0, 0]];
+const shakes = new Map(); // window -> { timer, start }
+let noticesHold = false; // the notices panel holds the screen (takeover, flames, DANGER's banner, the alarm): nothing shakes
+const reducedMotion = () => {
+  try {
+    return !!require('electron').systemPreferences.getAnimationSettings().prefersReducedMotion;
+  } catch {
+    return false;
+  }
+};
+function stopShake(win) {
+  const sh = shakes.get(win);
+  if (!sh) return;
+  clearInterval(sh.timer);
+  shakes.delete(win);
+  // Back to the exact start, unless it was maximized or went full screen meanwhile (that frame is the system's now).
+  if (!win.isDestroyed() && !win.isMaximized() && !win.isFullScreen()) win.setBounds(sh.start);
+}
+function shakeWin(win, amp) {
+  if (!win || win.isDestroyed() || shakes.has(win) || !(amp > 0) || reducedMotion()) return;
+  if (!win.isVisible() || win.isMinimized() || win.isMaximized() || win.isFullScreen()) return;
+  const b = (typeof panelBounds !== 'undefined' && panelBounds.get(win)) || win.getBounds();
+  const start = { x: Math.round(b.x), y: Math.round(b.y), width: b.width, height: b.height };
+  const t0 = Date.now();
+  const timer = setInterval(() => {
+    const t = Date.now() - t0;
+    if (t >= 560 || win.isDestroyed() || !win.isVisible() || win.isMinimized() || win.isMaximized() || win.isFullScreen() || noticesHold) return stopShake(win);
+    let i = 1;
+    while (i < SHAKE_STOPS.length - 1 && SHAKE_STOPS[i][0] < t) i++;
+    const [ta, xa, ya] = SHAKE_STOPS[i - 1], [tb, xb, yb] = SHAKE_STOPS[i];
+    const k = (1 - Math.cos(Math.PI * Math.min(Math.max((t - ta) / (tb - ta), 0), 1))) / 2;
+    win.setBounds({ x: start.x + Math.round((xa + (xb - xa) * k) * amp), y: start.y + Math.round((ya + (yb - ya) * k) * amp), width: start.width, height: start.height });
+  }, 8);
+  shakes.set(win, { timer, start });
+}
+// A friend's nudge while their chat isn't on screen (the card came as well): the dashboard by its state, as the Mac's
+// nudgeDashboard: full screen or maximized -> the map's centre circle shakes (in the page); a window on screen with the app in
+// front -> the whole window shakes; minimized, hidden or behind other apps -> nothing (the card and the buzz are all).
+function nudgeDashboard() {
+  if (!dash || dash.isDestroyed() || noticesHold || reducedMotion() || !dash.isVisible() || dash.isMinimized() || !BaseWindow.getFocusedWindow()) return;
+  if (dash.isFullScreen() || dash.isMaximized()) toDash('nudgeCore()');
+  else shakeWin(dash, 1);
 }
 
 function notices() {
@@ -4203,7 +4266,10 @@ function chatPanel() {
   if (!win || win.isDestroyed()) {
     win = panelWindow('chat');
     panels.chats.set('chat', win);
+    for (const ev of ['show', 'hide', 'minimize', 'restore']) win.on(ev, () => setImmediate(tellShowing));
     win.on('closed', () => {
+      // Its timer stops too (stopShake doesn't touch a destroyed window).
+      stopShake(win);
       if (panels.chats.get('chat') === win) panels.chats.delete('chat');
       if (panels.showing.size) {
         panels.showing.clear();
@@ -4251,7 +4317,9 @@ function handleMessages(win, body) {
       if (role === 'notices') {
         takeover.on = body.place === 'screen' && w >= 1 && h >= 1;
         if (!takeover.on) takeover.lockedUntil = 0;
+        noticesHold = w >= 1 && h >= 1 && (body.place === 'screen' || body.place === 'fire' || body.place === 'center');
       }
+      if (role === 'chat') stopShake(win);
       if (w < 1 || h < 1) {
         if (role === 'notices') win.setIgnoreMouseEvents(false);
         win.steppedAside = false;
@@ -4319,8 +4387,18 @@ function handleMessages(win, body) {
       }
       return true;
     }
+    // A nudge (nudge.ts): the chat window's own frame moves for 0.56 s, only when it is on screen and nothing holds the screen. The
+    // page asks only for its own chat with the friend, or for the sender's half jolt.
+    case 'shake':
+      if (role === 'chat' && !noticesHold && chatSeen() && Number(body.amp) > 0) shakeWin(win, Math.min(Number(body.amp), 1));
+      return true;
+    // The nudge's card came up (the chat isn't on screen): the dashboard shakes by its own state.
+    case 'nudgeShake':
+      if (role === 'notices') nudgeDashboard();
+      return true;
     case 'drag': {
       if (role !== 'chat') return true;
+      stopShake(win);
       const b = panelBounds.get(win) || win.getBounds(), z = win.webContents.getZoomFactor() || 1;
       b.x += (body.dx || 0) * z;
       b.y += (body.dy || 0) * z;
@@ -4330,6 +4408,7 @@ function handleMessages(win, body) {
     }
     case 'dragEnd': {
       if (role !== 'chat') return true;
+      stopShake(win);
       const b = panelBounds.get(win) || win.getBounds();
       const next = wholeOnDisplay({ x: Math.round(b.x), y: Math.round(b.y), width: b.width, height: b.height });
       panelBounds.set(win, next);
