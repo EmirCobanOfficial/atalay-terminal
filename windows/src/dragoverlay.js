@@ -92,7 +92,9 @@ function ghost(title, at) {
     send('ghost', { title: String(title == null ? '' : title) });
   }
   w.setBounds({ x: Math.round(at.x - GHOST.width / 2), y: Math.round(at.y + 6), width: GHOST.width, height: GHOST.height });
+  // On Windows every always-on-top level is HWND_TOPMOST and showInactive keeps the old slot: raised so a pinned window never covers it.
   if (!w.isVisible()) w.showInactive();
+  w.moveTop();
 }
 
 function hideGhost() {
@@ -113,7 +115,9 @@ function showBox(bounds, msg) {
   const w = create('box');
   if (!sameRect(w.getBounds(), bounds)) w.setBounds(bounds);
   send('box', msg);
+  // Raised on every show (see ghost), the ghost above it again.
   if (!w.isVisible()) w.showInactive();
+  w.moveTop();
   liftGhost();
 }
 

@@ -966,7 +966,10 @@
   // The strip is the pane's title bar: in a split, the panes without the keys dim a little, as in iTerm2, and the one
   // with them is marked. A double click on its name renames it in place (Enter keeps it, empty goes back to the one it's
   // given, Esc drops it); a right click on the strip has Rename and the moves to a tab or a window of its own.
+  // The tab in front has several panes, even while one is zoomed to the whole area (only then is `panes` 1): its strip drags.
+  let inSplit = false;
   atl.on('term:pane', (p) => {
+    inSplit = !!p && (p.panes > 1 || !!p.split);
     const several = !!p && p.panes > 1;
     document.body.classList.toggle('pane-split', several);
     document.body.classList.toggle('pane-off', several && !p.focused);
@@ -1019,14 +1022,15 @@
   let pdLastEnd = 0;
   const tellDrag = (m) => atl.send('term:drag', { kind: 'pane', ...m });
   hudEl.addEventListener('pointerdown', (e) => {
-    pdSwallow = false;
-    if (e.button !== 0 || pd || renaming || !document.body.classList.contains('pane-split')) return;
+    if (e.button !== 0 || pd || renaming || !inSplit) return;
     if (e.target.closest('button, input')) return;
     pd = { x0: e.clientX, y0: e.clientY, pointerId: e.pointerId, started: false, cancelled: false, finished: false, seq: 0, raf: 0 };
     tellDrag({ phase: 'arm', seq: 0 });
   });
   window.addEventListener('pointermove', (e) => {
     if (!pd || e.pointerId !== pd.pointerId || pd.finished) return;
+    // The button came up where no pointerup reached this page: the drag is over, or disarmed.
+    if (!(e.buttons & 1)) return endPaneDrag(e, true);
     if (!pd.started) {
       if (Math.hypot(e.clientX - pd.x0, e.clientY - pd.y0) <= DRAG_SLOP) return;
       pd.started = true;
@@ -1063,6 +1067,8 @@
   window.addEventListener('lostpointercapture', (e) => {
     if (pd && pd.started && !pd.finished && e.pointerId === pd.pointerId) endPaneDrag(e, false);
   });
+  // A drag that ended by pointercancel or lost capture gets no click: the flag must not eat the next, unrelated one.
+  window.addEventListener('pointerdown', () => { pdSwallow = false; }, true);
   // The click that follows a drag must not press a button or start a rename.
   window.addEventListener('click', (e) => {
     if (!pdSwallow) return;

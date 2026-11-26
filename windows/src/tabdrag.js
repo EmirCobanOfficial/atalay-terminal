@@ -131,13 +131,26 @@ function tearAt(d, p) {
   return g.tearBounds(d.f.win.getBounds(), p, screen.getDisplayNearestPoint(p).workArea);
 }
 
+// The tear-off's outline: getBounds() counts the invisible resize borders Windows 10/11 add left, right and below, so the
+// line is drawn inside them, where the window is seen.
+function outlineAt(d, p) {
+  const t = tearAt(d, p);
+  const w = d.f.win;
+  const b = w.getBounds();
+  const cb = w.getContentBounds();
+  const l = Math.max(0, cb.x - b.x);
+  const r = Math.max(0, b.x + b.width - (cb.x + cb.width));
+  const bt = Math.max(0, b.y + b.height - (cb.y + cb.height));
+  return { x: t.x + l, y: t.y, width: t.width - l - r, height: t.height - bt };
+}
+
 // Draws the ghost and the preview of a drop (the table of the spec's 4.6; instant, as the Mac's chip and pane-bar previews).
 function preview(d, p, found) {
   const { drop, self, hit } = found;
   dragoverlay.ghost(d.title, p);
   if (drop && drop.type === 'detach') {
     dragoverlay.zone(null);
-    dragoverlay.outline(tearAt(d, p));
+    dragoverlay.outline(outlineAt(d, p));
     return;
   }
   dragoverlay.outline(null);
@@ -351,8 +364,11 @@ function pollKeys(w) {
       w.keysBusy = false;
       if (!k || wdrag !== w) return;
       w.shift = !!k.shift;
+      // The button is up but 'moved' never came (the move loop ended some other way): the drag is over, so the merge is decided now.
+      w.up = k.button === false ? (w.up || 0) + 1 : 0;
       // Windows puts the window back on Esc, so the merge is off for the rest of this drag (the Mac keeps moving it instead).
       if (k.esc) w.cancelled = true;
+      if (w.up >= 2) finishWindowDrag(w.f);
     })
     .catch(() => {
       w.keysBusy = false;
@@ -420,17 +436,22 @@ function startWindowDrag(f, newBounds) {
     shift: false,
     cancelled: false,
     keysBusy: false,
+    up: 0,
     headerShown: false,
     dwellShown: false,
   };
   wdrag = w;
-  warm();
-  snapshotFor(
-    () => wdrag === w,
-    (list) => {
-      w.snapshot = list;
-    }
-  );
+  // The first drag makes the overlay windows and starts the helper: after this 'will-move' returns, so the move loop isn't held up.
+  setImmediate(() => {
+    if (wdrag !== w) return;
+    warm();
+    snapshotFor(
+      () => wdrag === w,
+      (list) => {
+        w.snapshot = list;
+      }
+    );
+  });
   w.timer = setInterval(() => {
     try {
       tick(w);
@@ -482,6 +503,12 @@ function watchFrame(f) {
   f.win.on('closed', () => {
     if (drag && (drag.f === f || (drag.drop && drag.drop.to === f))) finish(drag, { notify: drag.f !== f });
   });
+  // A source window that hides or minimises mid-drag can't carry it on: its page is still there to be told.
+  const dropSource = () => {
+    if (drag && drag.f === f) finish(drag, { notify: true });
+  };
+  f.win.on('hide', dropSource);
+  f.win.on('minimize', dropSource);
   if (WIN) {
     f.win.on('will-move', (e, newBounds) => {
       if (newBounds && Number.isFinite(newBounds.width) && Number.isFinite(newBounds.height)) startWindowDrag(f, newBounds);

@@ -2812,7 +2812,7 @@ function layoutFrame(f) {
   const key = `${f.tabs.length}|${rects.size}|${f.focus}|${[...rects.keys()].join(',')}`;
   if (key !== f.stateKey) {
     f.stateKey = key;
-    for (const [id, view] of f.views) send(view, 'term:pane', { tabs: f.tabs.length, panes: rects.size, shown: rects.has(id), focused: id === f.focus });
+    for (const [id, view] of f.views) send(view, 'term:pane', { tabs: f.tabs.length, panes: rects.size, split: panes.ids(shown).length > 1, shown: rects.has(id), focused: id === f.focus });
   }
   pushBar(f);
 }
@@ -3286,7 +3286,8 @@ function tearOffTab(f, i, bounds) {
   const g = newFrame(bounds);
   moveTab(f, i, g, 0, true);
   if (f.pinned) setPinned(g, true);
-  showFrame(g, g.focus);
+  // The bounds are already on the pointer's display: they stay.
+  showFrame(g, g.focus, true);
   return true;
 }
 
@@ -3336,7 +3337,8 @@ function tearOffPane(f, id, bounds) {
   const g = newFrame(bounds);
   addPane(g, id, 'tab');
   if (f.pinned) setPinned(g, true);
-  showFrame(g, id);
+  // The bounds are already on the pointer's display: they stay.
+  showFrame(g, id, true);
   return true;
 }
 
@@ -3515,10 +3517,10 @@ function setPinned(f, on) {
 }
 
 /** Window `f` to the front with pane `id` (its tab) in front, as a click on its session in the dashboard brings it. */
-function showFrame(f, id) {
+function showFrame(f, id, keepPlace = false) {
   if (!f || f.win.isDestroyed()) return false;
   f.steppedAside = false;
-  if (!f.win.isVisible() && !PROBE) f.win.setBounds(wholeOnDisplay(f.win.getBounds(), chatHome()));
+  if (!keepPlace && !f.win.isVisible() && !PROBE) f.win.setBounds(wholeOnDisplay(f.win.getBounds(), chatHome()));
   if (f.win.isMinimized()) f.win.restore();
   pinToDash(f.win);
   f.win.show();

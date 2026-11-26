@@ -102,11 +102,14 @@
   }
   window.addEventListener('pointermove', (e) => {
     if (!drag || e.pointerId !== drag.pointerId || drag.finished) return;
+    // The button came up where no pointerup reached this page (over another window, say): the drag is over, or disarmed.
+    if (!(e.buttons & 1)) return endDrag(e, true);
     if (!drag.started) {
       if (Math.hypot(e.clientX - drag.x0, e.clientY - drag.y0) <= DRAG_SLOP) return;
       drag.started = true;
       drag.seq = ++seq;
-      try { drag.chip.setPointerCapture(e.pointerId); } catch (_) { /* the chip is gone: lostpointercapture cancels */ }
+      // The bar's chips holder keeps the pointer, not the chip: a rebuild of the chips must not drop it.
+      try { chips.setPointerCapture(e.pointerId); } catch (_) { /* the page is going: lostpointercapture cancels */ }
       document.body.classList.add('dragging');
       tellDrag({ phase: 'start', i: drag.i, seq: drag.seq });
     }
@@ -128,13 +131,14 @@
       swallowClick = true;
       lastDragEnd = performance.now();
     }
-    if (d.chip.hasPointerCapture(d.pointerId)) d.chip.releasePointerCapture(d.pointerId);
+    if (chips.hasPointerCapture(d.pointerId)) chips.releasePointerCapture(d.pointerId);
     document.body.classList.remove('dragging');
     drag = null;
     // The bar kept the chips as they were while the drag ran, so it draws what came in meanwhile now.
     if (redrawLater) {
       redrawLater = false;
-      draw();
+      // After the click that follows the release, which would miss a chip rebuilt before it.
+      setTimeout(draw, 0);
     }
   }
   window.addEventListener('pointerup', (e) => endDrag(e, true));
@@ -143,6 +147,8 @@
   window.addEventListener('lostpointercapture', (e) => {
     if (drag && drag.started && !drag.finished && e.pointerId === drag.pointerId) endDrag(e, false);
   });
+  // A drag that ended by pointercancel or lost capture gets no click: the flag must not eat the next, unrelated one.
+  window.addEventListener('pointerdown', () => { swallowClick = false; }, true);
   // The click that follows a drag must not pick or rename anything.
   window.addEventListener('click', (e) => {
     if (!swallowClick) return;
@@ -300,8 +306,8 @@
   function draw() {
     document.documentElement.style.setProperty('--bar-h', `${state.height || 30}px`);
     bar.hidden = !state.bar;
-    // Chips are kept while one is being dragged: rebuilding it would drop the pointer it holds.
-    if (drag && drag.started && !drag.finished) redrawLater = true;
+    // Chips are kept while one is being pressed or dragged: rebuilding it would drop the chip the press began on.
+    if (drag && !drag.finished) redrawLater = true;
     else if (editing < 0) drawChips();
     // A gap being dragged is kept: the layout under it changes as it moves.
     if (!gaps.querySelector('.drag')) drawGaps();
