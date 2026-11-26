@@ -18,7 +18,6 @@ import { buildCore } from './core.js';
 import { makeRaid } from './raid.js';
 import { buildBlueBox, buildRoadster, buildStation, CAR_LENGTH, carStudio } from './models.js';
 import { buildBackdrop } from './space.js';
-import { buildEye, drawStrands, transferPoint, transferSign } from './solar.js';
 import { glowTexture } from './textures.js';
 import { readTheme, rgba } from './theme.js';
 import { clamp, damp, easeInOut, easeOut, el, lerp, setText, TAU } from './util.js';
@@ -46,30 +45,6 @@ const WHITE = new THREE.Color(1, 1, 1);
 const VIOLET = new THREE.Color('#9d6bff');
 const tmp = { a: new THREE.Vector3(), b: new THREE.Vector3(), c: new THREE.Vector3(), d: new THREE.Vector3(), p: new THREE.Vector3(), m: new THREE.Matrix4() };
 const colorOf = (hex) => new THREE.Color(hex);
-
-// ---------- solar view ----------
-// Settings › Appearance › orbit map (settings.js, Orbit.solar): the map as a solar system. The sessions are planets on
-// flat orbits round the core, one inside the other, turning round it together and evenly spaced (so none hides
-// another), bigger the busier they are; when it's your turn they stay on their orbit instead of parking at the edges,
-// and subagents circle them as moons. The camera looks from higher up, so the orbits open up.
-// The stations are small ports on a ring outside the last orbit. A call is a short arc from its planet out to its
-// port, round the core rather than across it, there for a few seconds; a subagent's calls go on its session's. The
-// core gets an eye (solar.js) that follows the pointer over the map, else the planet that just called or the one that
-// needs you, else looks around. Fewer words: no flying file names, floating lines, live badges or last calls on the
-// ports. The stars, the dust and the cars' lane's ring go. Kept in this page's storage.
-const SOLAR = { on: false, links: new Map(), portR: K.STATION_R, ringNow: K.STATION_R, base: 0 };
-try {
-  SOLAR.on = localStorage.getItem('solar') === 'on';
-} catch {}
-const SOLAR_R0 = 150, SOLAR_STEP = 64; // the first orbit's radius, and the gap to the next: wider than a planet
-const SOLAR_LINK_MS = 2200; // how long a call's arc stays, fading: a trail behind its bolt, not a line that stays
-const SOLAR_LINKS = 2; // a planet's newest links drawn, at most
-const SOLAR_SPIN = 0.2; // rad/s: the planets turn round the core together, evenly spaced, so none hides another
-const SOLAR_POLAR = 0.78; // the camera's default angle from straight above: higher than the atom's, so the orbits open up
-const SOLAR_BULGE = 40; // how far a link swings out past the straight run between its radii
-const ECLIPTIC = new THREE.Quaternion().setFromAxisAngle(AXIS_X, Math.PI / 2); // the orbits' plane, y = 0
-// A planet's size: 0.85, up to 1.1 with 24 calls or more in the last minute (the session's spark, 20 s a bar).
-const planetScale = (s) => 0.85 + 0.25 * Math.min(1, (s.spark || []).slice(-3).reduce((a, v) => a + v, 0) / 24);
 
 // ---------- renderer, camera, controls ----------
 const host = document.getElementById('space');
@@ -118,46 +93,6 @@ const backdrop = buildBackdrop(glowTex, THEME);
 scene.add(backdrop.group);
 const core = buildCore(R, glowTex, K.CORE_R, THEME);
 scene.add(core.group);
-const eye = buildEye(K.CORE_R * 0.66);
-eye.paint(THEME);
-eye.group.visible = false;
-core.group.add(eye.group);
-// Where the eye looks (solar view): the pointer over the map for a few seconds after it moved, else a planet it was
-// sent to (a call, needs you), else a slow look around. x, y from -1 to 1, right and up.
-const GAZE = { x: 0, y: 0, mouse: null, mouseAt: 0, look: null, until: 0, hold: 0, last: 0 };
-host.addEventListener('pointermove', (e) => {
-  if (!SOLAR.on) return;
-  GAZE.mouse = localXY(e);
-  GAZE.mouseAt = performance.now();
-}, { passive: true });
-host.addEventListener('pointerleave', () => (GAZE.mouse = null), { passive: true });
-// A glance at node for ms; at most one every `gap` ms, and none while a held one (needs you) lasts.
-function lookAt(node, ms, hold = 0, gap = 0) {
-  const now = performance.now();
-  if (now < GAZE.hold || now - GAZE.last < gap) return;
-  GAZE.look = node;
-  GAZE.until = now + ms;
-  GAZE.last = now;
-  if (hold) GAZE.hold = now + hold;
-}
-const _gs = { x: 0, y: 0, z: 0 }, _gc = { x: 0, y: 0, z: 0 };
-function stepGaze(now, dt) {
-  toScreen(tmp.p.set(0, 0, 0), _gc);
-  let tx, ty;
-  if (GAZE.mouse && now - GAZE.mouseAt < 4000) ({ x: tx, y: ty } = GAZE.mouse);
-  else if (GAZE.look && now < GAZE.until && !gone(GAZE.look)) {
-    toScreen(GAZE.look.pos, _gs);
-    tx = _gs.x;
-    ty = _gs.y;
-  } else {
-    tx = _gc.x + Math.sin(now / 3300) * 160 + Math.sin(now / 1900) * 40;
-    ty = _gc.y + Math.sin(now / 5100) * 70;
-  }
-  const dx = tx - _gc.x, dy = ty - _gc.y, d = Math.hypot(dx, dy) || 1, m = Math.min(1, d / 220);
-  GAZE.x += ((dx / d) * m - GAZE.x) * damp(12, dt);
-  GAZE.y += ((-dy / d) * m - GAZE.y) * damp(12, dt);
-  eye.update(now, GAZE.x, GAZE.y, heat, CAM.right, CAM.up, CAM.fwd);
-}
 function paintTheme() {
   scene.background.copy(THEME.bg);
   ambient.color.copy(THEME.tint(0x8a7766));
@@ -173,7 +108,6 @@ window.addEventListener('themechange', () => {
   paintTheme();
   backdrop.paint(THEME);
   core.paint(THEME);
-  eye.paint(THEME);
   refreshCore();
   lastMinimap = 0;
   poke();
@@ -275,13 +209,11 @@ new ResizeObserver(() => {
 function fitDistance() {
   const vf = THREE.MathUtils.degToRad(camera.fov / 2);
   const hf = Math.atan(Math.tan(vf) * camera.aspect);
-  // Solar view: the ports' ring, seen from SOLAR_POLAR, with a margin all round; the sides keep room for parked cars.
-  if (SOLAR.on) return clamp(Math.max((SOLAR.portR + 40) / (Math.tan(hf) * 0.76), (SOLAR.portR * Math.cos(SOLAR_POLAR) + 120) / (Math.tan(vf) * 0.82)), 320, 2600);
   const dH = (K.STATION_R + 30) / (Math.tan(hf) * 0.74); // keep the side margins free for parked sessions
   const dV = (K.ATOM_R + 3 * K.ATOM_STEP + K.HEX + 30) / (Math.tan(vf) * 0.86);
   return clamp(Math.max(dH, dV), 320, 2200);
 }
-const viewAt = (dist, polar = SOLAR.on ? SOLAR_POLAR : K.POLAR, az = 0) => new THREE.Vector3().setFromSphericalCoords(dist, polar, az);
+const viewAt = (dist, polar = K.POLAR, az = 0) => new THREE.Vector3().setFromSphericalCoords(dist, polar, az);
 
 // A jolt (a box blowing up): the camera shakes for a moment around where it is.
 const SHAKE = { until: 0, amp: 0, ms: 1, off: new THREE.Vector3() };
@@ -361,15 +293,12 @@ function pxPerUnit(p) {
 // ---------- atom orbits ----------
 // Orbit planes are laid out against the default view, so from there they cross like the classic
 // atom symbol: plane k of n is turned k·180°/n in the screen plane and leans TILT out of it.
-const VIEW0 = { fwd: new THREE.Vector3(), right: new THREE.Vector3(), up: new THREE.Vector3() };
-// The home view's axes, for its angle: K.POLAR, or SOLAR_POLAR in Solar view (applySolar), so a raid's orbit (raid.js)
-// faces the camera it frames.
-function setView0(polar) {
-  VIEW0.fwd.setFromSphericalCoords(1, polar, 0).negate();
-  VIEW0.right.crossVectors(VIEW0.fwd, UP).normalize();
-  VIEW0.up.crossVectors(VIEW0.right, VIEW0.fwd).normalize();
-}
-setView0(K.POLAR);
+const VIEW0 = (() => {
+  const fwd = new THREE.Vector3().setFromSphericalCoords(1, K.POLAR, 0).negate();
+  const right = new THREE.Vector3().crossVectors(fwd, UP).normalize();
+  const up = new THREE.Vector3().crossVectors(right, fwd).normalize();
+  return { fwd, right, up };
+})();
 function atomQuat(phi, out) {
   const u = tmp.a.copy(VIEW0.right).multiplyScalar(Math.cos(phi)).addScaledVector(VIEW0.up, Math.sin(phi));
   const w = tmp.b.copy(VIEW0.right).multiplyScalar(-Math.sin(phi)).addScaledVector(VIEW0.up, Math.cos(phi));
@@ -410,7 +339,7 @@ function hiddenByCore(p) {
 
 // ---------- sessions ----------
 const NODES = new Map();
-const homeKindOf = (status) => (!SOLAR.on && (status === 'idle' || status === 'waiting') ? 'park' : 'orbit');
+const homeKindOf = (status) => (status === 'idle' || status === 'waiting' ? 'park' : 'orbit');
 const statusColor = (st) => colorOf(STATUS[st]?.color || STATUS.busy.color);
 const raycaster = new THREE.Raycaster();
 const _ndc = new THREE.Vector2();
@@ -460,7 +389,6 @@ class Session {
     this.dragOff = new THREE.Vector3();
     this.dragPlane = new THREE.Plane();
     this.theta = (this.ci * 2.39996 + 0.6) % TAU;
-    this.off = this.offTarget = 0; // solar view: its angle from the others' common one
     this.r = this.rTarget = K.ATOM_R;
     this.phi = this.phiTarget = 0;
     this.fresh = true;
@@ -551,7 +479,7 @@ class Session {
       this.homeScale = (K.PARK_HEX_PX / K.HEX) * parkPoint(this.slot, out);
       return out.addScaledVector(CAM.up, Math.sin(now / 760 + this.ci * 1.7) * 1.2 * this.homeScale);
     }
-    this.homeScale = SOLAR.on ? planetScale(this.s) : 1;
+    this.homeScale = 1;
     return out.set(Math.cos(this.theta) * this.r, Math.sin(this.theta) * this.r, 0).applyQuaternion(this.quat);
   }
 
@@ -576,19 +504,11 @@ class Session {
   update(dt, now) {
     this.r += (this.rTarget - this.r) * damp(1.6, dt);
     this.phi += (this.phiTarget - this.phi) * damp(1.4, dt);
-    if (SOLAR.on) this.quat.copy(ECLIPTIC);
-    else atomQuat(this.phi, this.quat);
+    atomQuat(this.phi, this.quat);
     this.kick = Math.max(0, this.kick - dt * 1.6);
     const ended = this.status === 'ended';
-    if (SOLAR.on) {
-      // Its place in the even spacing, reached gently when sessions come or go (the short way round).
-      const d = ((((this.offTarget - this.off) % TAU) + TAU * 1.5) % TAU) - Math.PI;
-      this.off += d * damp(1.5, dt);
-      this.theta = (SOLAR.base + this.off) % TAU;
-    } else {
-      const omega = 0.42 * Math.sqrt(K.ATOM_R / this.r) * (ended ? 0.3 : 1) * (1 + this.kick * 1.2);
-      this.theta = (this.theta + omega * dt) % TAU;
-    }
+    const omega = 0.42 * Math.sqrt(K.ATOM_R / this.r) * (ended ? 0.3 : 1) * (1 + this.kick * 1.2);
+    this.theta = (this.theta + omega * dt) % TAU;
     const H = this.home(this.homePos, now);
     this.prev.copy(this.pos);
 
@@ -615,8 +535,7 @@ class Session {
       }
     } else {
       this.pos.copy(H);
-      // A planet grows and shrinks with its calls gently; elsewhere the size follows the camera (a parking spot's) at once.
-      this.scale = SOLAR.on ? this.scale + (this.homeScale - this.scale) * damp(4, dt) : this.homeScale;
+      this.scale = this.homeScale;
     }
     if (dt > 0 && this.mode !== 'spring') this.vel.lerp(tmp.d.copy(this.pos).sub(this.prev).divideScalar(dt), damp(12, dt));
 
@@ -648,7 +567,7 @@ class Session {
   }
 
   updateOrbitRing(dt) {
-    const want = this.homeKind === 'orbit' && !this.dying ? (this.status === 'ended' ? 0.18 : 0.55) * (SOLAR.on ? 0.6 : 1) : 0;
+    const want = this.homeKind === 'orbit' && !this.dying ? (this.status === 'ended' ? 0.18 : 0.55) : 0;
     this.orbitAlpha += (want - this.orbitAlpha) * damp(3, dt);
     this.orbitRing.visible = this.orbitAlpha > 0.01;
     if (!this.orbitRing.visible) return;
@@ -809,27 +728,13 @@ function assignOrbits() {
   const n = orb.length;
   orb.forEach((o, i) => {
     o.phiTarget = (i * Math.PI) / Math.max(1, n);
-    o.rTarget = SOLAR.on ? SOLAR_R0 + i * SOLAR_STEP : K.ATOM_R + i * K.ATOM_STEP;
-    o.offTarget = (i * TAU) / Math.max(1, n);
-    if (o.fresh) o.off = o.offTarget;
+    o.rTarget = K.ATOM_R + i * K.ATOM_STEP;
     if (o.fresh) {
       o.phi = o.phiTarget;
       o.r = o.rTarget;
     }
   });
   for (const o of NODES.values()) o.fresh = false;
-  const portR = Math.max(K.STATION_R, SOLAR_R0 + (n - 1) * SOLAR_STEP + 90);
-  if (portR === SOLAR.portR) return;
-  SOLAR.portR = portR;
-  // Solar view: the framing follows the ring (home button, the idle tour's end, a raid's stage); a camera left at home
-  // goes along, one the viewer moved stays.
-  if (SOLAR.on && SIZE.w) {
-    // At home, or on its way there (sessions often arrive while the camera flies home).
-    const home = (T, P) => T.lengthSq() < 1 && Math.abs(P.distanceTo(T) - CAM.fit) < CAM.fit * 0.05;
-    const atHome = !cine && (camAnim ? home(camAnim.toT, camAnim.toP) : home(controls.target, camera.position));
-    CAM.fit = fitDistance();
-    if (atHome) resetView();
-  }
 }
 
 // Sessions take the spots from the top down and cars from the bottom up, so the two stay apart. The spot a chat or a
@@ -891,18 +796,12 @@ CATS.forEach((c, i) => {
   const obj = new CSS2DObject(e);
   obj.center.set(0.5, 0);
   scene.add(obj);
-  STATIONS[c] = { c, i, col, m, halo, pos: m.group.position.clone().setY(11), home: m.group.position.clone().setY(11), hitAt: 0, last: '', live: 0, el: e, obj, scale: 1 };
+  STATIONS[c] = { c, i, col, m, halo, pos: m.group.position.clone().setY(11), hitAt: 0, last: '', live: 0, el: e, obj, scale: 1 };
 });
 
 function updateStations(dt, now) {
-  // Solar view: the ports' ring stays outside the last orbit as sessions come and go.
-  if (SOLAR.on) SOLAR.ringNow += (SOLAR.portR - SOLAR.ringNow) * damp(2, dt);
   for (const c of CATS) {
     const st = STATIONS[c];
-    if (SOLAR.on) {
-      const a = -Math.PI / 2 + (st.i / CATS.length) * TAU;
-      st.pos.set(Math.cos(a) * SOLAR.ringNow, 11, Math.sin(a) * SOLAR.ringNow);
-    }
     const flash = Math.max(0, 1 - (now - st.hitAt) / 700);
     const live = st.live ? 0.5 + 0.5 * Math.sin(now / 160) : 0;
     st.m.coreMat.emissiveIntensity = 0.75 + flash * 3.2 + live * 1.2;
@@ -1133,7 +1032,7 @@ function drawShips() {
   let lane = false;
   for (const s of SHIPS.values()) lane ||= onLane(s);
   if (!lane) return;
-  if (!SOLAR.on) lines.circle(tmp.p.set(0, LANE.Y, 0), LANE.R, AXIS_X, AXIS_Z, ICE, 0.09, 128);
+  lines.circle(tmp.p.set(0, LANE.Y, 0), LANE.R, AXIS_X, AXIS_Z, ICE, 0.09, 128);
   for (const s of SHIPS.values()) {
     if (!onLane(s) || s.fly || !s.t.running) continue;
     const step = 0.006 + s.speed * 0.05;
@@ -1499,8 +1398,7 @@ function onEvent(ev) {
       wireHit(ev, now);
       const st = STATIONS[ev.c];
       if (!node || !st) break;
-      const labelled = !SOLAR.on && BOLTS.filter((b) => b.label).length < 6;
-      if (SOLAR.on) lookAt(node.owner, 1100, 0, 500);
+      const labelled = BOLTS.filter((b) => b.label).length < 6;
       BOLTS.push({ a: node, b: st, col: colorOf(CAT[ev.c].color), t0: now, dur: 1100 + Math.random() * 450, size: 4.4, dir: 1, text: partLabel(ev), label: labelled ? boltLabel(partLabel(ev), CAT[ev.c].color) : null });
       node.owner.kick = Math.min(1.5, node.owner.kick + 0.6);
       if (ev.n === 'Agent' || ev.n === 'Task') {
@@ -1512,7 +1410,7 @@ function onEvent(ev) {
     case 'result': {
       const st = STATIONS[ev.c];
       if (!node || !st) break;
-      BOLTS.push({ a: st, b: node, col: colorOf(ev.ok ? '#3dffa8' : '#ff4d4d'), t0: now, dur: 780 + Math.random() * 300, size: 3.2, dir: -1, ok: ev.ok, label: ev.ok || SOLAR.on ? null : boltLabel('✗ failed', '#ff4d4d') });
+      BOLTS.push({ a: st, b: node, col: colorOf(ev.ok ? '#3dffa8' : '#ff4d4d'), t0: now, dur: 780 + Math.random() * 300, size: 3.2, dir: -1, ok: ev.ok, label: ev.ok ? null : boltLabel('✗ failed', '#ff4d4d') });
       break;
     }
     case 'prompt':
@@ -1566,15 +1464,12 @@ function drawBolts(now) {
     if (u < 0) continue;
     const A = b.a.pos, B = b.b.pos;
     arcCtrl(A, B, _ctl);
-    // Solar view: round the core, as the links go.
-    if (SOLAR.on) b.sign = transferSign(A, B, b.sign);
-    const at = (uu) => (SOLAR.on ? transferPoint(A, B, uu, SOLAR_BULGE, _bz, b.sign) : bezier(A, _ctl, B, uu, _bz));
     const e = easeInOut(u);
     for (let k = 12; k >= 1; k--) {
       const uu = e - k * 0.016;
-      if (uu > 0) glow.add(at(uu), b.col, (1 - k / 13) * 1.2, b.size * (1 - k / 16));
+      if (uu > 0) glow.add(bezier(A, _ctl, B, uu, _bz), b.col, (1 - k / 13) * 1.2, b.size * (1 - k / 16));
     }
-    at(e);
+    bezier(A, _ctl, B, e, _bz);
     glow.add(_bz, b.col, 1.6, b.size * 2.6);
     glow.add(_bz, WHITE, 2.6, b.size * 0.85);
     if (b.label) {
@@ -1638,7 +1533,7 @@ function drawStatusFx(now) {
         tmp.p.copy(n.pos).addScaledVector(CAM.right, Math.cos(a) * rad).addScaledVector(CAM.up, Math.sin(a) * rad);
         glow.add(tmp.p, n.color, 1.5, 5 * n.scale);
       }
-    } else if (n.homeKind === 'park' || (SOLAR.on && (n.status === 'waiting' || n.status === 'idle'))) {
+    } else if (n.homeKind === 'park') {
       const period = n.status === 'waiting' ? 1300 : 2200;
       const count = n.status === 'waiting' ? 3 : 2;
       for (let k = 0; k < count; k++) {
@@ -1668,83 +1563,6 @@ function drawWires(now) {
     const base = hot ? 0.42 : 0.05 + 0.16 * (1 - age / 600_000);
     lines.path(_pts, st.col, (t) => base * Math.min(1, t * 6, (1 - t) * 6 + 0.25), hot);
   }
-}
-
-// Solar view: a link per session and station with a call in the last SOLAR_LINK_MS, fading; the ports, and a faint
-// ring through them.
-const LINK_N = 24;
-const _lp = Array.from({ length: LINK_N }, () => new THREE.Vector3()), _lb = Array.from({ length: LINK_N }, () => new THREE.Vector3());
-function drawSolar(now) {
-  const time = now / 1000, fresh = new Map();
-  for (const [k, w] of WIRES) {
-    if (now - w.t > 600_000) WIRES.delete(k);
-    else if (now - w.t < SOLAR_LINK_MS) {
-      const [sid, , c] = k.split('|'), lk = sid + '|' + c;
-      if ((fresh.get(lk) || 0) < w.t) fresh.set(lk, w.t);
-    }
-  }
-  // Each planet's newest SOLAR_LINKS only.
-  const per = new Map();
-  for (const [lk, t] of [...fresh].sort((a, b) => b[1] - a[1])) {
-    const sid = lk.split('|')[0], n = per.get(sid) || 0;
-    if (n >= SOLAR_LINKS) fresh.delete(lk);
-    else per.set(sid, n + 1);
-  }
-  for (const [lk, t] of fresh) {
-    const [sid, c] = lk.split('|');
-    const n = NODES.get(sid), st = STATIONS[c];
-    if (!n || n.dying || !st || !n.root.visible) continue;
-    let L = SOLAR.links.get(lk);
-    if (!L) SOLAR.links.set(lk, (L = { sign: 0, phase: Math.random() * TAU }));
-    L.seen = now;
-    L.sign = transferSign(n.pos, st.pos, L.sign);
-    for (let i = 0; i < LINK_N; i++) transferPoint(n.pos, st.pos, i / (LINK_N - 1), SOLAR_BULGE, _lp[i], L.sign);
-    const age = now - t, u = age / SOLAR_LINK_MS, a = 0.38 * (1 - u) * (1 - u), hot = age < 700;
-    drawStrands(lines, _lp, _lb, CAM.fwd, st.col, (q) => a * Math.min(1, q * 6 + 0.2, (1 - q) * 6 + 0.2), { strands: hot ? 2 : 1, amp: 4 * (1 - u), time, phase: L.phase, dashed: hot });
-  }
-  for (const [lk, L] of SOLAR.links) if (L.seen !== now) SOLAR.links.delete(lk);
-  lines.circle(tmp.p.set(0, 11, 0), SOLAR.ringNow, AXIS_X, AXIS_Z, THEME.accent, 0.07, 160);
-  for (const c of CATS) {
-    const st = STATIONS[c];
-    const flash = Math.max(0, 1 - (now - st.hitAt) / 700), live = st.live ? 0.5 + 0.5 * Math.sin(now / 300) : 0;
-    glow.add(st.pos, st.col, 1.1 + flash * 2.2 + live * 0.6, 14 + flash * 10);
-    lines.circle(st.pos, 7 + flash * 4, CAM.right, CAM.up, st.col, 0.5 + flash * 0.4, 20);
-  }
-}
-function applySolar() {
-  setView0(SOLAR.on ? SOLAR_POLAR : K.POLAR);
-  backdrop.group.visible = !SOLAR.on;
-  host.classList.toggle('solar', SOLAR.on);
-  eye.group.visible = SOLAR.on;
-  for (const c of CATS) {
-    const st = STATIONS[c];
-    st.m.group.visible = !SOLAR.on;
-    if (!SOLAR.on) st.pos.copy(st.home);
-  }
-  SOLAR.links.clear();
-  // Every session to its new home: an orbit of the other kind, or back to its parking spot.
-  const now = performance.now();
-  for (const n of NODES.values()) {
-    if (n.dying) continue;
-    n.homeKind = homeKindOf(n.status);
-    if (n.mode !== 'drag') n.startFly(now);
-  }
-  assignOrbits();
-  assignParking();
-  refreshCore();
-  // Framed for the new layout, from its own angle.
-  if (SIZE.w) {
-    CAM.fit = fitDistance();
-    resetView();
-  }
-  poke();
-}
-function solar(on) {
-  SOLAR.on = !!on;
-  try {
-    localStorage.setItem('solar', SOLAR.on ? 'on' : 'off');
-  } catch {}
-  applySolar();
 }
 
 function drawTethers() {
@@ -1937,7 +1755,7 @@ new ResizeObserver(([e]) => {
   MM.w = e.contentRect.width;
   MM.h = e.contentRect.height;
 }).observe(mm);
-const mmScale = () => (Math.min(MM.w, MM.h) * 0.5 - 5) / ((SOLAR.on ? Math.max(SOLAR.ringNow, K.STATION_R) : K.STATION_R) + 24);
+const mmScale = () => (Math.min(MM.w, MM.h) * 0.5 - 5) / (K.STATION_R + 24);
 const _corner = new THREE.Vector3(), _op = new THREE.Vector3();
 function groundPoint(nx, ny, out) {
   const ray = rayAt({ x: ((nx + 1) / 2) * SIZE.w, y: ((1 - ny) / 2) * SIZE.h });
@@ -2062,7 +1880,6 @@ function onStatus(sid, status) {
   if (!n) return;
   poke(2000); // the three ripples of "waiting" end 1.92 s on
   if (status === 'waiting') for (let i = 0; i < 3; i++) ripple(n, STATUS.waiting.color, 90, 1400, i * 260);
-  if (status === 'waiting' && SOLAR.on) lookAt(n, 2600, 2600);
   else if (status === 'idle') ripple(n, STATUS.idle.color, 80, 1500);
 }
 function seed(events) {
@@ -2072,9 +1889,8 @@ function seed(events) {
 function refreshCore() {
   const T = STATE?.totals;
   if (!T) return;
-  core.draw(T, STATE.byCat || {}, coreNum, SOLAR.on);
-  // Solar view: the eye takes the core's middle, so its numbers go under it.
-  setText(coreEl, !STATE.sessions.length ? 'no Claude Code session in the last 30 min' : SOLAR.on ? `${coreNum.toFixed(1)} tools/min · ${T.tools} calls today` : '');
+  core.draw(T, STATE.byCat || {}, coreNum);
+  setText(coreEl, STATE.sessions.length ? '' : 'no Claude Code session in the last 30 min');
 }
 
 // ---------- a friend's spaceship attack (raid.js) ----------
@@ -2215,10 +2031,6 @@ function frame(now) {
     camera.position.add(SHAKE.off);
   }
   updateCamBasis();
-  if (SOLAR.on) {
-    SOLAR.base = (SOLAR.base + SOLAR_SPIN * dt) % TAU;
-    stepGaze(now, dt);
-  }
   host.classList.toggle('far', CAM.dist > CAM.fit * 1.5);
   glow.material.uniforms.focal.value = CAM.focal * SIZE.dpr;
   lines.material.uniforms.time.value = now / 1000;
@@ -2228,7 +2040,7 @@ function frame(now) {
     coreNum += (T.toolsPerMin - coreNum) * damp(3, dt);
     heat = clamp(T.toolsPerMin / 18, 0, 1);
   }
-  if (!SOLAR.on) backdrop.update(now, dt, SIZE.dpr);
+  backdrop.update(now, dt, SIZE.dpr);
   core.update(now, heat);
   for (const [id, n] of NODES) {
     if (n.update(dt, now) === false) {
@@ -2248,8 +2060,7 @@ function frame(now) {
 
   glow.begin();
   lines.begin();
-  if (SOLAR.on) drawSolar(now);
-  else drawWires(now);
+  drawWires(now);
   drawTethers();
   drawBolts(now);
   drawRipples(now);
@@ -2308,7 +2119,6 @@ function focusRunaway(pid) {
   if (b) followBox(b);
 }
 setCinematic(cineOn);
-if (SOLAR.on) applySolar();
 // QUALITY too: the power save switch's tooltip (app.js) gives its numbers.
-window.Orbit = { quality: QUALITY, state: onState, event: onEvent, status: onStatus, seed, activity, power, terminals: syncShips, terminalGone: shipGone, cinematic: startCinematic, idle: systemIdle, runaways: syncBoxes, focusRunaway, blowUp, relabel, attack: raid.start, corePoint, shipPoint, solar, solarOn: () => SOLAR.on, nudge: nudgeCore };
+window.Orbit = { quality: QUALITY, state: onState, event: onEvent, status: onStatus, seed, activity, power, terminals: syncShips, terminalGone: shipGone, cinematic: startCinematic, idle: systemIdle, runaways: syncBoxes, focusRunaway, blowUp, relabel, attack: raid.start, corePoint, shipPoint, nudge: nudgeCore };
 for (const [fn, args] of R.MAPQ.splice(0)) window.Orbit[fn](...args);

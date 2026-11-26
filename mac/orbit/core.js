@@ -96,10 +96,8 @@ export function buildCore(R, glowTex, radius, theme) {
   }
   paint(theme);
 
-  // eye: Solar view's, in the middle (solar.js), so the rings only: its numbers go under the core (index.js).
-  function draw(T, byCat, num, eye = false) {
-    // With the eye the numbers aren't drawn: they don't make it draw again.
-    const next = [eye, eye ? '' : T.tools, eye ? '' : num.toFixed(1), T.okRate.toFixed(3), T.cacheHit.toFixed(2), R.CATS.map((c) => byCat[c] || 0)].join('|');
+  function draw(T, byCat, num) {
+    const next = [T.tools, num.toFixed(1), T.okRate.toFixed(3), T.cacheHit.toFixed(2), R.CATS.map((c) => byCat[c] || 0)].join('|');
     if (next === key) return;
     key = next;
     bx.clearRect(0, 0, S, S);
@@ -128,10 +126,6 @@ export function buildCore(R, glowTex, radius, theme) {
     } else ring(RC + 4 * k, 0, '#000', 'rgba(255,255,255,0.06)', 6 * k);
     ring(RC - 6 * k, T.okRate, '#3dffa8', 'rgba(255,77,77,0.55)', 3 * k);
     ring(RC - 13 * k, T.cacheHit, rgba(P.accent), 'rgba(255,255,255,0.08)', 3 * k);
-    if (eye) {
-      bodyTex.needsUpdate = true;
-      return;
-    }
 
     const small = Math.round(RC * 0.13);
     bx.textAlign = 'center';
