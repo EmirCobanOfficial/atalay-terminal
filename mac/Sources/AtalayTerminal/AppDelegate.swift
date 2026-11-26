@@ -6,6 +6,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let engine = RadarEngine()
     private var controller: MainWindowController!
     private var monitors: [Any] = []
+    /// Chat › Claude Account…, shown only with two or more Claude accounts.
+    private var claudeAccountItem: NSMenuItem?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // A build an earlier run staged but never restarted into goes in first: nothing runs yet, so nothing can stop
@@ -347,6 +349,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         keyed(file, "newTerminal", "New Terminal…", #selector(newTerminal), target: self)
         keyed(file, "newWorktree", "New Worktree…", #selector(newWorktree), target: self)
         keyed(file, "moveToWorktree", "Open in a Worktree…", #selector(moveToWorktree), target: self)
+        // Two or more Claude accounts: the title button's menu, from the menu bar too (no key: nothing switches by a slip).
+        // Hidden with one account (validateMenuItem of the item above it, which is always shown).
+        claudeAccountItem = add(file, "Claude Account…", #selector(claudeAccountMenu), "", target: self)
+        claudeAccountItem?.isHidden = !ClaudeAccounts.multiple
         // The window in front, when it is in a worktree: send its work as a pull request, merge it here, or delete the worktree
         // (WorktreeShip.swift). Merge and Delete have no key: rare, and Delete can't be undone by a slip of the finger.
         file.addItem(.separator())
@@ -459,7 +465,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if item.action == #selector(moveTabToNewWindow) { return controller.canMoveTabToNewWindow }
         if item.action == #selector(mergeAllWindows) { return controller.canMergeAll }
         // Open in a Worktree…: for the AI chat in front (live, in a git folder), whatever the note's setting says; else shown, not usable.
-        if item.action == #selector(moveToWorktree) { return controller.movableChat() != nil }
+        if item.action == #selector(moveToWorktree) {
+            claudeAccountItem?.isHidden = !ClaudeAccounts.multiple
+            return controller.movableChat() != nil
+        }
+        if item.action == #selector(claudeAccountMenu) { return ClaudeAccounts.multiple }
         // The pull request, merge and delete items: usable when the window in front is a worktree's and its status allows it.
         let shipIds: [Selector: String] = [#selector(createPR): "create", #selector(mergeWorktree): "merge", #selector(deleteWorktree): "delete"]
         if let id = item.action.flatMap({ shipIds[$0] }) {
@@ -480,6 +490,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func deleteWorktree() { shipMenu("delete") }
     @objc private func newTerminal() { controller.overlay.showNewTerminal() }
     @objc private func moveToWorktree() { controller.moveToWorktree() }
+    @objc private func claudeAccountMenu() { controller.showClaudeAccountMenu() }
     @objc private func newWorktree() { controller.overlay.showNewTerminal(worktree: true) }
     @objc private func newFile() { controller.newFile() }
     @objc private func newTab() { controller.newTab() }

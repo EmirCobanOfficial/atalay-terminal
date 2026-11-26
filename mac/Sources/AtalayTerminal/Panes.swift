@@ -632,6 +632,7 @@ final class PaneTitleBar: NSView, NSTextFieldDelegate {
     private let label = NSTextField(labelWithString: "")
     private let close = NSButton(title: "\u{00D7}", target: nil, action: nil)
     private let dot = NSView()
+    private let disc = NSImageView()
     private var editor: NSTextField?
     private var pressedAt: NSPoint?
     private var dragging = false
@@ -656,7 +657,8 @@ final class PaneTitleBar: NSView, NSTextFieldDelegate {
         ctxText.font = Theme.mono(10)
         ctxText.textColor = ThemeStore.shared.color("--txt")
         counts.lineBreakMode = .byTruncatingTail
-        for v in [dot, label, meter, ctxText, counts, close] as [NSView] { addSubview(v) }
+        disc.isHidden = true
+        for v in [dot, disc, label, meter, ctxText, counts, close] as [NSView] { addSubview(v) }
         paint()
     }
 
@@ -672,6 +674,8 @@ final class PaneTitleBar: NSView, NSTextFieldDelegate {
         self.stats = stats
         status = stats?.status ?? ""
         label.stringValue = title
+        disc.isHidden = stats?.account == nil
+        if let m = stats?.account { disc.image = ChatWindowController.disc(m); disc.toolTip = "Claude account: " + m.label }
         if let s = stats {
             meter.frac = s.ctxMax > 0 ? min(1, Double(s.ctx) / s.ctxMax) : 0
             ctxText.stringValue = tokenText(s.ctx)
@@ -720,7 +724,9 @@ final class PaneTitleBar: NSView, NSTextFieldDelegate {
         let w = bounds.width, h = bounds.height
         close.frame = NSRect(x: w - 20, y: (h - 16) / 2, width: 16, height: 16)
         dot.frame = NSRect(x: 8, y: (h - 6) / 2, width: 6, height: 6)
-        let x: CGFloat = dot.isHidden ? 8 : 19
+        let discX: CGFloat = dot.isHidden ? 8 : 19
+        disc.frame = NSRect(x: discX, y: (h - 14) / 2, width: 14, height: 14)
+        let x: CGFloat = discX + (disc.isHidden ? 0 : 18)
         // From the right: the context (meter and size), then the counts; the name keeps at least 70 points, so the counts
         // go first when it is narrow, then the meter.
         var right = w - 24
@@ -831,6 +837,8 @@ struct TabStats: Equatable {
     var ctx: Int, ctxMax: Double, tools: Int, web: Int, errors: Int
     /// The session's state as the header shows it: "busy", "waiting" (needs the user), "idle"...
     var status = ""
+    /// The Claude account of the session, drawn as its initial disc: only given when the window's tabs use more than one.
+    var account: AcctMark?
 }
 
 private final class TabChip: NSView, NSTextFieldDelegate {
@@ -861,6 +869,7 @@ private final class TabChip: NSView, NSTextFieldDelegate {
     private let meter = CtxMeter()
     private let ctxText = NSTextField(labelWithString: "")
     private let counts = NSTextField(labelWithString: "")
+    private let disc = NSImageView()
 
     init(title: String, number: Int, active: Bool) {
         super.init(frame: .zero)
@@ -888,7 +897,8 @@ private final class TabChip: NSView, NSTextFieldDelegate {
         dot.wantsLayer = true
         dot.layer?.cornerRadius = 3.5
         dot.isHidden = true
-        for v in [dot, label, meter, ctxText, counts, close] as [NSView] { addSubview(v) }
+        disc.isHidden = true
+        for v in [dot, disc, label, meter, ctxText, counts, close] as [NSView] { addSubview(v) }
         fillStats()
     }
 
@@ -963,6 +973,8 @@ private final class TabChip: NSView, NSTextFieldDelegate {
     override var isFlipped: Bool { true }
 
     private func fillStats() {
+        disc.isHidden = stats?.account == nil
+        if let m = stats?.account { disc.image = ChatWindowController.disc(m); disc.toolTip = "Claude account: " + m.label }
         guard let s = stats else { return }
         meter.frac = s.ctxMax > 0 ? min(1, Double(s.ctx) / s.ctxMax) : 0
         ctxText.stringValue = Self.tok(s.ctx)
@@ -991,7 +1003,9 @@ private final class TabChip: NSView, NSTextFieldDelegate {
             titleRight = meter.frame.minX - 8
         }
         label.alignment = stats == nil ? .center : .left
-        let titleX: CGFloat = stats == nil ? 22 : (dot.isHidden ? 10 : 22)
+        let discX: CGFloat = dot.isHidden ? 10 : 22
+        let titleX: CGFloat = (stats == nil ? 22 : discX) + (disc.isHidden ? 0 : 19)
+        disc.frame = NSRect(x: discX, y: titleY, width: 15, height: 15)
         dot.frame = NSRect(x: 10, y: titleY + 4, width: 7, height: 7)
         editor?.frame = NSRect(x: 6, y: (h - 18) / 2, width: max(40, w - 30), height: 18)
         label.frame = NSRect(x: titleX, y: titleY, width: max(0, titleRight - titleX), height: 15)

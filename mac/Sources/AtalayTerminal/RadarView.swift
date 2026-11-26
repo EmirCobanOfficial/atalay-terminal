@@ -13,6 +13,16 @@ final class DashboardWebView: WKWebView {
         let fromTop = isFlipped ? p.y : bounds.height - p.y
         return fromTop < 64 * pageZoom || super.acceptsFirstMouse(for: event)
     }
+
+    /// ⌘F (Edit › Find…): in the dashboard it is the chats list's search field (web/chats.js); the terminals' find is
+    /// theirs, in their own windows.
+    override func performTextFinderAction(_ sender: Any?) {
+        if (sender as? NSMenuItem)?.tag == NSTextFinder.Action.showFindInterface.rawValue {
+            evaluateJavaScript("window.__chats && window.__chats.focusSearch && window.__chats.focusSearch(); true", completionHandler: nil)
+            return
+        }
+        super.performTextFinderAction(sender)
+    }
 }
 
 /// Whether a friend's spaceship (web/attack.js) would really be seen on the orbit map. macOS calls a window visible
@@ -107,6 +117,7 @@ final class RadarView: NSObject, WKScriptMessageHandler, WKNavigationDelegate, W
         ucc.addScriptMessageHandler(NotesBridge(), contentWorld: .page, name: "notes")
         ucc.addScriptMessageHandler(NotesAIBridge(), contentWorld: .page, name: "notesai")
         ucc.addScriptMessageHandler(AttackBridge(), contentWorld: .page, name: "attack")
+        ucc.addScriptMessageHandler(ClaudeAccountsBridge(), contentWorld: .page, name: "claudeAccounts")
         webView.setValue(false, forKey: "drawsBackground")
         webView.navigationDelegate = self
         webView.uiDelegate = self
@@ -135,6 +146,11 @@ final class RadarView: NSObject, WKScriptMessageHandler, WKNavigationDelegate, W
         return URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("Resources/web")
+    }
+
+    /// The chats list is a panel of this page (web/chats.js): its requests go to Sidebar.swift's ChatsBridge.
+    func handleChats(_ bridge: ChatsBridge) {
+        webView.configuration.userContentController.addScriptMessageHandler(bridge, contentWorld: .page, name: "chats")
     }
 
     /// Settings' archived chats (web/cloud.js) go to the chats list (Sidebar.swift).

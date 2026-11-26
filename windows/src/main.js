@@ -86,7 +86,7 @@ if (guard) {
   if (debugging || !ptyOwn) guard.lock();
 }
 
-const { createEngine } = require('./engine');
+const { createEngine, renamedAt } = require('./engine');
 const { createGit } = require('./git');
 const { createCloud } = require('./cloud');
 const { createTokenLedger } = require('./tokenledger');
@@ -203,19 +203,18 @@ function shortcutsChanged() {
   for (const wc of webContents.getAllWebContents()) if (!wc.isDestroyed()) wc.send('atl:ringMouse', shortcuts.ringMouse());
   pushChatsKeys();
 }
-// The chats list's header names the keys that open and close it (pages/chats.js), as the user set them: after the list
-// loads and whenever they change.
+// The chats list's fold bar names the key that folds its saved chats (web/chats.js), as the user set it: after the list loads
+// and whenever it changes.
 function pushChatsKeys() {
-  run(chatsView, `window.__chats && __chats.keys && __chats.keys(${JSON.stringify({ chatsList: shortcuts.label(shortcuts.combo('chatsList')) })})`);
+  run(dashView, `window.__chats && __chats.keys && __chats.keys(${JSON.stringify({ chatsList: shortcuts.label(shortcuts.combo('chatsList')) })})`);
 }
 // Esc and the close keys swapped (Settings › Shortcuts › Chats): an Esc that hid a terminal, held or pressed again,
 // doesn't go on to the window Windows puts in front next: Escape is dropped everywhere for half a second.
 let escMuteUntil = 0;
 
 // ---------- the parts ----------
-// The dashboard window: the chats list beside the dashboard's page, as the Mac's split view has them (two views, so
-// each page is as wide as its part of the window).
-let dash = null, dashView = null, chatsView = null;
+// The dashboard window: one page that fills it; the chats list is one of its panels (web/chats.js), as on the Mac.
+let dash = null, dashView = null;
 const boots = new Map(); // webContents id -> what its preload asks for before the page loads
 // A terminal's `page` is its own view (pages/terminal.js); `win` is the window it's a tab or a pane of (its `frame`'s),
 // and so are `steppedAside` and `pinned`: a window's tabs show, hide and pin together (openChatWindow).
@@ -243,7 +242,7 @@ const themes = createThemes({
       const wc = webContents.fromId(id);
       if (wc && !wc.isDestroyed()) wc.send('atl:theme', css);
     }
-    if (dash) { for (const w of [dash, dashView, chatsView]) w.setBackgroundColor(themes.color('--bg')); noteWindows.setBackground(themes.color('--bg')); }
+    if (dash) { for (const w of [dash, dashView]) w.setBackgroundColor(themes.color('--bg')); noteWindows.setBackground(themes.color('--bg')); }
   },
   // Settings' text size: the dashboard zooms, as a browser does.
   onScale(factor) {
@@ -364,6 +363,8 @@ const engine = createEngine({
   memTree: (pid) => memTrees.get(pid) || null,
   // A Claude process under one of the app's terminals belongs to that window (its id becomes the session's `tab`).
   isAppPid: (pid) => (terminals.list().find((t) => t.pid === pid) || {}).id || false,
+  // The name typed for a chat in the list: the session cards, the MCP list and the rest show it too (the Mac's ChatNames).
+  nameOf: (id) => chatlist.title(id),
   // An AI session left "busy": the notes it was working in let it go (notesai.js; the Mac's NotesTools.sessionIdle).
   onSessionIdle(pid) {
     try {
@@ -411,6 +412,15 @@ const engine = createEngine({
   onHistory(items) {
     chatlist.setItems(items);
     pushChats();
+    // A name typed in the list may have given way to Claude's own /rename (chatlist.js).
+    engine.namesChanged();
+  },
+  // Claude's own /rename, just written into a running chat: newer than a name typed in the list, which gives way to it.
+  onCustomTitle({ id, title }) {
+    if (!chatlist.renamedLive(id, title)) return;
+    engine.namesChanged();
+    pushChats(true);
+    pushChatInfos();
   },
 });
 
@@ -428,6 +438,14 @@ const chatlist = createChatList({
     home: os.homedir(),
   }),
   onErased: () => engine.refreshHistory(),
+  // A name typed in the list against Claude's own /rename: when that was made (engine.js), and the list and the windows
+  // follow once the typed one gave way.
+  renamedAt,
+  onNames: () => {
+    engine.namesChanged();
+    pushChats(true);
+    pushChatInfos();
+  },
 });
 
 const git = createGit({
@@ -686,7 +704,7 @@ const mascot = createMascot({
   defaultEnabled: STAGING || (!RELEASE && !PROBE),
   defaultMischief: STAGING ? 3 : 1,
   run,
-  dash: () => dash, dashView: () => dashView, chatsView: () => chatsView,
+  dash: () => dash, dashView: () => dashView, chatsView: () => null,
   terminals: mascotTerminals,
   inFront: () => appInFront(),
   openView: mascotOpenView,
@@ -702,11 +720,10 @@ function mascotOpenView(view) {
   if (MASCOT_VIEWS.includes(view)) toDash(`openView(${JSON.stringify(view)})`);
 }
 
-// A tap of hers on a tab or the like (app.js's __mascotNav allows its own list); a folder's fold is the chats list's.
+// A tap of hers on a tab or the like (app.js's __mascotNav allows its own list, a folder's fold in the chats list too).
 function mascotNavTap(id) {
   if (typeof id !== 'string' || !id || id.length > 400) return;
-  if (id.startsWith('fold:')) run(chatsView, `window.__mascotFold && __mascotFold(${JSON.stringify(id.slice(5))})`);
-  else run(dashView, `window.__mascotNav && __mascotNav(${JSON.stringify(id)})`);
+  run(dashView, `window.__mascotNav && __mascotNav(${JSON.stringify(id)})`);
 }
 
 // Before she hides a terminal the dashboard takes the keys (and no field), so keys still in flight go nowhere instead of
@@ -724,7 +741,6 @@ function parkKeys() {
   const blur = 'document.activeElement && document.activeElement.blur && document.activeElement.blur()';
   pageOf(dashView)?.focus();
   run(dashView, blur);
-  run(chatsView, blur);
   return true;
 }
 
@@ -866,7 +882,7 @@ const worktreeShip = createWorktreeShip({
   openPath: (p) => shell.openPath(p),
   hooks: {
     shownTops: () => new Set([...chats.values()].filter((c) => c.wtTop && c.win && !c.win.isDestroyed() && c.win.isVisible() && !c.win.isMinimized()).map((c) => c.wtTop)),
-    listVisible: () => !!dash && !dash.isDestroyed() && dash.isVisible() && !dash.isMinimized() && chatsList.shown,
+    listVisible: () => !!dash && !dash.isDestroyed() && dash.isVisible() && !dash.isMinimized(),
     live: (top) => shipLive(top),
     ai: (top, windowId) => shipAI(top, windowId),
     title: (top, windowId) => shipTitle(top, windowId),
@@ -1091,7 +1107,7 @@ function pushActiveSession(force = false) {
   // live session's, so the bar marks the row with either (the Mac's best.convId).
   const alt = (active && active.ai && active.convId) || null;
   if (chatlist.setActive(chatSid, alt) || force) {
-    run(chatsView, `window.__chats && __chats.active(${JSON.stringify(chatSid)}, ${JSON.stringify(alt)})`);
+    run(dashView, `window.__chats && __chats.active(${JSON.stringify(chatSid)}, ${JSON.stringify(alt)})`);
   }
 }
 
@@ -1241,7 +1257,6 @@ const HANG_LOG = path.join(app.getPath('userData'), 'hangs.log');
 const hungSince = new WeakMap();
 function pageName(wc) {
   if (wc === pageOf(dashView)) return 'dashboard';
-  if (wc === pageOf(chatsView)) return 'chats list';
   if (wc === pageOf(panels.notices)) return 'notices';
   if (wc === pageOf(over)) return 'overlay';
   if (mascot.has(wc)) return 'Viktoria';
@@ -1401,8 +1416,7 @@ function createDashboard() {
   // The app's menu and its keys (Ctrl+N, Ctrl+K, Ctrl+Q…), as the other windows have them.
   if (process.platform !== 'darwin' && Menu.getApplicationMenu()) win.setMenu(Menu.getApplicationMenu());
   dashView = new WebContentsView({ webPreferences: webPrefs() });
-  chatsView = new WebContentsView({ webPreferences: webPrefs() });
-  const views = [dashView, chatsView];
+  const views = [dashView];
   for (const v of views) {
     v.setBackgroundColor(bg);
     win.contentView.addChildView(v);
@@ -1414,8 +1428,8 @@ function createDashboard() {
     });
     // Reload Dashboard ended a stuck page's renderer and loaded it again already (reloadDashboard): not twice.
     v.webContents.on('render-process-gone', () => setTimeout(() => !v.webContents.isDestroyed() && !(v === dashView && Date.now() - dashRestartedAt < 3000) && v.webContents.reload(), 500));
-    // Ctrl+B, the Mac's ⌘B (or the keys set for it): the chats list slides open or shut (in the terminals it stays the
-    // shell's). While Settings › Shortcuts records new keys, every key goes to it, not the page or the menu.
+    // Ctrl+B, the Mac's ⌘B (or the keys set for it): the chats list folds its saved chats away or back (in the terminals
+    // it stays the shell's). While Settings › Shortcuts records new keys, every key goes to it, not the page or the menu.
     v.webContents.on('before-input-event', (e, input) => {
       if (v === dashView && shortcuts.recordInput(input)) return e.preventDefault();
       const chatsKeys = shortcuts.combo('chatsList');
@@ -1436,7 +1450,6 @@ function createDashboard() {
       if (['Enter', 'NumpadEnter', 'Space'].includes(input.code) || ['Enter', ' '].includes(input.key)) userInput.press = now;
     }
   });
-  chatsView.setVisible(chatsList.shown);
   layout();
   for (const ev of ['resize', 'maximize', 'unmaximize', 'restore', 'enter-full-screen', 'leave-full-screen']) win.on(ev, layout);
   checkPages();
@@ -1446,9 +1459,6 @@ function createDashboard() {
     dashView.webContents.setZoomFactor(themes.uiScale());
     pushSide(true);
   });
-  chatsView.webContents.loadFile(path.join(__dirname, '..', 'pages', 'chats.html'));
-  // A list (re)loaded while a menu is open is dimmed too.
-  chatsView.webContents.on('did-finish-load', () => sidebarDim && run(chatsView, DIM_JS));
   // Shown once the dashboard's page is there (no empty window first), or a few seconds on whatever happens.
   let shown = false;
   const show = () => {
@@ -1472,10 +1482,10 @@ function createDashboard() {
   }
   // The dashboard brought to the front by Windows (a terminal in front of it hid, with Ctrl+W or the swapped Esc, or
   // Alt+Tab) is a window with neither page holding the keys: they went nowhere, the menu's (Ctrl+Shift+N, Ctrl+K…)
-  // too. Its page gets them then, as showDashboard gives them, unless the chats list kept them.
+  // too. Its page gets them then, as showDashboard gives them.
   win.on('focus', () => setImmediate(() => {
     if (win.isDestroyed() || !win.isFocused()) return;
-    if (!chatsView.webContents.isFocused() && !dashView.webContents.isFocused()) dashView.webContents.focus();
+    if (!dashView.webContents.isFocused()) dashView.webContents.focus();
   }));
   // The level-up waits for the app to be in front (the notices' "focus"): the app's focus events are BrowserWindows'.
   win.on('focus', tellFocus);
@@ -1497,10 +1507,7 @@ function createDashboard() {
   win.on('closed', () => {
     // A window's views don't go with it: their pages close here.
     for (const v of views) if (!v.webContents.isDestroyed()) v.webContents.close();
-    if (dash === win) dash = dashView = chatsView = null;
-    clearInterval(chatsList.timer);
-    chatsList.timer = null;
-    chatsList.slide = null;
+    if (dash === win) dash = dashView = null;
     chatsJSON = '';
     winOpenJSON = '';
     stepAside(false);
@@ -1512,96 +1519,33 @@ function createDashboard() {
   });
 }
 
-// ---------- the chats list beside the dashboard (the Mac's sidebar) ----------
-// Open from the start, at the width it had when it was last closed (narrowest 210, widest 460); Ctrl+B or its × slides
-// it open and shut, fading, while the dashboard gives it room and takes it back.
-const CHATS_MIN = 210, CHATS_MAX = 460;
-const chatsWidth = (w) => (Number.isFinite(w) ? Math.round(Math.min(CHATS_MAX, Math.max(CHATS_MIN, w))) : 280);
-const chatsList = { shown: settings.get('sidebarHidden') !== true && !DEMO, width: chatsWidth(settings.get('sidebarWidth')), slide: null, timer: null };
+// ---------- the chats list: a panel of the dashboard's page (web/chats.js), as on the Mac ----------
+// Ctrl+B (or the list's own tag) folds its saved chats away and back; the live chats stay. Kept across launches.
+const chatsList = { folded: settings.get('sidebarHidden') === true && !DEMO };
 
 function layout() {
   if (!dash || dash.isDestroyed() || dash.isMinimized()) return;
   const [w, h] = dash.getContentSize();
   if (w < 1 || h < 1) return;
-  const side = Math.round(chatsList.slide != null ? chatsList.slide : chatsList.shown ? chatsList.width : 0);
-  chatsView.setBounds({ x: 0, y: 0, width: side, height: h });
-  dashView.setBounds({ x: side, y: 0, width: Math.max(0, w - side), height: h });
-  pushSide();
+  dashView.setBounds({ x: 0, y: 0, width: w, height: h });
 }
 
-// The page centres its menus on the whole window, so it needs how far right of the window's edge it starts (the chats
-// list), in its own px: the text size zooms the page, so the same DIPs are fewer px. Sent when it changes (the list
-// dragged, opened or shut, the window or the text size changed), and again after the page loads or reloads (force).
-let sideSent = null;
+// The page centres its menus on the whole window, so it needs how far right of the window's edge it starts: nothing sits
+// left of it now. Sent again after the page loads or reloads (force).
 function pushSide(force) {
-  if (!dashView || !chatsView || dashView.webContents.isDestroyed()) return;
-  // Each script run on a page still loading adds a listener to it; the load handler pushes this forced anyway.
-  if (!force && dashView.webContents.isLoading()) return;
-  if (force) sideSent = null;
-  const wide = chatsView.getVisible() ? chatsView.getBounds().width : 0;
-  const px = Math.round(wide / (dashView.webContents.getZoomFactor() || 1));
-  if (px === sideSent) return;
-  sideSent = px;
-  run(dashView, `document.documentElement.style.setProperty('--side-x', '${px}px')`);
+  if (!force || !dashView || dashView.webContents.isDestroyed()) return;
+  run(dashView, "document.documentElement.style.setProperty('--side-x', '0px')");
 }
 
-// Darkens the chats list as the page's backdrop darkens the dashboard, so the open menu is the one thing in front; the
-// cover takes the list's clicks too, as a menu over the whole window would. It lives in the list's page, so it stays
-// while the list is hidden and a list opened meanwhile comes up dimmed (and a reloaded list gets it again).
-let sidebarDim = false;
-const DIM_JS = `(() => {
-  let d = document.getElementById('atl-side-dim');
-  if (!d) {
-    d = document.createElement('div');
-    d.id = 'atl-side-dim';
-    d.style.cssText = 'position:fixed;inset:0;z-index:2147483647;background:rgba(0,0,0,.4)';
-    document.documentElement.appendChild(d);
-  }
-})()`;
-const UNDIM_JS = `document.getElementById('atl-side-dim')?.remove()`;
-function dimSidebar(on) {
-  sidebarDim = on;
-  // A list still loading takes it from its load handler (sidebarDim).
-  if (chatsView && !chatsView.webContents.isLoading()) run(chatsView, on ? DIM_JS : UNDIM_JS);
+// Ctrl+B: the page folds the chats list's saved chats away (or back); the state is kept.
+function setChatsFolded(on, tellPage) {
+  chatsList.folded = !!on;
+  settings.set('sidebarHidden', chatsList.folded);
+  if (tellPage) run(dashView, `window.__chats && __chats.fold(${chatsList.folded})`);
 }
-
-// CSS's cubic-bezier(0.65, 0, 0.35, 1), the Mac's slide: progress (0…1) -> how far along.
-const slideCurve = (() => {
-  const [x1, y1, x2, y2] = [0.65, 0, 0.35, 1];
-  const at = (a, b, s) => 3 * a * s * (1 - s) ** 2 + 3 * b * s * s * (1 - s) + s ** 3;
-  return (t) => {
-    let lo = 0, hi = 1;
-    for (let i = 0; i < 24; i++) {
-      const mid = (lo + hi) / 2;
-      if (at(x1, x2, mid) < t) lo = mid;
-      else hi = mid;
-    }
-    return at(y1, y2, (lo + hi) / 2);
-  };
-})();
-
 function toggleChats() {
-  if (!dash || chatsList.timer) return;
-  const opening = !chatsList.shown;
-  const from = opening ? 0 : chatsList.width, to = opening ? chatsList.width : 0;
-  if (opening) chatsView.setVisible(true);
-  run(chatsView, `window.__chats && __chats.fade(${opening})`);
-  const t0 = Date.now();
-  chatsList.slide = from;
-  layout();
-  chatsList.timer = setInterval(() => {
-    const t = Math.min(1, (Date.now() - t0) / 450);
-    chatsList.slide = from + (to - from) * slideCurve(t);
-    if (t >= 1) {
-      clearInterval(chatsList.timer);
-      chatsList.timer = null;
-      chatsList.slide = null;
-      chatsList.shown = opening;
-      if (!opening && chatsView) chatsView.setVisible(false);
-      settings.set('sidebarHidden', !opening);
-    }
-    layout();
-  }, 16);
+  if (!dash) return;
+  setChatsFolded(!chatsList.folded, true);
 }
 
 // Tells the dashboard which sessions have a visible chat window (cards light up), as on the Mac.
@@ -1620,7 +1564,7 @@ function pushWinOpen(force) {
 
 let chatsJSON = '', chatsVersion = -1;
 function pushChats(force) {
-  if (!chatsView) return;
+  if (!dashView) return;
   const live = chatlist.setLive(engine.live());
   // A chat with a window of the app, shown or not: "in a window".
   const open = chatlist.setOpen([...chats.values()].map((c) => c.sessionId).filter(Boolean));
@@ -1630,7 +1574,7 @@ function pushChats(force) {
   const json = JSON.stringify(streamer.on ? madeUpChats(snap) : snap);
   if (json === chatsJSON && !force) return;
   chatsJSON = json;
-  run(chatsView, `window.__chats && __chats.update(${json})`);
+  run(dashView, `window.__chats && __chats.update(${json})`);
 }
 
 /**
@@ -1641,6 +1585,9 @@ function pushChats(force) {
 function shipFolders(snap) {
   const tops = new Set();
   const folders = {};
+  // A worktree's folder sits in its main folder's group in the list (web/chats.js) when that folder is in it: `main` is its key.
+  const norm = (p) => path.normalize(String(p || '')).replace(/[\\/]+$/, '').toLowerCase();
+  const keyOf = new Map(Object.entries(snap.folders || {}).map(([k, f]) => [norm(f && f.cwd), k]));
   for (const [key, f] of Object.entries(snap.folders || {})) {
     const wi = f && f.cwd ? gitShip.info(f.cwd) : null;
     const top = wi && wi.linked ? wi.top : f && f.cwd && worktreeShip.isDeleted(f.cwd) ? f.cwd : null;
@@ -1653,7 +1600,8 @@ function shipFolders(snap) {
     const st = worktreeShip.status(top);
     const items = worktreeShip.items(st, deleted || worktreeShip.isBusy(top)).filter((x) => ['create', 'merge', 'delete', 'prmerge', 'openpr'].includes(x.id));
     // Its right-click menu is a native one too: a dimmed item's reason goes in its title (menuLabel).
-    folders[key] = { ...f, wt: { top, state: worktreeShip.listState(top), items: items.map((x) => ({ id: x.id, title: menuLabel(x), enabled: x.enabled })) } };
+    const main = wi && wi.main ? keyOf.get(norm(wi.main)) : undefined;
+    folders[key] = { ...f, wt: { top, branch: (wi && wi.branch) || '', main: main && main !== key ? main : undefined, state: worktreeShip.listState(top), items: items.map((x) => ({ id: x.id, title: menuLabel(x), enabled: x.enabled })) } };
   }
   worktreeShip.watchList([...tops].filter((t) => !worktreeShip.isDeleted(t)));
   return { ...snap, folders };
@@ -1671,7 +1619,10 @@ function madeUpChats(snap) {
       return { ...t, title, job: t.job ? streamer.fake('cmd', t.job) : t.job, tip: title || 'terminal' };
     }),
     folders: Object.fromEntries(
-      Object.entries(snap.folders).map(([key, f]) => [key, { ...f, label: streamer.project(f.cwd), path: streamer.folder(f.cwd) }]),
+      Object.entries(snap.folders).map(([key, f]) => [key, {
+        ...f, label: streamer.project(f.cwd), path: streamer.folder(f.cwd),
+        ...(f.wt ? { wt: { ...f.wt, branch: streamer.fake('branch', f.wt.branch || '') } } : {}),
+      }]),
     ),
   };
 }
@@ -1706,11 +1657,9 @@ function handleChats(msg) {
       pushChats(true);
       pushActiveSession(true);
       pushChatsKeys();
+      run(dashView, `window.__chats && __chats.fold(${chatsList.folded})`);
       mascot.pushToPages();
       return true;
-    // The rects in the list Viktoria walks on (pages/chats.js reports them while she is on).
-    case 'mascotRects':
-      return mascot.updateSidebarRects(msg.rects), true;
     case 'open':
       return openSession(String(msg.id || ''), false);
     case 'fork':
@@ -1749,6 +1698,7 @@ function handleChats(msg) {
       break;
     case 'rename':
       chatlist.rename(String(msg.id || ''), String(msg.name ?? ''));
+      engine.namesChanged();
       break;
     case 'folders':
       for (const k of Array.isArray(msg.keys) ? msg.keys : []) chatlist.setFolder(String(k || ''), msg.on === true);
@@ -1763,24 +1713,16 @@ function handleChats(msg) {
     case 'deleteFolders':
       return deleteChats(chatlist.chatsInFolders((Array.isArray(msg.keys) ? msg.keys : []).map(String)));
     case 'menu':
-      return popupMenu(msg.items, msg.at, chatsView);
+      return popupMenu(msg.items, msg.at, dashView);
     // A worktree folder's Create Pull Request…, Merge…, Delete Worktree…, Open PR: the sheet stands alone in the middle (no
     // window to drop from), as the Mac's list opens it. Only a linked worktree's own folder.
     case 'ship':
       if (!['create', 'merge', 'delete', 'prmerge', 'openpr'].includes(msg.id) || !worktreeShip.knows(String(msg.top || ''))) return false;
       return worktreeShip.handle(msg.id, String(msg.top), null);
-    case 'close':
-      toggleChats();
+    // The saved chats folded or unfolded from the page itself (its tag, its fold bar, ⌘F opening them): kept.
+    case 'closed':
+      setChatsFolded(msg.on === true, false);
       return true;
-    // Dragged wider or narrower: kept for the next time it opens (and the next launch) once the drag is over.
-    case 'width': {
-      if (!chatsList.shown || chatsList.timer) return true;
-      const z = (chatsView && !chatsView.webContents.isDestroyed() && chatsView.webContents.getZoomFactor()) || 1;
-      chatsList.width = chatsWidth(Number(msg.w) * z);
-      layout();
-      if (msg.done) settings.set('sidebarWidth', chatsList.width);
-      return true;
-    }
     default:
       throw new Error('unknown request');
   }
@@ -1981,8 +1923,7 @@ function showDashboard() {
   if (dash.isMinimized()) dash.restore();
   dash.show();
   dash.focus();
-  // The keys go to the dashboard's page unless the chats list has them (its search).
-  if (!chatsView.webContents.isFocused()) dashView.webContents.focus();
+  dashView.webContents.focus();
 }
 
 // ---------- Source Control's editor: files from the terminals, new files ----------
@@ -2064,7 +2005,6 @@ function handleRadar(msg) {
     case 'ready':
       // A reloaded page has no menu open, and starts its feed over: lines from the old one would never dissolve.
       stepAside(false);
-      dimSidebar(false);
       feedPanel.clearIfCreated();
       engine.requestInit();
       pushWinOpen(true);
@@ -2149,7 +2089,6 @@ function handleRadar(msg) {
     // A menu (friends, settings, an update) opened or closed on the dashboard: the windows pinned above it step out of
     // the way meanwhile, as on the Mac.
     case 'modal':
-      dimSidebar(msg.open === true);
       return stepAside(msg.open === true);
     // A note out of the dashboard in its own window, closed from the dashboard, the dashboard's notes loaded (the notes
     // left out at the last quit come back), a note hidden from AI or shown again (its window's eye follows), and the
@@ -2531,7 +2470,7 @@ function newFrame(place) {
     // on the Mac, when the one hidden had them and the dashboard shows.
     if (hadKeys && dash && !dash.isDestroyed() && dash.isVisible() && !dash.isMinimized()) {
       dash.focus();
-      if (!chatsView.webContents.isFocused()) dashView.webContents.focus();
+      dashView.webContents.focus();
     }
     if (activeTerminalId && f.views.has(activeTerminalId)) {
       activeTerminalId = null;
@@ -4165,8 +4104,14 @@ function chatSeen() {
   const w = panels.chats.get('chat');
   return !!w && !w.isDestroyed() && w.isVisible() && !w.isMinimized() && !!BaseWindow.getFocusedWindow();
 }
+// The friend whose tab is in front (panels.front, the chat page's `showing`) while the chat window itself has the keyboard focus,
+// else null: only their nudge shakes the chat (any other brings the card, and the terminals or the map shake).
+function chatFocused() {
+  const w = panels.chats.get('chat');
+  return !!w && !w.isDestroyed() && w.isVisible() && !w.isMinimized() && w.isFocused() ? panels.front || null : null;
+}
 function tellShowing() {
-  toNotices(`showing && __messages.showing(${JSON.stringify([...panels.showing])}, ${chatSeen()})`);
+  toNotices(`showing && __messages.showing(${JSON.stringify([...panels.showing])}, ${chatSeen()}, ${JSON.stringify(chatFocused())})`);
 }
 
 // ---------- the nudge's window shake (nudge.ts, messages.js; the Mac's WindowShake in Messages.swift) ----------
@@ -4189,6 +4134,7 @@ function stopShake(win) {
   if (!sh) return;
   clearInterval(sh.timer);
   shakes.delete(win);
+  if (!win.isDestroyed()) win.removeListener('will-move', sh.moved);
   // Back to the exact start, unless it was maximized or went full screen meanwhile (that frame is the system's now).
   if (!win.isDestroyed() && !win.isMaximized() && !win.isFullScreen()) win.setBounds(sh.start);
 }
@@ -4207,15 +4153,29 @@ function shakeWin(win, amp) {
     const k = (1 - Math.cos(Math.PI * Math.min(Math.max((t - ta) / (tb - ta), 0), 1))) / 2;
     win.setBounds({ x: start.x + Math.round((xa + (xb - xa) * k) * amp), y: start.y + Math.round((ya + (yb - ya) * k) * amp), width: start.width, height: start.height });
   }, 8);
-  shakes.set(win, { timer, start });
+  // The user takes the window by its frame (a native drag; setBounds doesn't fire this): the shake ends at once, as on the Mac.
+  const moved = () => stopShake(win);
+  win.once('will-move', moved);
+  shakes.set(win, { timer, start, moved });
 }
-// A friend's nudge while their chat isn't on screen (the card came as well): the dashboard by its state, as the Mac's
-// nudgeDashboard: full screen or maximized -> the map's centre circle shakes (in the page); a window on screen with the app in
-// front -> the whole window shakes; minimized, hidden or behind other apps -> nothing (the card and the buzz are all).
+// A friend's nudge while their chat doesn't have the keyboard focus (the card came as well), in this order: every terminal
+// window on screen shakes at once (visible, not minimized, not stepped aside; never maximized or full screen: shakeWin); else the
+// map's centre circle when the dashboard is on screen (in the page; the window itself never moves); else nothing (the card and
+// the buzz are all). Never a focus, a raise or a show. Electron has no occlusion state: with no Orbiterm window in front another
+// app may cover them, so then only a terminal pinned on top (above every app) counts as on screen, and the map doesn't.
 function nudgeDashboard() {
-  if (!dash || dash.isDestroyed() || noticesHold || reducedMotion() || !dash.isVisible() || dash.isMinimized() || !BaseWindow.getFocusedWindow()) return;
-  if (dash.isFullScreen() || dash.isMaximized()) toDash('nudgeCore()');
-  else shakeWin(dash, 1);
+  if (noticesHold || reducedMotion()) return;
+  const front = appInFront();
+  const wins = new Set();
+  for (const c of chats.values()) {
+    const w = c.win;
+    if (!c.steppedAside && (front || c.pinned) && w && !w.isDestroyed() && w.isVisible() && !w.isMinimized() && !w.isMaximized() && !w.isFullScreen()) wins.add(w);
+  }
+  if (wins.size) {
+    for (const w of wins) shakeWin(w, 1);
+    return;
+  }
+  if (front && dash && !dash.isDestroyed() && dash.isVisible() && !dash.isMinimized()) toDash('nudgeCore()');
 }
 
 function notices() {
@@ -4271,6 +4231,7 @@ function chatPanel() {
       // Its timer stops too (stopShake doesn't touch a destroyed window).
       stopShake(win);
       if (panels.chats.get('chat') === win) panels.chats.delete('chat');
+      panels.front = null;
       if (panels.showing.size) {
         panels.showing.clear();
         tellShowing();
@@ -4388,9 +4349,10 @@ function handleMessages(win, body) {
       return true;
     }
     // A nudge (nudge.ts): the chat window's own frame moves for 0.56 s, only when it is on screen and nothing holds the screen. The
-    // page asks only for its own chat with the friend, or for the sender's half jolt.
+    // page asks only for its own chat with the friend (`key`: only while it has the keyboard focus, else the card came and the
+    // terminals or the map shake), or for the sender's half jolt.
     case 'shake':
-      if (role === 'chat' && !noticesHold && chatSeen() && Number(body.amp) > 0) shakeWin(win, Math.min(Number(body.amp), 1));
+      if (role === 'chat' && !noticesHold && chatSeen() && (!body.key || win.isFocused()) && Number(body.amp) > 0) shakeWin(win, Math.min(Number(body.amp), 1));
       return true;
     // The nudge's card came up (the chat isn't on screen): the dashboard shakes by its own state.
     case 'nudgeShake':
@@ -4479,6 +4441,8 @@ function handleMessages(win, body) {
       // The friends whose tabs are open in the chat window (or no one anymore): no pop-ups for them. `id`, the old
       // form, is the one in front.
       if (role !== 'chat') return true;
+      // The one in front: the nudge shakes the chat only for that friend (chatFocused).
+      panels.front = typeof body.id === 'string' && body.id ? body.id : null;
       panels.showing.clear();
       if (Array.isArray(body.ids)) {
         for (const id of body.ids) if (typeof id === 'string' && id) panels.showing.add(id);
@@ -5559,7 +5523,6 @@ async function probe() {
   await wait(9000);
   await run(dashView, "document.getElementById('boot')?.remove()");
   await shot(dashView, 'dashboard');
-  await shot(chatsView, 'chats');
   for (const step of (process.env.ATL_PROBE_STEPS || '').split(';;').filter(Boolean)) {
     const [name, js] = step.split('|');
     console.log('probe: step', name);

@@ -531,7 +531,7 @@
 #activity .vs-ab.vs-ab-foot:hover { background: var(--accent); box-shadow: 0 0 22px rgba(var(--accent-rgb), 0.75); }
 #activity .vs-ab.vs-ab-foot:hover .vs-ci { color: var(--ink); }
 @keyframes fbk-beacon { 50% { opacity: 1; } }
-#app.cloud-mode #sessions, #app.cloud-mode #mapwrap, #app.cloud-mode #right, #app.cloud-mode #bottom { display: none; }
+#app.cloud-mode #chats, #app.cloud-mode #mapwrap, #app.cloud-mode #right, #app.cloud-mode #bottom { display: none; }
 .cv { --glow: var(--accent-rgb); position: relative; grid-row: 2 / 4; grid-column: 2 / -1; display: none; gap: 8px; min-width: 0; min-height: 0; }
 .cv.on { display: flex; }
 .cv .body { overflow: auto; padding: 12px 14px; }

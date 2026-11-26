@@ -891,6 +891,7 @@ window.Cloud = (() => {
     renderNotesAI();
     renderUI();
     window.Fonts?.mount(q('.mn-settings'));
+    window.ClaudeAcct?.mountSettings(q('.mn-settings'));
   }
 
   // ---------- archived chats ----------
@@ -1422,8 +1423,8 @@ window.Cloud = (() => {
         return m < 60 ? `${m}m` : m < 1440 ? `${Math.floor(m / 60)}h` : `${Math.floor(m / 1440)}d`;
       };
       const sub = ndgNew
-        ? `<span class="fr-ndg">${FR_NDG}${ndg.mine ? 'you nudged' : 'nudged you'} \u00b7 ${ageShort(ndgAt)}</span>`
-        : atkNew ? `<span class="fr-atk"><i aria-hidden="true">\u{1F680}</i>${atk.mine ? 'you fired' : 'fired at you'} \u00b7 ${ageShort(atkAt)}</span>` : line;
+        ? `<span class="fr-ndg">${FR_NDG}${ndg.mine ? 'you sent a nudge' : 'sent you a nudge'} \u00b7 ${ageShort(ndgAt)}</span>`
+        : atkNew ? `<span class="fr-atk"><i aria-hidden="true">\u{1F680}</i>${atk.mine ? 'you fired a rocket' : 'fired a rocket at you'} \u00b7 ${ageShort(atkAt)}</span>` : line;
       const unseen = (f.attack && f.attack.unseen) || 0;
       const nudges = (f.nudge && f.nudge.unread) || 0;
       const count = (f.unread || 0) + unseen + nudges;
@@ -2821,6 +2822,7 @@ window.Cloud = (() => {
       row('Earning', `${T(o.ratePerHour)} ORB/h`, done ? 'Today’s limit is reached' : 'Only while you work') +
       (Number.isFinite(o.earnedToday) ? row('Earned today', `+${T(o.earnedToday)}`, o.dailyCapMin ? `${Xp.dur(Math.min(o.earnedTodaySeconds || 0, capSec))} of ${Xp.dur(capSec)}` : '') : '') +
       row('Attack price', `${T(o.attackPrice)} ORB`, 'Refunded if you cancel the lock') +
+      (Number.isFinite(o.nudgePrice) && o.nudgePrice > 0 ? row('Nudge price', `${T(o.nudgePrice)} ORB`, 'Only when it goes through') : '') +
       (o.shieldMin ? row('Shield', `${o.shieldMin} min`, `After a hit${o.hitsPerDayMax ? ` · up to ${o.hitsPerDayMax} hits a day` : ''}`) : '');
   }
   function orbPopClose() {

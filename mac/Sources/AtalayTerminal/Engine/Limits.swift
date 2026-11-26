@@ -12,7 +12,11 @@ enum Limits {
     /// The status line the user had before ours (its command): ours hands Claude's JSON on to it and shows what it prints.
     private static let nextURL = dir.appendingPathComponent("statusline-next")
 
-    private static let script = """
+    /// Orbiterm's accounts folder, baked in: a status line run with CLAUDE_CONFIG_DIR set to one of its accounts (Orbiterm
+    /// sets it for that account's terminals) writes limits-claude-<first 8 hex of the sha256 of the folder's path>.json, so
+    /// each account's limits stay apart; any other (unset, the default folder, a folder of the user's own) writes
+    /// limits.json, as before there were accounts.
+    private static var script: String { """
     #!/bin/sh
     # Orbiterm: Claude Code passes its status JSON here (statusLine in its settings.json). The latest one that
     # carries the account's usage limits is kept for the dashboard. A status line of your own (statusline-next) still
@@ -22,14 +26,26 @@ enum Limits {
     case "$json" in
     *'"rate_limits"'*)
       mkdir -p "$dir" 2>/dev/null
+      name=limits.json
+      case "$CLAUDE_CONFIG_DIR" in
+      '\(ClaudeAccounts.root.replacingOccurrences(of: "'", with: "'\\''"))'/?*)
+        name="limits-claude-$(printf '%s' "$CLAUDE_CONFIG_DIR" | /usr/bin/shasum -a 256 | cut -c1-8).json" ;;
+      esac
       tmp="$dir/limits.$$.json"
-      printf '%s' "$json" > "$tmp" && mv -f "$tmp" "$dir/limits.json"
+      printf '%s' "$json" > "$tmp" && mv -f "$tmp" "$dir/$name"
       ;;
     esac
     if [ -s "$dir/statusline-next" ]; then printf '%s' "$json" | /bin/sh -c "$(cat "$dir/statusline-next")"; fi
     exit 0
 
-    """
+    """ }
+
+    /// Cheap check (a file compare) that the script installed is this build's: an older app that shares the folder (the
+    /// installed one next to staging) writes its own at its launch, and its script sends every account's limits to
+    /// limits.json. With two or more accounts it is looked at on every registry poll, and put back at once.
+    static func ensureScript() {
+        if (try? String(contentsOf: scriptURL, encoding: .utf8)) != script { installScript() }
+    }
 
     /// Writes the script the status line command runs, so it is there even if the folder was cleared, and hooks it into
     /// Claude Code's settings.
@@ -44,9 +60,19 @@ enum Limits {
 
     /// Points Claude Code's statusLine at the script, or the limits never reach the dashboard. A status line the user
     /// already had keeps working through it (its command moves to statusline-next); a settings file that doesn't read
-    /// as JSON is left alone.
+    /// as JSON is left alone. Every account's settings.json, once per real file: the other accounts' are links to the
+    /// default's, and a write goes to what the link points at, so the link stays one.
     private static func hookStatusLine() {
-        let file = CLAUDE_DIR + "/settings.json"
+        var done = Set<String>()
+        for (id, dir) in ClaudeAccounts.dirs {
+            // Another account's folder that isn't there (being removed): not made again for a settings file.
+            if id != ClaudeAccounts.defaultId, !FileManager.default.fileExists(atPath: dir) { continue }
+            let file = URL(fileURLWithPath: dir + "/settings.json").resolvingSymlinksInPath().path
+            if done.insert(file).inserted { hookStatusLine(file: file) }
+        }
+    }
+
+    private static func hookStatusLine(file: String) {
         let ours = "/bin/sh '\(scriptURL.path)'"
         var settings: [String: Any] = [:]
         if let data = FileManager.default.contents(atPath: file) {
@@ -65,12 +91,14 @@ enum Limits {
         settings["statusLine"] = line
         guard let out = try? JSONSerialization.data(withJSONObject: settings, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
         else { return }
-        try? FileManager.default.createDirectory(atPath: CLAUDE_DIR, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(atPath: (file as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
         try? out.write(to: URL(fileURLWithPath: file), options: .atomic)
     }
 
     /// `{fiveHour: {pct, resetsAt}, week: {pct, resetsAt}, at}` with times in ms, or nil if nothing was reported yet.
-    static func parse(mtime: Double) -> [String: Any]? {
+    static func parse(mtime: Double) -> [String: Any]? { parse(path: path, mtime: mtime) }
+
+    static func parse(path: String, mtime: Double) -> [String: Any]? {
         guard let data = FileManager.default.contents(atPath: path),
               let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let rl = j["rate_limits"] as? [String: Any] else { return nil }

@@ -59,6 +59,9 @@ window.Messages = (() => {
   // Whether that chat window is really on screen (not minimized, on another Space, covered or the app hidden): the native side
   // says, with `showing`. A nudge shakes the chat only when it is seen; else the card comes (and the dashboard may shake).
   let chatSeen = true;
+  // The friend whose tab is in front while that chat window has the keyboard focus, else null (the native side says, with
+  // `showing`): only their nudge shakes the chat; any other one brings the card (and the terminals or the map shake).
+  let chatFocused = null;
 
   // ======================= notices =======================
   const notes = NOTICES ? mount('msgbox') : null;
@@ -276,12 +279,17 @@ window.Messages = (() => {
 
   // A friend's nudge while their chat isn't on screen (nudge.ts): the message card's frame with its own tag, the friend's
   // picture with the mark on its corner and their last words for context. A reply goes out as a message, as on INCOMING.
+  // The card's second line, the same on the nudge's and the attack's: the last words between you, for context.
+  function lastSaid(f) {
+    const said = f && f.last && Social.preview(f.last);
+    return said ? `${f.last.mine ? 'you said' : 'last said'} <q>${esc(said)}</q> \u00b7 ${esc(ago(new Date(f.last.at).getTime()))}` : 'no messages yet';
+  }
   function nudgeHTML(p) {
     const id = p.from.id;
     const per = person(id) || { id, name: p.from.name, short: p.from.name, presence: 'online' };
     const f = Social.friend(id);
     const said = f && f.last && Social.preview(f.last);
-    const meta = said ? `${f.last.mine ? 'you said' : 'last said'} <q>${esc(said)}</q> \u00b7 ${esc(ago(new Date(f.last.at).getTime()))}` : 'no messages yet';
+    const meta = lastSaid(f);
     const line = `${per.short} sent you a nudge`;
     return (
       `<div class="mb peek nudge in${p.quiet ? ' quiet' : ''}" role="group" aria-label="${esc(`${line} just now.${said ? ` Their last message: ${said}` : ''}`)}"><div class="mb-border"></div>` +
@@ -499,23 +507,23 @@ window.Messages = (() => {
       const h = list[0];
       const f = friendOf(h) || { ...h.from, presence: 'offline' };
       const name = hitName(h);
-      return `<div class="mb peek fired in" data-act="open" role="group" aria-label="${esc(`${name} fired at you ${ago(h.at)}. Nothing lost.${shieldSay}`)}" title="Open the chat"><div class="mb-border"></div>` +
-        `<div class="mb-head"><span class="mb-tag">\u{1F680} ATTACK</span><span class="mb-who">${who(f)}</span>${timeEl(h.at, 'mb-time')}` +
+      return `<div class="mb peek fired in" data-act="open" role="group" aria-label="${esc(`${name} fired a rocket at you ${ago(h.at)}.${shieldSay}`)}" title="Open the chat"><div class="mb-border"></div>` +
+        `<div class="mb-head"><span class="mb-tag">\u{1F680} ATTACK</span><span class="mb-who">${who(f)}</span><time class="mb-time" datetime="${new Date(h.at).toISOString()}" title="${esc(fullTime(h.at))}">${time(h.at)}</time>` +
         `${expand}<button class="mb-x" data-act="close" title="Close" aria-label="Close">×</button></div>` +
         `<div class="fd-one"><span class="fd-pic">${picOf(h)}<i class="fd-mark" aria-hidden="true">\u{1F680}</i></span>` +
-        `<span><b class="fd-line">${esc(name)} fired at you</b><small class="fd-meta">at ${esc(clock(h.at))} · <b>nothing lost</b></small></span></div>` +
+        `<span><b class="fd-line">${esc(name)} fired a rocket at you</b><small class="fd-meta">${lastSaid(f)}</small></span></div>` +
         `<div class="fd-foot">${shield}${fire(h, false)}</div></div>`;
     }
     const names = list.map(hitName);
     const who2 = names.length === 2 ? `${names[0]} and ${names[1]}` : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
-    return `<div class="mb peek fired in" role="group" aria-label="${esc(`${list.length} attacks: ${who2}. Nothing lost.${shieldSay}`)}"><div class="mb-border"></div>` +
+    return `<div class="mb peek fired in" role="group" aria-label="${esc(`${list.length} attacks: ${who2}. ${shieldSay.trim()}`.trim())}"><div class="mb-border"></div>` +
       `<div class="mb-head"><span class="mb-tag">\u{1F680} ${list.length} ATTACKS</span><span class="mb-who"><small>since ${esc(clock(list[list.length - 1].at))}</small></span>` +
       `<button class="mb-x" data-act="close" title="Close" aria-label="Close" style="margin-left:auto">×</button></div>` +
       '<ul class="fd-list">' + list.map((h) =>
-        `<li class="fd-row" tabindex="0" data-act="open" data-fid="${esc(h.fid)}" title="Open the chat with ${esc(hitName(h))}" aria-label="${esc(`${hitName(h)} fired at you ${ago(h.at)}`)}">` +
+        `<li class="fd-row" tabindex="0" data-act="open" data-fid="${esc(h.fid)}" title="Open the chat with ${esc(hitName(h))}" aria-label="${esc(`${hitName(h)} fired a rocket at you ${ago(h.at)}`)}">` +
         `<span class="fd-pic">${picOf(h)}<i class="fd-mark" aria-hidden="true">\u{1F680}</i></span>` +
-        `<span class="fd-line">${esc(hitName(h))} fired at you</span>${timeEl(h.at)}${fire(h, true)}</li>`).join('') +
-      `</ul><div class="fd-foot">${shield}<small class="fd-meta"><b>nothing lost</b></small></div></div>`;
+        `<span class="fd-line">${esc(hitName(h))} fired a rocket</span>${timeEl(h.at)}${fire(h, true)}</li>`).join('') +
+      `</ul><div class="fd-foot">${shield}</div></div>`;
   }
 
   // The card as it stands now: put up, drawn again in place, or taken down. Behind something that is on screen it waits its turn.
@@ -1317,16 +1325,16 @@ window.Messages = (() => {
         }
         showPeek({ kind: 'message', from: ev.from || Social.friend(ev.with), body: Social.preview(ev.message), at: ev.message.at });
         return;
-      // A friend's nudge (nudge.ts): the buzz plays here, once per computer. With their chat on screen the chat page shakes
-      // itself and nothing comes up; else the card does, and (the dashboard's state decides) the map's centre or the
-      // dashboard window shakes (Swift: "nudgeShake"). Never a focus, a raise or a window opened. A second one within a
+      // A friend's nudge (nudge.ts): the buzz plays here, once per computer. With the keyboard in their chat (its window key,
+      // their tab in front) the chat page shakes itself and nothing comes up; else the card does, and every terminal on
+      // screen or else the map's centre shakes (Swift: "nudgeShake"). Never a focus, a raise or a window opened. A second one within a
       // minute (`floored`, social.js) and the ones that wait under a takeover, the flames, DANGER or the alarm come without
       // buzz, shake or jolt.
       case 'nudge': {
         const n = ev.nudge;
         if (!n || n.mine || !n.with || n.floored || Social.dnd()) return;
         // (No buzz either while a takeover, the flames, DANGER or the alarm holds the screen: the chat's line is enough then.)
-        if (showing.has(n.with) && chatSeen) return void (screenHeld() || Sfx.play('nudge'));
+        if (showing.has(n.with) && chatSeen && chatFocused === n.with) return void (screenHeld() || Sfx.play('nudge'));
         nudgeCard({ kind: 'nudge', from: n.from || Social.friend(n.with), at: n.at, quiet: false });
         return;
       }
@@ -1726,7 +1734,14 @@ window.Messages = (() => {
     mine_off: () => "Nudges are off for you, so you can't send one either. Turn them on in Settings > Privacy.",
     down: () => "Can't reach the server.",
     not_friends: () => "You're not friends anymore.",
+    orb: () => { const o = nudgeOrb(); return o ? `Not enough ORB. A nudge costs ${Social.orbText(o.nudgePrice)} ORB, you have ${Social.orbText(o.balance)}.` : 'Not enough ORB.'; },
   };
+  // A nudge costs ORB (nudge_price, set in the admin panel); the app's copy of the economy (Social.orb) says how much, once the API has told it.
+  const nudgeOrb = () => {
+    const o = window.Social && Social.orb && Social.orb();
+    return o && Number.isFinite(o.nudgePrice) && o.nudgePrice > 0 ? o : null;
+  };
+  const nudgePriceText = () => { const o = nudgeOrb(); return o ? `${Social.orbText(o.nudgePrice)} ORB` : ''; };
   const mmss = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
   // What the button can do now: ready, wait (the minute after a nudge; `left` seconds), streak (three with no answer: ten
   // minutes or until they write), or a reason. Times are the API's clock (Social.now).
@@ -1740,6 +1755,8 @@ window.Messages = (() => {
     if (n.off) return { k: 'off' };
     const left = Math.ceil(((n.readyAt || 0) - Social.now()) / 1000);
     if (left > 0) return { k: n.why === 'unanswered' ? 'streak' : 'wait', left };
+    const o = nudgeOrb();
+    if (o && Number.isFinite(o.balance) && o.balance < o.nudgePrice) return { k: 'orb' };
     return { k: 'ready' };
   }
   const ndgText = (s, name) =>
@@ -1759,15 +1776,17 @@ window.Messages = (() => {
     const name = person(current).short;
     const s = ndgState(f);
     const wait = s.k === 'wait' || s.k === 'streak';
-    const html = GLYPH + (wait ? `<span class="ndg-cd" aria-hidden="true">${s.k === 'streak' ? `${Math.ceil(s.left / 60)}m` : s.left}</span>` : '');
+    const price = s.k === 'ready' || s.k === 'orb' ? nudgeOrb() : null;
+    const html = GLYPH + (price ? `<small class="ndg-p">${esc(Social.orbText(price.nudgePrice))}</small>` : '') + (wait ? `<span class="ndg-cd" aria-hidden="true">${s.k === 'streak' ? `${Math.ceil(s.left / 60)}m` : s.left}</span>` : '');
     if (b.__html !== html) b.innerHTML = b.__html = html;
     b.classList.toggle('wait', wait);
+    b.classList.toggle('priced', !!price);
     if (wait) b.style.setProperty('--left', `${Math.max(0, Math.min(100, Math.round((s.left / (s.k === 'streak' ? 600 : 60)) * 100)))}%`);
     const ready = s.k === 'ready';
     if (ready) b.removeAttribute('aria-disabled');
     else b.setAttribute('aria-disabled', 'true');
-    b.setAttribute('aria-label', ready ? `Nudge ${name}` : `Nudge ${name}: ${s.k === 'wait' ? `you can again in ${s.left} seconds` : s.k === 'streak' ? `no answer to your last 3 yet, you can again in ${Math.ceil(s.left / 60)} minutes` : ndgText(s, name).replace(/\.$/, '')}`);
-    b.title = ready ? `Nudge ${name}: their chat shakes for a moment \u00b7 or type /nudge` : ndgText(s, name);
+    b.setAttribute('aria-label', ready ? `Nudge ${name}${nudgePriceText() ? `, ${nudgePriceText()}` : ''}` : `Nudge ${name}: ${s.k === 'wait' ? `you can again in ${s.left} seconds` : s.k === 'streak' ? `no answer to your last 3 yet, you can again in ${Math.ceil(s.left / 60)} minutes` : ndgText(s, name).replace(/\.$/, '')}`);
+    b.title = ready ? `Nudge ${name}: their chat shakes for a moment${nudgePriceText() ? ` \u00b7 ${nudgePriceText()}` : ''} \u00b7 or type /nudge` : ndgText(s, name);
     if (wait) ndgTimer = setTimeout(paintNudge, 1000);
   }
   // Send one: your line at once, your own window's half jolt, the buzz; then the API. False when it didn't go (the reason is in
@@ -1803,6 +1822,7 @@ window.Messages = (() => {
       // Their switch, or yours, as the API has it now: the button greys out with it.
       if (fr && r.why === 'off') fr.nudge = { ...(fr.nudge || {}), off: true };
       if (r.why === 'mine_off' && Social.state()?.me) Social.state().me.nudges = false;
+      if (r.why === 'orb' && Social.setOrb) Social.setOrb({ nudgePrice: r.price, balance: r.balance });
       const why = r.error ? (r.error === 'not_friends' ? 'not_friends' : 'down') : r.why;
       if (isOpen && current === id) {
         paintNudge();
@@ -1811,6 +1831,7 @@ window.Messages = (() => {
       }
       return false;
     }
+    if (Number.isFinite(r.balance) && r.price > 0 && Social.setOrb) Social.setOrb({ nudgePrice: r.price, balance: r.balance });
     // The live echo (the same nudge, from the API) may have come first: then it's the one kept.
     if (c.nudges.some((x) => x !== temp && x.id === r.nudge.id)) undo();
     else Object.assign(temp, { id: r.nudge.id, at: r.nudge.at, settled: true });
@@ -2111,32 +2132,27 @@ window.Messages = (() => {
   // What a row shows: a different one (opened now, edited by the server's answer) means a new row.
   const contentOf = (m) => `${m.mine ? 1 : 0}|${Social.sealed(m) ? 1 : 0}|${m.body}|${m.reply ? `${m.reply.uuid}|${m.reply.who}|${m.reply.text}` : ''}`;
 
-  // The attack's line, kept in the history (a system line, quieter than people's messages): "kerem fired at you · nothing lost ·
-  // 12:41 AM", and on the other side "You fired at kerem · −42.32 ORB · 9:14 PM".
-  function atkRow(a, name) {
+  // The attack's line and the nudge's line are one component (.fc-ndg, MSN's system line): an icon, "kerem fired a rocket at you" /
+  // "You fired a rocket at kerem", and the time. Only the icon and the verb differ; no outcome and no price (the ORB capsule shows it).
+  function sysRow(kind, a, name) {
     const mine = !!a.mine;
-    const price = mine && Number(a.price) > 0 ? `\u2212${Social.orbText(a.price)} ORB` : '';
-    const r = mine ? price : 'nothing lost';
-    const words = mine ? `<b>You</b> fired at <b>${esc(name)}</b>` : `<b>${esc(name)}</b> fired at you`;
-    const row = el('div', `fc-atk${mine ? ' mine' : ''}`);
+    const atk = kind === 'atk';
+    const bold = `<b>${esc(name)}</b>`;
+    const html = atk
+      ? (mine ? `<b>You</b> fired a rocket at ${bold}` : `${bold} fired a rocket at you`)
+      : (mine ? `<b>You</b> sent a nudge` : `${bold} sent you a nudge`);
+    const say = atk
+      ? (mine ? `You fired a rocket at ${name}` : `${name} fired a rocket at you`)
+      : (mine ? 'You sent a nudge' : `${name} sent you a nudge`);
+    const row = el('div', `fc-ndg${atk ? ' atk' : ''}${mine ? ' mine' : ''}`);
     row.setAttribute('role', 'note');
-    row.setAttribute('aria-label', `${mine ? `You fired at ${name}` : `${name} fired at you`}${r ? `, ${r}` : ''}, ${new Date(a.at).toLocaleString('en-US', { weekday: 'long', day: 'numeric', month: 'long', hour: 'numeric', minute: '2-digit' })}`);
-    row.innerHTML = '<i></i>' +
-      `<span class="fc-atk-plate"><span class="fc-atk-t"><i class="rk" aria-hidden="true">\u{1F680}</i>${words}</span>${r ? `<span class="fc-atk-r">${esc(r)}</span>` : ''}` +
-      `<time datetime="${new Date(a.at).toISOString()}" title="${esc(new Date(a.at).toLocaleString())}">${esc(clock(a.at))}</time></span><i></i>`;
+    row.setAttribute('aria-label', `${say}, ${fullTime(a.at)}`);
+    row.innerHTML = `<span class="fc-ndg-i">${atk ? '<i class="rk" aria-hidden="true">\u{1F680}</i>' : GLYPH}</span><span class="fc-ndg-t">${html}</span>` +
+      `<time datetime="${new Date(a.at).toISOString()}" title="${esc(new Date(a.at).toLocaleString())}">${esc(clock(a.at))}</time>`;
     return row;
   }
-  // The nudge's line, kept in the history, in the messages' own columns: "kerem sent you a nudge" / "You sent kerem a nudge".
-  function ndgRow(n, name) {
-    const mine = !!n.mine;
-    const say = mine ? `You sent ${name} a nudge` : `${name} sent you a nudge`;
-    const row = el('div', `fc-ndg${mine ? ' mine' : ''}`);
-    row.setAttribute('role', 'note');
-    row.setAttribute('aria-label', `${say}, ${fullTime(n.at)}`);
-    row.innerHTML = `<span class="fc-ndg-i">${GLYPH}</span><span class="fc-ndg-t">${mine ? `<b>You</b> sent <b>${esc(name)}</b> a nudge` : `<b>${esc(name)}</b> sent you a nudge`}</span>` +
-      `<time datetime="${new Date(n.at).toISOString()}" title="${esc(new Date(n.at).toLocaleString())}">${esc(clock(n.at))}</time>`;
-    return row;
-  }
+  const atkRow = (a, name) => sysRow('atk', a, name);
+  const ndgRow = (n, name) => sysRow('ndg', n, name);
   // Under the newest line fired at you: your shield and Fire back (attack.js draws both; it keeps their clock).
   function atkAct(id) {
     const row = el('div', 'fc-atk-act');
@@ -2207,7 +2223,7 @@ window.Messages = (() => {
         prev = null;
         return;
       }
-      items.push({ key: `atk:${a.id}`, make: () => atkRow(a, name), sig: `${a.mine ? 1 : 0}|${name}|${a.price || 0}|${t}`, atk: a });
+      items.push({ key: `atk:${a.id}`, make: () => atkRow(a, name), sig: `${a.mine ? 1 : 0}|${name}|${t}`, atk: a });
       // Under the newest one fired at you, while your shield runs: the shield and Fire back.
       if (lastIn === a && window.Attack && Attack.shieldLeft && Attack.shieldLeft() > 0) {
         items.push({ key: `act:${a.id}`, make: () => atkAct(current), sig: `act|${current}` });
@@ -2259,11 +2275,10 @@ window.Messages = (() => {
         if (n) n.replaceWith(made);
         else if ((it.m || it.atk || it.ndg) && fresh && fresh.has(it.key)) {
           made.classList.add('new');
-          // An attack's line has two (the slide, then the light across its plate): it keeps `new` until the light is over.
-          // A nudge's too (the slide, then its mark's jolt or, with Reduce Motion, its ring).
+          // An attack's or a nudge's line (one component) has two: the slide, then its mark's jolt or, with Reduce Motion, its
+          // ring; it keeps `new` until that is over.
           const done = (e) => {
-            if (it.atk && e.animationName !== 'fc-atk-sweep') return;
-            if (it.ndg && e.animationName !== 'ndg-jolt' && e.animationName !== 'ndg-ring') return;
+            if ((it.atk || it.ndg) && e.animationName !== 'ndg-jolt' && e.animationName !== 'ndg-ring') return;
             made.classList.remove('new');
             made.removeEventListener('animationend', done);
           };
@@ -2867,7 +2882,8 @@ window.Messages = (() => {
         return;
       }
       // A friend's nudge, live (nudge.ts), or yours from another of your computers: its line slides in (read at once in the chat
-      // in front). Theirs shakes that chat window (native "shake", only when it is on screen and nothing holds the screen) unless
+      // in front). Theirs shakes that chat window (native "shake" with `key`: only when it has the keyboard focus and nothing holds
+      // the screen; else the notices' card came and the terminals or the map shake) unless
       // a pointer is down in it or it is a second one within a minute (`floored`); another tab's friend: only that tab jolts.
       // The buzz is the notices page's. Reduce Motion: nothing moves, the line's mark and the tab swell a ring instead (CSS).
       case 'nudge': {
@@ -2887,7 +2903,7 @@ window.Messages = (() => {
           paintNudge();
           if (!n.mine) {
             Social.read(n.with);
-            if (!n.floored && !pointerDown && !reducedMotion() && !Social.dnd()) post({ type: 'shake', amp: 1 });
+            if (!n.floored && !pointerDown && !reducedMotion() && !Social.dnd()) post({ type: 'shake', amp: 1, key: true });
           }
         } else {
           if (!n.mine && tabs.includes(n.with)) {
@@ -3421,9 +3437,10 @@ window.Messages = (() => {
     },
     // ⌘W: the tab in front (the last one closes the window).
     close: () => (isOpen ? closeTab(current) : undefined),
-    showing: (ids, seen) => {
+    showing: (ids, seen, focused) => {
       showing = new Set(ids || []);
       chatSeen = seen !== false;
+      chatFocused = typeof focused === 'string' && focused ? focused : null;
       // Their chat is open now: the attack's card has done its job. (Only while the chat is on screen: this is also called when it
       // gets covered, minimized or hidden, now that the nudge asks whether it is seen.)
       if (NOTICES && chatSeen) for (const id of showing) if (hits.some((h) => h.fid === id)) seenFrom(id);

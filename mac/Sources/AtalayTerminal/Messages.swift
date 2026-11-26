@@ -31,6 +31,8 @@ final class MessagePanel: NSObject, WKScriptMessageHandler, WKNavigationDelegate
     private var steppedAside = false
     /// Friends whose chat is on screen: the notices don't pop up for them.
     private static var showing = Set<String>()
+    /// The friend whose tab is in front in the chat window (none while it's closed): a nudge shakes the chat only from them.
+    private static var front: String?
     /// The update notice was clicked (the main window shows what's new).
     static var onOpenUpdate: (() -> Void)?
     /// The "updated" note was clicked (the main window shows what's new in the version you're on).
@@ -55,8 +57,8 @@ final class MessagePanel: NSObject, WKScriptMessageHandler, WKNavigationDelegate
     static var onAttackFire: ((String) -> Void)?
     static var onAttackCancel: ((String) -> Void)?
     /// A friend's nudge while their chat isn't on screen (the notices page says, "nudgeShake"): the dashboard's own state decides what
-    /// shakes (MainWindowController.nudgeDashboard): the map's centre circle in full screen, the whole window otherwise, nothing when
-    /// it can't be seen.
+    /// shakes (MainWindowController.nudgeDashboard): every terminal window on screen at once, else the map's centre circle, else
+    /// nothing (the card and the buzz).
     static var onNudgeDashboard: (() -> Void)?
     /// The notices panel holds the screen (the level-up takeover, the flames, DANGER's banner, the alarm in the middle): no window
     /// shakes then, as the page queues the nudge's card to show quietly after.
@@ -146,6 +148,12 @@ final class MessagePanel: NSObject, WKScriptMessageHandler, WKNavigationDelegate
             // dashboard, on another Space, covered, or the app hidden. The notices page is told with `showing`.
             NotificationCenter.default.addObserver(forName: NSWindow.didChangeOcclusionStateNotification, object: panel, queue: .main) { _ in
                 MainActor.assumeIsolated { Self.tellShowing() }
+            }
+            // The keyboard focus decides too (the nudge shakes the chat only when it has the keys).
+            for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification] {
+                NotificationCenter.default.addObserver(forName: name, object: panel, queue: .main) { _ in
+                    MainActor.assumeIsolated { Self.tellShowing() }
+                }
             }
             for name in [NSApplication.didHideNotification, NSApplication.didUnhideNotification] {
                 NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { _ in
@@ -439,6 +447,7 @@ final class MessagePanel: NSObject, WKScriptMessageHandler, WKNavigationDelegate
     private func closed() {
         guard role == .chat, Self.chatPanel === self else { return }
         WindowShake.stop(panel)
+        Self.front = nil
         guard !Self.showing.isEmpty else { return }
         Self.showing = []
         Self.tellShowing()
@@ -451,9 +460,16 @@ final class MessagePanel: NSObject, WKScriptMessageHandler, WKNavigationDelegate
         return p.isVisible && p.occlusionState.contains(.visible) && !NSApp.isHidden
     }
 
+    /// The friend whose tab is in front while the chat window has the keyboard focus (key window, the app not hidden), else nil:
+    /// a nudge from them shakes the chat itself; any other one brings the card (another tab only jolts its tab).
+    private static var chatFocused: String? {
+        guard let p = chatPanel?.panel, p.isKeyWindow, !NSApp.isHidden else { return nil }
+        return front
+    }
+
     private static func tellShowing() {
         guard let data = try? JSONSerialization.data(withJSONObject: Array(showing)), let json = String(data: data, encoding: .utf8) else { return }
-        notices.run("window.__messages && __messages.showing(\(json), \(chatSeen))")
+        notices.run("window.__messages && __messages.showing(\(json), \(chatSeen), \(literal(chatFocused)))")
     }
 
     private static func literal(_ value: String?) -> String {
@@ -518,8 +534,9 @@ final class MessagePanel: NSObject, WKScriptMessageHandler, WKNavigationDelegate
         case "shake":
             // A nudge (nudge.ts, messages.js): the chat window's own frame moves for 0.56 s, the frost and the page with it. Only
             // when it is on screen and nothing holds the screen, no button is down and Reduce Motion is off; never a focus or a raise.
+            // A friend's (`key`): only while the chat has the keyboard focus, else their card came and the terminals or the map shake.
             guard role == .chat, panel.isVisible, panel.occlusionState.contains(.visible), !NSApp.isHidden, !Self.noticesHoldScreen,
-                  NSEvent.pressedMouseButtons == 0, number("amp") > 0 else { return }
+                  NSEvent.pressedMouseButtons == 0, number("amp") > 0, body["key"] as? Bool != true || panel.isKeyWindow else { return }
             WindowShake.run(panel, amp: min(number("amp"), 1))
         case "nudgeShake":
             // The nudge's card came up (the chat isn't on screen): the dashboard shakes by its own state (MainWindowController).
@@ -573,6 +590,8 @@ final class MessagePanel: NSObject, WKScriptMessageHandler, WKNavigationDelegate
         case "showing":
             // The friends whose tabs are open in the chat window (or no one anymore): no pop-ups for them.
             guard role == .chat else { return }
+            // `id`: the one in front (the nudge's focus rule).
+            Self.front = (body["id"] as? String).flatMap { $0.isEmpty ? nil : $0 }
             if let ids = body["ids"] as? [String] {
                 Self.showing = Set(ids)
             } else if let friend {

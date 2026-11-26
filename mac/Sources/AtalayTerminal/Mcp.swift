@@ -1196,6 +1196,7 @@ enum McpConnect {
                 p.waitUntilExit()
                 ok = p.terminationStatus == 0
             }
+            if ok { ClaudeAccounts.syncMcp() }
             DispatchQueue.main.async { MainActor.assumeIsolated { done(ok ? nil : "Claude Code isn't installed, or it refused. Try `claude mcp add` yourself.") } }
         }
     }

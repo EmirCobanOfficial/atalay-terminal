@@ -7,12 +7,63 @@ import WebKit
 nonisolated enum ChatNames {
     private static let lock = NSLock()
     nonisolated(unsafe) private static var map = UserDefaults.standard.dictionary(forKey: "chatTitles") as? [String: String] ?? [:]
-    static func set(_ new: [String: String]) { lock.lock(); map = new; lock.unlock() }
+    /// When each name was given (ms), to weigh it against the AI's own rename. Names given before this was kept have none.
+    nonisolated(unsafe) private static var givenAt = UserDefaults.standard.dictionary(forKey: "chatTitlesAt") as? [String: Double] ?? [:]
+    static func set(_ new: [String: String]) {
+        lock.lock()
+        var at = givenAt.filter { new[$0.key] != nil }
+        let now = Date().timeIntervalSince1970 * 1000
+        for (id, name) in new where map[id] != name { at[id] = now }
+        map = new
+        let changed = at != givenAt
+        givenAt = at
+        lock.unlock()
+        if changed { UserDefaults.standard.set(at, forKey: "chatTitlesAt") }
+    }
     static func resolve(_ id: String, _ raw: String) -> String { resolve(id, nil, raw) }
     static func resolve(_ id: String, _ alt: String?, _ raw: String) -> String {
         lock.lock(); defer { lock.unlock() }
         if let t = map[id] ?? alt.flatMap({ map[$0] }), !t.isEmpty { return t }
         return raw
+    }
+
+    /// The last /rename value the engine saw in each chat's transcript (kept across launches), so a new one can be told from
+    /// one already there: the newest rename wins, whether it was typed here or in the AI.
+    nonisolated(unsafe) private static var seen = UserDefaults.standard.dictionary(forKey: "chatCustomSeen") as? [String: String] ?? [:]
+    static let superseded = Notification.Name("ChatNameSuperseded")
+    /// The engine read a chat's own rename (on the engine's queue). A value not seen before is weighed once against a name typed
+    /// here, and the newer wins: one just written (`live`) is newer; else `renamedAt` dates it (read from the transcript, only
+    /// when asked, given the time the name was typed). A name typed before typed names kept their time gives way to it.
+    static func noteCustom(_ id: String, _ title: String, live: Bool = false, renamedAt: (Double) -> Double? = { _ in nil }) {
+        lock.lock()
+        guard seen[id] != title else { lock.unlock(); return }
+        seen[id] = title
+        let all = seen, typed = map[id], at = givenAt[id]
+        lock.unlock()
+        UserDefaults.standard.set(all, forKey: "chatCustomSeen")
+        guard let typed else { return }
+        if !live, let at, let renamed = renamedAt(at), renamed < at { return }
+        lock.lock()
+        let drop = map[id] == typed
+        if drop {
+            map[id] = nil
+            givenAt[id] = nil
+        }
+        let times = givenAt
+        lock.unlock()
+        guard drop else { return }
+        UserDefaults.standard.set(times, forKey: "chatTitlesAt")
+        DispatchQueue.main.async { NotificationCenter.default.post(name: superseded, object: id, userInfo: ["name": typed]) }
+    }
+
+    /// The renames remembered of chats no longer on disk are forgotten (`ids`: every Claude chat's id).
+    static func prune(keeping ids: Set<String>) {
+        lock.lock()
+        let kept = seen.filter { ids.contains($0.key) }
+        let changed = kept.count != seen.count
+        if changed { seen = kept }
+        lock.unlock()
+        if changed { UserDefaults.standard.set(kept, forKey: "chatCustomSeen") }
     }
 }
 
@@ -78,6 +129,8 @@ final class SidebarModel: ObservableObject {
     var onErased: (() -> Void)?
     /// The dashboard's streamer mode (Streamer.swift): chats, folders and terminals show made-up names.
     @Published var streamer = false
+    /// The linked worktrees on the list now (their state is read while it shows, WorktreeShip.watchList).
+    fileprivate var watching = Set<String>()
 
     /// The same folder however it's written (a trailing slash, `..`).
     static func folderKey(_ cwd: String) -> String {
@@ -384,7 +437,8 @@ final class SidebarModel: ObservableObject {
         for p in pinned where !archivedFolders.contains(p) { map[card(p)]?.pinned = true }
         for g in sections.groups {
             let h = home(g.cwd)
-            if let w = h.wt { map[h.key]?.add(w, items: g.items) } else { map[h.key]?.items = g.items }
+            // Two spellings of one folder (a link, /tmp and /private/tmp) are one card: the chats of both, not the last one's.
+            if let w = h.wt { map[h.key]?.add(w, items: g.items) } else { map[h.key]?.items += g.items }
         }
         for t in terminals where q.isEmpty || "\(t.title) \(t.job) \(t.cwd)".lowercased().contains(q) {
             let h = home(t.cwd)
@@ -393,6 +447,7 @@ final class SidebarModel: ObservableObject {
         // The worktree with the newest chat first; those with only a terminal after them.
         for key in order {
             map[key]?.worktrees.sort { ($0.items.first?.mtime ?? 0) > ($1.items.first?.mtime ?? 0) }
+            if map[key]?.items.count ?? 0 > 1 { map[key]?.items.sort { $0.mtime > $1.mtime } }
         }
         return order.compactMap { map[$0] }.filter { q.isEmpty || !$0.items.isEmpty || !$0.terms.isEmpty || !$0.worktrees.isEmpty }
     }
@@ -519,781 +574,14 @@ struct SidebarActions {
     let ship: (String, String) -> Void
     let reveal: (String) -> Void
     let copyId: (String) -> Void
-    /// Delete, for these chats: the app asks first, then they go to Settings' deleted chats for 30 days.
-    let delete: ([String]) -> Void
+    /// Delete, for these chats: the app asks first, then they go to Settings' deleted chats for 30 days. True when they were deleted.
+    let delete: ([String]) -> Bool
     /// One of the app's terminals (its car id): shows it, or ends it.
     let openTerminal: (String) -> Void
     let endTerminal: (String) -> Void
-    /// The open folder button: a folder from the system's picker, kept in the list, with a terminal in it.
-    let openFolder: () -> Void
-    /// The list closes (sliding, as with its shortcut).
-    let close: () -> Void
-}
-
-struct SidebarView: View {
-    @ObservedObject var model: SidebarModel
-    let actions: SidebarActions
-    @ObservedObject var theme = ThemeStore.shared
-    /// What each worktree group says: its work, its pull request, merged or deleted (WorktreeShip.swift).
-    @ObservedObject var ship = WorktreeShip.shared
-    /// Her switch: the rects she walks on are reported only while she is on (Mascot.swift).
-    @State private var mascotOn = Mascot.isEnabled
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 8) {
-                Text("chats")
-                    .font(.mono(10.5, .bold))
-                    .foregroundColor(Theme.cInk)
-                    .padding(.horizontal, 8)
-                    .frame(height: 19)
-                    .background(Theme.cAccent)
-                Text("\(model.savedCount) saved · \(model.briefs.values.filter(\.live).count) live")
-                    .font(.mono(9.5))
-                    .foregroundColor(Theme.cDim)
-                Spacer()
-                // Its shortcut, and a close button: it slides shut.
-                Text(Shortcuts.label(Shortcuts.combo("chatsList")))
-                    .font(.mono(9.5))
-                    .foregroundColor(Theme.cDim2)
-                Button(action: actions.close) {
-                    Image(systemName: "xmark").font(.system(size: 9, weight: .bold)).foregroundColor(Theme.cDim)
-                }
-                .buttonStyle(.plain)
-                .help("Close the chats list")
-            }
-            .padding(.top, 8)
-            .padding(.horizontal, 10)
-
-            HStack(spacing: 6) {
-                Image(systemName: "magnifyingglass").font(.system(size: 10)).foregroundColor(Theme.cDim)
-                TextField("search: title, prompt, folder", text: $model.query)
-                    .textFieldStyle(.plain)
-                    .font(.mono(11))
-                    .foregroundColor(Theme.cText)
-            }
-            .padding(.horizontal, 8)
-            .frame(height: 26)
-            .background(RoundedRectangle(cornerRadius: 4).fill(Color.black.opacity(0.25)))
-            .overlay(RoundedRectangle(cornerRadius: 4).stroke(Theme.cLineSoft, lineWidth: 1))
-            .padding(.horizontal, 10)
-            .padding(.top, 10)
-
-            // A folder from the system's picker: it stays at the top of the list, with a terminal opened in it.
-            Button(action: actions.openFolder) {
-                HStack(spacing: 6) {
-                    Image(systemName: "folder.badge.plus").font(.system(size: 10.5))
-                    Text("open folder").font(.mono(10.5, .semibold))
-                    Spacer()
-                }
-                .foregroundColor(Theme.cAccentSoft)
-                .padding(.horizontal, 8)
-                .frame(height: 24)
-                .background(RoundedRectangle(cornerRadius: 4).fill(Theme.cAccent.opacity(0.08)))
-                .overlay(RoundedRectangle(cornerRadius: 4).stroke(Theme.cLineSoft, lineWidth: 1))
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .help("Open a folder: it stays at the top of the list, and a terminal opens in it")
-            .padding(10)
-
-            // Chats picked (⌘-click on them) or folders (on their headers): archive or delete them all at once.
-            if !model.selectedFolders.isEmpty || !model.selectedChats.isEmpty {
-                let folders = !model.selectedFolders.isEmpty
-                HStack(spacing: 8) {
-                    Text("\(folders ? model.selectedFolders.count : model.pickedChats.count) selected")
-                        .font(.mono(10, .semibold))
-                        .lineLimit(1)
-                        .foregroundColor(Theme.cAccentSoft)
-                    Spacer()
-                    bulkButton("archive") {
-                        withAnimation(.easeInOut(duration: 0.25)) {
-                            if folders { model.setSelectedFolders(archived: true) } else { model.archivePicked() }
-                        }
-                    }
-                    // The app asks first; what's deleted leaves the list then.
-                    bulkButton("delete", danger: true) {
-                        actions.delete(folders ? model.chats(inFolders: model.selectedFolders) : model.pickedChats.map(\.id))
-                    }
-                    Button {
-                        model.clearPicked()
-                    } label: {
-                        Image(systemName: "xmark").font(.system(size: 9, weight: .bold)).foregroundColor(Theme.cDim)
-                    }
-                    .buttonStyle(.plain)
-                    .help("Clear the selection")
-                }
-                .padding(.horizontal, 10)
-                .padding(.bottom, 6)
-            }
-
-            ScrollView {
-                let sections = model.sections
-                let cards = model.cards
-                let labels = model.labels(for: cards.map(\.cwd))
-                // A plain stack: the lazy one went round placing its rows for ever (the app froze) once rows changed under
-                // the pointer while it scrolled.
-                VStack(alignment: .leading, spacing: 1) {
-                    if !sections.favorites.isEmpty {
-                        SectionHeader(icon: "star.fill", title: "favorites", count: sections.favorites.count)
-                            .mascotPlatform("side:favorites", on: mascotOn)
-                        ForEach(sections.favorites) { item in row(item) }
-                    }
-                    ForEach(cards, id: \.cwd) { card in
-                        folderCard(card, label: labels[card.cwd] ?? projectLabel(card.cwd))
-                    }
-                    if cards.isEmpty && sections.favorites.isEmpty {
-                        Text(model.query.isEmpty ? "no chats yet · open a folder to start" : "nothing matches")
-                            .font(.mono(10))
-                            .foregroundColor(Theme.cDim)
-                            .padding(.horizontal, 12)
-                            .padding(.top, 10)
-                    }
-                }
-                .padding(.bottom, 12)
-            }
-            .mascotPlatform("__scroll__", on: mascotOn)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(Theme.cPanel)
-        .coordinateSpace(name: "sidebar")
-        .onPreferenceChange(SidebarPlatformKey.self) { rects in
-            Task { @MainActor in
-                Mascot.shared.updateSidebarLocalRects(rects)
-            }
-        }
-        .id(theme.current.id)
-        .onReceive(NotificationCenter.default.publisher(for: Mascot.changed)) { _ in mascotOn = Mascot.isEnabled }
-    }
-
-    /// A folder as a panel of its own, in the dashboard's panel look: its strip (a click folds it shut or open), the app's
-    /// terminals in it, then its chats. It lights up while one of them is in a window.
-    private func folderCard(_ card: FolderCard, label: String) -> some View {
-        let shut = model.folded.contains(SidebarModel.folderKey(card.cwd)) && model.query.isEmpty
-        let expanded = model.expanded.contains(card.cwd) || !model.query.isEmpty
-        let inWindow = { (i: ChatItem) in
-            model.openInTabs.contains(i.id) || (model.brief(for: i).map { model.openInTabs.contains($0.id) } ?? false)
-        }
-        let live = card.terms.contains(where: \.shown) || card.items.contains(where: inWindow)
-            || card.worktrees.contains { $0.terms.contains(where: \.shown) || $0.items.contains(where: inWindow) }
-        // What "+N more" opens: the chats past the first 5 here, and past the first 3 of each worktree group.
-        let hidden = max(0, card.items.count - 5) + card.worktrees.reduce(0) { $0 + max(0, $1.items.count - 3) }
-        return VStack(alignment: .leading, spacing: 1) {
-            header(card, label: label, shut: shut)
-                .mascotPlatform("side:\(card.cwd)", on: mascotOn)
-            if !shut {
-                VStack(alignment: .leading, spacing: 1) {
-                    ForEach(card.terms) { t in termRow(t) }
-                    ForEach(expanded ? card.items : Array(card.items.prefix(5))) { item in row(item) }
-                    ForEach(card.worktrees, id: \.top) { g in worktreeGroup(g, card: card, expanded: expanded) }
-                    if !expanded && hidden > 0 {
-                        Button {
-                            model.expanded.insert(card.cwd)
-                        } label: {
-                            Text("+\(hidden) more")
-                                .font(.mono(9.5))
-                                .foregroundColor(Theme.cDim)
-                                .padding(.leading, 26)
-                                .padding(.vertical, 3)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                    if card.items.isEmpty && card.terms.isEmpty && card.worktrees.isEmpty {
-                        HStack(spacing: 4) {
-                            Text("nothing here yet ·").font(.mono(9.5)).foregroundColor(Theme.cDim)
-                            Button { actions.newTerminal(card.cwd) } label: {
-                                Text("open a terminal").font(.mono(9.5, .semibold)).foregroundColor(Theme.cAccentSoft)
-                            }
-                            .buttonStyle(.plain)
-                        }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 6)
-                    }
-                }
-                .padding(.vertical, 4)
-            }
-        }
-        .background(FolderCardFrame(live: live))
-        .padding(.horizontal, 6)
-        .padding(.top, 6)
-    }
-
-    /// A linked worktree inside its main repo's card: a header "⎇ worktree · branch" with a thin branch line down its left side,
-    /// then its terminals and chats, as the card's own rows. At most 3 chats until the card's "+N more" opens them all.
-    private func worktreeGroup(_ g: WorktreeGroup, card: FolderCard, expanded: Bool) -> some View {
-        let shown = expanded ? g.items : Array(g.items.prefix(3))
-        let branch = model.streamer ? Streamer.fake("branch", g.branch) : g.branch
-        let gone = g.gone
-        return VStack(alignment: .leading, spacing: 1) {
-            WorktreeGroupHeader(branch: branch, count: g.items.count + g.terms.count, gone: gone,
-                                tip: model.streamer ? "worktree" : "\(tildify(g.top)) · branch \(g.branch)",
-                                onNew: { actions.newTerminal(g.top) }, onWorktree: { actions.newWorktree(g.top) },
-                                onReveal: { actions.reveal(g.top) }, canOpen: !gone,
-                                top: g.top, st: ship.status[g.top], deleted: ship.deleted.contains(g.top), streamer: model.streamer,
-                                onShip: { actions.ship($0, g.top) })
-            VStack(alignment: .leading, spacing: 1) {
-                ForEach(g.terms) { t in termRow(t) }
-                ForEach(shown) { item in row(item) }
-            }
-            .padding(.leading, 9)
-        }
-        .padding(.leading, 13)
-        .padding(.trailing, 2)
-        .padding(.top, 3)
-        .overlay(alignment: .topLeading) {
-            // The branch line: bright at the header, fading down to its last row.
-            Rectangle()
-                .fill(LinearGradient(colors: [Theme.cAccentSoft.opacity(0.9), Theme.cAccent.opacity(0.18)], startPoint: .top, endPoint: .bottom))
-                .frame(width: 1.5)
-                .padding(.leading, 16.5)
-                .padding(.top, 22)
-                .padding(.bottom, 6)
-        }
-    }
-
-    /// One of the app's terminals with no Claude in it: what runs in it, and whether its window shows. A click shows it;
-    /// ending it is in its menu only, so it can't go by mistake.
-    private func termRow(_ t: TermRow) -> some View {
-        TerminalRow(term: t, streamer: model.streamer)
-            .onTapGesture { actions.openTerminal(t.id) }
-            .contextMenu {
-                Button("Show Terminal") { actions.openTerminal(t.id) }
-                Button("New Terminal in This Folder") { actions.newTerminal(t.cwd) }
-                Button("New Worktree…") { actions.newWorktree(t.cwd) }.disabled(Worktrees.info(of: t.cwd) == nil)
-                Button("Show Folder in Finder") { actions.reveal(t.cwd) }
-                Divider()
-                Button("End Terminal") { actions.endTerminal(t.id) }
-            }
-    }
-
-    /// A button of the bar over the list while chats or folders are picked. `danger`: it deletes, so it isn't the filled
-    /// one (the likely action is), only outlined in red.
-    private func bulkButton(_ title: String, danger: Bool = false, _ action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(title)
-                .font(.mono(10, .semibold))
-                .foregroundColor(danger ? Theme.cRed : Theme.cInk)
-                .padding(.horizontal, 8)
-                .frame(height: 18)
-                .background(RoundedRectangle(cornerRadius: 3).fill(danger ? Color.clear : Theme.cAccent))
-                .overlay(RoundedRectangle(cornerRadius: 3).stroke(danger ? Theme.cRed : Color.clear, lineWidth: 1))
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-    }
-
-    /// A folder card's strip: a click folds it shut or open, ⌘-click picks it for the bulk bar.
-    private func header(_ card: FolderCard, label: String, shut: Bool) -> some View {
-        let cwd = card.cwd
-        return ProjectHeader(cwd: cwd, shownPath: model.shownPath(cwd), label: label, count: card.total, terms: card.terms.count + card.worktrees.reduce(0) { $0 + $1.terms.count },
-                             pinned: card.pinned, shut: shut, archived: false, selected: model.selectedFolders.contains(cwd),
-                             bulk: model.selectedFolders.count, isRepo: card.isRepo, onNew: { actions.newTerminal(cwd) },
-                             onWorktree: { actions.newWorktree(cwd) },
-                             onArchive: { withAnimation(.easeInOut(duration: 0.25)) { model.setFolder(cwd, archived: true) } },
-                             // Its chats, or those of every folder picked with it.
-                             onDelete: {
-                                 let picked = model.selectedFolders.count > 1 && model.selectedFolders.contains(cwd)
-                                 actions.delete(model.chats(inFolders: picked ? model.selectedFolders : [cwd]))
-                             },
-                             onSelect: { model.selectFolder(cwd) },
-                             onFold: { withAnimation(.easeInOut(duration: 0.2)) { model.toggleFold(cwd) } },
-                             onUnpin: { withAnimation(.easeInOut(duration: 0.25)) { model.unpin(cwd) } },
-                             onReveal: { actions.reveal(cwd) },
-                             onBulk: { on in withAnimation(.easeInOut(duration: 0.25)) { model.setSelectedFolders(archived: on) } })
-    }
-
-    private func row(_ item: ChatItem) -> some View {
-        let favorite = model.favorites.contains(item.id), archived = model.isArchived(item)
-        let b = model.brief(for: item)
-        let inTab = model.openInTabs.contains(item.id) || (b.map { model.openInTabs.contains($0.id) } ?? false)
-        let isActive = model.activeSessionId == item.id || (b != nil && model.activeSessionId == b?.id)
-        let selected = model.selectedChats.contains(item.id)
-        // With others picked too, its menu's Delete is for all of them.
-        let picked = selected ? model.pickedChats.map(\.id) : []
-        return ChatRow(item: item, title: model.title(of: item), tip: model.streamer ? model.title(of: item) : nil, renaming: model.renaming == item.id,
-                       onRename: { name in
-                           if let name { model.rename(item.id, to: name) } else { model.renaming = nil }
-                       },
-                       brief: b, inTab: inTab,
-                       isActive: isActive, favorite: favorite,
-                       archived: archived, selected: selected,
-                       onStar: { withAnimation(.easeInOut(duration: 0.25)) { model.toggleFavorite(item) } },
-                       onArchive: { withAnimation(.easeInOut(duration: 0.25)) { model.toggleArchived(item) } })
-            .onTapGesture {
-                // ⇧-click picks all up to it, ⌘-click picks it; while some are picked a click picks too, so one that
-                // misses its key doesn't open a chat (and start Claude). Else a click opens it.
-                let keys = NSEvent.modifierFlags
-                if keys.contains(.shift) {
-                    model.pick(upTo: item)
-                } else if keys.contains(.command) || !model.selectedChats.isEmpty {
-                    model.pick(item)
-                } else {
-                    actions.open(item.id)
-                }
-            }
-            .contextMenu {
-                Button("Rename…") { model.renaming = item.id }
-                Button(favorite ? "Remove from Favorites" : "Add to Favorites") {
-                    withAnimation(.easeInOut(duration: 0.25)) { model.toggleFavorite(item) }
-                }
-                Button(archived ? "Unarchive" : "Archive") {
-                    withAnimation(.easeInOut(duration: 0.25)) { model.toggleArchived(item) }
-                }
-                Button(selected ? "Deselect" : "Select") { model.pick(item) }
-                Divider()
-                Button("Open in a Window") { actions.open(item.id) }
-                if item.tool == "claude" {
-                    Button("Open a Copy (fork)") { actions.fork(item.id) }
-                }
-                Button("New Terminal in This Folder") { actions.newTerminal(item.cwd) }
-                Button("New Worktree…") { actions.newWorktree(item.cwd) }.disabled(Worktrees.info(of: item.cwd) == nil)
-                Divider()
-                Button("Show Folder in Finder") { actions.reveal(item.cwd) }
-                Button("Copy Session ID") { actions.copyId(item.id) }
-                Divider()
-                Button(picked.count > 1 ? "Delete the \(picked.count) Selected Chats…" : "Delete…") {
-                    actions.delete(picked.count > 1 ? picked : [item.id])
-                }
-            }
-    }
-}
-
-/// FAVORITES at the top of the list, ARCHIVED at its foot.
-private struct SectionHeader: View {
-    let icon: String
-    let title: String
-    let count: Int
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Image(systemName: icon).font(.system(size: 9.5)).foregroundColor(Theme.cAccent.opacity(0.85))
-            Text(title.uppercased()).font(.mono(10, .semibold)).foregroundColor(Theme.cAccentSoft)
-            Text("\(count)").font(.mono(9)).foregroundColor(Theme.cDim2)
-            Spacer()
-        }
-        .padding(.horizontal, 10)
-        .padding(.top, 10)
-        .padding(.bottom, 3)
-        .contentShape(Rectangle())
-    }
-}
-
-private struct ProjectHeader: View {
-    let cwd: String
-    /// The folder's path as its tooltip says it (made up in streamer mode).
-    let shownPath: String
-    let label: String
-    let count: Int
-    /// The app's terminals in it, whether it was opened from the list, and whether it's folded shut.
-    let terms: Int
-    let pinned: Bool
-    let shut: Bool
-    /// In the ARCHIVED section: its button takes the whole folder out of the archive.
-    let archived: Bool
-    /// Picked for the bulk bar (⌘-click on the strip), and how many are.
-    let selected: Bool
-    let bulk: Int
-    /// In a git repo: the ⎇ button and the menu's New Worktree… are for it (a folder that isn't one has no ⎇ at all).
-    let isRepo: Bool
-    let onNew: () -> Void
-    let onWorktree: () -> Void
-    let onArchive: () -> Void
-    let onDelete: () -> Void
-    let onSelect: () -> Void
-    let onFold: () -> Void
-    let onUnpin: () -> Void
-    let onReveal: () -> Void
-    let onBulk: (Bool) -> Void
-    @State private var hover = false
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "chevron.right")
-                .font(.system(size: 8, weight: .bold))
-                .foregroundColor(Theme.cDim)
-                .rotationEffect(.degrees(shut ? 0 : 90))
-                .frame(width: 9)
-            Image(systemName: pinned ? "pin.fill" : "folder").font(.system(size: 9.5)).foregroundColor(Theme.cAccent.opacity(0.8))
-                .help(pinned ? "Opened from the list" : "")
-            Text(label)
-                .font(.mono(10, .semibold))
-                .foregroundColor(Theme.cAccentSoft)
-                .lineLimit(1)
-                .truncationMode(.head)
-            Text("\(count)").font(.mono(9)).foregroundColor(Theme.cDim2)
-            if terms > 0 {
-                HStack(spacing: 2) {
-                    Image(systemName: "terminal").font(.system(size: 8.5))
-                    Text("\(terms)").font(.mono(9))
-                }
-                .foregroundColor(Theme.cDim)
-                .help("\(terms) terminal\(terms > 1 ? "s" : "") in the app")
-            }
-            Spacer()
-            // On hover: the whole folder in or out of the archive (one chat in it can come back alone). Always laid out.
-            Button(action: onArchive) {
-                Image(systemName: archived ? "tray.and.arrow.up" : "archivebox").font(.system(size: 9.5)).foregroundColor(Theme.cDim)
-            }
-            .buttonStyle(.plain)
-            .opacity(hover ? 1 : 0)
-            .allowsHitTesting(hover)
-            .help(archived ? "Unarchive the folder: all its chats back in the list" : "Archive the folder: all its chats out of the list")
-            if isRepo {
-                Button(action: onWorktree) {
-                    Image(systemName: "arrow.triangle.branch").font(.system(size: 11, weight: .semibold)).foregroundColor(Theme.cAccent)
-                        .frame(width: 16, height: 16)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .opacity(hover ? 1 : 0.35)
-                .help("New worktree from this repo: a separate folder on a branch of its own")
-            }
-            Button(action: onNew) {
-                Image(systemName: "plus").font(.system(size: 9, weight: .bold)).foregroundColor(Theme.cAccent)
-            }
-            .buttonStyle(.plain)
-            .opacity(hover ? 1 : 0.35)
-            .help("New terminal in this folder")
-        }
-        .padding(.horizontal, 8)
-        .frame(height: 26)
-        // The card's strip, as a dashboard panel's.
-        .background(
-            Rectangle().fill(selected ? Theme.cAccent.opacity(0.2) : Theme.cAccent.opacity(hover ? 0.1 : 0.06))
-        )
-        .overlay(alignment: .bottom) { Rectangle().fill(Theme.cLineSoft).frame(height: 1).opacity(shut ? 0 : 1) }
-        // All of it hovers, the empty middle too: on the way to its buttons the pointer crossed nothing, they vanished.
-        .contentShape(Rectangle())
-        .onTapGesture {
-            // ⌘-click picks it for archiving several at once; a click folds it shut or open.
-            if NSEvent.modifierFlags.contains(.command) { onSelect() } else { onFold() }
-        }
-        .help(selected ? "Selected · ⌘-click again to leave it out"
-              : "\(shownPath) · click to fold \(shut ? "open" : "shut") · ⌘-click to select, for archiving or deleting several at once")
-        .onHover { hover = $0 }
-        .contextMenu {
-            if bulk > 1 && selected {
-                Button("Archive the \(bulk) Selected Folders") { onBulk(true) }
-                Button("Unarchive the \(bulk) Selected Folders") { onBulk(false) }
-                Divider()
-            }
-            Button("New Terminal in This Folder", action: onNew)
-            Button("New Worktree…", action: onWorktree).disabled(!isRepo)
-            Button("Show Folder in Finder", action: onReveal)
-            Divider()
-            Button(archived ? "Unarchive Folder" : "Archive Folder", action: onArchive)
-            Button(selected ? "Deselect" : "Select", action: onSelect)
-            if pinned { Button("Remove from the List", action: onUnpin) }
-            Divider()
-            Button(bulk > 1 && selected ? "Delete the Chats in the \(bulk) Selected Folders…" : "Delete the Chats in This Folder…",
-                   action: onDelete)
-        }
-    }
-}
-
-/// The head of a worktree's group in its main repo's card: "worktree · branch", how many rows, and on hover a + for a new
-/// terminal in that worktree. Only a label (no folding): the card is level one, its rows level two.
-private struct WorktreeGroupHeader: View {
-    let branch: String
-    let count: Int
-    let gone: Bool
-    let tip: String
-    let onNew: () -> Void
-    let onWorktree: () -> Void
-    let onReveal: () -> Void
-    let canOpen: Bool
-    let top: String
-    let st: WorktreeStatus?
-    let deleted: Bool
-    var streamer = false
-    let onShip: (String) -> Void
-    @State private var hover = false
-
-    var body: some View {
-        let dim = deleted
-        HStack(spacing: 5) {
-            Image(systemName: "arrow.triangle.branch").font(.system(size: 9)).foregroundColor(dim ? Theme.cDim : Theme.cAccentSoft)
-            Text("worktree ·").font(.mono(9.5)).foregroundColor(ThemeStore.shared.swiftUI("--txt3"))
-            Text(branch).font(.mono(9.5, .semibold)).foregroundColor(dim ? Theme.cDim : Theme.cAccentSoft).lineLimit(1)
-            Text("\(count)").font(.mono(9)).foregroundColor(Theme.cDim2)
-            if gone && !deleted { Text("(folder gone)").font(.mono(9)).foregroundColor(Theme.cDim).lineLimit(1) }
-            Spacer(minLength: 0)
-            WorktreeGroupState(st: st, deleted: deleted)
-            if canOpen && !deleted {
-                Button(action: onNew) {
-                    Text("+").font(.mono(11, .bold)).foregroundColor(Theme.cAccent).frame(width: 15, height: 15).contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .opacity(hover ? 1 : 0)
-                .allowsHitTesting(hover)
-                .help("New terminal in this worktree")
-            }
-        }
-        .frame(height: 19)
-        .padding(.trailing, 2)
-        .contentShape(Rectangle())
-        .onHover { hover = $0 }
-        .help(tip)
-        .onAppear { WorktreeShip.shared.watchList(top) }
-        .onDisappear { WorktreeShip.shared.unwatchList(top) }
-        .contextMenu {
-            Button("New Terminal in This Worktree", action: onNew).disabled(!canOpen || deleted)
-            Button("New Worktree…", action: onWorktree).disabled(!canOpen || deleted)
-            Button("Show Folder in Finder", action: onReveal).disabled(!canOpen || deleted)
-            Divider()
-            ForEach(WorktreeShip.items(st, deleted: deleted, streamer: streamer).filter { $0.id != "changes" && $0.id != "reveal" }) { item in
-                Button(item.title) { onShip(item.id) }.disabled(!item.enabled)
-            }
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("worktree \(branch), \(count) chats" + (streamer ? "" : st.map { ", " + $0.chipLabel(deleted: deleted) } ?? ""))
-    }
-}
-
-/// The group's state, right-aligned before the hover +: `+42 −7`, `#48 ✓`, `merged ✓`, `deleted` (spec 4.3).
-private struct WorktreeGroupState: View {
-    let st: WorktreeStatus?
-    let deleted: Bool
-
-    var body: some View {
-        let tx3 = ThemeStore.shared.swiftUI("--txt3")
-        HStack(spacing: 4) {
-            if deleted {
-                Text("deleted").foregroundColor(Theme.cDim)
-            } else if let st {
-                switch st.phase {
-                case "work":
-                    if let pr = st.pr, pr.state == "CLOSED" { Text("#\(pr.number) closed") }
-                    else {
-                        Text("+\(st.add)").foregroundColor(Theme.cAccentSoft)
-                        Text("\u{2212}\(st.del)").foregroundColor(ThemeStore.shared.swiftUI("--red-soft"))
-                    }
-                case "pr":
-                    if let pr = st.pr {
-                        Text("#\(pr.number)\(pr.draft ? " draft" : "")")
-                        if !pr.draft { ChecksMark(kind: pr.checks.kind).scaleEffect(0.85) }
-                    }
-                case "merged":
-                    Text("merged")
-                    ChecksMark(kind: "pass").scaleEffect(0.85)
-                case "gone": Text("folder gone").foregroundColor(Theme.cDim)
-                default: EmptyView()
-                }
-            }
-        }
-        .font(.mono(9))
-        .foregroundColor(tx3)
-        .lineLimit(1)
-        .padding(.trailing, 2)
-    }
-}
-
-/// A folder card's frame, in the dashboard's panel look: a thin line with the accent's corner marks; brighter, with a
-/// glow, while one of its chats or terminals is in a window.
-private struct FolderCardFrame: View {
-    let live: Bool
-
-    var body: some View {
-        ZStack {
-            Rectangle().fill(Theme.cAccent.opacity(live ? 0.05 : 0.02))
-            Rectangle().stroke(live ? Theme.cLine : Theme.cLineSoft, lineWidth: 1)
-            CornerMarks().stroke(Theme.cAccent.opacity(live ? 1 : 0.75), lineWidth: 1.5)
-        }
-        .shadow(color: live ? Theme.cAccent.opacity(0.35) : .clear, radius: live ? 6 : 0)
-    }
-}
-
-/// The short L at each corner of a dashboard panel.
-private struct CornerMarks: Shape {
-    func path(in r: CGRect) -> Path {
-        let k: CGFloat = 7
-        var p = Path()
-        p.move(to: CGPoint(x: r.minX, y: r.minY + k)); p.addLine(to: CGPoint(x: r.minX, y: r.minY)); p.addLine(to: CGPoint(x: r.minX + k, y: r.minY))
-        p.move(to: CGPoint(x: r.maxX - k, y: r.minY)); p.addLine(to: CGPoint(x: r.maxX, y: r.minY)); p.addLine(to: CGPoint(x: r.maxX, y: r.minY + k))
-        p.move(to: CGPoint(x: r.maxX, y: r.maxY - k)); p.addLine(to: CGPoint(x: r.maxX, y: r.maxY)); p.addLine(to: CGPoint(x: r.maxX - k, y: r.maxY))
-        p.move(to: CGPoint(x: r.minX + k, y: r.maxY)); p.addLine(to: CGPoint(x: r.minX, y: r.maxY)); p.addLine(to: CGPoint(x: r.minX, y: r.maxY - k))
-        return p
-    }
-}
-
-/// One of the app's terminals with no Claude in it, in its folder's card.
-private struct TerminalRow: View {
-    let term: TermRow
-    /// Streamer mode: a made-up folder and command.
-    let streamer: Bool
-    @State private var hover = false
-
-    var body: some View {
-        let title = term.title.isEmpty ? "terminal" : streamer ? Streamer.project(term.title) : term.title
-        let job = term.job.isEmpty ? "idle" : streamer ? Streamer.fake("cmd", term.job) : term.job
-        HStack(spacing: 7) {
-            Image(systemName: "terminal")
-                .font(.system(size: 10))
-                .foregroundColor(term.job.isEmpty ? Theme.cDim : Theme.cAccent)
-                .frame(width: 14)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(title)
-                    .font(.mono(11, term.shown ? .semibold : .regular))
-                    .foregroundColor(Theme.cHi)
-                    .lineLimit(1)
-                Text((["terminal", job] + (term.shown ? ["showing"] : [])).joined(separator: " · "))
-                    .font(.mono(9.5))
-                    .foregroundColor(Theme.cDim)
-                    .lineLimit(1)
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
-        .background(
-            RoundedRectangle(cornerRadius: 4)
-                .fill(term.shown ? Theme.cAccent.opacity(0.14) : (hover ? Theme.cAccent.opacity(0.06) : .clear))
-        )
-        .padding(.horizontal, 4)
-        .contentShape(Rectangle())
-        .onHover { hover = $0 }
-        .help(streamer ? title : "\(term.title) · \(tildify(term.cwd))")
-    }
-}
-
-private struct ChatRow: View {
-    let item: ChatItem
-    /// Its name (one the user gave it, else Claude's title), and whether it's being renamed in place.
-    let title: String
-    /// What its tooltip says instead of the last prompt (streamer mode).
-    let tip: String?
-    let renaming: Bool
-    /// The new name, or nil when the rename is called off (Esc).
-    let onRename: (String?) -> Void
-    let brief: SessionBrief?
-    let inTab: Bool
-    let isActive: Bool
-    let favorite: Bool
-    let archived: Bool
-    /// Picked (⌘-click) for deleting or archiving several at once: a tick in its light's place, and a brighter row.
-    let selected: Bool
-    let onStar: () -> Void
-    let onArchive: () -> Void
-    @State private var hover = false
-    @State private var draft = ""
-    @FocusState private var editing: Bool
-
-    var body: some View {
-        let live = brief?.live == true
-        let status = live ? brief?.status : nil
-        let isAgy = item.tool == "antigravity"
-        HStack(spacing: 8) {
-            StatusDot(status: status ?? "ended", size: 7, hollow: !live)
-                .id(status ?? "ended")
-                .opacity(selected ? 0 : 1)
-                .overlay {
-                    if selected {
-                        Image(systemName: "checkmark.circle.fill").font(.system(size: 10)).foregroundColor(Theme.cAccent)
-                    }
-                }
-            VStack(alignment: .leading, spacing: 1) {
-                if renaming {
-                    // Enter keeps it, Esc calls it off; an empty name gives the chat back its own.
-                    TextField("name", text: $draft)
-                        .textFieldStyle(.plain)
-                        .font(.mono(11))
-                        .foregroundColor(Theme.cHi)
-                        .focused($editing)
-                        .onSubmit { onRename(draft) }
-                        .onExitCommand { onRename(nil) }
-                        .onAppear {
-                            draft = title
-                            editing = true
-                        }
-                        .padding(.horizontal, 3)
-                        .background(RoundedRectangle(cornerRadius: 3).stroke(Theme.cAccent, lineWidth: 1))
-                } else {
-                    HStack(spacing: 4) {
-                        Text(title)
-                            .font(.mono(11, isActive ? .semibold : .regular))
-                            .foregroundColor(isActive || live ? Theme.cHi : Theme.cText)
-                            .lineLimit(1)
-                        if isAgy || item.tool == "codex" || item.tool == "cursor" {
-                            Text(isAgy ? "agy" : item.tool == "cursor" ? "cursor" : "codex")
-                                .font(.mono(8, .medium))
-                                .foregroundColor(Theme.cAccent.opacity(0.8))
-                                .padding(.horizontal, 3)
-                                .padding(.vertical, 1)
-                                .background(RoundedRectangle(cornerRadius: 2).fill(Theme.cAccent.opacity(0.12)))
-                        }
-                    }
-                }
-                Text(meta(live: live, status: status))
-                    .font(.mono(9))
-                    .foregroundColor(status == "waiting" ? Theme.cAlert : Theme.cDim)
-                    .lineLimit(1)
-            }
-            Spacer(minLength: 0)
-            // On hover: star it (to the top) or archive it (out of the list). A starred one keeps its star. Always laid out,
-            // only shown or not: a row that changed size under the pointer kept the list re-placing itself.
-            Button(action: onStar) {
-                Image(systemName: favorite ? "star.fill" : "star")
-                    .font(.system(size: 10))
-                    .foregroundColor(favorite ? Theme.cAmber : Theme.cDim)
-            }
-            .buttonStyle(.plain)
-            .opacity(hover || favorite ? 1 : 0)
-            .allowsHitTesting(hover || favorite)
-            .help(favorite ? "Remove from favorites" : "Add to favorites: it stays at the top")
-            Button(action: onArchive) {
-                Image(systemName: archived ? "tray.and.arrow.up" : "archivebox")
-                    .font(.system(size: 10))
-                    .foregroundColor(Theme.cDim)
-            }
-            .buttonStyle(.plain)
-            .opacity(hover ? 1 : 0)
-            .allowsHitTesting(hover)
-            .help(archived ? "Unarchive: back in the list" : "Archive: out of the list (under ARCHIVED, closed)")
-        }
-        .padding(.leading, 14)
-        .padding(.trailing, 8)
-        .padding(.vertical, 4)
-        .background(
-            RoundedRectangle(cornerRadius: 4)
-                .fill(selected ? Theme.cAccent.opacity(0.26)
-                      : isActive ? Theme.cAccent.opacity(0.18) : (inTab ? Theme.cAccent.opacity(0.10) : (hover ? Theme.cAccent.opacity(0.06) : .clear)))
-        )
-        .overlay(alignment: .leading) {
-            if isActive {
-                RoundedRectangle(cornerRadius: 1.5)
-                    .fill(Theme.cAccent)
-                    .frame(width: 2.5)
-                    .padding(.vertical, 4)
-            }
-        }
-        .padding(.horizontal, 6)
-        .contentShape(Rectangle())
-        .onHover { hover = $0 }
-        .help(tip ?? (item.lastPrompt.isEmpty ? title : item.lastPrompt))
-    }
-
-    private func meta(live: Bool, status: String?) -> String {
-        var bits = [relative(item.mtime)]
-        if item.size > 0 { bits.append(fmtBytes(item.size)) }
-        if isActive {
-            bits.append("active window")
-        } else if inTab {
-            bits.append("in a window")
-        } else if live {
-            bits.append(brief?.host == "term" ? "in another terminal" : "live")
-        }
-        if status == "waiting" { bits.append("NEEDS YOU") } else if status == "idle", live { bits.append("your turn") }
-        return bits.joined(separator: " · ")
-    }
-
-    private func relative(_ ms: Double) -> String {
-        let s = max(0, Date().timeIntervalSince1970 - ms / 1000)
-        if s < 60 { return "now" }
-        if s < 3600 { return "\(Int(s / 60))m" }
-        if s < 86_400 { return "\(Int(s / 3600))h" }
-        if s < 86_400 * 30 { return "\(Int(s / 86_400))d" }
-        return "\(Int(s / (86_400 * 30)))mo"
-    }
+    /// The open folder button: a folder from the system's picker, kept in the list, with a terminal in it. `done` says whether
+    /// one was picked.
+    let openFolder: (@escaping (Bool) -> Void) -> Void
 }
 
 /// Settings' archived chats (web/cloud.js), out of the chats list as in Claude's and ChatGPT's settings: the list by
@@ -1360,27 +648,224 @@ final class TrashBridge: NSObject, WKScriptMessageHandlerWithReply {
     }
 }
 
-struct SidebarPlatformRect: Equatable {
-    let id: String
-    let rect: CGRect
-}
+// MARK: the page's list (web/chats.js)
 
-private struct SidebarPlatformKey: PreferenceKey {
-    static var defaultValue: [SidebarPlatformRect] = []
-    static func reduce(value: inout [SidebarPlatformRect], nextValue: () -> [SidebarPlatformRect]) {
-        value.append(contentsOf: nextValue())
+extension SidebarModel {
+    /// The chat with this id as the list holds it (not a deleted one).
+    func chat(_ id: String) -> ChatItem? { everything.first { $0.id == id } }
+
+    /// A folder card by the key the page knows it by.
+    func card(forKey key: String) -> FolderCard? { cards.first { Self.folderKey($0.cwd) == key } }
+
+    /// What a linked worktree's header says on the right (spec 4.3): `+42 −7`, `#48 ✓`, `merged ✓`, `deleted`.
+    private static func shipText(_ st: WorktreeStatus?, deleted: Bool) -> String {
+        if deleted { return "deleted" }
+        guard let st else { return "" }
+        func mark(_ kind: String) -> String { kind == "pass" ? " \u{2713}" : kind == "fail" ? " \u{2715}" : kind == "run" ? " \u{25CC}" : "" }
+        switch st.phase {
+        case "work":
+            if let pr = st.pr, pr.state == "CLOSED" { return "#\(pr.number) closed" }
+            return "+\(st.add) \u{2212}\(st.del)"
+        case "pr":
+            guard let pr = st.pr else { return "" }
+            return "#\(pr.number)" + (pr.draft ? " draft" : mark(pr.checks.kind))
+        case "merged": return "merged \u{2713}"
+        case "gone": return "folder gone"
+        default: return ""
+        }
+    }
+
+    /// The list as the page draws it, in the shape the Windows app sends (windows/src/chatlist.js snapshot()): `rows` (every
+    /// chat shown, the favorites too), `terms`, `pinned`, `saved`, `live`, `folders` (key -> label, path, cwd, repo, and `wt`
+    /// for a linked worktree, which the page puts in its main folder), and `order`, the folders as they are listed. The
+    /// titles are `title(of:)`'s, so streamer mode's made-up names are in them already.
+    func snapshot() -> [String: Any] {
+        let ship = WorktreeShip.shared
+        let secs = sections
+        let cards = self.cards
+        let names = labels(for: cards.map(\.cwd))
+        var rows: [[String: Any]] = []
+        var terms: [[String: Any]] = []
+        var folders: [String: [String: Any]] = [:]
+        var order: [String] = []
+        var pins: [String] = []
+        var tops = Set<String>()
+        // A live chat with nothing saved yet has no time of its own (`everything` gives it "now", a new one at every look):
+        // it goes without one, so the same list makes the same snapshot and isn't pushed to the page again.
+        let saved = Set(items.map(\.id))
+        func row(_ item: ChatItem, key: String, fav: Bool) -> [String: Any] {
+            let b = brief(for: item)
+            let live = b?.live == true
+            let inWindow = openInTabs.contains(item.id) || (b.map { openInTabs.contains($0.id) } ?? false)
+            var r: [String: Any] = [
+                "id": item.id, "cwd": item.cwd, "key": key, "mtime": saved.contains(item.id) ? item.mtime as Any : NSNull(), "size": item.size,
+                "title": title(of: item), "lastPrompt": streamer ? "" : item.lastPrompt, "fav": fav, "tool": item.tool,
+                "status": live ? (b?.status ?? "busy") as Any : NSNull(), "host": live ? (b?.host ?? "") as Any : NSNull(),
+                "open": inWindow,
+            ]
+            // A renamed chat is still found by the title its AI gave it.
+            if !streamer, let named = customTitles[item.id], !item.title.isEmpty, named != item.title { r["origTitle"] = item.title }
+            if let b, b.id != item.id { r["sid"] = b.id }
+            return r
+        }
+        func term(_ t: TermRow, key: String) -> [String: Any] {
+            let title = t.title.isEmpty ? "terminal" : streamer ? Streamer.project(t.title) : t.title
+            let job = t.job.isEmpty ? "" : streamer ? Streamer.fake("cmd", t.job) : t.job
+            return ["id": t.id, "cwd": t.cwd, "key": key, "title": title, "job": job, "shown": t.shown,
+                    "tip": streamer ? title : "\(t.title) \u{00B7} \(tildify(t.cwd))"]
+        }
+        for item in secs.favorites { rows.append(row(item, key: Self.folderKey(item.cwd), fav: true)) }
+        for card in cards {
+            let key = Self.folderKey(card.cwd)
+            order.append(key)
+            if card.pinned { pins.append(key) }
+            // A worktree opened from the list is a card of its own too: what its main card says of it (`wt`) stays.
+            if folders[key]?["wt"] == nil {
+                folders[key] = ["label": names[card.cwd] ?? projectLabel(card.cwd), "path": shownPath(card.cwd), "cwd": card.cwd, "repo": card.isRepo]
+            }
+            for item in card.items { rows.append(row(item, key: key, fav: false)) }
+            for t in card.terms { terms.append(term(t, key: key)) }
+            for g in card.worktrees {
+                let wkey = Self.folderKey(g.top)
+                let isDeleted = ship.deleted.contains(g.top)
+                let st = ship.status[g.top]
+                tops.insert(g.top)
+                var text = Self.shipText(st, deleted: isDeleted)
+                if text.isEmpty && g.gone && !isDeleted { text = "folder gone" }
+                let items = WorktreeShip.items(st, deleted: isDeleted, streamer: streamer)
+                    .filter { $0.id != "changes" && $0.id != "reveal" }
+                    .map { ["id": $0.id, "title": $0.title, "enabled": $0.enabled] as [String: Any] }
+                folders[wkey] = [
+                    "label": g.branch, "path": streamer ? "worktree" : tildify(g.top), "cwd": g.top, "repo": true,
+                    "wt": ["top": g.top, "main": key, "branch": streamer ? Streamer.fake("branch", g.branch) : g.branch,
+                           "state": ["text": text, "deleted": isDeleted] as [String: Any], "items": items] as [String: Any],
+                ]
+                for item in g.items { rows.append(row(item, key: wkey, fav: false)) }
+                for t in g.terms { terms.append(term(t, key: wkey)) }
+            }
+        }
+        // The worktrees on the list are the ones whose state is kept fresh (WorktreeShip.watchList), while it can be seen.
+        for t in tops.subtracting(watching) { ship.watchList(t) }
+        for t in watching.subtracting(tops) { ship.unwatchList(t) }
+        watching = tops
+        return [
+            "rows": rows, "terms": terms, "pinned": pins, "order": order, "saved": savedCount,
+            "live": briefs.values.filter(\.live).count, "folders": folders, "folded": Array(folded),
+            "active": activeSessionId as Any? ?? NSNull(), "activeAlt": NSNull(),
+            "chatsKey": Shortcuts.label(Shortcuts.combo("chatsList")),
+        ]
+    }
+
+    func snapshotJSON() -> String {
+        guard let data = try? JSONSerialization.data(withJSONObject: snapshot(), options: [.sortedKeys]), let json = String(data: data, encoding: .utf8) else { return "null" }
+        return json
     }
 }
 
-private extension View {
-    func mascotPlatform(_ id: String, on: Bool) -> some View {
-        background(
-            GeometryReader { geo in
-                Color.clear.preference(
-                    key: SidebarPlatformKey.self,
-                    value: on ? [SidebarPlatformRect(id: id, rect: geo.frame(in: .named("sidebar")))] : []
-                )
+/// The page's menus are native ones: `items` ({id, title, enabled?} or {separator}) popped up where the page says (its px,
+/// from the top left of the page); the reply is the picked item's id, or null.
+@MainActor
+final class ChatMenu: NSObject {
+    private var picked: String?
+
+    @objc private func pick(_ item: NSMenuItem) { picked = item.representedObject as? String }
+
+    func run(_ items: [[String: Any]], at: [String: Any], in view: NSView, zoom: CGFloat) -> Any {
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        for it in items {
+            if it["separator"] as? Bool == true { menu.addItem(.separator()); continue }
+            guard let id = it["id"] as? String, let title = it["title"] as? String else { continue }
+            let mi = NSMenuItem(title: title, action: #selector(pick(_:)), keyEquivalent: "")
+            mi.target = self
+            mi.representedObject = id
+            mi.isEnabled = it["enabled"] as? Bool ?? true
+            menu.addItem(mi)
+        }
+        let x = ((at["x"] as? NSNumber)?.doubleValue ?? 0) * Double(zoom)
+        let y = ((at["y"] as? NSNumber)?.doubleValue ?? 0) * Double(zoom)
+        let point = NSPoint(x: x, y: view.isFlipped ? y : view.bounds.height - y)
+        picked = nil
+        menu.popUp(positioning: nil, at: point, in: view)
+        return picked ?? NSNull()
+    }
+}
+
+/// The chats list's requests (web/chats.js, the Windows app's handleChats in main.js): the page draws the list, the app does
+/// what's asked of it.
+final class ChatsBridge: NSObject, WKScriptMessageHandlerWithReply {
+    private weak var model: SidebarModel?
+    private let actions: SidebarActions
+    /// The page asked for its list (a load, a reload): push it, with the fold and keys.
+    var onReady: (() -> Void)?
+    /// ⌘B's fold, as the page has it.
+    var onClosed: ((Bool) -> Void)?
+    private let menu = MainActor.assumeIsolated { ChatMenu() }
+
+    init(model: SidebarModel, actions: SidebarActions) {
+        self.model = model
+        self.actions = actions
+    }
+
+    func userContentController(_ ucc: WKUserContentController, didReceive message: WKScriptMessage,
+                               replyHandler: @escaping @MainActor @Sendable (Any?, String?) -> Void) {
+        let body = message.body as? [String: Any] ?? [:]
+        let web = message.webView
+        MainActor.assumeIsolated {
+            guard let model else { return replyHandler(nil, "no chats list") }
+            let str = { (k: String) in body[k] as? String ?? "" }
+            let list = { (k: String) in (body[k] as? [Any] ?? []).compactMap { $0 as? String } }
+            /// The folder cards the page's keys name (a key is the folder as `folderKey` writes it).
+            let cwds = { (keys: [String]) in keys.map { model.card(forKey: $0)?.cwd ?? $0 } }
+            /// A folder on this Mac, whatever the page sends: never a file or a package (`reveal` opens it, and opening an app
+            /// or a script would run it), as the Windows app's handleChats keeps to folders.
+            let folder = { () -> String? in
+                let p = str("cwd")
+                var isDir: ObjCBool = false
+                guard p.hasPrefix("/"), FileManager.default.fileExists(atPath: p, isDirectory: &isDir), isDir.boolValue,
+                      !NSWorkspace.shared.isFilePackage(atPath: p) else { return nil }
+                return p
             }
-        )
+            switch body["type"] as? String {
+            case "ready": onReady?()
+            case "open": if !str("id").isEmpty { actions.open(str("id")) }
+            case "fork": if !str("id").isEmpty { actions.fork(str("id")) }
+            case "newTerminal": actions.newTerminal(str("cwd"))
+            case "newWorktree": actions.newWorktree(str("cwd"))
+            case "reveal": if let p = folder() { actions.reveal(p) }
+            case "copyId": if !str("id").isEmpty { actions.copyId(str("id")) }
+            case "showTerminal": actions.openTerminal(str("id"))
+            case "endTerminal": actions.endTerminal(str("id"))
+            // A worktree's own actions, for a worktree the list shows (its state is read for it), as on Windows.
+            case "ship":
+                guard ["create", "merge", "prmerge", "delete", "openpr"].contains(str("id")), model.watching.contains(str("top")) else {
+                    return replyHandler(false, nil)
+                }
+                actions.ship(str("id"), str("top"))
+            case "unpin": model.unpin(str("cwd"))
+            case "favorite": if let item = model.chat(str("id")) { model.toggleFavorite(item) }
+            case "archive": if let item = model.chat(str("id")), !model.isArchived(item) { model.toggleArchived(item) }
+            case "archiveMany":
+                for id in list("ids") { if let item = model.chat(id), !model.isArchived(item) { model.toggleArchived(item) } }
+            case "rename": if model.chat(str("id")) != nil { model.rename(str("id"), to: str("name")) }
+            case "folders":
+                let on = body["on"] as? Bool == true
+                for cwd in cwds(list("keys")) { model.setFolder(cwd, archived: on) }
+            case "delete":
+                return replyHandler(actions.delete(list("ids")), nil)
+            case "deleteFolders":
+                return replyHandler(actions.delete(model.chats(inFolders: Set(cwds(list("keys"))))), nil)
+            case "openFolder":
+                actions.openFolder { picked in replyHandler(picked, nil) }
+                return
+            case "closed": onClosed?(body["on"] as? Bool == true)
+            case "menu":
+                guard let web else { return replyHandler(nil, nil) }
+                let items = body["items"] as? [[String: Any]] ?? []
+                return replyHandler(menu.run(items, at: body["at"] as? [String: Any] ?? [:], in: web, zoom: web.pageZoom), nil)
+            default: return replyHandler(nil, "unknown request")
+            }
+            replyHandler(true, nil)
+        }
     }
 }

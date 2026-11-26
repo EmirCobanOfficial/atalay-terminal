@@ -173,6 +173,8 @@ enum NotesAI {
                     }
                 }
             }
+            // The other Claude accounts' configs follow (ClaudeAccounts.syncMcp).
+            ClaudeAccounts.syncMcp()
             if let done { DispatchQueue.main.async { done() } }
         }
     }

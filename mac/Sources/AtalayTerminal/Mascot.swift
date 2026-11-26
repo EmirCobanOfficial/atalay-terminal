@@ -92,7 +92,6 @@ final class Mascot: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
     private var hasAppearedOnce = false
     private var rawWebPanels: [[String: Any]] = []
     private var rawNavTargets: [[String: Any]] = []
-    private var sidebarLocalRects: [SidebarPlatformRect] = []
 
     private override init() {
         super.init()
@@ -979,12 +978,6 @@ final class Mascot: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
         refreshPlatforms()
     }
 
-    func updateSidebarLocalRects(_ rects: [SidebarPlatformRect]) {
-        guard rects != sidebarLocalRects else { return }
-        sidebarLocalRects = rects
-        refreshPlatforms()
-    }
-
     func refreshPlatforms() {
         guard Self.isEnabled, loaded, shown, let panel, let coff = cgToPanelOffset() else { return }
         var platforms: [[String: Any]] = []
@@ -1060,28 +1053,7 @@ final class Mascot: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
                 }
             }
 
-            if let sf = manager?.mascotSidebarFrame() {
-                let sx = Double(sf.minX) + ox, sy = Double(sf.minY) + oy
-                emit("side:top", x: sx, y: sy, w: Double(sf.width), h: 24, occ: occ)
-                let scrollRect = sidebarLocalRects.first(where: { $0.id == "__scroll__" })?.rect
-                for item in sidebarLocalRects where item.id != "__scroll__" && item.rect.width > 8 && item.rect.height > 4 {
-                    if let sr = scrollRect {
-                        if item.rect.minY < sr.minY - 2 || item.rect.minY > sr.maxY - 8 { continue }
-                    }
-                    let rx = sx + Double(item.rect.minX)
-                    let ry = sy + Double(item.rect.minY)
-                    let rw = Double(item.rect.width)
-                    let rh = Double(item.rect.height)
-                    emit(item.id, x: rx, y: ry, w: rw, h: rh, occ: occ)
-                    if NSApp.isActive, item.id.hasPrefix("side:") && item.id != "side:favorites", !covered(rx + rw / 2, ry + rh / 2) {
-                        let cwd = String(item.id.dropFirst(5))
-                        if !cwd.isEmpty {
-                            navTargets.append(["id": "fold:\(cwd)", "x": Int(rx.rounded()), "y": Int(ry.rounded()),
-                                               "w": Int(rw.rounded()), "h": Int(rh.rounded())])
-                        }
-                    }
-                }
-            }
+            // The chats list is a panel of the page now: its folder strips come with the page's panels and nav targets (app.js).
         }
 
         guard let json = jsonString(["type": "platforms", "list": platforms, "nav": navTargets]) else { return }

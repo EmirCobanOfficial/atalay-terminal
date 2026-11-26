@@ -1,0 +1,119 @@
+/* Claude accounts (claude-accounts.js): an account's mark, the top bar's Claude columns, the limits popover, Settings > Claude's group, the New Terminal picker's chip. */
+.ac { display: inline-grid; flex: none; place-items: center; width: 1.34em; height: 1.34em; border-radius: 50%; background: rgb(var(--ah)); color: var(--ink); font: 800 0.78em/1 var(--font-sans); letter-spacing: 0; vertical-align: -0.12em; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35); }
+.ac.lg { width: 28px; height: 28px; font-size: 13px; }
+.limits .lim-n.acct { display: inline-flex; align-items: center; gap: 0.35em; }
+.limits .lim-n.acct .ac { font-size: 0.86em; }
+.limits .lim-n.acct em { max-width: 7.5em; overflow: hidden; text-overflow: ellipsis; color: var(--txt2); font-style: normal; }
+.limits .lim-n.acct .ai { color: var(--dim); }
+/* the Claude group and the other AIs: a little more room between them than between two columns of one AI */
+.limits .gap-after { margin-right: 8px; }
+
+/* ---------- Settings > Claude: the accounts group ---------- */
+.st-accts .ac-row { gap: 12px; padding: 10px 0; }
+.st-accts .ac-row .st-l { flex: 1; min-width: 0; }
+.st-accts .ac-row .st-l b { display: flex; align-items: center; gap: 6px; }
+.st-accts .ac-lim { flex: none; color: var(--txt3); font: 0.75rem var(--font); white-space: nowrap; }
+.st-accts .ac-lim i { font-style: normal; color: var(--green); }
+.st-accts .ac-lim i.hot { color: var(--red); }
+.st-accts .ac-more { width: 28px; padding: 0; letter-spacing: 0.05em; }
+/* a whole row you click, drawn like the rows around it (a plain <button> otherwise came up grey with centred text) */
+.st-accts .ac-add { -webkit-appearance: none; appearance: none; width: 100%; justify-content: flex-start; padding: 10px 0; border: 0; border-top: 1px solid rgba(var(--accent-rgb), 0.11); border-radius: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; box-shadow: none; }
+.st-accts .ac-add .st-l { display: flex; flex-direction: column; gap: 3px; }
+.st-accts .ac-add b { color: var(--accent-soft); font-weight: 600; transition: color 0.12s; }
+.st-accts .ac-add small { display: block; color: var(--txt3); font-size: 0.75rem; line-height: 1.4; }
+.st-accts .ac-add:hover b { color: var(--hi); }
+.st-accts .ac-add:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
+.st-accts .ac-new { margin: 0 -16px; padding: 14px 16px 16px; border-top: 1px solid rgba(var(--accent-rgb), 0.2); background: rgba(var(--accent-rgb), 0.06); border-radius: 0 0 10px 10px; }
+.st-accts .ac-new h4 { margin: 0 0 4px; color: var(--hi); font: 600 0.875rem var(--font-sans); }
+.st-accts .ac-new p { margin: 0 0 12px; max-width: 34rem; color: var(--txt3); font: 0.78rem/1.45 var(--font-sans); }
+.st-accts .ac-new label { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; color: var(--txt2); font: 0.8125rem var(--font-sans); }
+.st-accts .ac-new input { width: 14rem; height: 28px; padding: 0 8px; border: 1px solid rgba(var(--accent-rgb), 0.55); border-radius: 6px; background: rgba(0, 0, 0, 0.35); color: var(--hi); font: 0.8125rem var(--font-sans); outline: 2px solid rgba(var(--accent-rgb), 0.35); }
+.st-accts .ac-new .sw { display: inline-flex; gap: 6px; }
+.st-accts .ac-new .sw i { width: 18px; height: 18px; border-radius: 50%; background: rgb(var(--ah)); }
+.st-accts .ac-new .sw i.on { box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px rgb(var(--ah)); }
+.st-accts .ac-new .btns { display: flex; gap: 8px; }
+.st-accts .st-btn.primary, .st-accts .ac-new .primary { border-color: var(--accent); background: var(--accent); color: var(--ink); font-weight: 700; }
+.st-accts .ac-wait { display: flex; align-items: center; gap: 8px; color: var(--amber); font: 0.78rem var(--font-sans); }
+.st-accts .ac-wait i { width: 10px; height: 10px; border-radius: 50%; border: 1.5px solid rgba(var(--amber-rgb), 0.3); border-top-color: var(--amber); animation: ac-spin 0.8s linear infinite; }
+@keyframes ac-spin { to { transform: rotate(360deg); } }
+.st-accts .def-row .lb-seg button .ac { margin-right: 5px; }
+.pk-foot .pk-acct { flex: none; display: inline-flex; align-items: center; gap: 6px; color: var(--dim); }
+.pk-foot .pk-acct .acct-chip { height: 26px; border-radius: 13px; padding-right: 9px; font-size: 12px; }
+.pk-foot .pk-acct .acct-chip .ac { width: 18px; height: 18px; font-size: 10.5px; }
+.pk-foot .pk-seg { display: inline-flex; overflow: hidden; border: 1px solid rgba(var(--accent-rgb), 0.45); border-radius: 6px; }
+.pk-foot .pk-seg button { display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 10px; border: 0 !important; border-radius: 0; background: transparent; color: var(--txt2); font: inherit; box-shadow: none !important; }
+.pk-foot .pk-seg button + button { border-left: 1px solid rgba(var(--accent-rgb), 0.3) !important; }
+.pk-foot .pk-seg button.on { background: rgba(var(--ah), 0.22); color: var(--hi); font-weight: 700; }
+.pk-foot .pk-seg button .ac { width: 16px; height: 16px; font-size: 9.5px; }
+.lim-ring { position: fixed; z-index: 6; border: 1px solid rgba(var(--accent-rgb), 0.6); border-radius: 6px; background: rgba(var(--accent-rgb), 0.08); pointer-events: none; }
+.lim-pop { position: fixed; z-index: 100; width: 21rem; padding: 0.75rem 1rem 0.5rem; border: 1px solid rgba(var(--accent-rgb), 0.45); border-radius: 12px; background: rgba(var(--surface-rgb), 0.96); -webkit-backdrop-filter: blur(16px) saturate(1.4); backdrop-filter: blur(16px) saturate(1.4); box-shadow: 0 14px 36px rgba(0, 0, 0, 0.6), 0 0 18px rgba(var(--accent-rgb), 0.18); color: var(--txt); font: 0.8125rem/1.4 var(--font-sans); }
+.lim-pop .lp-h { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 0.25rem; color: var(--accent); font: 700 0.6875rem var(--font); letter-spacing: 0.14em; text-transform: uppercase; }
+.lim-pop .lp-h small { color: var(--txt3); font: 0.6875rem var(--font-sans); letter-spacing: 0; text-transform: none; }
+.lim-pop .lp-acct { padding: 0.5625rem 0 0.5rem; border-top: 1px solid var(--line-soft); }
+.lim-pop .lp-top { display: flex; align-items: center; gap: 0.5rem; }
+.lim-pop .lp-top .ac { width: 1.375rem; height: 1.375rem; font-size: 0.75rem; }
+.lim-pop .lp-top b { color: var(--hi); font-weight: 650; }
+.lim-pop .lp-top .st-tag { margin-left: 0; }
+.lim-pop .lp-sub { margin: 0.0625rem 0 0.375rem 1.875rem; color: var(--txt3); font-size: 0.75rem; }
+.lim-pop .lp-w { display: grid; grid-template-columns: 3.5rem 1fr 2.6rem 6.4rem; align-items: center; column-gap: 0.5rem; margin-left: 1.875rem; padding: 0.125rem 0; font: 0.75rem var(--font); }
+.lim-pop .lp-w .k { color: var(--dim); }
+.lim-pop .lp-w .bar { position: relative; height: 0.3125rem; border-radius: 3px; background: rgba(var(--dim2-rgb), 0.9); overflow: hidden; }
+.lim-pop .lp-w .bar i { position: absolute; inset: 0 auto 0 0; background: currentColor; }
+.lim-pop .lp-w b { color: inherit; font-weight: 700; text-align: right; }
+.lim-pop .lp-w small { color: var(--txt3); font-size: 0.6875rem; white-space: nowrap; }
+.lim-pop .lp-w.ok { color: var(--green); } .lim-pop .lp-w.warn { color: var(--amber); } .lim-pop .lp-w.hot { color: var(--red); }
+.lim-pop .lp-foot { margin-top: 0.125rem; padding-top: 0.25rem; border-top: 1px solid var(--line-soft); }
+.lim-pop .lp-act { display: flex; align-items: center; gap: 0.5rem; width: 100%; min-height: 1.75rem; padding: 0.25rem 0.375rem; border: 0; border-radius: 6px; background: none; color: var(--accent-soft); font: inherit; text-align: left; cursor: pointer; }
+.lim-pop .lp-act:hover, .lim-pop .lp-act:focus-visible { background: rgba(var(--accent-rgb), 0.12); color: var(--hi); outline: none; }
+.lim-pop .lp-act svg { flex: none; width: 0.875rem; height: 0.875rem; fill: none; stroke: currentColor; stroke-width: 1.4; }
+.lim-pop .lp-act span { display: flex; flex-direction: column; }
+.lim-pop .lp-act small { color: var(--txt3); font-size: 0.6875rem; }
+/* the Claude columns can be clicked: the pointer, and a faint hover box like the ring */
+.limits .lim-claude { cursor: pointer; }
+.acct-chip { position: relative; flex: none; display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 7px 0 3px; border: 1px solid rgba(var(--ah), 0.55); border-radius: 11px; background: rgba(var(--ah), 0.1); color: rgb(var(--ah)); font: 600 11px var(--font); white-space: nowrap; cursor: pointer; }
+.acct-chip::before { content: ""; position: absolute; inset: -2px -1px; } /* 26 pt tall hit area */
+.acct-chip .ac { width: 16px; height: 16px; font-size: 9.5px; }
+.acct-chip .chev { width: 8px; height: 8px; margin-left: 1px; fill: none; stroke: currentColor; stroke-width: 1.6; opacity: 0.85; }
+.acct-chip:hover, .acct-chip.open { border-color: rgb(var(--ah)); background: rgba(var(--ah), 0.2); }
+.acct-chip.open { box-shadow: 0 0 0 3px rgba(var(--ah), 0.18); }
+.acct-chip .lv { padding-left: 5px; border-left: 1px solid rgba(var(--ah), 0.35); font-weight: 700; }
+.acct-chip .lv.hot { color: var(--red); }
+.acct-chip.out { border-color: rgba(var(--red-rgb), 0.7); background: rgba(var(--red-rgb), 0.1); }
+.acct-chip.compact { padding-right: 5px; }
+.acct-chip:focus-visible { outline: 2px solid var(--accent-soft); outline-offset: 2px; }
+.acct-chip.flash { animation: ac-flash 0.9s ease-out; }
+.acct-chip .pend { display: inline-flex; align-items: center; gap: 4px; padding-left: 6px; border-left: 1px solid rgba(var(--ah), 0.4); color: var(--txt2); font-weight: 500; }
+.acct-chip .pend .ac { width: 14px; height: 14px; font-size: 8.5px; }
+.acct-chip .pend .clk { width: 11px; height: 11px; fill: none; stroke: rgb(var(--ah)); stroke-width: 1.3; stroke-linecap: round; }
+.acct-chip.pending { border-style: dashed; }
+
+/* The name cell of a Claude column is a button (it opens the limits popover): drawn as the text it is. */
+.limits button.lim-n { padding: 0; border: 0; background: none; font: inherit; font-size: 0.78em; letter-spacing: 0.04em; text-align: left; cursor: pointer; }
+.limits button.lim-n:focus-visible { outline: 2px solid var(--accent-soft); outline-offset: 2px; }
+@keyframes ac-flash { 0% { box-shadow: 0 0 0 0 rgba(var(--ah), 0.7); } 100% { box-shadow: 0 0 0 8px rgba(var(--ah), 0); } }
+.lim-pop { animation: lp-in 0.12s ease-out; }
+@keyframes lp-in { from { opacity: 0; transform: translateY(-4px); } }
+.st-accts .ac-err { margin: 0.5rem 0 0; color: var(--red-soft); font: 0.78rem var(--font-sans); }
+.st-accts .ac-menu { position: absolute; z-index: 20; min-width: 11rem; padding: 4px; border: 1px solid rgba(var(--accent-rgb), 0.45); border-radius: 8px; background: rgba(var(--surface-rgb), 0.97); box-shadow: 0 10px 28px rgba(0, 0, 0, 0.55); }
+.st-accts .ac-menu button { display: block; width: 100%; padding: 5px 10px; border: 0; border-radius: 5px; background: none; color: var(--txt); font: 0.8125rem var(--font-sans); text-align: left; cursor: pointer; }
+.st-accts .ac-menu button:hover { background: rgba(var(--accent-rgb), 0.14); color: var(--hi); }
+.st-accts .ac-menu button.bad { color: var(--red-soft); }
+.st-accts .ac-row { position: relative; }
+
+/* The New Terminal picker's account menu (picker.js acctFoot), above the chip. */
+.pk-foot .pk-acct { position: relative; }
+.pk-foot .pk-acct-menu { position: absolute; left: 0; bottom: calc(100% + 6px); z-index: 30; min-width: 11rem; padding: 4px; border: 1px solid rgba(var(--accent-rgb), 0.45); border-radius: 8px; background: rgba(var(--surface-rgb), 0.97); box-shadow: 0 10px 28px rgba(0, 0, 0, 0.55); }
+.pk-foot .pk-acct-menu button { display: flex; align-items: center; gap: 6px; width: 100%; padding: 5px 10px 5px 4px; border: 0 !important; border-radius: 5px; background: none; color: var(--txt); font: 12px var(--font-sans); text-align: left; cursor: pointer; box-shadow: none !important; }
+.pk-foot .pk-acct-menu button:hover { background: rgba(var(--accent-rgb), 0.14); color: var(--hi); }
+.pk-foot .pk-acct-menu .ck { width: 1em; text-align: center; color: var(--accent-soft); }
+.pk-foot .pk-acct-menu .ac { width: 16px; height: 16px; font-size: 9.5px; }
+@media (prefers-reduced-motion: reduce) { .lim-pop, .acct-chip.flash { animation: none; } }
+
+/* The new-worktree sheet's account choice, under "Open with" (worktree.js). */
+.wt-acct { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+.wt-acct[hidden] { display: none; }
+.wt .pk-seg, .wt-alone .pk-seg { display: inline-flex; overflow: hidden; border: 1px solid rgba(var(--accent-rgb), 0.45); border-radius: 6px; }
+.wt .pk-seg button, .wt-alone .pk-seg button { display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 10px; border: 0; border-radius: 0; background: transparent; color: var(--txt2); font: inherit; cursor: pointer; }
+.wt .pk-seg button + button, .wt-alone .pk-seg button + button { border-left: 1px solid rgba(var(--accent-rgb), 0.3); }
+.wt .pk-seg button.on, .wt-alone .pk-seg button.on { background: rgba(var(--ah), 0.22); color: var(--hi); font-weight: 700; }
+.wt .pk-seg .ac, .wt-alone .pk-seg .ac { width: 16px; height: 16px; font-size: 9.5px; }

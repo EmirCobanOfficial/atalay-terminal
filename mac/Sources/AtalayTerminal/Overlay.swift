@@ -235,10 +235,12 @@ final class OverlayController: NSObject, WKScriptMessageHandlerWithReply, WKNavi
     /// `moving`: the chat this was opened from (its window, session, AI's name, folder's name): the sheet offers that chat's AI and
     /// says it keeps running; when the worktree is there, the new AI opens in the usual place and the old chat's strip says so
     /// (MainWindowController.finishMove). Nothing of the old chat is closed.
-    func showNewWorktree(from dir: String, ai: String? = nil, moving: (window: String, sid: String, tool: String, folder: String)? = nil) {
+    func showNewWorktree(from dir: String, ai: String? = nil, moving: (window: String, sid: String, tool: String, folder: String)? = nil,
+                         account: String? = nil) {
         let screen = NSScreen.main ?? NSScreen.screens[0]
         var opts: [String: Any] = ["dir": dir]
         if let ai { opts["ai"] = ai }
+        if let account { opts["account"] = account }
         if let moving { opts["moving"] = ["replacing": moving.window, "sid": moving.sid, "tool": moving.tool, "folder": moving.folder] }
         let arg = (try? JSONSerialization.data(withJSONObject: [opts], options: [])).flatMap { String(data: $0, encoding: .utf8) } ?? "[{}]"
         present(on: screen) { [weak self] in self?.webView.evaluateJavaScript("Overlay.newWorktree(\(arg)[0].dir, \(arg)[0])") }
@@ -360,8 +362,19 @@ final class OverlayController: NSObject, WKScriptMessageHandlerWithReply, WKNavi
         case "newTerminal":
             let dir = FolderLister.expand(body["dir"] as? String ?? "")
             hide()
-            if !dir.isEmpty { manager?.newTerminal(in: dir, nudgeTold: body["told"] as? Bool == true) }
+            let account = body["account"] as? String
+            if !dir.isEmpty {
+                // The account used in this repo is the next one's default (only with two or more accounts).
+                if let account, let top = Worktrees.info(of: dir)?.top { ClaudeAccounts.remember(account, inRepo: top) }
+                manager?.newTerminal(in: dir, nudgeTold: body["told"] as? Bool == true, account: account)
+            }
             replyHandler(true, nil)
+        // The Claude accounts for the picker's chip (only shown with two or more), and the one last used in a folder's repo.
+        case "claudeAccounts":
+            var answer = ClaudeAccounts.webJSON()
+            let dir = FolderLister.expand(body["dir"] as? String ?? "")
+            if let top = Worktrees.info(of: dir)?.top, let id = ClaudeAccounts.lastAccount(inRepo: top) { answer["last"] = id }
+            replyHandler(answer, nil)
         // The new-worktree sheet. Reads of files only (the picker asks as the selection moves)...
         case "gitInfo":
             let p = FolderLister.expand(body["path"] as? String ?? "")
@@ -399,12 +412,15 @@ final class OverlayController: NSObject, WKScriptMessageHandlerWithReply, WKNavi
         case "worktreeOpen":
             let path = body["path"] as? String ?? ""
             let ai = body["ai"] as? String ?? "claude"
+            // The sheet's account choice (shown with two or more accounts, for Claude), the repo's next default too.
+            let account = body["account"] as? String
             hide()
+            if !path.isEmpty, let account, let top = Worktrees.info(of: path)?.top { ClaudeAccounts.remember(account, inRepo: top) }
             if path.isEmpty {
             } else if let replacing = body["replacing"] as? String, let sid = body["sid"] as? String {
-                manager?.finishMove(replacing: replacing, sid: sid, path: path, ai: ai)
+                manager?.finishMove(replacing: replacing, sid: sid, path: path, ai: ai, account: account)
             } else {
-                manager?.newChat(in: path, ai: ai)
+                manager?.newChat(in: path, ai: ai, account: account)
             }
             replyHandler(true, nil)
         // The Create PR / Merge / Delete sheets (web/worktree.js; WorktreeShip.swift does the work, git off the main thread).

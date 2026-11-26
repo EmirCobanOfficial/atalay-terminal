@@ -1,0 +1,276 @@
+/* ======================================================================================================================
+   The chats list: one of the dashboard's panels (#chats), drawn by chats.js. Every selector is .sl-* or #chats.
+   Sizes in em of the dashboard's own text (body: var(--fs)), so the text-size setting (pageZoom) scales it all.
+   ====================================================================================================================== */
+
+/* ---------- shared atoms ---------- */
+.sl-root { --sl-hair: rgba(var(--accent-rgb), .13); --sl-sel: linear-gradient(90deg, rgba(var(--accent-rgb), .30), rgba(var(--accent-rgb), .09));
+  --sl-hover: rgba(var(--accent-rgb), .07); --sl-ease: cubic-bezier(.22, 1, .36, 1); }
+.sl-root button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+.sl-root svg.ic { width: 1.1em; height: 1.1em; flex: none; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+
+/* The status mark: the map's session shape (a hexagon), filled while live, an outline once ended. */
+.sl-hx { width: .86em; height: .96em; flex: none; overflow: visible; }
+.sl-hx path { fill: var(--st); stroke: var(--st); stroke-width: 1.1; }
+.sl-hx.s-busy { --st: var(--accent); filter: drop-shadow(0 0 .25em rgba(var(--accent-rgb), .75)); }
+.sl-hx.s-idle { --st: var(--cyan); filter: drop-shadow(0 0 .25em rgba(var(--cyan-rgb), .7)); }
+.sl-hx.s-waiting { --st: var(--warn); filter: drop-shadow(0 0 .3em rgba(var(--warn-rgb), .85)); animation: sl-alarm 1s ease-in-out infinite alternate; }
+.sl-hx.s-ended path { fill: none; stroke: var(--txt3); opacity: .7; }
+@keyframes sl-alarm { from { opacity: .45; } }
+
+/* The state, in words next to the mark (colour is never the only signal). */
+.sl-st { flex: none; padding: 0 .4em; border: 1px solid currentColor; font-size: .8em; letter-spacing: .06em; line-height: 1.5; white-space: nowrap; text-transform: uppercase; }
+.sl-st.s-busy { color: var(--accent); } .sl-st.s-idle { color: var(--cyan); }
+.sl-st.s-waiting { color: var(--ink); background: var(--warn); border-color: var(--warn); }
+
+/* Which AI: only when it isn't Claude Code (the default, as today). */
+.sl-ai { flex: none; padding: 0 .35em; border: 1px solid rgba(var(--accent-soft-rgb), .4); color: var(--accent-soft); font-size: .78em; line-height: 1.45; }
+
+/* A section label: FAVORITES, ON THE MAP… with a hairline to the edge. */
+.sl-sec { display: flex; align-items: center; gap: .6em; padding: 1em .5em .45em; color: var(--txt3); font-size: .78em; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; white-space: nowrap; }
+.sl-sec::after { content: ""; flex: 1; height: 1px; background: var(--sl-hair); }
+.sl-sec .n { color: var(--dim); font-weight: 400; letter-spacing: .04em; }
+.sl-sec .warn { order: 3; color: var(--warn); letter-spacing: .06em; }
+.sl-sec svg { width: 1.1em; height: 1.1em; color: var(--amber); fill: currentColor; stroke: none; }
+
+/* A folder: its name, how many, and its two actions (new worktree, new terminal), dim until hovered. */
+.sl-fold { display: flex; align-items: center; gap: .5em; min-height: 2.4em; padding: 0 .4em 0 .3em; border-radius: .35em; color: var(--accent-soft); cursor: pointer; }
+.sl-fold:hover { background: var(--sl-hover); }
+.sl-fold .chev { width: .8em; height: .8em; color: var(--txt3); transform: rotate(90deg); transition: transform .2s var(--sl-ease); }
+.sl-fold.shut .chev { transform: none; }
+.sl-fold .nm { min-width: 0; overflow: hidden; font-weight: 700; white-space: nowrap; text-overflow: ellipsis; }
+.sl-fold .n { color: var(--txt3); font-size: .9em; font-weight: 400; }
+.sl-fold .sp { flex: 1; }
+.sl-fold .acts { display: flex; gap: .15em; opacity: .45; transition: opacity .12s; }
+.sl-fold:hover .acts, .sl-fold:focus-within .acts { opacity: 1; }
+.sl-fold .acts button { display: grid; place-items: center; width: 1.9em; height: 1.9em; border-radius: .3em; color: var(--accent); }
+.sl-fold .acts button:hover { background: rgba(var(--accent-rgb), .16); color: var(--hi); }
+
+/* A saved chat: one line. Its age on the right; on hover its star and archive take the age's place. */
+.sl-row { position: relative; display: flex; align-items: center; gap: .6em; min-height: 2.4em; padding: 0 .55em 0 1.3em; border-radius: .35em; color: var(--txt); cursor: pointer; }
+.sl-row:hover { background: var(--sl-hover); }
+.sl-row .t { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.sl-row .age { flex: none; color: var(--txt3); font-size: .88em; font-variant-numeric: tabular-nums; }
+.sl-row .hov { display: none; gap: .2em; }
+.sl-row:hover .age { display: none; } .sl-row:hover .hov { display: flex; }
+.sl-row .hov button { display: grid; place-items: center; width: 1.8em; height: 1.8em; border-radius: .3em; color: var(--txt3); }
+.sl-row .hov button:hover { color: var(--hi); background: rgba(var(--accent-rgb), .16); }
+.sl-row .star { color: var(--amber); }
+.sl-row.is-live .t { color: var(--hi); }
+.sl-row.is-win { background: rgba(var(--accent-rgb), .09); }
+/* The chat in front (its window is the one in use): a filled, glowing shape that stays (HIG: persistent selection). */
+.sl-row.is-front { background: var(--sl-sel); box-shadow: inset 2px 0 0 var(--accent), 0 0 1.2em rgba(var(--accent-rgb), .12); }
+.sl-row.is-front .t { color: var(--hi); font-weight: 600; }
+.sl-row.is-front .age { color: var(--txt2); }
+.sl-row.is-front .sl-st.s-busy { color: var(--ink); background: var(--accent); border-color: var(--accent); }
+.sl-row:focus-visible, .sl-fold:focus-visible, .sl-root button:focus-visible { outline: 2px solid var(--accent-soft); outline-offset: 1px; }
+.sl-root .sl-more { display: block; width: 100%; text-align: left; text-decoration: none; padding: .35em 0 .35em 2.6em; color: var(--txt3); font-size: .9em; }
+.sl-more:hover { color: var(--hi); }
+/* A worktree inside its folder: "⎇ feat/raid-loot  +42 −7", its chats under a branch line. */
+.sl-wt { position: relative; margin-left: 1.25em; padding-left: .6em; }
+.sl-wt::before { content: ""; position: absolute; left: 0; top: 1.2em; bottom: .6em; width: 1.5px; background: linear-gradient(rgba(var(--accent-soft-rgb), .8), rgba(var(--accent-rgb), .12)); }
+.sl-wth { display: flex; align-items: center; gap: .45em; min-height: 2em; color: var(--accent-soft); font-size: .92em; }
+.sl-wth svg { width: 1em; height: 1em; }
+.sl-wth .k { color: var(--txt3); } .sl-wth .d { margin-left: auto; color: var(--txt3); font-size: .95em; }
+.sl-wth .d .a { color: var(--accent-soft); } .sl-wth .d .r { color: var(--red-soft); }
+.sl-wt .sl-row { padding-left: .6em; }
+/* One of the app's terminals with no AI in it. */
+.sl-row.term .t { color: var(--txt2); }
+.sl-row.term svg { width: 1em; height: 1em; color: var(--cyan); }
+
+/* The search field (plain words, a magnifier, the shortcut on the right). */
+.sl-find { display: flex; align-items: center; gap: .5em; height: 2.5em; padding: 0 .7em; border: 1px solid var(--sl-hair); border-radius: .35em; background: rgba(0, 0, 0, .22); color: var(--txt3); }
+.sl-find span { flex: 1; color: var(--dim); }
+.sl-find kbd { font: inherit; font-size: .85em; color: var(--dim); }
+
+/* Mini session card: the dashboard's own card (app.js createCard/updateCard), its details folded away. */
+/* Its warnings stay (.flags: loop?, slow tool, ctx 80%+, ⚠ same file): empty unless one is up. */
+.card.sl-mini .ctx, .card.sl-mini .kv, .card.sl-mini svg.spark, .card.sl-mini .ag { display: none; }
+.card.sl-mini { padding: .55em .7em .5em .9em; }
+.card.sl-mini:hover { transform: none; }
+.card.front { background: linear-gradient(90deg, rgba(var(--accent-rgb), .20), rgba(var(--panel-rgb), var(--glass-a)) 70%); box-shadow: inset 0 0 0 1px rgba(var(--accent-rgb), .7), 0 0 1.4em rgba(var(--accent-rgb), .3); }
+
+/* ======================================================================================================================
+   A · TEK PANO — the list is one of the dashboard's panels, in the left column, the live sessions on top of it.
+   ====================================================================================================================== */
+#chats { grid-row: 2 / 4; grid-column: 2; }
+#chats > header .meta { margin-left: auto; }
+#chats > header .sl-hb { display: grid; place-items: center; width: 2em; height: 100%; color: var(--txt3); }
+#chats > header .sl-hb:hover { color: var(--hi); background: rgba(var(--accent-rgb), .14); }
+#chats > header .sl-hb svg { width: 1.15em; height: 1.15em; }
+#chats > header .sl-hb:last-child { margin-right: .3em; }
+#chats .sl-body { flex: 1; min-height: 0; overflow-y: auto; padding: .6em .6em 1.2em; scrollbar-width: none; }
+#chats .sl-body::-webkit-scrollbar { display: none; }
+#chats .sl-live { display: flex; flex-direction: column; gap: .55em; }
+#chats .sl-saved { display: flex; flex-direction: column; gap: 1px; }
+#chats .sl-fold + .sl-rows { padding-bottom: .3em; }
+/* ⌘B: the saved chats fold away, the live cards stay (today's dashboard without the list). */
+html.chats-closed #chats .sl-saved, html.chats-closed #chats .sl-find, html.chats-closed #chats .sl-bulk { display: none; }
+/* ---------- the fold bar: where the saved chats begin (⌘B) ----------
+   Open: a section label "SAVED CHATS 12" with a real "Hide ⌘B" button at its end. Folded: the same place is one wide
+   button "Show 12 saved chats" (Apple's disclosure button: next to what it hides, points up while shown, down while
+   hidden). The tag stays a label like every panel's; its click and ⌘B still fold. */
+#chats .sl-fb { display: block; width: 100%; text-align: left; }
+#chats .sl-fb[hidden] { display: none; }
+#chats .sl-fb .fb-shut { display: none; }
+html.chats-closed #chats .sl-fb .fb-open { display: none; }
+html.chats-closed #chats .sl-fb .fb-shut { display: flex; }
+/* open: a section label like ON THE MAP / FAVORITES, with the button at its end */
+#chats .sl-fb .fb-open { display: flex; align-items: center; gap: .6em; padding: .9em .1em .35em .5em; }
+#chats .sl-fb .fb-open .lab { color: var(--txt3); font-size: .78em; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; white-space: nowrap; }
+#chats .sl-fb .fb-open .n { color: var(--dim); font-size: .78em; letter-spacing: .04em; }
+#chats .sl-fb .fb-open .line { flex: 1; height: 1px; background: var(--sl-hair); transition: background-color .15s ease-out; }
+#chats .sl-fb .fb-open .pill { display: inline-flex; align-items: center; gap: .4em; flex: none; height: 2.1em; padding: 0 .45em 0 .55em; border: 1px solid rgba(var(--accent-rgb), .5); border-radius: .4em;
+  background: rgba(var(--accent-rgb), .1); color: var(--accent-soft); font-weight: 700;
+  transition: background-color .15s ease-out, border-color .15s ease-out, box-shadow .15s ease-out, color .15s ease-out; }
+#chats .sl-fb .pill svg, #chats .sl-fb .ic svg { width: .9em; height: .9em; flex: none; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+#chats .sl-fb kbd { display: inline-grid; place-items: center; flex: none; height: 1.55em; padding: 0 .4em; border: 1px solid rgba(var(--accent-soft-rgb), .45); border-bottom-width: 2px; border-radius: .3em;
+  background: rgba(0, 0, 0, .25); color: var(--txt2); font: 600 .88em/1 var(--font); }
+#chats .sl-fb.nokey kbd { display: none; }
+#chats .sl-fb:hover .fb-open .pill { border-color: var(--accent); background: rgba(var(--accent-rgb), .22); color: var(--hi); box-shadow: 0 0 10px rgba(var(--accent-rgb), .35); }
+#chats .sl-fb:hover .fb-open .line { background: rgba(var(--accent-rgb), .35); }
+/* folded: one wide button where the list was. Many live cards: it sticks to the panel's bottom edge instead of
+   scrolling away, so the way back is always on screen. Its own solid base, so cards never show through it. */
+html.chats-closed #chats .sl-fb { position: sticky; bottom: 0; z-index: 2; padding-bottom: .1em; }
+#chats .sl-fb .fb-shut { align-items: center; gap: .75em; min-height: 3.6em; margin-top: .8em; padding: .5em .7em .5em .6em; border: 1px solid rgba(var(--accent-rgb), .55); border-radius: .5em;
+  background-color: rgb(var(--panel-rgb)); background-image: linear-gradient(90deg, rgba(var(--accent-rgb), .22), rgba(var(--accent-rgb), .06));
+  box-shadow: inset 0 1px 0 rgba(var(--accent-soft-rgb), .14), 0 0 1.4em rgba(var(--accent-rgb), .1);
+  transition: background-color .15s ease-out, border-color .15s ease-out, box-shadow .15s ease-out; }
+#chats .sl-fb .fb-shut .ic { display: grid; place-items: center; flex: none; width: 2.2em; height: 2.2em; border: 1px solid rgba(var(--accent-rgb), .75); border-radius: 50%; background: rgba(var(--accent-rgb), .18); color: var(--accent-pale);
+  transition: background-color .15s ease-out, color .15s ease-out; }
+#chats .sl-fb .fb-shut .ic svg { width: 1em; height: 1em; stroke-width: 2.2; transition: transform .2s cubic-bezier(.22, 1, .36, 1); }
+#chats .sl-fb .fb-shut .tx { display: flex; flex-direction: column; gap: .15em; min-width: 0; }
+#chats .sl-fb .fb-shut .tx b { overflow: hidden; color: var(--accent-pale); font-weight: 700; white-space: nowrap; text-overflow: ellipsis; }
+#chats .sl-fb .fb-shut .tx small { overflow: hidden; color: var(--txt3); font-size: .9em; white-space: nowrap; text-overflow: ellipsis; }
+#chats .sl-fb .fb-shut kbd { margin-left: auto; }
+#chats .sl-fb:hover .fb-shut { border-color: var(--accent); background-image: linear-gradient(90deg, rgba(var(--accent-rgb), .32), rgba(var(--accent-rgb), .1));
+  box-shadow: inset 0 1px 0 rgba(var(--accent-soft-rgb), .2), 0 0 1.4em rgba(var(--accent-rgb), .3); }
+#chats .sl-fb:hover .fb-shut .ic { background: var(--accent); color: var(--ink); }
+#chats .sl-fb:hover .fb-shut .ic svg { transform: translateY(.12em); }
+#chats .sl-fb:hover .fb-shut .tx b { color: var(--hi); }
+#chats .sl-fb:active .fb-shut, #chats .sl-fb:active .fb-open .pill { transform: translateY(1px); }
+#chats .sl-fb:focus-visible { outline: none; }
+#chats .sl-fb:focus-visible .fb-open .pill, #chats .sl-fb:focus-visible .fb-shut { outline: 2px solid var(--accent-soft); outline-offset: 2px; }
+/* the moment it appears (a click or ⌘B folded the list): it drops in with one warm glow, so the eye finds where the
+   chats went (NN/g change blindness). Not on load, not under reduced motion. */
+html.chats-closed #chats .sl-fb.arrive .fb-shut { animation: sl-fb-in .6s cubic-bezier(.22, 1, .36, 1); }
+@keyframes sl-fb-in { from { opacity: 0; transform: translateY(-.3em); box-shadow: 0 0 2.4em rgba(var(--accent-rgb), .65); } 35% { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) {
+  #chats .sl-fb, #chats .sl-fb * { transition: none !important; animation: none !important; }
+  #chats .sl-fb:hover .fb-shut .ic svg, #chats .sl-fb:active .fb-shut, #chats .sl-fb:active .fb-open .pill { transform: none; }
+}
+
+/* ---------- the narrow window ---------- */
+@media (max-width: 1250px) {
+  #app { grid-template-columns: 48px minmax(230px, 26%) minmax(0, 1fr) minmax(240px, 24%); }
+}
+@media (max-width: 920px) {
+  #chats { height: 70vh; }
+}
+
+/* ---------- beyond the mock: what the old list did, in the same look ---------- */
+.sl-find { position: relative; }
+.sl-find input { flex: 1; min-width: 0; padding: 0; border: 0; outline: 0; background: none; color: var(--txt); font: inherit; }
+.sl-find input::placeholder { color: var(--dim); opacity: 1; }
+.sl-find:focus-within { border-color: rgba(var(--accent-rgb), .45); }
+.sl-find .x { display: none; width: 1.6em; height: 1.6em; place-items: center; color: var(--txt3); }
+.sl-find.has .x { display: grid; }
+.sl-find.has kbd { display: none; }
+.sl-find .x:hover { color: var(--hi); }
+.sl-find svg.ic { color: var(--txt3); }
+/* the bar over the list while chats or folders are picked */
+.sl-bulk { display: flex; align-items: center; gap: .6em; margin-top: .5em; padding: .3em .2em 0 .4em; color: var(--accent-soft); font-weight: 600; }
+.sl-bulk[hidden] { display: none; }
+.sl-bulk .sp { flex: 1; }
+.sl-bulk button { height: 1.9em; padding: 0 .7em; border: 1px solid transparent; border-radius: .3em; font-weight: 600; }
+.sl-bulk .b-arc { background: var(--accent); color: var(--ink); }
+.sl-bulk .b-del { border-color: var(--red); color: var(--red); }
+.sl-bulk .b-x { display: grid; place-items: center; width: 1.9em; padding: 0; color: var(--txt3); }
+.sl-bulk .b-x:hover { color: var(--hi); }
+/* picked: a fill and a tick in the hexagon's place */
+.sl-row.sel, .sl-row.sel:hover { background: rgba(var(--accent-rgb), .26); }
+.sl-fold.sel, .sl-fold.sel:hover { background: rgba(var(--accent-rgb), .22); }
+.sl-tick { width: .96em; height: .96em; flex: none; color: var(--accent); fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+/* a chat renamed in place */
+.sl-ren { flex: 1; min-width: 0; padding: .1em .4em; border: 1px solid var(--accent); border-radius: .3em; outline: 0; background: rgba(var(--accent-rgb), .08); color: var(--hi); font: inherit; }
+.card .sl-ren { position: absolute; z-index: 2; left: .9em; right: .7em; top: 2.3em; background: rgb(var(--panel-rgb)); }
+/* a folder with a pin: opened from the list */
+.sl-fold .pin { width: .95em; height: .95em; flex: none; color: var(--accent); opacity: .8; }
+.sl-fold .tn { display: inline-flex; align-items: center; gap: .2em; color: var(--txt3); font-size: .9em; }
+.sl-fold .tn svg { width: .95em; height: .95em; fill: none; stroke: currentColor; stroke-width: 1.5; }
+.sl-row.is-front .sl-st.s-idle { color: var(--ink); background: var(--cyan); border-color: var(--cyan); }
+.sl-row.is-win .age { color: var(--txt2); }
+.sl-row .star.on svg { fill: currentColor; }
+.sl-row.term.is-win { box-shadow: inset 2px 0 0 var(--cyan); }
+.sl-row .hov button.on { color: var(--amber); }
+.sl-row .hov button.on svg { fill: currentColor; }
+.sl-wth .plus { position: absolute; right: 0; top: 0; display: grid; place-items: center; width: 1.9em; height: 100%; border-radius: .3em; color: var(--accent); opacity: 0; transition: opacity .12s; }
+.sl-wth { position: relative; }
+.sl-wth:hover .plus, .sl-wth .plus:focus-visible { opacity: 1; background: rgba(var(--accent-rgb), .16); }
+.sl-wth:hover .d { opacity: 0; }
+.sl-wt.gone .sl-wth, .sl-wt.gone .sl-wth .k, .sl-wt.gone .sl-wth .d { color: var(--dim); }
+.sl-wth svg { fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.sl-wth b { font-weight: 600; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.sl-empty { display: flex; align-items: center; gap: .4em; padding: .35em .5em .35em 1.3em; color: var(--dim2); font-size: .95em; }
+.sl-empty button { color: var(--accent-soft); text-decoration: underline; text-underline-offset: 2px; }
+.sl-none { padding: 1.4em .6em; color: var(--txt3); text-align: center; }
+/* No saved chats at all */
+.sl-blank { display: flex; flex-direction: column; align-items: center; gap: .5em; padding: 2.2em 1em 1em; text-align: center; }
+.sl-blank .orb { position: relative; width: 3em; height: 3.3em; margin-bottom: .6em; color: var(--accent); }
+.sl-blank .orb svg { width: 100%; height: 100%; fill: none; stroke: currentColor; stroke-width: 1.2; overflow: visible; }
+.sl-blank .orb i { position: absolute; left: 50%; top: 50%; width: .45em; height: .45em; margin: -.225em; border-radius: 50%; background: var(--accent-soft); box-shadow: 0 0 .6em var(--accent); animation: sl-orbit 9s linear infinite; }
+@keyframes sl-orbit { from { transform: rotate(0) translateX(2.1em); } to { transform: rotate(360deg) translateX(2.1em); } }
+.sl-blank h3 { margin: 0; color: var(--hi); font: 750 1.375em/1.2 var(--font-sans); }
+.sl-blank p { margin: 0; color: var(--txt2); font-size: .95em; }
+.sl-blank button { margin-top: .6em; padding: .55em 1.1em; border: 1px solid rgba(var(--accent-rgb), .45); border-radius: .35em; background: rgba(var(--accent-rgb), .1); color: var(--accent-soft); font-weight: 600; }
+.sl-blank button:hover { border-color: var(--accent); color: var(--hi); }
+/* Before the first snapshot */
+.sl-skel { height: 2.4em; margin: 1px 0; border-radius: .35em; background: rgba(var(--accent-rgb), .06); animation: sl-breathe 1.6s ease-in-out infinite alternate; }
+@keyframes sl-breathe { to { opacity: .45; } }
+/* what moves (200 to 250 ms, the way the old list did): a chat starred or unstarred grows in where it lands, a folder
+   folds its rows away or lets them grow, an archived chat or folder shrinks out before the app takes it off */
+.sl-row.arrive { overflow: hidden; animation: sl-grow .25s var(--sl-ease); }
+.sl-row.arrive .star svg { animation: sl-pop .25s ease-in-out; }
+.sl-grp.unfolding > .sl-rows { overflow: hidden; animation: sl-grow-g .2s var(--sl-ease); }
+.sl-grp.unfolding .sl-fold .chev { animation: sl-chev .2s var(--sl-ease); }
+.sl-grp.folding > .sl-rows { overflow: hidden; animation: sl-shrink .2s var(--sl-ease) forwards; }
+.sl-grp.folding .sl-fold .chev { transform: none; }
+.sl-leaving { overflow: hidden; pointer-events: none; animation: sl-shrink .25s ease-in-out forwards; }
+@keyframes sl-grow { from { max-height: 0; opacity: 0; } to { max-height: 4em; } }
+@keyframes sl-grow-g { from { max-height: 0; opacity: 0; } to { max-height: 60em; } }
+@keyframes sl-shrink { from { max-height: var(--h, 4em); } to { max-height: 0; opacity: 0; padding-top: 0; padding-bottom: 0; margin: 0; } }
+@keyframes sl-pop { 50% { transform: scale(1.4); } }
+@keyframes sl-chev { from { transform: none; } }
+/* A chat goes live: its card arrives on top, one warm light crossing it */
+#chats .sl-live .card.enter:not(.st-waiting) { animation: sl-card-in .38s cubic-bezier(.34, 1.3, .64, 1); }
+@keyframes sl-card-in { from { opacity: 0; transform: translateY(-.6em) scale(.97); } }
+#chats .card:focus-visible { outline: 2px solid var(--accent-soft); outline-offset: 1px; }
+.sl-sec .live-note { color: var(--txt3); }
+@media (prefers-reduced-motion: reduce) {
+  .sl-row.arrive, .sl-row.arrive .star svg, .sl-grp.unfolding > .sl-rows, .sl-grp.unfolding .sl-fold .chev, .sl-grp.folding > .sl-rows, .sl-leaving, #chats .sl-live .card.enter { animation: none; }
+  .sl-root *, .sl-root *::before { transition: none !important; }
+}
+
+/* the tag is a button (a click folds the saved chats) that looks like every panel's tag */
+#chats > header .tag { padding: 0 8px; background: var(--accent); color: var(--ink); font-weight: 700; letter-spacing: .04em; cursor: pointer; }
+#chats > header .tag:hover { background: var(--accent-soft); }
+.sl-find > span#chats-find-i { flex: none; display: grid; place-items: center; color: var(--txt3); }
+.sl-find > span#chats-find-i svg { width: 1.1em; height: 1.1em; }
+.sl-sec { min-height: 0; }
+#chats .sl-row:hover .star { display: none; }
+
+/* The Mac's window has no title bar of its own: the top bar is it, with the traffic lights at its left. Full screen has
+   no lights there (they come down with the menu bar): the bar keeps its own padding. */
+html.on-mac #top { padding-left: 78px; }
+html.on-mac.mac-full #top { padding-left: 10px; }
+/* a folder's hover archive (the whole folder out of the list, as its menu's Archive Folder), the old strip's */
+.sl-fold .acts .farc { color: var(--txt3); opacity: 0; transition: opacity .12s; }
+.sl-fold:hover .acts .farc, .sl-fold:focus-within .acts .farc { opacity: 1; }
+/* a linked worktree listed as a folder of its own (its main folder isn't in the list): its state, dimmed once deleted */
+.sl-fold .wts { flex: none; color: var(--txt3); font-size: .9em; white-space: nowrap; }
+.sl-fold .wts .a { color: var(--accent-soft); } .sl-fold .wts .r { color: var(--red-soft); }
+.sl-fold:hover .wts { display: none; }
+.sl-fold.gone, .sl-fold.gone .nm { color: var(--dim); }
+.sl-wth .n { color: var(--txt3); font-size: .9em; }
+/* a folder (its strip and its rows) is the mock's flat pair, one pixel apart */
+.sl-grp { display: flex; flex-direction: column; gap: 1px; }

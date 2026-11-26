@@ -36,7 +36,7 @@ window.Overlay = {
       around: 'picker',
       mode: wt ? 'wt' : 'term',
       onPick: (dir, meta) => {
-        API.newTerminal(dir, dir.replace(/\/+$/, '').split('/').pop(), meta && meta.told);
+        API.newTerminal(dir, dir.replace(/\/+$/, '').split('/').pop(), meta && meta.told, meta && meta.account);
         API.done();
       },
       onCancel: () => API.done(),
@@ -52,7 +52,8 @@ window.Overlay = {
       alone: true,
       ai: opts && opts.ai,
       moving: opts && opts.moving,
-      onDone: (r) => API.worktreeOpen(r.open, r.ai, opts && opts.moving),
+      account: opts && opts.account,
+      onDone: (r) => API.worktreeOpen(r.open, r.ai, opts && opts.moving, r.account),
       onCancel: () => API.done(),
     }).then((shown) => shown || (doneTimer = setTimeout(API.done, 2500))); // the toast (worktree.js) shows first
   },

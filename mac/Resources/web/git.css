@@ -26,7 +26,7 @@
 
 /* In the dashboard's place: its header, its activity bar and its ticker stay as they are, Source Control takes the
    panels' room. */
-#app.git-mode #sessions, #app.git-mode #mapwrap, #app.git-mode #right, #app.git-mode #bottom { display: none; }
+#app.git-mode #chats, #app.git-mode #mapwrap, #app.git-mode #right, #app.git-mode #bottom { display: none; }
 
 /* ---- the dashboard's activity bar ---- */
 #activity { position: relative; grid-row: 2 / 4; grid-column: 1; display: flex; flex-direction: column; align-items: center; gap: 8px; padding-top: 3px; background: var(--side); border: 1px solid var(--border); }

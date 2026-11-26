@@ -357,6 +357,8 @@ final class KeysBridge: NSObject, WKScriptMessageHandlerWithReply {
                 replyHandler(Shortcuts.state(), nil)
             default: replyHandler(nil, "unknown request")
             }
+            // The chats list's fold bar names ⌘B's keys (`chatsKey` in its snapshot): a new set goes to it at once.
+            if ["set", "reset"].contains(body["type"] as? String ?? "") { MainWindowController.shared?.pushChats() }
         }
     }
 }

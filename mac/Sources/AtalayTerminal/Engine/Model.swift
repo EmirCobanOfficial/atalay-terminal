@@ -60,6 +60,13 @@ final class Session: Track {
     var hostTab: String?
     /// The session this conversation continues in: Claude resumed it under a new session id.
     var supersededBy: String?
+    /// The Claude account whose registry holds it (ClaudeAccounts id), and when its transcript last showed a rate-limit
+    /// error that no later reply has followed (0 if none).
+    var account = ""
+    var limitHitAt = 0.0
+    /// When the Claude process now carrying it started (its registry's startedAt): a limit error from before it (an earlier
+    /// process, maybe another account's, before a switch) is not this one's.
+    var procStartedAt = 0.0
 
     init(id: String) { self.id = id }
 }
@@ -196,6 +203,8 @@ final class Cursor {
     var agentId: String?
     var started = false
     var skipLine = false
+    /// Its first read is done: what comes now was just written (the first one reads the file's past, from 0 or today).
+    var caughtUp = false
 
     init(path: String) { self.path = path }
 }
@@ -279,6 +288,9 @@ struct SessionBrief: Equatable {
     var actionCat = ""
     var actionLabel = ""
     var actionSince = 0.0
+    /// The Claude account it runs under (ClaudeAccounts id), and whether its last reply was a rate-limit error.
+    var account = ""
+    var limitHit = false
 }
 
 /// Live event for the native chat windows (tool calls, results, prompts, replies).

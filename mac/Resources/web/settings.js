@@ -148,6 +148,8 @@ window.Settings = (() => {
     // in the Mac's menu bar, in Windows' system tray.
     const MCP_MODES = [['off', 'Off'], ['watch', 'Watch only'], ['write', 'Watch and type']];
     const claude =
+      // The accounts group (claude-accounts.js fills it, in the Mac app: the accounts bridge).
+      (window.ClaudeAcct && window.webkit?.messageHandlers?.claudeAccounts ? '<div class="ca-mount"></div>' : '') +
       group('claude can use orbiterm',
         row('let Claude use my chats', { cls: 'mcp-note', text: '…' },
           `<span class="lb-seg ui-seg st-mcp-mode">${MCP_MODES.map(([m, n]) => `<button type="button" data-mode="${m}">${n}</button>`).join('')}</span>`)) +
@@ -226,7 +228,7 @@ window.Settings = (() => {
       pane('account', 'Account', '', account) +
       pane('appearance', 'Appearance', '', appearance) +
       pane('chats', 'Chats', '', chats) +
-      pane('claude', 'Claude', `let Claude on this ${MACHINE} see your AI chats, and type into them`, claude) +
+      pane('claude', 'Claude', window.ClaudeAcct && window.webkit?.messageHandlers?.claudeAccounts ? 'your Claude accounts, and what Claude can do with your chats' : `let Claude on this ${MACHINE} see your AI chats, and type into them`, claude) +
       (c.keys ? pane('shortcuts', 'Shortcuts', 'click a shortcut, then press the new keys · esc cancels, delete takes them off', shortcuts) : '') +
       pane('privacy', 'Privacy', 'what friends, the leaderboard and Discord can see', privacy) +
       pane('general', 'General', '', general) +

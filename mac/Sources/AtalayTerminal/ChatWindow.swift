@@ -50,6 +50,15 @@ final class ChatHUD: ObservableObject {
     @Published var shipBusy: String?
     @Published var shipDeleted = false
     @Published var shipMenuOpen = false
+    /// The Claude account of the pane in front, and the note about it, in the worktree note's slot (ClaudeAccountsChat.swift).
+    @Published var acct: AcctChipState?
+    @Published var acctNote: AcctNote?
+    /// A switch (to an account id) waiting for that session's reply to end, by session id; only in memory, on the user's click.
+    var pendingSwitch: [String: String] = [:]
+    var acctHold = false, wentAt = 0.0
+    var limitQuiet = Set<String>(), lowQuiet = Set<String>()
+    var onAcctMenu: (() -> Void)?
+    var onAcct: ((AcctAction) -> Void)?
     /// The window's width, for the title row's three sizes (960 pt and up, 640 to 959, under 640).
     @Published var width: CGFloat = 900
     var onShip: ((String) -> Void)?
@@ -195,6 +204,10 @@ private struct TitleRow: View {
                 WorktreeChipView(branch: hud.streamer ? Streamer.fake("branch", hud.wt?.branch ?? hud.wtBranch) : hud.wt?.branch ?? hud.wtBranch,
                                  st: hud.wt, deleted: hud.shipDeleted, wide: hud.width >= 960, compact: narrow, streamer: hud.streamer,
                                  action: { hud.onShip?("changes") })
+            }
+            // Two or more Claude accounts: the one this terminal uses, and a way to change it (ClaudeAccountsChat.swift).
+            if let a = hud.acct, !hud.mirror {
+                AccountChip(state: a, narrow: hud.width < 640, onOpen: { hud.onAcctMenu?() })
             }
             Text("·").font(.mono(12)).foregroundColor(mur47 ? Mur47.titleText.opacity(0.6) : Theme.cDim2)
             Text(title)
@@ -882,6 +895,7 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
     private var nudgeHeight: NSLayoutConstraint!
     private var tabBarTop: NSLayoutConstraint!
     private var nudgeSub: AnyCancellable?
+    private var acctNoteSub: AnyCancellable?
     private var shipSub: AnyCancellable?
     private var shipLastStatus = ""
     private var nudgeAnnounced: String?
@@ -1176,8 +1190,14 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
         container.addSubview(nudgeBar, positioned: .below, relativeTo: border)
         nudgeHeight = nudgeBar.heightAnchor.constraint(equalToConstant: 0)
         tabBarTop = tabBar.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 4)
+        acctNoteSub = hud.$acctNote.receive(on: DispatchQueue.main).sink { [weak self, weak nudgeBar] note in
+            nudgeBar?.isHidden = note == nil && self?.hud.nudge == nil
+            self?.layoutNudge(self?.hud.nudge)
+        }
+        hud.onAcctMenu = { [weak self] in self?.acctMenu() }
+        hud.onAcct = { [weak self] in self?.acctNoteAction($0) }
         nudgeSub = hud.$nudge.receive(on: DispatchQueue.main).sink { [weak self, weak nudgeBar] offer in
-            nudgeBar?.isHidden = offer == nil
+            nudgeBar?.isHidden = offer == nil && self?.hud.acctNote == nil
             self?.layoutNudge(offer)
             if let o = offer, self?.nudgeAnnounced != o.sid {
                 self?.nudgeAnnounced = o.sid
@@ -1572,7 +1592,7 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
     // MARK: tabs and split panes (iTerm2's ⌘T, ⌘D, ⇧⌘D, ⌘[ ⌘], ⌥⌘ arrows, ⇧⌘[ ⇧⌘], ⌃⌘ arrows, ⇧⌘↩, ⌘W)
 
     /// Every terminal in this window: its own first, then the extra panes.
-    private var allTerminals: [ChatTerminalView] { [terminal] + extras.map(\.terminal) }
+    var allTerminals: [ChatTerminalView] { [terminal] + extras.map(\.terminal) }
 
     /// The shells of every pane (the dashboard maps them to this window).
     var shellPids: [Int32] { [shellPid] + extras.map(\.shellPid) }
@@ -2665,22 +2685,24 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
     private func updatePaneBars() {
         guard !paneBars.isEmpty else { return }
         let focus = tabs.indices.contains(activeTab) ? focusedTerminal : nil
+        let several = Set(allTerminals.compactMap { briefFor($0) }.compactMap(acctMark).map(\.id)).count > 1
         for bar in paneBars.values {
             guard let tv = bar.pane as? ChatTerminalView, !bar.isEditing else { continue }
             let stats = briefFor(tv).map { b in
-                TabStats(ctx: b.ctx, ctxMax: b.ctxMax, tools: b.tools, web: b.web, errors: b.errors, status: b.status)
+                TabStats(ctx: b.ctx, ctxMax: b.ctxMax, tools: b.tools, web: b.web, errors: b.errors, status: b.status,
+                         account: several ? acctMark(b) : nil)
             }
             bar.set(title: paneTitle(tv), stats: stats)
             bar.focused = tv === focus
         }
     }
 
-    private func sessionName(of tv: ChatTerminalView) -> String? {
+    func sessionName(of tv: ChatTerminalView) -> String? {
         tv === terminal ? detached?.name : extra(of: tv)?.link?.name
     }
 
     /// The AI session running in pane `tv`.
-    private func briefFor(_ tv: ChatTerminalView) -> SessionBrief? {
+    func briefFor(_ tv: ChatTerminalView) -> SessionBrief? {
         let shell = tv === terminal ? shellPid : extra(of: tv)?.shellPid ?? 0
         return paneBriefs.values.first { Self.isUnder($0.pid, shell: shell) }
     }
@@ -2716,7 +2738,7 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
     }
 
     /// A pane's shell has an AI or a job running.
-    private func paneRuns(_ tv: ChatTerminalView) -> Bool {
+    func paneRuns(_ tv: ChatTerminalView) -> Bool {
         let shell = tv === terminal ? shellPid : extra(of: tv)?.shellPid ?? 0
         return shell > 0 && (Self.runsAgent(shell) || !Proc.children(of: shell).isEmpty)
     }
@@ -3034,6 +3056,7 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
         focusHistory.append(tv)
         dimInactive()
         manager?.terminalFocused(window: id)
+        acctRefresh()
     }
 
     /// The dashboard's menus (friends, settings, updates) open on the dashboard, under the windows pinned above it:
@@ -3347,9 +3370,13 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
             let titles = tabs.indices.map(tabTitle)
             if titles != tabBar.shownTitles { tabBar.show(titles: titles, active: activeTab, reveal: false) }
         }
-        let stats: [TabStats?] = tabs.indices.map { i in
-            briefForTab(i).map { b in
-                TabStats(ctx: b.ctx, ctxMax: b.ctxMax, tools: b.tools, web: b.web, errors: b.errors, status: b.status)
+        // The account's initial on each chip, only when the window's tabs use more than one Claude account.
+        let briefs = tabs.indices.map { briefForTab($0) }
+        let several = Set(briefs.compactMap { $0.flatMap(acctMark) }.map(\.id)).count > 1
+        let stats: [TabStats?] = briefs.map { brief in
+            brief.map { b in
+                TabStats(ctx: b.ctx, ctxMax: b.ctxMax, tools: b.tools, web: b.web, errors: b.errors, status: b.status,
+                         account: several ? acctMark(b) : nil)
             }
         }
         let height: CGFloat = stats.contains { $0 != nil } ? 36 : 24
@@ -3368,6 +3395,7 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
         border.setStatus(hud.status)
         syncFavorite()
         shipStatusChanged(brief?.status ?? "")
+        acctRefresh()
     }
 
     /// The window's title (Mission Control's, the Window menu's, its first tab's): made up in streamer mode.
@@ -3576,7 +3604,7 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
     /// The note's height: none, one line, or two when the window is narrow. Once per change: every height change resizes
     /// the terminal, so it doesn't animate.
     func layoutNudge(_ offer: WorktreeOffer?) {
-        let h: CGFloat = offer == nil ? 0 : (window?.frame.width ?? 900) < 700 ? 50 : 34
+        let h: CGFloat = offer == nil && hud.acctNote == nil ? 0 : (window?.frame.width ?? 900) < 700 ? 50 : 34
         if nudgeHeight.constant != h {
             nudgeHeight.constant = h
             paneTop.constant = 6 + h
@@ -3717,7 +3745,9 @@ struct WorktreeNudgeBar: View {
     @State private var shown = false
 
     var body: some View {
-        if let o = hud.nudge {
+        if let n = hud.acctNote {
+            AccountNoteBar(note: n, act: { hud.onAcct?($0) })
+        } else if let o = hud.nudge {
             GeometryReader { geo in
                 HStack(spacing: 8) {
                     Image(systemName: "arrow.triangle.branch").font(.system(size: 12)).foregroundColor(Theme.cAccentSoft)

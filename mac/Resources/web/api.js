@@ -11,7 +11,9 @@ window.API = (() => {
     getSlots: (set) => native('getSlots', { set }),
     saveSlots: (slots, set) => native('saveSlots', { slots, set }),
     // told: the picker's bottom bar already said who works in that folder (no note in the new chat later).
-    newTerminal: (dir, name, told) => native('newTerminal', { dir, name, told: !!told }),
+    newTerminal: (dir, name, told, account) => native('newTerminal', { dir, name, told: !!told, account: account || undefined }),
+    // The Claude accounts (two or more show the picker's account chip) and the one last used in `dir`'s repo.
+    claudeAccounts: (dir) => native('claudeAccounts', { dir }),
     done: () => native('done'),
     // New worktree (Mac only: the Windows app answers null to these, and the pages then don't offer it). gitInfo reads files:
     // { repo, worktree, branch } for a folder; worktreeInfo is git's answer for the name sheet; worktreeCreate makes the
@@ -20,7 +22,7 @@ window.API = (() => {
     worktreeInfo: (dir) => native('worktreeInfo', { dir }),
     worktreeCreate: (dir, name, ai) => native('worktreeCreate', { dir, name, ai }),
     // moving: { replacing, sid } when the sheet was opened from a chat's note (the app then marks that chat's strip "Opened in …"; nothing is closed).
-    worktreeOpen: (path, ai, moving) => native('worktreeOpen', { path, ai, replacing: moving && moving.replacing, sid: moving && moving.sid }),
+    worktreeOpen: (path, ai, moving, account) => native('worktreeOpen', { path, ai, replacing: moving && moving.replacing, sid: moving && moving.sid, account: account || undefined }),
     revealFolder: (path) => native('revealFolder', { path }),
     // Create PR, Merge, Delete worktree (worktree-ship.js): the sheet's data, and each thing it does; the native side checks the folder is a
     // worktree it knows, and reports each step with Worktree.shipStep.
