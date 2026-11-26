@@ -577,6 +577,7 @@ const cloud = createCloud({
     },
   },
   onUpdateRequired: () => updates?.on426?.(),
+  onNetBack: () => notesNetBack(),
   onChange(state) {
     pushCloud();
     if (state && state.xp) toNotices(`xp(${JSON.stringify(state.xp)})`);
@@ -876,6 +877,13 @@ const noteWindows = createNoteWindows({
   // A shared note's own parts and the friends' and shared notes' calls, for a note window's page (it has no `cloud`).
   notesSync, social: (method, p, body) => cloud.social(method, p, body), openSignIn,
 });
+// The network came back (cloud.js onNetBack) or the PC woke up: the shared notes' live lines, the dashboard's pinned note and
+// each note window's, try again at once (the Mac's notesNetBack, on both). A line that died while the network was down says
+// nothing until something is sent, so the pinned note stopped following the others' edits until it was opened again.
+function notesNetBack() {
+  run(dashView, 'window.Notes && Notes.netBack && Notes.netBack()');
+  noteWindows.netBack();
+}
 const feedPanel = createFeedPanel({ BrowserWindow, WEB, webPrefs, bootFor, checkPages, home: () => chatHome() });
 // AI tools and my notes (notesai.js, notestools.js; the Mac's NotesAI.swift and NotesTools.swift): Settings > Privacy's
 // switch, and the notes' eleven tools on the local MCP server (`mcp`, mcp.js), which keeps its pipe open while
@@ -5829,8 +5837,7 @@ app.whenReady().then(() => {
   // The PC woke up: the live line comes back at once, and so does every shared note's (the Mac's Social.kick, notesNetBack).
   powerMonitor.on('resume', () => {
     cloud.kick();
-    run(dashView, 'window.Notes && Notes.netBack && Notes.netBack()');
-    noteWindows.netBack();
+    notesNetBack();
   });
   // Viktoria rests while the PC is locked or asleep (the Mac's display sleep), and lets go of the cursor at once.
   powerMonitor.on('lock-screen', () => mascot.setAsleep('lock', true));
