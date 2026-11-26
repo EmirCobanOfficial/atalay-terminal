@@ -2,12 +2,14 @@
 // The desktop, for Viktoria (mascot.js): what the Mac app reads with CGWindowListCopyWindowInfo, NSEvent.pressedMouseButtons
 // and CGWarpMouseCursorPosition. One long-lived PowerShell loads a little C# (Add-Type) and answers a line on its input
 // with the answer and "end", as runaways.js's does; it ends with its input, so it never outlives the app, and nothing is
-// started per call. Two questions:
+// started per call. Three questions:
 // - windows(): the windows on screen, front to back, as `{ hwnd, pid, topmost, l, t, r, b }` in physical pixels (each
 //   window's visible frame). Visible ones only: not minimized, not cloaked (another virtual desktop's, a hidden app's),
 //   no tool windows, no desktop or taskbar. No titles and no process names are read, as on the Mac.
 // - hold({ x, y }, pid): the cursor to that physical point, only while a window of process `pid` (the app) is in front
 //   ("away" otherwise). The mouse buttons are not read here: the overlay's own mouse events end a hold (mascot.js).
+// - keys(): Shift, Esc and the logical left mouse button as `{ shift, esc, button }`, read with GetAsyncKeyState. The tab and
+//   window drags (tabdrag.js) ask it each tick of a native title-bar move, where the page gets no key or mouse events.
 // Everything fails soft: where it can't run (not Windows, PowerShell or the compile refusing, an antivirus in the way) it
 // says so once in the log and every answer is null, and the app goes on without it.
 const { spawn } = require('child_process');
@@ -31,6 +33,8 @@ public static class AtlDesk {
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr h, StringBuilder s, int n);
   [DllImport("user32.dll")] static extern bool SetCursorPos(int x, int y);
   [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")] static extern short GetAsyncKeyState(int vk);
+  [DllImport("user32.dll")] static extern int GetSystemMetrics(int i);
   [DllImport("user32.dll")] static extern IntPtr SetThreadDpiAwarenessContext(IntPtr c);
   [DllImport("dwmapi.dll")] static extern int DwmGetWindowAttribute(IntPtr h, int a, out RECT r, int size);
   [DllImport("dwmapi.dll")] static extern int DwmGetWindowAttribute(IntPtr h, int a, out int v, int size);
@@ -82,12 +86,21 @@ public static class AtlDesk {
     try { SetCursorPos(x, y); } finally { if (old != IntPtr.Zero) SetThreadDpiAwarenessContext(old); }
     return "ok";
   }
+
+  static bool Down(int vk) { return (GetAsyncKeyState(vk) & 0x8000) != 0; }
+
+  // "shift esc button" as 0/1. GetAsyncKeyState reads the physical buttons, so with swapped buttons (SM_SWAPBUTTON) the
+  // logical left one is the physical right one.
+  public static string Keys() {
+    int left = GetSystemMetrics(23) != 0 ? 0x02 : 0x01;
+    return (Down(0x10) ? "1" : "0") + " " + (Down(0x1B) ? "1" : "0") + " " + (Down(left) ? "1" : "0");
+  }
 }`;
 
 function createDesk() {
   let ps = null, ready = false, dead = false, logged = false, failures = 0, stopping = false;
   const queue = []; // the questions asked and not yet answered, in order: { kind, lines, resolve, timer }
-  let pendingWindows = null, holdBusy = false;
+  let pendingWindows = null, holdBusy = false, keysBusy = false;
   let buf = '';
 
   function say(msg) {
@@ -167,6 +180,7 @@ function createDesk() {
       '    $p = $ask.Split(" ")',
       '    if ($p[0] -eq "W") { $out = [AtlDesk]::Wins() }',
       '    elseif ($p[0] -eq "H") { $out = [AtlDesk]::Hold([int]$p[1], [int]$p[2], [int]$p[3]) + "`n" }',
+      '    elseif ($p[0] -eq "K") { $out = [AtlDesk]::Keys() + "`n" }',
       '  } catch {}',
       '  [Console]::Out.Write($out + "end`n")',
       '  [Console]::Out.Flush()',
@@ -261,6 +275,19 @@ function createDesk() {
         return lines && (lines[0] === 'ok' || lines[0] === 'away') ? lines[0] : null;
       });
     },
+    // { shift, esc, button } (the logical left button) right now, or null (no helper, not ready yet, or still busy with the
+    // last one). Like hold(), never asked before the helper is ready: a drag samples it every few tens of milliseconds, and an
+    // answer that waited for the compile would be stale.
+    keys() {
+      if (!ready || keysBusy) return Promise.resolve(null);
+      keysBusy = true;
+      return ask('K', 'K').then((lines) => {
+        keysBusy = false;
+        const p = lines && lines[0] ? lines[0].split(' ') : [];
+        if (p.length !== 3 || !p.every((v) => v === '0' || v === '1')) return null;
+        return { shift: p[0] === '1', esc: p[1] === '1', button: p[2] === '1' };
+      });
+    },
     // Ends with its input; a later start() makes a new one.
     stop() {
       stopping = true;
@@ -268,6 +295,7 @@ function createDesk() {
       stopping = false;
       pendingWindows = null;
       holdBusy = false;
+      keysBusy = false;
     },
   };
 }
