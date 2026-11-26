@@ -292,6 +292,8 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
   // of their own.
   function bind(n) {
     stopSync();
+    // Whether the page is drawn read-only now, waiting for a shared note's text (placeholder).
+    const held = placeholder;
     cur = n;
     // A document another page (a window) may have written since is read again first: what's drawn meanwhile is the last kept copy.
     const reread = !!n.shared && canShare && !ydocFresh.has(n.id);
@@ -313,6 +315,11 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
     lastKind = '';
     lastFocus = null;
     if (n.shared && !reread) startSync(n);
+    // The lines drawn while the text was on its way were made read-only (render, paintShare), and only a sync's change gives
+    // them back (the document's afterTransaction). Text that comes by a bind instead (the note's file read again once its
+    // window closed, or once it was pinned after being out) is no change: the panel kept those lines read-only, so the pinned
+    // note couldn't be written in until it was opened in its window. They're written in again here. Windows only for now.
+    if (held && !placeholder && !MAC) setEditable(true);
     paintShare();
   }
 
