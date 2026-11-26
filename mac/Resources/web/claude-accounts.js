@@ -230,7 +230,8 @@
         continue;
       }
       const sub = [a.email, a.plan, a.orgName].filter(Boolean).join(' · ') || (a.isDefault ? 'Claude Code’s own account' : 'not signed in yet');
-      body += `<div class="hk-row st-row ac-row" data-id="${E(a.id)}"><i class="ac lg" style="--ah:${E(a.hue)}">${E(a.initial)}</i><span class="st-l"><b>${E(a.label)}${a.isDefault && multi ? '<em class="st-tag">default</em>' : ''}</b><small>${E(sub)}</small></span>` +
+      // `note`: something the user should know about this account (Windows: its settings are a copy, no Developer Mode).
+      body += `<div class="hk-row st-row ac-row" data-id="${E(a.id)}"><i class="ac lg" style="--ah:${E(a.hue)}">${E(a.initial)}</i><span class="st-l"><b>${E(a.label)}${a.isDefault && multi ? '<em class="st-tag">default</em>' : ''}</b><small>${E(sub)}</small>${a.note ? `<small class="ac-note">${E(a.note)}</small>` : ''}</span>` +
         (a.signedIn ? `<span class="ac-lim">${lim(poolOf(a))}</span>` : `<button type="button" class="st-btn ac-again" data-id="${E(a.id)}">Sign in…</button>`) +
         `<button type="button" class="st-btn ac-more" data-id="${E(a.id)}" aria-label="More for ${E(a.label)}" aria-haspopup="menu">•••</button></div>`;
     }
@@ -337,7 +338,7 @@
         if (k === 'rename') return ((renaming = id), paint(el));
         if (k.startsWith('hue:')) return act({ type: 'hue', id, hue: k.slice(4) });
         if (k === 'remove') {
-          const ok = typeof askBox === 'function' ? await askBox({ title: `Remove ${a.label}?`, text: 'It is signed out and its folder is removed from this Mac. Your chat history stays: it is shared with your other accounts.', ok: 'Remove' }) : true;
+          const ok = typeof askBox === 'function' ? await askBox({ title: `Remove ${a.label}?`, text: `It is signed out and its folder is removed from this ${window.__platform === 'win32' ? 'PC' : 'Mac'}. Your chat history stays: it is shared with your other accounts.`, ok: 'Remove' }) : true;
           if (ok) act({ type: 'remove', id });
         }
       };

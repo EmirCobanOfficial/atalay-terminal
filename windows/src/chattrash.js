@@ -81,7 +81,7 @@ function remove(p) {
  * (~/.gemini/antigravity-cli); `cursorDir`: Cursor's (CURSOR_CONFIG_DIR or ~/.cursor); `codexExe()`: where Codex's own
  * program is, or null; `home`: the user's folder.
  */
-function createChatTrash({ claudeDir, codexDir, agyDir, cursorDir, codexExe, home }) {
+function createChatTrash({ claudeDir, claudeDirs, codexDir, agyDir, cursorDir, codexExe, home }) {
   const cursor = cursorDir || process.env.CURSOR_CONFIG_DIR || path.join(home || require('os').homedir(), '.cursor');
   // ----- Claude Code -----
 
@@ -116,6 +116,15 @@ function createChatTrash({ claudeDir, codexDir, agyDir, cursorDir, codexExe, hom
     add(path.join(claudeDir, 'debug', `${chat.id}.txt`));
     const todos = path.join(claudeDir, 'todos');
     for (const name of names(todos)) if (name.startsWith(`${chat.id}-`)) add(path.join(todos, name));
+    // Another Claude account's own folders (claudeaccounts.js): its checkpoints, shell environment, tasks, images, debug log
+    // and to-dos. Its `projects` is the default's, through a link: never swept here (the link would lead to the same files).
+    for (const root of typeof claudeDirs === 'function' ? claudeDirs() : []) {
+      if (!root || String(root).length < 2 || path.resolve(root).toLowerCase() === path.resolve(claudeDir).toLowerCase()) continue;
+      for (const sub of ['file-history', 'session-env', 'tasks', 'image-cache']) add(path.join(root, sub, chat.id));
+      add(path.join(root, 'debug', `${chat.id}.txt`));
+      const t = path.join(root, 'todos');
+      for (const name of names(t)) if (name.startsWith(`${chat.id}-`)) add(path.join(t, name));
+    }
     return out;
   }
 

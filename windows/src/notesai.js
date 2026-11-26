@@ -28,7 +28,7 @@ const SERVER_NAME = /^[A-Za-z0-9_-]{1,64}$/;
  * isn't there): register, ensureBridge, serverName, refresh, mode. folderOf(id): the folder one of the app's terminals is
  * in (main.js), for the notes' projects.
  */
-function createNotesAI({ settings, dialog, parent, notesStore, noteWindows, terminals, folderOf, dataDir, which, childEnvironment, usable, mcp }) {
+function createNotesAI({ settings, dialog, parent, notesStore, noteWindows, terminals, folderOf, dataDir, which, childEnvironment, usable, mcp, claudeDirs }) {
   const HOME = os.homedir();
   const CLAUDE_DIR = process.env.CLAUDE_CONFIG_DIR || path.join(HOME, '.claude');
   const codexHome = () => process.env.CODEX_HOME || path.join(HOME, '.codex');
@@ -63,6 +63,7 @@ function createNotesAI({ settings, dialog, parent, notesStore, noteWindows, term
     folderOf,
     dataDir,
     claudeDir: CLAUDE_DIR,
+    claudeDirs,
   });
 
   // The notes' eleven tools on the server, once (the Mac's AppDelegate loop over NotesTools.all). Each is checked against the

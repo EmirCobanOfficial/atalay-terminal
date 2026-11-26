@@ -12,6 +12,8 @@
 .st-accts .ac-row { gap: 12px; padding: 10px 0; }
 .st-accts .ac-row .st-l { flex: 1; min-width: 0; }
 .st-accts .ac-row .st-l b { display: flex; align-items: center; gap: 6px; }
+/* something to know about the account (Windows: its settings are a copy), a quiet amber line under it */
+.st-accts .ac-row .st-l small.ac-note { margin-top: 2px; color: var(--amber); }
 .st-accts .ac-lim { flex: none; color: var(--txt3); font: 0.75rem var(--font); white-space: nowrap; }
 .st-accts .ac-lim i { font-style: normal; color: var(--green); }
 .st-accts .ac-lim i.hot { color: var(--red); }

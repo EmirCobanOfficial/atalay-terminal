@@ -139,7 +139,7 @@ async function treeOf(cwd) {
  * `live()`, optional: the AI sessions running now (engine.live()), for the picker's "Claude is working here", which warns
  * before a second AI starts in the same working tree.
  */
-function createOverlay({ dataDir, claudeDir, live }) {
+function createOverlay({ dataDir, claudeDir, live, accounts }) {
   const projects = path.join(claudeDir, 'projects');
 
   // The AIs working in the working tree `top` (the Mac's aiTools(inTreeOf:), MainWindowController.swift), by name:
@@ -352,6 +352,16 @@ function createOverlay({ dataDir, claudeDir, live }) {
         case 'listDir': return listDir(body.path);
         case 'places': return places();
         case 'gitInfo': return gitInfo(body.path);
+        // The Claude accounts for the picker's chip (only shown with two or more), and the one last used in a folder's repo.
+        case 'claudeAccounts': {
+          if (!accounts) return null;
+          const answer = accounts.webJSON();
+          const dir = expand(String(body.dir || ''));
+          const t = dir ? await treeOf(dir) : null;
+          const id = t && accounts.lastAccount(t.top);
+          if (id) answer.last = id;
+          return answer;
+        }
         case 'getSlots': return { slots: await serial(set(body), () => readSlots(set(body))) };
         case 'saveSlots':
           try {
@@ -364,6 +374,8 @@ function createOverlay({ dataDir, claudeDir, live }) {
     },
     expand,
     locate,
+    /** The top folder of the repo a folder is in (or null), for the account last used there. */
+    top: async (dir) => ((await treeOf(dir)) || {}).top || null,
   };
 }
 

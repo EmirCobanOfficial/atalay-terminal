@@ -127,3 +127,42 @@ body.pane-split:not(.pane-off) #hud { border-bottom-color: var(--accent, #f88008
 #find button svg { fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
 @media (max-width: 420px) { #find input { width: 110px; } }
 .xterm .xterm-viewport { scrollbar-color: rgba(var(--accent-rgb, 248, 128, 8), 0.35) transparent; }
+
+/* Claude accounts (spec 4 to 7; the Mac's AccountChip and AccountNoteBar): shown with two or more accounts only. --ah is the
+   account's colour as "r, g, b". */
+#hud #acct { display: inline-flex; flex: none; align-items: center; gap: 5px; max-width: 46%; height: 20px; margin: 2px 0; padding: 0 6px 0 3px; overflow: hidden;
+  border: 1px solid rgba(var(--ah, 255, 176, 87), 0.55); border-radius: 10px; background: rgba(var(--ah, 255, 176, 87), 0.1);
+  color: rgb(var(--ah, 255, 176, 87)); font: 600 10.5px "Cascadia Mono", Consolas, monospace; white-space: nowrap; cursor: pointer; }
+#hud #acct[hidden] { display: none !important; }
+#hud #acct:hover, #hud #acct.open { border-color: rgb(var(--ah, 255, 176, 87)); background: rgba(var(--ah, 255, 176, 87), 0.2); color: rgb(var(--ah, 255, 176, 87)); }
+#hud #acct.open { box-shadow: 0 0 0 3px rgba(var(--ah, 255, 176, 87), 0.18); }
+#hud #acct.out { border-color: color-mix(in srgb, var(--red, #ff4d4d) 70%, transparent); background: color-mix(in srgb, var(--red, #ff4d4d) 10%, transparent); }
+#hud #acct.pending { border-style: dashed; }
+.ac { display: inline-grid; flex: none; place-items: center; width: 14px; height: 14px; border-radius: 50%; background: rgb(var(--ah, 255, 176, 87)); color: #180e07; font: 800 8.5px/1 "Segoe UI", sans-serif; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35); }
+#acct .lab { overflow: hidden; text-overflow: ellipsis; }
+#acct .sep { flex: none; width: 1px; height: 10px; background: rgba(var(--ah, 255, 176, 87), 0.35); }
+#acct .pct { color: var(--red, #ff4d4d); font-weight: 700; }
+#acct .next { display: inline-flex; align-items: center; gap: 4px; color: var(--txt2, var(--dim, #8f7a66)); font-weight: 500; }
+#acct .next svg { width: 11px; height: 11px; fill: none; stroke: rgb(var(--ah2, 255, 176, 87)); stroke-width: 1.4; stroke-linecap: round; }
+#acct .chev { width: 8px; height: 8px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+#hud #acct.flash { animation: ac-flash 900ms ease-out 1; }
+@keyframes ac-flash { from { box-shadow: 0 0 0 0 rgba(var(--ah, 255, 176, 87), 0.6); } to { box-shadow: 0 0 0 8px rgba(var(--ah, 255, 176, 87), 0); } }
+@media (prefers-reduced-motion: reduce) { #hud #acct.flash { animation: none; } }
+/* A narrow strip keeps the initial and the chevron only (fitHud adds .narrow). */
+#hud #acct.narrow .lab, #hud #acct.narrow .sep, #hud #acct.narrow .pct, #hud #acct.narrow .words { display: none; }
+#acctnote { display: flex; flex: none; align-items: center; gap: 10px; min-height: 34px; padding: 5px 12px; box-sizing: border-box; border-top: 1px solid rgba(255, 77, 77, 0.2); border-bottom: 1px solid rgba(255, 77, 77, 0.4);
+  background: rgba(255, 77, 77, 0.08); color: var(--txt2, var(--dim, #8f7a66)); font: 12px "Segoe UI", sans-serif; }
+#acctnote[hidden] { display: none; }
+#acctnote.low { border-top-color: rgba(255, 192, 64, 0.2); border-bottom-color: rgba(255, 192, 64, 0.42); background: rgba(255, 192, 64, 0.06); }
+#acctnote.went, #acctnote.switching { border-top-color: rgba(var(--accent-rgb, 248, 128, 8), 0.2); border-bottom-color: rgba(var(--accent-rgb, 248, 128, 8), 0.42); background: rgba(var(--accent-rgb, 248, 128, 8), 0.08); }
+#acctnote svg { flex: none; width: 13px; height: 13px; fill: none; stroke: var(--red-soft, var(--red, #ff4d4d)); stroke-width: 1.4; stroke-linecap: round; }
+#acctnote.low svg { stroke: var(--amber, #ffc040); }
+#acctnote.went svg, #acctnote.switching svg { stroke: var(--accent-soft, #ffb057); }
+#acctnote .msg { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#acctnote .msg b { color: var(--hi, #fff8f0); font-weight: 600; }
+#acctnote button { display: inline-flex; flex: none; align-items: center; gap: 6px; height: 24px; padding: 0 9px; border: 1px solid var(--accent, #f88008); border-radius: 6px; background: transparent; color: var(--accent-soft, #ffb057); font: inherit; cursor: pointer; }
+#acctnote button:hover { background: rgba(var(--accent-rgb, 248, 128, 8), 0.14); }
+#acctnote button.quiet { border-color: transparent; color: var(--txt3, var(--dim, #8f7a66)); }
+#acctnote button.quiet:hover { background: transparent; color: var(--txt, #f5ebe0); }
+#acctnote .ac { background: rgb(var(--ah)); }
+@media (max-width: 420px) { #acctnote .msg .more { display: none; } }

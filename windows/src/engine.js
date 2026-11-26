@@ -1615,6 +1615,9 @@ class Session extends Track {
     // `updatedAt` of the registry entry that carries this chat. Two live processes can hold one conversation (a
     // `--resume` that didn't fork); the one updated last carries the card.
     this.regUpdated = 0;
+    // The Claude account whose registry holds it, when this process started, and when its usage limit last answered 429
+    // (0 after a normal reply).
+    this.account = ''; this.procStartedAt = 0; this.limitHitAt = 0;
     this.tty = null;
     this.cpu = 0;
     this.mem = 0;
@@ -1690,6 +1693,11 @@ class RadarEngine {
     this.registry = path.join(this.claudeDir, 'sessions');
     this.userSettings = path.join(this.claudeDir, 'settings.json');
     this.limitsFile = opts.limitsFile || null;
+    // The Claude accounts (claudeaccounts.js): every account's registry is read, a session knowing which one it was found in.
+    // Without it (or with one account) the engine reads the one folder, as it always did.
+    this.accounts = opts.accounts || null;
+    // Put the status line script back when an older app that shares its folder swapped it (cheap: one file compare).
+    this.ensureScript = typeof opts.ensureScript === 'function' ? opts.ensureScript : null;
     // Spend by day and project past today (the spend panel's history), kept by the app (ledger.js).
     this.ledger = createLedger({
       file: opts.ledgerFile || path.join(process.env.LOCALAPPDATA || path.join(HOME, 'AppData', 'Local'), 'atalay-terminal', 'ledger.json'),
@@ -1795,7 +1803,7 @@ class RadarEngine {
     this.firstCwd = new Map();
     this.bootPumps = [];
     this.timers = [];
-    this.watchers = { projects: null, registry: null, agy: null, codex: null, codexWaiting: null, codexHome: null, cursorEvents: null, cursorProjects: null, cursorChats: null };
+    this.watchers = { projects: null, registry: null, agy: null, codex: null, codexWaiting: null, codexHome: null, cursorEvents: null, cursorProjects: null, cursorChats: null, accounts: null };
     this.lastRun = {};
     this.lastScan = 0;
     this.scanning = false;
@@ -1912,6 +1920,9 @@ class RadarEngine {
         sessionId: S.id, pid: S.pid, cwd: S.cwd, status: this.shownStatus(S, mine, now),
         name: S.name || S.id.slice(0, 8), title: this.named(S.id, null, S.title || ''), prompt: S.lastPrompt || '', waitingFor: S.waitingFor ?? null,
         host: this.hostLabel(S), tab: typeof S.hostTab === 'string' ? S.hostTab : null, statusSince: S.statusSince || 0,
+        // Its Claude account, and a usage limit hit by the process running it now (after a switch the old account's error is
+        // still the transcript's last record until the next reply, and it is not the new account's).
+        account: S.account || '', limitHit: S.limitHitAt > 0 && S.limitHitAt >= S.procStartedAt && now - S.limitHitAt < 6 * 3_600_000,
         // Its context and today's counts, for the strip of the window it runs in (terminal.js).
         ctx: S.ctx, ctxMax: S.ctxMax, tools: S.tools, web: S.web, errors: S.errors,
         model: shortModel(S.model), effort: S.effort || '', cost: S.cost, spark: spark30(S.spark, now),
@@ -2375,6 +2386,13 @@ class RadarEngine {
       } catch (e) { report(e); }
     });
     watch('registry', this.registry, {}, () => this.registryChanged());
+    // Another Claude account's folder: its registry (its chats come and go); the rest of it, the history included, is the
+    // default account's by links.
+    if (this.accounts && fs.existsSync(this.accounts.root)) {
+      watch('accounts', this.accounts.root, { recursive: true }, (_event, name) => {
+        if (/(^|[\\/])sessions([\\/]|$)/.test(String(name || ''))) this.registryChanged();
+      });
+    }
     // Codex's approval requests (codexhooks.js), the moment its hook writes or drops one, and its own log, where the
     // user's answer to one lands.
     watch('codexWaiting', this.codexHooks.dir, {}, () => this.codexWaitChanged());
@@ -2938,13 +2956,19 @@ class RadarEngine {
     if (rec.isApiErrorMessage === true || model === '<synthetic>') {
       const txt = clip(redact(content.map((b) => str(b.text)).filter((x) => x !== undefined).join(' ')), 100);
       this.emit(this.ev('sys', ts, S, A, { l: txt || 'API error', err: true }), today);
+      // A 429 on the account's usage limit: the terminal window offers to go on with another account, on a click.
+      if (!A && rec.error === 'rate_limit') S.limitHitAt = Math.max(S.limitHitAt, ts);
       // A subagent that died on a quota or API error writes nothing more.
       if (A) A.end(ts);
       return;
     }
     if (model !== undefined) {
       actor.model = model;
-      if (!A) S.model = model;
+      // A normal reply after the limit's error: the limit is over.
+      if (!A) {
+        S.model = model;
+        S.limitHitAt = 0;
+      }
     }
     if (!A && typeof rec.effort === 'string') S.effort = rec.effort;
 
@@ -3415,16 +3439,48 @@ class RadarEngine {
   // Claude Code keeps one small JSON file per running process in sessions/<pid>.json. Unchanged files (same mtime)
   // are not read again.
   pollRegistry() {
-    let names = [];
-    try {
-      names = fs.readdirSync(this.registry);
-    } catch {}
     const seen = new Set();
     const present = new Set();
-    for (const n of names) {
-      if (!REG_FILE.test(n)) continue;
+    // Each real registry folder once: two accounts whose folders lead to one place (a link) are not read twice.
+    const regs = new Set();
+    const acc = this.accounts && this.accounts.multiple() ? this.accounts.dirs() : [{ id: '', dir: null }];
+    if (acc.length > 1 && this.ensureScript) this.ensureScript();
+    for (const { id, dir } of acc) {
+      const registry = dir ? path.join(dir, 'sessions') : this.registry;
+      let real = registry;
+      try {
+        real = fs.realpathSync.native(registry);
+      } catch {}
+      if (regs.has(real.toLowerCase())) continue;
+      regs.add(real.toLowerCase());
+      this.pollRegistryOf(id, registry, seen, present);
+    }
+    for (const n of this.regCache.keys()) if (!present.has(n)) this.regCache.delete(n);
+    const entries = new Set([...this.regCache.values()].map((c) => `${c.pid}:${c.procStart}`));
+    for (const key of this.verified.keys()) if (!entries.has(key)) this.verified.delete(key);
+    for (const S of this.sessions.values()) {
+      if (S.live && !seen.has(S.id)) {
+        S.live = false;
+        S.reg = null;
+        S.hostTab = null;
+        S.endedAt = Date.now();
+        this.stateDirty = true;
+      }
+    }
+  }
+
+  // One account's registry folder: its files are known by the account too (the same pid can't be in two, but the cache is
+  // kept apart all the same).
+  pollRegistryOf(account, registryDir, seen, present) {
+    let names = [];
+    try {
+      names = fs.readdirSync(registryDir);
+    } catch {}
+    for (const fname of names) {
+      if (!REG_FILE.test(fname)) continue;
+      const n = `${account}/${fname}`;
       present.add(n);
-      const file = path.join(this.registry, n);
+      const file = path.join(registryDir, fname);
       let st;
       try {
         st = fs.statSync(file);
@@ -3476,6 +3532,8 @@ class RadarEngine {
       const updated = typeof j.updatedAt === 'number' ? j.updatedAt : 0;
       if (S.live && S.pid != null && S.pid !== pid && alive(S.pid) && S.regUpdated > updated) continue;
       S.regUpdated = updated;
+      S.account = account;
+      S.procStartedAt = typeof j.startedAt === 'number' ? j.startedAt : 0;
       this.stateDirty = true;
       S.live = true;
       S.endedAt = 0;
@@ -3493,18 +3551,6 @@ class RadarEngine {
       if (S.reg === 'idle' || S.reg === 'shell') S.pending.clear();
       const fp = this.transcriptFor(S.cwd, sid);
       if (!this.cursors.has(this.cursorKey(fp)) && fs.existsSync(fp)) this.pumpSoon(fp);
-    }
-    for (const n of this.regCache.keys()) if (!present.has(n)) this.regCache.delete(n);
-    const entries = new Set([...this.regCache.values()].map((c) => `${c.pid}:${c.procStart}`));
-    for (const key of this.verified.keys()) if (!entries.has(key)) this.verified.delete(key);
-    for (const S of this.sessions.values()) {
-      if (S.live && !seen.has(S.id)) {
-        S.live = false;
-        S.reg = null;
-        S.hostTab = null;
-        S.endedAt = Date.now();
-        this.stateDirty = true;
-      }
     }
   }
 
@@ -5055,6 +5101,8 @@ class RadarEngine {
         byCat: S.byCat, pending, spark, flags, agents: subs, agentsRunning: nRun,
         waitingFor: S.waitingFor ?? null, tty: S.tty ?? null, pid: S.pid ?? null, host,
         tab: typeof S.hostTab === 'string' ? S.hostTab : null,
+        account: S.account || '',
+        limitHit: S.live && S.limitHitAt > 0 && S.limitHitAt >= S.procStartedAt && now - S.limitHitAt < 6 * 3_600_000,
         ...(S.live ? this.memOf(S.pid) : {}),
       };
       if (S.last) item.last = S.last;
@@ -5172,11 +5220,36 @@ class RadarEngine {
     // Every AI's usage limits for the top bar, in its order, whichever chat is in front: Claude's from its status line,
     // Codex's, Antigravity's and Cursor's as last read, Antigravity's a column per group in use (agyPools), Cursor's a
     // monthly one (its plan's included usage). One not heard from in a week is left out.
-    const pools = [['Claude Code', limits && { ...limits, id: 'claude', name: 'claude' }], ['Codex', this.codexUsage && { ...this.codexUsage, id: 'codex', name: 'codex' }],
+    const pools = [...this.claudePools(limits), ['Codex', this.codexUsage && { ...this.codexUsage, id: 'codex', name: 'codex' }],
       ...(this.agyUsage ? agyPools(this.agyUsage, this.agyModel) : []).map((p) => ['Antigravity', p]),
       ['Cursor', this.cursorUsage && { ...this.cursorUsage, id: 'cursor', name: 'cursor' }]];
-    out.limitsByAI = pools.filter(([, v]) => v && now - (Number(v.at) || 0) < 7 * 24 * 3_600_000).map(([tool, v]) => ({ ...v, tool }));
+    out.limitsByAI = pools.filter(([, v]) => v && (v.accounts || now - (Number(v.at) || 0) < 7 * 24 * 3_600_000)).map(([tool, v]) => ({ ...v, tool }));
     return out;
+  }
+
+  // Claude's limit pools for the top bar. One account: the status line's file, as before. Two or more: a pool per quota, one
+  // per organization (accounts of one organization share it), else one per account; the accounts' order is Settings'. A column
+  // for each account, even before it has data.
+  claudePools(limits) {
+    const A = this.accounts;
+    if (!A || !A.multiple()) return [['Claude Code', limits && { ...limits, id: 'claude', name: 'claude' }]];
+    const order = [];
+    const byKey = new Map();
+    for (const a of A.all()) {
+      const k = a.orgId ? a.orgId : a.id;
+      const data = A.limits(a);
+      const pool = byKey.get(k) || { id: `claude:${k}`, name: 'claude', accounts: [], at: 0 };
+      pool.accounts.push({ id: a.id, label: a.label, initial: a.initial, hue: a.hue, email: a.email, plan: a.plan, orgName: a.orgName });
+      // The newest reading of the pool's accounts (one organization, one quota).
+      if (data && (data.at || 0) >= pool.at) {
+        pool.fiveHour = data.fiveHour;
+        pool.week = data.week;
+        pool.at = data.at;
+      }
+      if (!byKey.has(k)) order.push(k);
+      byKey.set(k, pool);
+    }
+    return order.map((k) => ['Claude Code', byKey.get(k)]);
   }
 
   // The usage limits, read again when the file changes; none while there is no file (the page then hides them).

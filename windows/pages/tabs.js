@@ -41,6 +41,14 @@
         .filter(Boolean).join(' · ');
       if (i < 9) chip.append(el('span', 'n', String(i + 1)));
       if (st) chip.append(el('span', `dot ${st}`));
+      // The Claude account's initial, only when the window's tabs use more than one.
+      if (t.acct && /^\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}\s*$/.test(String(t.acct.hue))) {
+        const ac = el('i', 'ac', String(t.acct.initial || '').slice(0, 2));
+        ac.style.setProperty('--ah', t.acct.hue);
+        ac.title = `Claude account: ${t.acct.label}`;
+        chip.append(ac);
+        chip.title += ` · ${t.acct.label}`;
+      }
       chip.append(el('span', 'name', t.title));
       if (s) {
         const ctx = el('span', 'ctx');

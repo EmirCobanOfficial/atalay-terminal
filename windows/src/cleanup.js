@@ -60,6 +60,11 @@ function isInteractiveShell(p) {
 // processes (the engine's registry), and its npm package: an npm install runs as node on the package's cli.js.
 const CLAUDE_DIR = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
 const CLAUDE_PACKAGE = /[\\/]@anthropic-ai[\\/]claude-code[\\/]/i;
+// The other Claude accounts' folders (claudeaccounts.js; main.js sets it): their registries name Claude's processes too.
+let accountDirs = () => [];
+function setAccountDirs(fn) {
+  if (typeof fn === 'function') accountDirs = fn;
+}
 
 /**
  * Claude Code's own process (the Mac's Proc.isClaude): claude.exe, node running the npm package (`node …\@anthropic-ai\
@@ -69,7 +74,10 @@ const CLAUDE_PACKAGE = /[\\/]@anthropic-ai[\\/]claude-code[\\/]/i;
 function isClaude(p) {
   if (!p) return false;
   if (/^claude$/i.test(p.name) || CLAUDE_PACKAGE.test(String(p.cmd || ''))) return true;
-  return Number.isInteger(p.pid) && p.pid > 0 && fs.existsSync(path.join(CLAUDE_DIR, 'sessions', `${p.pid}.json`));
+  if (!(Number.isInteger(p.pid) && p.pid > 0)) return false;
+  if (fs.existsSync(path.join(CLAUDE_DIR, 'sessions', `${p.pid}.json`))) return true;
+  for (const d of accountDirs()) if (d && fs.existsSync(path.join(d, 'sessions', `${p.pid}.json`))) return true;
+  return false;
 }
 
 /** Claude or another AI tool's own process (runaways.js's aiTool, the Mac's Cleanup.isAIProcess). */
@@ -854,4 +862,4 @@ function createCleanup({ runaways, engine, terminals, chatWindow, endTerminal, i
   };
 }
 
-module.exports = { createCleanup, describe, isInteractiveShell, isAIProcess, memState, decideStrip, dismissedStill, words, burning, stamp };
+module.exports = { createCleanup, describe, isInteractiveShell, isAIProcess, memState, decideStrip, dismissedStill, words, burning, stamp, setAccountDirs };

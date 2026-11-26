@@ -661,6 +661,7 @@
   const actionEl = document.getElementById('action');
   const sparkEl = document.getElementById('spark');
   const pinEl = document.getElementById('pin');
+  const acctEl = document.getElementById('acct');
   // A narrow window drops the strip's pieces one at a time, the least needed first, rather than wrapping it or cutting
   // off its buttons: the sparkline, model and effort, today's counts, the cost, why it waits, the tool call, the context.
   // The folder, the tool call's own words and the title give way on their own before that (the title slowest, and only
@@ -669,10 +670,13 @@
   const fitHud = () => {
     for (const el of DROPS) el.classList.remove('dropped');
     const cramped = () => hudEl.scrollWidth > hudEl.clientWidth || titleEl.clientWidth < Math.min(titleEl.scrollWidth, 72);
+    acctEl.classList.remove('narrow');
     for (const el of DROPS) {
       if (!cramped()) break;
       el.classList.add('dropped');
     }
+    // The account's chip keeps its initial and chevron (spec 10): its words go before the title's room does.
+    if (!acctEl.hidden && cramped()) acctEl.classList.add('narrow');
   };
   new ResizeObserver(fitHud).observe(hudEl);
   // The status's and the tool call's clocks, every second (the Mac's header redraws as often).
@@ -764,8 +768,104 @@
     pinEl.hidden = typeof i.pinned !== 'boolean';
     if (!pinEl.hidden) setPin(i.pinned);
     tick();
+    drawAcct(i.acct, i.status);
     fitHud();
   });
+  // ---------- the Claude account (spec 4 to 7; the Mac's AccountChip and AccountNoteBar) ----------
+  // The app sends `acct` with the strip (term:info): null with one account only or when another AI runs here, else the chip
+  // ({ mark, left, out, pending }) and the note under it. A click opens the app's menu; a note's buttons are the user's
+  // clicks too: nothing here switches by itself.
+  const acctNote = document.getElementById('acctnote');
+  const escA = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+  const hueOf = (h) => (typeof h === 'string' && /^\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}\s*$/.test(h) ? h : '255, 176, 87');
+  const disc = (m) => `<i class="ac" style="--ah:${hueOf(m.hue)}">${escA(m.initial)}</i>`;
+  const GAUGE = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 11.5a5.5 5.5 0 1 1 11 0M8 11.5 5.6 7.4"/></svg>';
+  const TICK = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 8.5l3 3 6-7"/></svg>';
+  const CLOCK = '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.6"/><path d="M8 4.8V8l2.2 1.4"/></svg>';
+  let acctWas = '';
+  let noteSaid = '';
+  function drawAcct(a, status) {
+    const c = a && a.chip;
+    acctEl.hidden = !c;
+    if (!c) {
+      acctNote.hidden = true;
+      acctNote.innerHTML = '';
+      acctWas = noteSaid = '';
+      return;
+    }
+    const m = c.mark;
+    const low = typeof c.left === 'number' && c.left < 20;
+    let words = '';
+    if (c.pending) words = `<span class="sep"></span><span class="next words">${CLOCK}<span>→</span>${disc(c.pending)}<span>after this reply</span></span>`;
+    else if (c.out) words = '<span class="sep"></span><span class="pct">limit</span>';
+    else if (low) words = `<span class="sep"></span><span class="pct">${Math.round(c.left)}%</span>`;
+    const label = `Claude account: ${m.label}${c.out ? ', out of its limit' : low ? `, ${Math.round(c.left)}% left` : ''}${c.pending ? `, moves to ${c.pending.label} when this reply ends` : ''}`;
+    const html = `${disc(m)}<span class="lab">${escA(m.label)}</span>${words}<svg class="chev" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 6l4.5 4.5L12.5 6"/></svg>`;
+    acctEl.style.setProperty('--ah', hueOf(m.hue));
+    if (c.pending) acctEl.style.setProperty('--ah2', hueOf(c.pending.hue));
+    acctEl.classList.toggle('out', !!c.out);
+    acctEl.classList.toggle('pending', !!c.pending);
+    acctEl.title = label;
+    acctEl.setAttribute('aria-label', label);
+    if (html !== acctEl.__html) {
+      // After a switch: one ring pulse in the new colour.
+      if (acctEl.__mark && acctEl.__mark !== m.id) {
+        acctEl.classList.remove('flash');
+        void acctEl.offsetWidth;
+        acctEl.classList.add('flash');
+      }
+      acctEl.innerHTML = html;
+      acctEl.__html = html;
+    }
+    acctEl.__mark = m.id;
+    drawNote(a.note);
+  }
+  const noteHTML = (n) => {
+    const btn = (act, to, label, cls) => `<button type="button" class="${cls || ''}" data-act="${act}"${to ? ` data-to="${escA(to.id)}"` : ''}>${to ? disc(to) : ''}<span>${label}</span></button>`;
+    if (n.kind === 'limit') {
+      const text = n.to
+        ? `<b>${escA(n.from.label)} is out of its ${n.what}.</b> <span class="more">It fills again ${escA(n.fills)}.</span>`
+        : `<b>${escA(n.from.label)} is out of its ${n.what} until ${escA(n.fills.replace(/^(at|on) /, ''))}.</b> <span class="more">${escA(n.otherOut || '')}</span>`;
+      return { cls: 'limit', say: `${n.from.label} is out of its ${n.what}.`, html: `${GAUGE}<span class="msg">${text}</span>${n.to ? btn('continue', n.to, `Continue with ${escA(n.to.label)}`) + btn('notNow', null, 'Not now', 'quiet') : btn('notNow', null, 'Not now', 'quiet')}` };
+    }
+    if (n.kind === 'low') {
+      const week = n.what === 'week';
+      const text = `<b>${escA(n.from.label)} has 5% ${week ? 'of its week ' : ''}left.</b> <span class="more">${n.idle ? `Continue with ${escA(n.to.label)}?` : `Switch to ${escA(n.to.label)} when this reply ends?`}</span>`;
+      return { cls: 'low', say: `${n.from.label} has 5% left.`, html: `${GAUGE}<span class="msg">${text}</span>${btn('continue', n.to, n.idle ? `Continue with ${escA(n.to.label)}` : 'After this reply')}${btn('notNow', null, 'Not now', 'quiet')}` };
+    }
+    if (n.kind === 'switching') return { cls: 'switching', say: '', html: `${CLOCK}<span class="msg"><b>Switching to ${escA(n.to.label)}…</b></span>` };
+    return { cls: 'went', say: `This chat went on with ${n.to.label}.`, html: `${TICK}<span class="msg"><b>This chat went on with ${escA(n.to.label)}.</b>${n.fromLabel ? ` <span class="more">${escA(n.fromLabel)} fills again ${escA(n.fills || 'later')}.</span>` : ''}</span><button type="button" class="quiet" data-act="dismiss">Dismiss</button>` };
+  }
+  function drawNote(n) {
+    if (!n) {
+      acctNote.hidden = true;
+      acctNote.innerHTML = '';
+      noteSaid = '';
+      return;
+    }
+    const v = noteHTML(n);
+    const key = v.cls + v.html;
+    if (key === noteSaid) return;
+    noteSaid = key;
+    acctNote.className = v.cls;
+    acctNote.innerHTML = v.html;
+    acctNote.hidden = false;
+    // Said once (WCAG 4.1.3), politely.
+    if (v.say) announce.textContent = v.say;
+    acctNote.querySelectorAll('button').forEach((b) => {
+      b.onclick = () => {
+        term.focus();
+        atl.send('term:acctNote', { action: b.dataset.act, to: b.dataset.to || '' });
+      };
+    });
+  }
+  acctEl.onclick = () => {
+    term.focus();
+    const r = acctEl.getBoundingClientRect();
+    acctEl.classList.add('open');
+    atl.send('term:acctMenu', { x: Math.round(r.left), y: Math.round(r.bottom + 2) });
+  };
+  atl.on('term:acctMenu', (open) => acctEl.classList.toggle('open', !!open));
   // ---------- a linked worktree: the chip and the split button (the Mac's WorktreeChip.swift) ----------
   // The app sends what to show (term:ship, from its worktreeship.js; null: not in a worktree) and does what a click asks:
   // the chip shows the changes in Source Control, the main face opens the next step's sheet, ▾ a menu of everything.

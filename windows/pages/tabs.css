@@ -43,3 +43,6 @@ body { overflow: hidden; background: var(--code-bg, #251200); color: var(--txt, 
 .gap:hover::after, .gap.drag::after { background: var(--accent, #f88008); }
 .gap.row:hover::after, .gap.row.drag::after { width: 2px; }
 .gap.col:hover::after, .gap.col.drag::after { height: 2px; }
+
+/* A tab's Claude account: its initial in the account's colour, only when the window's tabs use more than one. */
+.chip .ac { display: inline-grid; flex: none; place-items: center; width: 14px; height: 14px; border-radius: 50%; background: rgb(var(--ah, 255, 176, 87)); color: #180e07; font: 800 8.5px/1 "Segoe UI", sans-serif; font-style: normal; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35); }

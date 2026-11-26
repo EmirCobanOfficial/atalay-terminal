@@ -93,7 +93,10 @@ const iso = (ms) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, 'Z');
  * (this build's terminals, whose ids name a note's terminal). folderOf(id): the folder a terminal is in (main.js), for its
  * project. dataDir: where notes-ai.log goes. claudeDir: Claude Code's folder.
  */
-function createNotesTools({ mode, mcpMode, notesStore, noteWindows, terminals, folderOf, dataDir, claudeDir }) {
+function createNotesTools({ mode, mcpMode, notesStore, noteWindows, terminals, folderOf, dataDir, claudeDir, claudeDirs }) {
+  // Claude's registry of running processes, in the default folder and in every other account's (claudeaccounts.js).
+  const registered = (pid) =>
+    [claudeDir, ...(typeof claudeDirs === 'function' ? claudeDirs() : [])].some((d) => d && fs.existsSync(path.join(d, 'sessions', `${pid}.json`)));
   // Notes AI may not see (the eye in Orbiterm, or a shared note its owner keeps from AI): from the app's own copy of the notes on
   // every call, never from the page or the AI. Such a note is not listed, and read, changed or pinned by its id it answers
   // exactly as a note that doesn't exist. Only the user's clicks set it (web/notes.js setAiHidden): none of these tools can.
@@ -556,7 +559,7 @@ function createNotesTools({ mode, mcpMode, notesStore, noteWindows, terminals, f
       if (CLAUDE_DESKTOP.test(exe)) return 0;
       const pid = Number.isInteger(p && p.pid) && p.pid > 0 ? p.pid : 0;
       if (name.startsWith('claude') || /[\\/]claude[\\/]versions[\\/]/i.test(exe)) return pid;
-      if (pid && fs.existsSync(path.join(claudeDir, 'sessions', `${pid}.json`))) return pid;
+      if (pid && registered(pid)) return pid;
       if (/[\\/]cursor-agent[\\/]versions[\\/]/i.test(exe)) return pid;
       if (Object.prototype.hasOwnProperty.call(OTHER_AIS, name)) {
         // A launcher's child is the same session, and the engine lists the launcher (runaways.js ais: Codex's Node script).
@@ -578,7 +581,7 @@ function createNotesTools({ mode, mcpMode, notesStore, noteWindows, terminals, f
       // The native Claude Code (claude.exe, or its versions folder's binary); an npm one is Node, known by the file Claude
       // keeps for each of its running processes (sessions/<pid>.json), as the Mac's Proc.isClaude.
       if (name.startsWith('claude') || /[\\/]claude[\\/]versions[\\/]/i.test(exe)) return 'Claude Code';
-      if (Number.isInteger(p && p.pid) && p.pid > 0 && fs.existsSync(path.join(claudeDir, 'sessions', `${p.pid}.json`))) return 'Claude Code';
+      if (Number.isInteger(p && p.pid) && p.pid > 0 && registered(p.pid)) return 'Claude Code';
       // Cursor's CLI is its own bundled Node, known by its folder (cursor-agent\versions\<version>\node.exe).
       if (/[\\/]cursor-agent[\\/]versions[\\/]/i.test(exe)) return 'Cursor';
       if (Object.prototype.hasOwnProperty.call(OTHER_AIS, name)) return OTHER_AIS[name];

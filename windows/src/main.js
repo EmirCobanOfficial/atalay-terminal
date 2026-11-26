@@ -95,13 +95,15 @@ const { createAIColors } = require('./aicolors');
 const { createTerminals, which, childEnvironment } = require('./terminals');
 const { createOverlay } = require('./overlay');
 const { createRunaways } = require('./runaways');
-const { createCleanup } = require('./cleanup');
+const { createCleanup, setAccountDirs } = require('./cleanup');
 const { createPowerSaver } = require('./power');
 const { createDiscord } = require('./discord');
 const { createFiles, linkTarget, fileFromURL } = require('./files');
 const { createSavers } = require('./savers');
 const { createChatList } = require('./chatlist');
 const { createLimits } = require('./limits');
+const { createClaudeAccounts, ROOT: ACCOUNTS_ROOT } = require('./claudeaccounts');
+const { createAcctWindow } = require('./acctwin');
 const { createCodexHooks } = require('./codexhooks');
 const { createCursorHooks } = require('./cursorhooks');
 const { createMcp } = require('./mcp');
@@ -276,6 +278,7 @@ const terminals = createTerminals({
     const c = chats.get(id);
     if (c) {
       send(c.page, 'term:exit');
+      acctWin.forget(id);
       // A plain terminal closes with its shell (its tab or pane, the window when it was the last); a chat's stays to show
       // how it ended until it's closed. One a worktree's delete ended (keepWindow) stays too, saying ENDED, as on the Mac
       // (spec 9.2: no window is closed).
@@ -323,10 +326,36 @@ function quitIfIdle() {
 }
 
 // Claude's 5-hour and weekly limits: Claude Code's status line hands its JSON to a script of ours (src/limits.js).
+// With several Claude accounts (src/claudeaccounts.js) it hooks every account's settings and keeps one limits file each.
+let accounts = null;
 const limits = createLimits({
   dir: path.join(app.getPath('userData')),
   claudeDir: process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'),
+  accountsRoot: ACCOUNTS_ROOT,
+  accountDirs: () => (accounts ? accounts.all().filter((a) => a.dir).map((a) => a.dir) : []),
 });
+// Several Claude accounts (the Mac's ClaudeAccounts): none by itself unless the user adds a second one; nothing here ever
+// switches an account, reads a token or asks a usage endpoint. `acctWin` is what a terminal window shows of it (acctwin.js).
+accounts = createClaudeAccounts({
+  dataDir: app.getPath('userData'),
+  claudeDir: process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'),
+  limitsFile: limits.file,
+  names: () => [mcp.serverName('full'), mcp.serverName('notes')],
+  // Only the app's usual profile hooks Claude Code's settings, as at launch (app.whenReady).
+  installStatusLine: () => {
+    if (process.platform === 'win32' && !PROBE && !profileSuffix()) limits.install();
+  },
+  signIn: (id) => openSignInTerminal(id),
+  runningChats: (id) => accountChatCount(id),
+  onChange: () => accountsChanged(),
+});
+const acctWin = createAcctWindow({ accounts, settings });
+setAccountDirs(() => accounts.all().filter((a) => a.dir).map((a) => a.dir));
+// The status line script is put back (a file compare) when an older app that shares the folder swapped it; only the app's
+// usual profile touches Claude Code's settings.
+const ensureStatusLine = () => {
+  if (process.platform === 'win32' && !PROBE && !profileSuffix()) limits.ensure();
+};
 
 // Codex's approval requests (src/codexhooks.js): its hooks keep them in the app's own folder, the same for every build and
 // profile.
@@ -356,6 +385,8 @@ let memTrees = new Map();
 const engine = createEngine({
   claudeDir: path.join(os.homedir(), '.claude'),
   limitsFile: limits.file,
+  accounts,
+  ensureScript: ensureStatusLine,
   codexHooks,
   // A Cursor seen for the first time puts its hooks in too (Cursor may have been installed after the app started).
   cursorHooks,
@@ -389,6 +420,8 @@ const engine = createEngine({
       if (c.wtTop && c.shipStatus === 'busy' && info.status !== 'busy') worktreeShip.refresh(c.wtTop, { force: true });
       c.shipStatus = info.status;
     }
+    // A switch the user chose "when this reply ends" for, whose reply has ended (acctwin.js: only a session at YOUR TURN).
+    for (const d of acctWin.due(engine.live(), (tab) => chats.has(tab) && terminals.has(tab))) switchAccount(d.id, d.to);
     badge();
     askAttention();
     if (!engineSeen) {
@@ -430,6 +463,7 @@ const chatlist = createChatList({
   settings,
   trashOps: createChatTrash({
     claudeDir: path.join(os.homedir(), '.claude'),
+    claudeDirs: () => accounts.all().filter((a) => a.dir).map((a) => a.dir),
     codexDir: process.env.CODEX_HOME || path.join(os.homedir(), '.codex'),
     agyDir: path.join(os.homedir(), '.gemini', 'antigravity-cli'),
     cursorDir: process.env.CURSOR_CONFIG_DIR || path.join(os.homedir(), '.cursor'),
@@ -583,7 +617,7 @@ function loadClientKey() {
 }
 
 // `live`: the sessions at work, for the folder picker's "Claude is working here" (overlay.js gitInfo).
-const overlay = createOverlay({ dataDir: app.getPath('userData'), claudeDir: path.join(os.homedir(), '.claude'), live: () => engine.live() });
+const overlay = createOverlay({ dataDir: app.getPath('userData'), claudeDir: path.join(os.homedir(), '.claude'), live: () => engine.live(), accounts });
 // The dashboard's notes (web/notes.js), encrypted in the app's data folder (notesstore.js).
 const notesStore = createNotesStore({
   dir: path.join(app.getPath('userData'), 'Notes'),
@@ -850,6 +884,7 @@ const notesAI = createNotesAI({
   // Never from a development check, nor from a run on a Mac (the three tools' settings there are the Mac app's).
   usable: process.platform === 'win32' && !PROBE,
   mcp: () => mcp,
+  claudeDirs: () => accounts.all().filter((a) => a.dir).map((a) => a.dir),
 });
 
 // The local MCP server (mcp.js, the Mac's Mcp.swift): Claude Desktop and Claude Code on this PC see the AI sessions in the
@@ -1958,8 +1993,10 @@ function newFile() {
 // Clean Up's requests (its run ends processes and terminals; its log, settings and Task Manager go with it): the
 // dashboard's page only, as on the Mac, where only RadarView's web view has the radar handler. The pages that send them
 // (cleanup.js, danger.js, cloud.js) are in index.html alone; a terminal's page, the chats list or the notices can't.
+// The spaceship's banner and its 🚀 state (attack.js) too: only the dashboard's Attack sends them (the panels' copy only
+// draws), so a chat page can't put up a DANGER banner or a Fire back of its own.
 const DASHBOARD_RADAR = new Set(['cleanupOpen', 'cleanupView', 'cleanupList', 'cleanupRun', 'cleanupRetry', 'cleanupHalt', 'cleanupDismiss',
-  'cleanupLog', 'cleanupPrefs', 'openActivityMonitor', 'attackSeen']);
+  'cleanupLog', 'cleanupPrefs', 'openActivityMonitor', 'attackSeen', 'attack', 'attackBtn']);
 
 // A spaceship attack (attack.js) while no window of the app has the keys: Windows can't tell the dashboard beside another
 // app's windows from one under them with the focus alone, so the window list (deskhelper.js, front to back) is read:
@@ -2150,6 +2187,17 @@ function handleRadar(msg) {
       runPanel(panels.notices, `window.Attack && Attack.banner && Attack.banner(${JSON.stringify(banner)})`);
       return true;
     }
+    // The dashboard's 🚀 for a friend changed state (locking, flight, idle): the notices card and every chat page redraw
+    // their Fire back from it, as the Mac's MessagePanel.attackBtn.
+    case 'attackBtn': {
+      if (typeof msg.id !== 'string' || !msg.id || msg.id.length > 64) return true;
+      if (!['locking', 'flight', 'idle'].includes(msg.state)) return true;
+      const until = Number(msg.until);
+      const js = `window.__messages && __messages.attackBtn && __messages.attackBtn(${JSON.stringify({ id: msg.id, state: msg.state, until: Number.isFinite(until) ? until : 0 })})`;
+      runPanel(panels.notices, js);
+      for (const w of panels.chats.values()) if (w && !w.isDestroyed()) runPanel(w, js);
+      return true;
+    }
     case 'log':
       console.log('dashboard page:', msg.msg);
       return true;
@@ -2245,6 +2293,8 @@ function chatInfo(id, c) {
     waitingFor: ai && ai.waitingFor ? (on ? streamer.fake('wait', ai.waitingFor) : ai.waitingFor) : null,
     statusSince: (ai && ai.statusSince) || 0,
     pinned: !!c.pinned,
+    // Its Claude account (the chip and the notes under the strip), with two or more accounts; null with one, or another AI.
+    acct: acctWin.view(id, c, s, tool),
     // Copy Claude's Last Reply has a reply to copy: Claude, Codex or Antigravity runs here (mcp.js reads their records).
     canCopyReply: !!s || (!!tool && ['Codex', 'Antigravity'].includes(tool.name)),
   };
@@ -2277,6 +2327,157 @@ const pushChatInfos = () => {
 };
 
 const tildify = (p) => (p && p.startsWith(os.homedir()) ? '~' + p.slice(os.homedir().length) : p || '');
+
+// ---------- several Claude accounts (the Mac's ClaudeAccountsBridge.swift and ClaudeAccountsChat.swift) ----------
+// What a terminal window shows of them is acctwin.js's (the chip, the notes, the menu); this is what acts on a click. The
+// rules: an account is only ever switched by a click of the user's (After This Reply is one), nothing counts down or
+// rotates, no usage endpoint is asked, no Claude token is read, and the account of a pane never changes by itself.
+/** The account a pane's shell starts with: { id, dir } (dir null: the default one), or null for none set. */
+const spawnAccount = (c) => {
+  const a = c.account && accounts.account(c.account);
+  return a ? { id: a.id, dir: a.dir } : null;
+};
+/** Settings › Claude's "Sign in…": a terminal runs Claude's own `claude auth login` under the account's folder. */
+function openSignInTerminal(id) {
+  const a = accounts.account(id);
+  if (!a || !a.dir) return;
+  openChatWindow({ cwd: os.homedir(), claudeArgs: ['auth', 'login'], title: 'Sign in to Claude', account: id });
+}
+/** How many Claude chats run under an account (an account with some can't be removed). */
+const accountChatCount = (id) => engine.live().filter((s) => !s.ai && (s.account || 'default') === id).length;
+function accountsChanged() {
+  try {
+    engine.namesChanged();
+    pushChatInfos();
+    if (app.isReady()) buildMenu();
+  } catch {}
+}
+/** The dashboard's Settings on Claude, with the add form when asked (the chip's "Add / Manage Claude Accounts…"). */
+function openAccountSettings(add) {
+  showDashboard();
+  run(dashView, `window.ClaudeAcct && ClaudeAcct.openSettings(${add ? 'true' : 'false'})`);
+}
+const liveClaude = (id, c) => engine.live().find((x) => !x.ai && (x.tab === id || (c.sessionId && x.sessionId === c.sessionId)));
+
+/**
+ * Goes on in pane `id` with another account: its Claude is hung up and the same pane starts `claude --resume <sid>` with the
+ * new account's folder (no line is typed); a plain terminal starts a new shell with it. The keys typed meanwhile wait, 3 s at
+ * most. Returns whether it started.
+ */
+function switchAccount(id, toId) {
+  const c = chats.get(id);
+  const to = accounts.account(toId);
+  // A switch already under way in this pane (its keys are held): this one waits for the user's next click.
+  if (!c || !to || !terminals.has(id) || c.hold) return false;
+  const s = liveClaude(id, c);
+  if (acctWin.idOf(c, s) === to.id) return false;
+  const from = accounts.account(acctWin.idOf(c, s)) || accounts.defaultAccount();
+  const fills = acctWin.fillsOf(from);
+  // Only a live Claude chat goes on (`--resume`); anything else (a plain terminal, a chat whose Claude ended, the sign-in
+  // terminal) restarts as a plain shell in its folder, as on the Mac: its old command (`auth login`, a new chat) never runs
+  // again by itself under the other account.
+  const claudeArgs = s && s.sessionId ? ['--resume', s.sessionId] : null;
+  c.hold = [];
+  const holdTimer = setTimeout(() => (c.hold = null), 3000);
+  const release = () => {
+    clearTimeout(holdTimer);
+    const kept = c.hold;
+    c.hold = null;
+    if (kept && kept.length && terminals.has(id)) terminals.write(id, kept.join(''));
+  };
+  const ok = terminals.restart(id, { claudeArgs, account: { id: to.id, dir: to.dir }, done: release });
+  if (!ok) return release(), false;
+  c.account = to.id;
+  c.claudeArgs = claudeArgs;
+  c.claude = !!claudeArgs;
+  c.startedAt = Date.now();
+  if (s) {
+    acctWin.pending.delete(s.sessionId);
+    acctWin.setWent(id, acctWin.wentNote(to, from.label, fills));
+    // The repo's next default in the pickers, as the Mac's acctPerform.
+    overlay.top(s.cwd || c.cwd).then((top) => top && accounts.remember(to.id, top), () => {});
+  }
+  sendInfo(id, c);
+  return true;
+}
+
+/** A pick in the chip's menu. Claude working asks first; a job in a plain terminal does too. */
+async function pickAccount(id, toId) {
+  const c = chats.get(id);
+  const to = accounts.account(toId);
+  if (!c || !to || !terminals.has(id)) return;
+  const s = liveClaude(id, c);
+  if (acctWin.idOf(c, s) === to.id) return;
+  const win = c.win && !c.win.isDestroyed() ? c.win : undefined;
+  if (s && (s.status === 'busy' || s.status === 'waiting')) {
+    const r = await dialog.showMessageBox(win, {
+      type: 'question', noLink: true, defaultId: 0, cancelId: 2,
+      message: `Continue this chat with ${to.label}?`,
+      detail: `Claude is still answering. After this reply, the same chat goes on with ${to.label} without stopping. Continue Now stops the reply here.`,
+      buttons: ['After This Reply', 'Continue Now', 'Cancel'],
+    });
+    if (!chats.has(id)) return;
+    if (r.response === 0) {
+      acctWin.pending.set(s.sessionId, to.id);
+      sendInfo(id, c);
+    } else if (r.response === 1) switchAccount(id, to.id);
+    return;
+  }
+  if (!s && paneRuns(id)) {
+    const r = await dialog.showMessageBox(win, {
+      type: 'warning', noLink: true, defaultId: 0, cancelId: 1,
+      message: `Restart this terminal with ${to.label}?`, detail: 'What runs in it stops.', buttons: ['Restart', 'Cancel'],
+    });
+    if (r.response !== 0 || !chats.has(id)) return;
+  }
+  switchAccount(id, to.id);
+}
+
+/** The chip's menu for pane `id` (acctwin.js builds it; the Window menu's "Claude Account…" shows it too). */
+function acctMenuFor(id) {
+  const c = chats.get(id);
+  if (!c || !accounts.multiple()) return null;
+  const s = liveClaude(id, c);
+  return acctWin.menuTemplate(id, c, s, {
+    pick: (to) => pickAccount(id, to),
+    pend: (to) => {
+      if (s) acctWin.pending.set(s.sessionId, to);
+      sendInfo(id, c);
+    },
+    cancel: () => {
+      if (s) acctWin.pending.delete(s.sessionId);
+      sendInfo(id, c);
+    },
+    now: (to) => {
+      if (s) acctWin.pending.delete(s.sessionId);
+      switchAccount(id, to);
+    },
+    settings: openAccountSettings,
+  });
+}
+ipcMain.on('term:acctMenu', (e, at) => {
+  const found = chatOf(e);
+  if (!found) return;
+  const [id, c] = found;
+  const template = acctMenuFor(id);
+  if (!template || !c.win || c.win.isDestroyed()) return;
+  const z = e.sender.getZoomFactor() || 1;
+  // Menu.popup's place is in the window's own coordinates: the page's view place in it, and the chip's place in the page.
+  const b = (c.page.getBounds && c.page.getBounds()) || { x: 0, y: 0 };
+  const pos = at && Number.isFinite(at.x) && Number.isFinite(at.y) ? { x: b.x + Math.round(at.x * z), y: b.y + Math.round(at.y * z) } : {};
+  send(c.page, 'term:acctMenu', true);
+  Menu.buildFromTemplate(template).popup({ window: c.win, ...pos, callback: () => send(c.page, 'term:acctMenu', false) });
+});
+// A note's button (the limit note's "Continue with …", the 5% note's "After this reply", "Not now", "Dismiss"): the user's click.
+ipcMain.on('term:acctNote', (e, q) => {
+  const found = chatOf(e);
+  if (!found || !q || typeof q !== 'object' || !['continue', 'notNow', 'dismiss'].includes(q.action)) return;
+  const [id, c] = found;
+  const r = acctWin.noteAction(id, { action: q.action, to: typeof q.to === 'string' ? q.to : '', now: true });
+  if (r && r.to) switchAccount(id, r.to);
+  else sendInfo(id, c);
+});
+
 
 /**
  * Which conversation a chat window shows. The engine finds a chat's Claude under the window's shell (`tab`), and that
@@ -2319,13 +2520,14 @@ let chatCascade = 0;
 // `transparent` needs a frameless one, which can't be resized), so the whole window is 90% opaque, its text and title bar
 // too, where the Mac keeps the text solid.
 const WINDOW_OPACITY = 0.9;
-function openChatWindow({ id = crypto.randomUUID(), cwd, claudeArgs, claude = !!claudeArgs, sessionId, title, show = true, into = null }) {
+function openChatWindow({ id = crypto.randomUUID(), cwd, claudeArgs, claude = !!claudeArgs, sessionId, title, show = true, into = null, account = null }) {
   // The terminal's own page, in a view: it moves between tabs, panes and windows with its session running on.
   const view = new WebContentsView({ webPreferences: webPrefs() });
   view.setBackgroundColor(themes.color('--code-bg'));
   const wc = view.webContents;
   bootFor(wc, { termFont: termFontSize(), termFamily: termFont.chosen(), keys: shortcuts.forTerminal() });
-  const c = { page: view, frame: null, sessionId, cwd, claude, claudeArgs, title: title || path.basename(cwd || os.homedir()), startedAt: Date.now() };
+  // `account`: the id of the Claude account it runs under (null: the default one), for a terminal's env and for the chip.
+  const c = { page: view, frame: null, sessionId, cwd, claude, claudeArgs, title: title || path.basename(cwd || os.homedir()), startedAt: Date.now(), account };
   // Its window's: the tabs and panes of a window show, hide and stay on top together.
   Object.defineProperties(c, {
     win: { get: () => (c.frame ? c.frame.win : null) },
@@ -2658,11 +2860,14 @@ function sendBar(f) {
     return;
   }
   // Each chip shows the pane in front of its tab: its name, whether its AI works or needs you, its context.
+  // The Claude account's initial on a chip, only when the window's panes use more than one (the Mac's TabChip).
+  const marks = new Set([...f.views.keys()].map((pid) => ((f.last.get(pid) || {}).acct || {}).chip).filter(Boolean).map((chip) => chip.mark.id));
   const tabs = f.tabs.map((node, i) => {
     const id = frontOf(f, i);
     const info = f.last.get(id) || {};
     const status = !chats.has(id) ? 'ended' : info.tool ? info.toolStatus || '' : info.status || '';
-    return { title: info.title || chats.get(id)?.title || 'terminal', status, stats: info.stats || null, panes: panes.ids(node).length };
+    const mark = marks.size > 1 && info.acct && info.acct.chip ? info.acct.chip.mark : null;
+    return { title: info.title || chats.get(id)?.title || 'terminal', status, stats: info.stats || null, panes: panes.ids(node).length, acct: mark ? { initial: mark.initial, hue: mark.hue, label: mark.label } : null };
   });
   send(f.win, 'term:tabs', {
     tabs, active: f.active, bar, height: TAB_BAR,
@@ -3143,7 +3348,7 @@ function restoreWindows(found, read = true) {
   }
   const open = (id, into) => {
     const s = byId.get(id);
-    return openChatWindow({ id, cwd: s.cwd, claude: s.claude, title: s.title, show: false, into });
+    return openChatWindow({ id, cwd: s.cwd, claude: s.claude, title: s.title, show: false, into, account: s.account && accounts.account(s.account) ? s.account : null });
   };
   const saved = settings.get('terminalLayout');
   for (const w of Array.isArray(saved) ? saved : []) {
@@ -3311,6 +3516,7 @@ function endTerminal(id) {
     dropPane(id);
     renamePane(id, '');
     chats.delete(id);
+    acctWin.forget(id);
     pushWinOpen();
     pushChats();
   }
@@ -3461,7 +3667,7 @@ ipcMain.on('term:ready', (e, { cols, rows }) => {
   if (terminals.has(id)) terminals.attach(id, cols, rows);
   else {
     terminals
-      .spawn({ id, cwd: c.cwd, claudeArgs: c.claudeArgs, cols, rows, title: c.title })
+      .spawn({ id, cwd: c.cwd, claudeArgs: c.claudeArgs, cols, rows, title: c.title, account: spawnAccount(c) })
       .catch((err) => send(c.page, 'term:data', `\r\n\x1b[31m${err.message}\x1b[0m\r\n`));
   }
   sendInfo(id, c);
@@ -3485,7 +3691,9 @@ ipcMain.on('term:input', (e, data) => {
       // A key or paste: Clean Up counts a chat's idle time from it too.
       cleanup.typed(found[0]);
     }
-    terminals.write(found[0], data);
+    // A pane that goes on with another account (switchAccount): what is typed waits for its new shell.
+    if (found[1].hold) found[1].hold.push(data);
+    else terminals.write(found[0], data);
   }
 });
 // Esc and the close keys swapped (Settings › Shortcuts, the Mac's EscClose.swift): the terminal itself had the keys and
@@ -4423,6 +4631,15 @@ function handleMessages(win, body) {
       showDashboard();
       toDash('openView("dash")');
       return true;
+    // Fire back (or its Cancel) from the who-fired-at-me card or a chat: the dashboard fires (Attack.press / cancelFor).
+    case 'attackFire':
+    case 'attackCancel':
+      if (typeof body.id !== 'string' || !body.id || body.id.length > 64) return true;
+      // Only the notices card and the chat window (the Mac has this handler there alone): a fire spends ORB, and every page
+      // here can post on "messages".
+      if (!win || !(win === panels.notices || [...panels.chats.values()].includes(win))) return true;
+      run(dashView, `window.Attack && Attack.${body.type === 'attackFire' ? 'press' : 'cancelFor'} && Attack.${body.type === 'attackFire' ? 'press' : 'cancelFor'}(${JSON.stringify(body.id)})`);
+      return true;
     // The forced update's notice: "restart now" is "update now".
     case 'restartNow':
       if (role === 'notices') updates.now();
@@ -4847,9 +5064,19 @@ ipcMain.handle('atl:post', async (e, name, body) => {
         if (e.sender !== pageOf(dashView)) throw new Error('not this page');
         return await shortcuts.handle(body);
       // Settings > Claude, the local MCP server: the dashboard's page only, and it only asks (mcp.js asks the user natively).
-      case 'mcp':
+      case 'mcp': {
         if (e.sender !== pageOf(dashView)) throw new Error('not this page');
-        return await mcp.handle(body);
+        const answer = await mcp.handle(body);
+        // The Claude access was registered or taken out for the default account: the other accounts' configs follow.
+        setTimeout(() => accounts.syncMcp(), 500);
+        return answer;
+      }
+      // Settings > Claude's accounts and the top bar's limits popover (claudeaccounts.js, the Mac's ClaudeAccountsBridge): the
+      // dashboard's page only. It adds an account, opens Claude's own sign-in in a terminal, renames, recolours and removes;
+      // it never switches one, and no token passes it.
+      case 'claudeAccounts':
+        if (e.sender !== pageOf(dashView)) throw new Error('not this page');
+        return accounts.handle(body);
       // A note's own window and the feed's corner window: each only its own page (a note window never gets `notes` or
       // `cloud`: the dashboard writes the notes).
       case 'noteWindow':
@@ -4857,9 +5084,12 @@ ipcMain.handle('atl:post', async (e, name, body) => {
         return await noteWindows.handle(e.sender, body);
       // Settings > Privacy > AI tools and my notes (web/cloud.js): the dashboard's page only, as the Mac's NotesAIBridge.
       // Turning it on asks natively (notesai.js); a note window, the feed and Viktoria were refused above.
-      case 'notesai':
+      case 'notesai': {
         if (e.sender !== pageOf(dashView)) throw new Error('not this page');
-        return await notesAI.handle(body);
+        const answer = await notesAI.handle(body);
+        setTimeout(() => accounts.syncMcp(), 500);
+        return answer;
+      }
       case 'feed':
         return feedPanel.handle(e.sender, body);
       case 'theme':
@@ -4881,7 +5111,11 @@ ipcMain.handle('atl:post', async (e, name, body) => {
           if (!asked) return true;
           // A shortcut's folder renamed since the page read it: the slot follows it, and the terminal opens there.
           const dir = await overlay.locate(asked);
-          if (dir) openChatWindow({ cwd: dir, claudeArgs: null, title: path.basename(dir) });
+          // The Claude account picked in the picker's chip (two or more accounts): the shell starts with it, and the repo
+          // remembers it as the next default.
+          const acct = typeof body.account === 'string' && accounts.account(body.account) ? body.account : null;
+          if (dir && acct) overlay.top(dir).then((top) => top && accounts.remember(acct, top), () => {});
+          if (dir) openChatWindow({ cwd: dir, claudeArgs: null, title: path.basename(dir), account: acct });
           // Gone (deleted, moved elsewhere): the user is told, as the Mac's "Folder not found" does, and the shortcut stays.
           // No parent window: the dashboard may be minimized while the Ring opened over a chat.
           else dialog.showMessageBox({ type: 'warning', message: 'Folder not found', detail: `${tildify(asked)}\n\nIt was moved or deleted. Right-click its shortcut to change or remove it.`, noLink: true });
@@ -5171,6 +5405,15 @@ function buildMenu() {
         },
         // The env files of the terminal in front (pages/env.js), the Mac's Env Files: the same keys close the view again.
         { label: 'Env Files', accelerator: shortcuts.accel('envFiles'), click: () => { const f = focusedChat(); if (f) send(f[1].page, 'term:env'); } },
+        // With two or more Claude accounts: the chip's menu, from the menu bar too (no key: nothing switches by a slip).
+        {
+          label: 'Claude Account…', visible: accounts.multiple(),
+          click: () => {
+            const f = focusedChat();
+            const t = f && acctMenuFor(f[0]);
+            if (t && f[1].win && !f[1].win.isDestroyed()) Menu.buildFromTemplate(t).popup({ window: f[1].win });
+          },
+        },
         // Asked first, as its End button (env changes not saved, then confirmEnd).
         { label: 'End This Terminal', click: () => { const f = focusedChat(); if (f) endAsked(f[0]); } },
         // The Mac's Window items for tabs and panes (iTerm2's), on the terminal window in front.
@@ -5324,6 +5567,10 @@ app.whenReady().then(() => {
     codexHooks.install();
   }
   installCursorHooks();
+  // Another account's Claude config gets Orbiterm's MCP servers as the default's has them, and the status line script is
+  // this build's (an older app sharing the folder may have swapped it).
+  accounts.syncMcp();
+  ensureStatusLine();
   engine.start();
   // What was on stays on: the pipe opens again and the tray shows it (the Mac's McpHub.start).
   if (!PROBE) mcp.start();
