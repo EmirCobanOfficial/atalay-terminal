@@ -2102,7 +2102,13 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
       // A <br> or a <div> slipped in (an emptied block keeps a <br>): back to plain text, the cursor where it was.
       const at = caretIn(t)?.start ?? 0;
       const text = read(t);
+      // paint() marks its text as drawn, but this one comes from the typing that typed() still has to take: kept as the
+      // text drawn before, or typed() takes the block's old text for a friend's change not drawn yet and drops the
+      // deletion (Windows: Chromium leaves a <br> in a block emptied by Backspace or Ctrl+Backspace, so its last letter or
+      // word came back and the cursor went before it).
+      const drawn = t._t;
       paint(t, text, b.type);
+      if (!MAC) t._t = drawn;
       place(t, Math.min(at, text.length));
     }
     typed(b, read(t), caretIn(t)?.start);
