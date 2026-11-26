@@ -123,6 +123,7 @@ const { createMascotAsset } = require('./mascotasset');
 const { createShareCard } = require('./sharecard');
 const { createShortcuts } = require('./shortcuts');
 const panes = require('./panes');
+const tabdrag = require('./tabdrag');
 const { createEnvBridge } = require('./envbridge');
 const { createEnvNative } = require('./envnative');
 const { createGitShip } = require('./gitship');
@@ -1330,6 +1331,10 @@ app.on('web-contents-created', (_e, contents) => {
   contents.on('before-input-event', (e, input) => {
     if (input.type === 'keyDown' && Date.now() < keysShutUntil) e.preventDefault();
     if (input.key === 'Escape' && Date.now() < escMuteUntil) e.preventDefault();
+  });
+  // Esc ends a tab or pane drag whichever page has the keys, and no page (the shell included) sees that Esc.
+  contents.on('before-input-event', (e, input) => {
+    if (input.type === 'keyDown' && input.key === 'Escape' && tabdrag.cancel()) e.preventDefault();
   });
   // A mouse button down in any of the app's pages (not Viktoria's own window): no cursor hold starts, and a running one
   // ends (mascot.appMouse), as the Mac's "never move a cursor that is dragging something".
@@ -2611,6 +2616,7 @@ function newFrame(place) {
   const f = {
     win, tabs: [], active: 0, focus: null, zoom: null, views: new Map(), last: new Map(), history: [], dividers: [],
     barLoaded: false, barTimer: null, stateKey: '', steppedAside: false, pinned: false,
+    chipGeom: null,
   };
   frames.add(f);
   windowsChanged();
@@ -2705,11 +2711,13 @@ function newFrame(place) {
     // An ended window a worktree's delete kept was what the app stayed for (quitIfIdle).
     if (keptWins.delete(win)) quitIfIdle();
   });
+  // The drag engine follows this window's focus, native moves and closing (tabdrag.watchFrame).
+  tabdrag.watchFrame(f);
   return f;
 }
 
-/** Puts terminal `id` (its view) in window `f`: a new tab ("tab", "next") or a split of pane `beside` ("right", "down"). */
-function addPane(f, id, how = 'tab', beside = null) {
+/** Puts terminal `id` (its view) in window `f`: a new tab ("tab", "next") or a split of pane `beside` ("right", "down"), before it when `before`. */
+function addPane(f, id, how = 'tab', beside = null, before = false) {
   const c = chats.get(id);
   if (!c || f.win.isDestroyed()) return;
   f.views.set(id, c.page);
@@ -2718,7 +2726,7 @@ function addPane(f, id, how = 'tab', beside = null) {
   const next = beside && f.views.has(beside) ? beside : f.focus;
   const t = next ? f.tabs.findIndex((n) => panes.has(n, next)) : -1;
   if ((how === 'right' || how === 'down') && t >= 0) {
-    f.tabs[t] = panes.insert(f.tabs[t], next, id, how === 'right' ? 'row' : 'col');
+    f.tabs[t] = panes.insert(f.tabs[t], next, id, how === 'right' ? 'row' : 'col', before);
     f.active = t;
   } else {
     const at = how === 'next' ? Math.min(f.active + 1, f.tabs.length) : f.tabs.length;
@@ -2907,6 +2915,15 @@ ipcMain.on('term:tabs', (e, q) => {
       return;
     case 'more':
       return tabList(f, q);
+    case 'geom': {
+      // The chips' places the drag engine needs for a slot and its marker: the page's pixels, kept as the window's.
+      const z = f.win.webContents.getZoomFactor() || 1;
+      const pair = (a) => (Array.isArray(a) && a.length === 2 && a.every(Number.isFinite) ? [a[0] * z, a[1] * z] : null);
+      const chips = Array.isArray(q.chips) ? q.chips.map(pair) : [];
+      const clip = pair(q.clip);
+      f.chipGeom = clip && chips.length && chips.every(Boolean) ? { chips, clip } : null;
+      return;
+    }
     case 'divider': {
       const d = Number.isInteger(q.d) ? f.dividers[q.d] : null;
       if (!d || !Number.isFinite(q.pos)) return;
@@ -3097,10 +3114,14 @@ function paneKeys(f, input) {
   return true;
 }
 
-/** Moves tab `i` of `from` to window `to` at `at` (the end by default), its sessions running on; `from` closes when it's left with nothing. */
-function moveTab(from, i, to, at = to.tabs.length, select = true) {
+/**
+ * Takes tab `i`'s views out of `from` and hands them to `to` (not yet in its tab list), with their last chat info and
+ * owner, and closes up `from`'s tabs, front tab, history, zoom and keys around the gap. Returns the tab's pane tree, or
+ * null when there is nothing to carry. `from` is left for settleFrame, so a caller can put the tree in place first.
+ */
+function carryTab(from, i, to) {
   const node = from.tabs[i];
-  if (!node || from === to || to.win.isDestroyed()) return;
+  if (!node || from === to || to.win.isDestroyed()) return null;
   const ids = panes.ids(node);
   for (const id of ids) {
     const view = from.views.get(id);
@@ -3119,28 +3140,44 @@ function moveTab(from, i, to, at = to.tabs.length, select = true) {
   if (from.active > i || from.active >= from.tabs.length) from.active = Math.max(0, from.active - 1);
   if (ids.includes(from.zoom)) from.zoom = null;
   if (ids.includes(from.focus)) from.focus = from.tabs.length ? frontOf(from) : null;
+  return node;
+}
+
+/** A window that gave tabs away: closed when nothing is left in it, else laid out again. */
+function settleFrame(from) {
+  if (!from.views.size) {
+    if (!from.win.isDestroyed()) from.win.destroy();
+  } else layoutFrame(from);
+}
+
+/** Moves tab `i` of `from` to window `to` at `at` (the end by default), its sessions running on; `from` closes when it's left with nothing. */
+function moveTab(from, i, to, at = to.tabs.length, select = true) {
+  // Which of the tab's panes had the keys, in order of when: carryTab drops them from `from`'s history.
+  const had = from.tabs[i] ? from.history.filter((x) => panes.has(from.tabs[i], x)) : [];
+  const node = carryTab(from, i, to);
+  if (!node) return;
+  const ids = panes.ids(node);
   at = Math.min(Math.max(at, 0), to.tabs.length);
   to.tabs.splice(at, 0, node);
   if (select || !to.focus) {
     to.active = at;
     to.focus = ids[0];
     to.history = [...to.history, ...ids.slice().reverse()];
-  } else if (to.active >= at) to.active++;
-  if (!from.views.size) {
-    if (!from.win.isDestroyed()) from.win.destroy();
-  } else layoutFrame(from);
+  } else {
+    if (to.active >= at) to.active++;
+    // A tab that comes in behind keeps its own front pane without taking the keys-history's end from the window's.
+    to.history = [...had, ...to.history.filter((x) => !had.includes(x))];
+  }
+  settleFrame(from);
   layoutFrame(to);
   saveLayout();
 }
 
 /** The Window menu's Move Tab to New Window and the chip menu's: tab `i` goes to a window of its own, a little down and right. */
 function moveTabToNewWindow(f, i = f && f.active) {
-  if (!f || f.tabs.length < 2 || !f.tabs[i]) return void shell.beep();
+  if (!f) return void shell.beep();
   const b = f.win.getBounds();
-  const g = newFrame(wholeOnDisplay({ ...b, x: b.x + 30, y: b.y + 30 }));
-  moveTab(f, i, g, 0, true);
-  if (f.pinned) setPinned(g, true);
-  showFrame(g, g.focus);
+  tearOffTab(f, i, wholeOnDisplay({ ...b, x: b.x + 30, y: b.y + 30 }));
 }
 
 /** Merge All Windows: every other terminal window on screen joins the one in front as tabs, without ending anything; each one's tab in front comes in front. */
@@ -3148,35 +3185,208 @@ function mergeAllWindows() {
   const f = focusedFrame();
   const others = f ? [...frames].filter((g) => g !== f && !g.win.isDestroyed() && g.win.isVisible() && !g.win.isMinimized()) : [];
   if (!others.length) return void shell.beep();
-  for (const g of others) {
-    const front = g.active, base = f.tabs.length, n = g.tabs.length;
-    for (let k = 0; k < n; k++) moveTab(g, 0, f, f.tabs.length, false);
-    f.active = base + Math.min(front, n - 1);
-  }
+  for (const g of others) mergeFrame(g, f, f.tabs.length, false);
   showFrame(f, frontOf(f));
 }
 
-/** A split pane becomes a tab of its own, at the end. */
-function paneToTab(f, id) {
+/** A split pane becomes a tab of its own, at `slot` (the end by default; the Mac's pane-bar drop onto the tab bar). */
+function paneToTab(f, id, slot = f.tabs.length) {
   const t = f.tabs.findIndex((n) => panes.has(n, id));
-  if (t < 0 || panes.ids(f.tabs[t]).length < 2) return void shell.beep();
+  if (t < 0 || panes.ids(f.tabs[t]).length < 2) return refuse();
   f.tabs[t] = panes.remove(f.tabs[t], id);
-  f.tabs.push(id);
+  f.tabs.splice(Math.min(Math.max(slot, 0), f.tabs.length), 0, id);
   if (f.zoom === id) f.zoom = null;
   focusPane(f, id);
   saveLayout();
+  return true;
 }
 
 /** A pane (or the only pane of a tab) becomes a window of its own, a little down and right, its session running on. */
 function paneToWindow(f, id) {
-  if (f.views.size < 2) return void shell.beep();
   const b = f.win.getBounds();
+  return tearOffPane(f, id, wholeOnDisplay({ ...b, x: b.x + 30, y: b.y + 30 }));
+}
+
+// ---------- tab, split and window drops (tabdrag.js) ----------
+// What a dragged tab, pane or window does when it lands, as the Mac's MainWindowController / ChatWindow drops do. Each is a
+// whole operation (keys, layout and saving included) that returns true when done, and false when it was refused (with a
+// beep, except for a reorder that changes nothing). Sessions never restart: only views move, and names and notes follow ids.
+
+/** Window `f` still exists: tracked, and its native window not destroyed (a drop runs a moment after the pointer was let go). */
+const live = (f) => !!f && frames.has(f) && !f.win.isDestroyed();
+/** The direction a split on `edge` runs in, and whether the newcomer goes before the target (left, top) or after it. */
+const edgeDir = (e) => (e === 'left' || e === 'right' ? 'row' : 'col');
+const edgeBefore = (e) => e === 'left' || e === 'top';
+/** A refused drop: the system beep, and false. */
+const refuse = () => (shell.beep(), false);
+/** What a chip or strip says about terminal `id`: its last title, else the chat's. */
+const paneTitle = (id) => ((frameHolding(id)?.last.get(id) || {}).title) || chats.get(id)?.title || 'terminal';
+
+/** Where the panes of the tab in front are (content coordinates, each strip included); a maximized pane is the only one. */
+function paneRects(f) {
+  const shown = f.tabs[f.active];
+  if (f.zoom && panes.has(shown, f.zoom)) return new Map([[f.zoom, areaOf(f)]]);
+  return panes.layout(shown, areaOf(f), PANE_GAP).rects;
+}
+
+/** A tab dragged along its own bar: it moves to `slot` (0 to the tab count, counted before the move); the tab in front stays in front. */
+function reorderTab(f, i, slot) {
+  if (!live(f) || !Number.isInteger(i) || !Number.isInteger(slot) || !f.tabs[i] || slot < 0 || slot > f.tabs.length) return false;
+  const j = slot > i ? slot - 1 : slot;
+  if (j === i) return false;
+  const shown = f.tabs[f.active];
+  f.tabs.splice(j, 0, f.tabs.splice(i, 1)[0]);
+  f.active = f.tabs.indexOf(shown);
+  layoutFrame(f);
+  saveLayout();
+  focusPane(f, f.focus);
+  return true;
+}
+
+/** Tab `i` (not the one in front) dragged onto a pane of the tab in front: its whole tree goes beside `targetId` on `edge`, and takes half of it. */
+function joinTab(f, i, targetId, edge) {
+  if (!live(f) || !f.tabs[i] || i === f.active || !panes.has(f.tabs[f.active], targetId)) return refuse();
+  const node = f.tabs.splice(i, 1)[0];
+  if (i < f.active) f.active--;
+  f.tabs[f.active] = panes.insert(f.tabs[f.active], targetId, node, edgeDir(edge), edgeBefore(edge));
+  f.zoom = null;
+  focusPane(f, panes.ids(node)[0]);
+  saveLayout();
+  return true;
+}
+
+/** Tab `i` of `from` dropped on another window's bar or header: it joins `to` as a tab at `slot`, in front, and `to` comes up with the keys in it. */
+function tabToFrame(from, i, to, slot) {
+  if (!live(from) || !from.tabs[i] || from === to || !live(to)) return refuse();
+  moveTab(from, i, to, slot, true);
+  showFrame(to, to.focus);
+  return true;
+}
+
+/** Tab `i` of `from` dropped on a pane of another window: its tree goes beside `targetId` on `edge` in the tab `to` shows, and the keys go to its first pane. */
+function tabToSplit(from, i, to, targetId, edge) {
+  if (!live(from) || !from.tabs[i] || from === to || !live(to)) return refuse();
+  // The pane it was to land beside is gone: the Mac adopts the tab instead.
+  if (!panes.has(to.tabs[to.active], targetId)) return tabToFrame(from, i, to, to.tabs.length);
+  const node = carryTab(from, i, to);
+  if (!node) return refuse();
+  const ids = panes.ids(node);
+  to.zoom = null;
+  to.tabs[to.active] = panes.insert(to.tabs[to.active], targetId, node, edgeDir(edge), edgeBefore(edge));
+  to.history = [...to.history.filter((x) => !ids.includes(x)), ...ids.slice().reverse()];
+  settleFrame(from);
+  showFrame(to, ids[0]);
+  saveLayout();
+  return true;
+}
+
+/** Tab `i` of `f` torn off into a window of its own at `bounds` (outer, screen), pinned when `f` is, shown. */
+function tearOffTab(f, i, bounds) {
+  if (!live(f) || f.tabs.length < 2 || !f.tabs[i]) return refuse();
+  const g = newFrame(bounds);
+  moveTab(f, i, g, 0, true);
+  if (f.pinned) setPinned(g, true);
+  showFrame(g, g.focus);
+  return true;
+}
+
+/** A pane dragged onto another pane of the same tab: it leaves its place and goes beside `targetId` on `edge`. */
+function paneToSplit(f, id, targetId, edge) {
+  const shown = live(f) && f.tabs[f.active];
+  if (!shown || id === targetId || !panes.has(shown, id) || !panes.has(shown, targetId)) return refuse();
+  f.tabs[f.active] = panes.insert(panes.remove(shown, id), targetId, id, edgeDir(edge), edgeBefore(edge));
+  f.zoom = null;
+  focusPane(f, id);
+  saveLayout();
+  return true;
+}
+
+/** A pane of `from` dropped on another window's bar or header: it joins `to` as a tab at `slot`, in front, and `to` comes up. */
+function paneToFrame(from, id, to, slot) {
+  if (from === to) return paneToTab(from, id, slot);
+  if (!live(from) || !from.views.has(id) || from.views.size < 2 || !live(to)) return refuse();
   takePane(id);
-  const g = newFrame(wholeOnDisplay({ ...b, x: b.x + 30, y: b.y + 30 }));
+  addPane(to, id, 'tab');
+  // addPane put the new tab last: it moves to the slot, and stays in front.
+  const at = Math.min(Math.max(slot, 0), to.tabs.length - 1);
+  to.tabs.splice(at, 0, to.tabs.pop());
+  to.active = at;
+  layoutFrame(to);
+  saveLayout();
+  showFrame(to, id);
+  return true;
+}
+
+/** A pane of `from` dropped on a pane of another window: it goes beside `targetId` on `edge` in the tab `to` shows. */
+function paneToFrameSplit(from, id, to, targetId, edge) {
+  if (from === to) return paneToSplit(from, id, targetId, edge);
+  if (!live(from) || !from.views.has(id) || from.views.size < 2 || !live(to)) return refuse();
+  if (!panes.has(to.tabs[to.active], targetId)) return paneToFrame(from, id, to, to.tabs.length);
+  takePane(id);
+  to.zoom = null;
+  addPane(to, id, edgeDir(edge) === 'row' ? 'right' : 'down', targetId, edgeBefore(edge));
+  showFrame(to, id);
+  return true;
+}
+
+/** A pane of `f` torn off into a window of its own at `bounds` (outer, screen), its session running on, pinned when `f` is, shown. */
+function tearOffPane(f, id, bounds) {
+  if (!live(f) || !f.views.has(id) || f.views.size < 2) return refuse();
+  takePane(id);
+  const g = newFrame(bounds);
   addPane(g, id, 'tab');
   if (f.pinned) setPinned(g, true);
   showFrame(g, id);
+  return true;
 }
+
+/**
+ * Every tab of `g` joins `f` at `at` (the end by default), the one that was in front of `g` in front of `f`'s new ones;
+ * `g` closes with nothing left. With `show`, `f` comes to the front with the keys in that tab's front pane.
+ */
+function mergeFrame(g, f, at = f.tabs.length, show = true) {
+  if (g === f || !live(g) || !live(f) || !g.tabs.length) return refuse();
+  at = Math.min(Math.max(at, 0), f.tabs.length);
+  const front = g.active, n = g.tabs.length;
+  for (let k = 0; k < n; k++) moveTab(g, 0, f, at + k, false);
+  f.active = at + Math.min(front, n - 1);
+  if (show) showFrame(f, frontOf(f));
+  return true;
+}
+
+/** Window `g` dropped on a pane of `f`: its tab in front goes beside `targetId` on `edge` (its other tabs stay; an empty `g` closes). */
+function mergeSplit(g, f, targetId, edge) {
+  return live(g) ? tabToSplit(g, g.active, f, targetId, edge) : refuse();
+}
+
+tabdrag.init({
+  frames, panes, TAB_BAR, PANE_GAP,
+  desk: attackDesk,
+  webPrefs,
+  bootFor,
+  pagesDir: path.join(__dirname, '..', 'pages'),
+  frameOfBar: (wc) => [...frames].find((f) => !f.win.isDestroyed() && f.win.webContents === wc) || null,
+  // The arrow bodies run later, when chatOf (further down) is initialised.
+  paneOfPage: (wc) => {
+    const found = chatOf({ sender: wc });
+    const f = found && found[1].frame;
+    return f && frames.has(f) ? { f, id: found[0] } : null;
+  },
+  paneRects,
+  barGeom: (f) => (f.tabs.length > 1 && f.barLoaded && f.chipGeom) || null,
+  tabTitle: (f, i) => paneTitle(frontOf(f, i)),
+  paneTitle,
+  unzoom: (f) => {
+    if (!f.zoom) return;
+    f.zoom = null;
+    layoutFrame(f);
+  },
+  refocus: (f) => live(f) && focusPane(f, f.focus),
+  ops: {
+    reorderTab, joinTab, tabToFrame, tabToSplit, tearOffTab, paneToTab, paneToSplit, paneToFrame, paneToFrameSplit, tearOffPane,
+    mergeFrame, mergeSplit,
+  },
+});
 
 /**
  * Ctrl+W (the Mac's ⌘W), and Esc when swapped: with several tabs or panes the one with the keys closes, as a window
@@ -3279,6 +3489,8 @@ ipcMain.on('term:paneMenu', (e) => {
     { label: 'Rename…', click: () => send(found[1].page, 'term:renameStart') },
     { label: 'Move Pane to New Tab', enabled: split, click: () => f.views.has(id) && paneToTab(f, id) },
     { label: 'Move Pane to New Window', enabled: f.views.size > 1, click: () => f.views.has(id) && paneToWindow(f, id) },
+    { type: 'separator' },
+    { label: 'Close Pane', click: () => f.views.has(id) && endAsked(id) },
   ]).popup({ window: f.win });
 });
 // A name typed on a pane's strip (a double-click on its name).
