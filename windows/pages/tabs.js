@@ -3,7 +3,8 @@
 // tab with its number, a dot while its AI works or needs you, its name and the AI's context. A click picks it, a double
 // click renames it in place, a right click opens its menu (the app's), × ends it. When the chips don't fit at their least
 // width the bar scrolls sideways and » lists them all. The terminals are views over this page: it shows only in the bar
-// and in the gaps, where a divider is dragged.
+// and in the gaps, where a divider is dragged. A chip pressed and moved past a few pixels is dragged instead: this page only
+// reports the pointer's phases (term:drag) and where the chips are (geom); main decides where the drop would land.
 (() => {
   const bar = document.getElementById('bar');
   const chips = document.getElementById('chips');
@@ -12,6 +13,7 @@
   let state = { tabs: [], active: 0, bar: false, dividers: [], height: 30 };
   let editing = -1;
   const tell = (q) => atl.send('term:tabs', q);
+  const DRAG_SLOP = 5;
 
   // Tokens as the strip writes them: 950, 9.5k, 95k, 1.2M.
   const fmtTok = (n) => {
@@ -68,6 +70,7 @@
         tell({ type: 'close', i });
       });
       chip.append(x);
+      chip.addEventListener('pointerdown', (e) => armDrag(e, i, chip, x));
       chip.addEventListener('click', () => editing < 0 && tell({ type: 'select', i }));
       chip.addEventListener('dblclick', (e) => {
         if (e.target !== x) rename(i);
@@ -80,12 +83,130 @@
     });
   }
 
+  // ---------- dragging a chip (the Mac's PaneTabBar drag) ----------
+  // A press that moves more than a few pixels is a drag, anything less stays a click. Once it starts the chip holds the
+  // pointer, so the moves keep coming while the pointer is over the terminals or another window, and main reads the
+  // pointer itself: this page only says which phase the drag is in.
+  let drag = null; // { i, x0, y0, pointerId, chip, started, cancelled, finished, seq, raf }
+  let seq = 0;
+  let swallowClick = false;
+  let lastDragEnd = 0;
+  let redrawLater = false;
+  const tellDrag = (m) => atl.send('term:drag', { kind: 'tab', ...m });
+
+  function armDrag(e, i, chip, x) {
+    swallowClick = false;
+    if (e.button !== 0 || editing >= 0 || e.target === x || drag) return;
+    drag = { i, x0: e.clientX, y0: e.clientY, pointerId: e.pointerId, chip, started: false, cancelled: false, finished: false, seq: 0, raf: 0 };
+    tellDrag({ phase: 'arm', seq: 0 });
+  }
+  window.addEventListener('pointermove', (e) => {
+    if (!drag || e.pointerId !== drag.pointerId || drag.finished) return;
+    if (!drag.started) {
+      if (Math.hypot(e.clientX - drag.x0, e.clientY - drag.y0) <= DRAG_SLOP) return;
+      drag.started = true;
+      drag.seq = ++seq;
+      try { drag.chip.setPointerCapture(e.pointerId); } catch (_) { /* the chip is gone: lostpointercapture cancels */ }
+      document.body.classList.add('dragging');
+      tellDrag({ phase: 'start', i: drag.i, seq: drag.seq });
+    }
+    // One report for each frame is enough: main reads the pointer itself when it gets it.
+    if (drag.cancelled || drag.raf) return;
+    const d = drag;
+    d.raf = requestAnimationFrame(() => {
+      d.raf = 0;
+      if (!d.cancelled && !d.finished) tellDrag({ phase: 'move', seq: d.seq });
+    });
+  });
+  function endDrag(e, up) {
+    if (!drag || e.pointerId !== drag.pointerId || drag.finished) return;
+    const d = drag;
+    d.finished = true;
+    if (d.started) {
+      // A cancel always ends the drag: after a pointercancel the pointer never comes back, so the drop must not run.
+      if (!d.cancelled) tellDrag({ phase: up ? 'end' : 'cancel', seq: d.seq });
+      swallowClick = true;
+      lastDragEnd = performance.now();
+    }
+    if (d.chip.hasPointerCapture(d.pointerId)) d.chip.releasePointerCapture(d.pointerId);
+    document.body.classList.remove('dragging');
+    drag = null;
+    // The bar kept the chips as they were while the drag ran, so it draws what came in meanwhile now.
+    if (redrawLater) {
+      redrawLater = false;
+      draw();
+    }
+  }
+  window.addEventListener('pointerup', (e) => endDrag(e, true));
+  window.addEventListener('pointercancel', (e) => endDrag(e, false));
+  // Capture lost while the button is still down (the chip left the page, say) is a drag that can't go on.
+  window.addEventListener('lostpointercapture', (e) => {
+    if (drag && drag.started && !drag.finished && e.pointerId === drag.pointerId) endDrag(e, false);
+  });
+  // The click that follows a drag must not pick or rename anything.
+  window.addEventListener('click', (e) => {
+    if (!swallowClick) return;
+    swallowClick = false;
+    e.stopPropagation();
+    e.preventDefault();
+  }, true);
+  window.addEventListener('dblclick', (e) => {
+    if (performance.now() - lastDragEnd < 500) e.stopPropagation();
+  }, true);
+  function cancelDrag() {
+    drag.cancelled = true;
+    document.body.classList.remove('dragging');
+  }
+  // Esc drops the drag; nothing is moved and the keys go back to where they were.
+  window.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape' || !drag || !drag.started || drag.cancelled || drag.finished) return;
+    e.preventDefault();
+    e.stopPropagation();
+    cancelDrag();
+    tellDrag({ phase: 'cancel', seq: drag.seq });
+  }, true);
+  // Main dropped the drag (Esc in another window, the source went away): stop reporting, and the click still gets swallowed.
+  atl.on('term:dragCancel', (m) => {
+    if (m && drag && drag.started && !drag.cancelled && m.seq === drag.seq) cancelDrag();
+  });
+
+  // ---------- where the chips are ----------
+  // Main hit-tests the pointer against the chips (the slot marker, which tab a drop lands in), so it needs their places:
+  // each chip's left and right edge and the visible part of the bar, in this page's pixels.
+  let geomRaf = 0;
+  let geomSent = '';
+  function queueGeom() {
+    if (geomRaf) return;
+    geomRaf = requestAnimationFrame(() => {
+      geomRaf = 0;
+      if (!state.bar) {
+        geomSent = '';
+        return;
+      }
+      const c = chips.getBoundingClientRect();
+      const g = {
+        chips: [...chips.children].map((k) => {
+          const r = k.getBoundingClientRect();
+          return [Math.round(r.left), Math.round(r.right)];
+        }),
+        clip: [Math.round(c.left), Math.round(c.right)],
+      };
+      const key = JSON.stringify(g);
+      if (key === geomSent) return;
+      geomSent = key;
+      tell({ type: 'geom', ...g });
+    });
+  }
+  chips.addEventListener('scroll', queueGeom);
+  window.addEventListener('resize', queueGeom);
+
   // The tab in front stays in view, and » shows while the chips overflow.
   function fit() {
     const over = chips.scrollWidth > chips.clientWidth + 1;
     more.hidden = !over;
     const on = chips.children[state.active];
     if (on) on.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    queueGeom();
   }
   chips.addEventListener('wheel', (e) => {
     if (chips.scrollWidth <= chips.clientWidth) return;
@@ -179,7 +300,9 @@
   function draw() {
     document.documentElement.style.setProperty('--bar-h', `${state.height || 30}px`);
     bar.hidden = !state.bar;
-    if (editing < 0) drawChips();
+    // Chips are kept while one is being dragged: rebuilding it would drop the pointer it holds.
+    if (drag && drag.started && !drag.finished) redrawLater = true;
+    else if (editing < 0) drawChips();
     // A gap being dragged is kept: the layout under it changes as it moves.
     if (!gaps.querySelector('.drag')) drawGaps();
     else {

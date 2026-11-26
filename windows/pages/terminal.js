@@ -1008,6 +1008,87 @@
     e.preventDefault();
     atl.send('term:paneMenu');
   });
+  // ---------- dragging the strip (the Mac's pane title bar drag) ----------
+  // As with the app's tab chips: a press that moves more than a few pixels drags the pane, anything less stays a click.
+  // The strip takes the pointer only then, so a double click on the name still reaches it; main reads the pointer itself and
+  // this page says only which phase the drag is in.
+  const DRAG_SLOP = 5;
+  let pd = null; // { x0, y0, pointerId, started, cancelled, finished, seq, raf }
+  let pdSeq = 0;
+  let pdSwallow = false;
+  let pdLastEnd = 0;
+  const tellDrag = (m) => atl.send('term:drag', { kind: 'pane', ...m });
+  hudEl.addEventListener('pointerdown', (e) => {
+    pdSwallow = false;
+    if (e.button !== 0 || pd || renaming || !document.body.classList.contains('pane-split')) return;
+    if (e.target.closest('button, input')) return;
+    pd = { x0: e.clientX, y0: e.clientY, pointerId: e.pointerId, started: false, cancelled: false, finished: false, seq: 0, raf: 0 };
+    tellDrag({ phase: 'arm', seq: 0 });
+  });
+  window.addEventListener('pointermove', (e) => {
+    if (!pd || e.pointerId !== pd.pointerId || pd.finished) return;
+    if (!pd.started) {
+      if (Math.hypot(e.clientX - pd.x0, e.clientY - pd.y0) <= DRAG_SLOP) return;
+      pd.started = true;
+      pd.seq = ++pdSeq;
+      try { hudEl.setPointerCapture(e.pointerId); } catch (_) { /* lostpointercapture cancels */ }
+      document.body.classList.add('dragging');
+      tellDrag({ phase: 'start', seq: pd.seq });
+    }
+    // One report for each frame is enough: main reads the pointer itself when it gets it.
+    if (pd.cancelled || pd.raf) return;
+    const d = pd;
+    d.raf = requestAnimationFrame(() => {
+      d.raf = 0;
+      if (!d.cancelled && !d.finished) tellDrag({ phase: 'move', seq: d.seq });
+    });
+  });
+  const endPaneDrag = (e, up) => {
+    if (!pd || e.pointerId !== pd.pointerId || pd.finished) return;
+    const d = pd;
+    d.finished = true;
+    if (d.started) {
+      // A cancel always ends the drag: after a pointercancel the pointer never comes back, so the drop must not run.
+      if (!d.cancelled) tellDrag({ phase: up ? 'end' : 'cancel', seq: d.seq });
+      pdSwallow = true;
+      pdLastEnd = performance.now();
+    }
+    if (hudEl.hasPointerCapture(d.pointerId)) hudEl.releasePointerCapture(d.pointerId);
+    document.body.classList.remove('dragging');
+    pd = null;
+  };
+  window.addEventListener('pointerup', (e) => endPaneDrag(e, true));
+  window.addEventListener('pointercancel', (e) => endPaneDrag(e, false));
+  // Capture lost while the button is still down is a drag that can't go on.
+  window.addEventListener('lostpointercapture', (e) => {
+    if (pd && pd.started && !pd.finished && e.pointerId === pd.pointerId) endPaneDrag(e, false);
+  });
+  // The click that follows a drag must not press a button or start a rename.
+  window.addEventListener('click', (e) => {
+    if (!pdSwallow) return;
+    pdSwallow = false;
+    e.stopPropagation();
+    e.preventDefault();
+  }, true);
+  window.addEventListener('dblclick', (e) => {
+    if (performance.now() - pdLastEnd < 500) e.stopPropagation();
+  }, true);
+  const cancelPaneDrag = () => {
+    pd.cancelled = true;
+    document.body.classList.remove('dragging');
+  };
+  // Esc drops the drag: nothing moves, and the shell never sees that Esc.
+  window.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape' || !pd || !pd.started || pd.cancelled || pd.finished) return;
+    e.preventDefault();
+    e.stopPropagation();
+    cancelPaneDrag();
+    tellDrag({ phase: 'cancel', seq: pd.seq });
+  }, true);
+  // Main dropped the drag (Esc in another window, the source went away): stop reporting, and the click still gets swallowed.
+  atl.on('term:dragCancel', (m) => {
+    if (m && pd && pd.started && !pd.cancelled && m.seq === pd.seq) cancelPaneDrag();
+  });
   term.focus();
   atl.send('term:ready', size());
 })();

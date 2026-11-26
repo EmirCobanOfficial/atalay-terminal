@@ -46,3 +46,6 @@ body { overflow: hidden; background: var(--code-bg, #251200); color: var(--txt, 
 
 /* A tab's Claude account: its initial in the account's colour, only when the window's tabs use more than one. */
 .chip .ac { display: inline-grid; flex: none; place-items: center; width: 14px; height: 14px; border-radius: 50%; background: rgb(var(--ah, 255, 176, 87)); color: #180e07; font: 800 8.5px/1 "Segoe UI", sans-serif; font-style: normal; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35); }
+
+/* While a chip is dragged the pointer holds a closed hand wherever it is over this page, the chip's own × included. */
+body.dragging, body.dragging * { cursor: grabbing !important; }

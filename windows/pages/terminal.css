@@ -166,3 +166,6 @@ body.pane-split:not(.pane-off) #hud { border-bottom-color: var(--accent, #f88008
 #acctnote button.quiet:hover { background: transparent; color: var(--txt, #f5ebe0); }
 #acctnote .ac { background: rgb(var(--ah)); }
 @media (max-width: 420px) { #acctnote .msg .more { display: none; } }
+
+/* While a pane's strip is dragged the pointer holds a closed hand wherever it is over this page, the strip's buttons included. */
+body.dragging, body.dragging * { cursor: grabbing !important; }
