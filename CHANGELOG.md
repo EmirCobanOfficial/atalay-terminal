@@ -5,10 +5,22 @@ Each version's lines are its release notes: the app lists them on its "what's ne
 
 ## Next
 
+## 0.28.0
+
+- Spaceship attack in 3D: when a friend locks on, a metal cockpit frame closes round your screen, their ship comes in from deep space, every shot cracks the glass the moment it lands, air vents out and the glass seals itself again. Each shot and crack has its own sound
+- Who fired at you: a card names them, with Fire back right on it and in your chat with them. Someone who fired at you can be fired back at for 24 hours, even if they go Away, Busy or Invisible
+- On Away, Do Not Disturb or Invisible you can't fire at anyone
+- Nudge a friend, as in MSN: their chat window shakes with a buzz. It works while they have your chat open, and costs 4.23 ORB
+- Claude accounts: add a second Claude account and switch a chat between them from the chip in its title; the same chat goes on, now or after the current reply, and a note tells you when an account has 5% left
+- Terminal windows: tabs and splits like iTerm2. In a split, each pane has its own star, copy, env and close, and the footer follows the pane you're in. Option keys work again inside Claude, Codex and Antigravity
+- Favorites: a chat you star shows at the top of the sidebar, even while it's open or empty
+- Minimizing the dashboard leaves your terminals on screen, and bringing it back keeps it in front
+- Chat list as a panel on the dashboard, with a bar to hide or show saved chats
+- Shared notes: a new look online, with your friends' and their AI's place in the note; the owner's AI can read and edit a shared note
+- Badges: the tier you reached shows without how many tiers there are
 - Claude Desktop extension: Orbiterm starts again (0.27.0 showed "Orbiterm couldn't start"), on the Mac and Windows. Thanks to @EmirCobanOfficial on GitHub, EmirMac#7124 in the app (PR #52)
 - Mac: a minimized chat window stays in the Dock when a dashboard menu closes. Thanks to @alican645 on GitHub, alican645#4413 in the app (PR #55)
 - Session cards: a long kind badge stays on one line beside the name and shortens with "…" instead of wrapping under it. Thanks to @EmirCobanOfficial on GitHub, EmirMac#7124 in the app (PR #49)
-- Orbit map: Solar view. Your sessions are planets turning round a core with an eye (Settings › Appearance, off by default). Thanks to @EmirCobanOfficial on GitHub, EmirMac#7124 in the app (PR #57)
 - Orbit map: the legend's colours match the planets on every theme. Thanks to @Svobodennn on GitHub, Svoboden#8628 in the app (PR #58)
 - Dashboard: a tool result no longer restyles the whole page, so a busy dashboard uses less CPU. Thanks to @EmirCobanOfficial on GitHub, EmirMac#7124 in the app (PR #59)
 - Dashboard: nothing is drawn while it is minimized or hidden, and it catches up when you bring it back. XP, hours, sounds and notifications carry on as before. Thanks to @EmirCobanOfficial on GitHub, EmirMac#7124 in the app (PR #60)
