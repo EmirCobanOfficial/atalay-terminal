@@ -3690,6 +3690,8 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
         if let top = hud.wtTop { WorktreeShip.shared.refresh(top, pr: true) }
         manager?.terminalFocused(window: id)
         fitSession()
+        // Clicked forward while free since a dashboard minimize: it rides the dashboard again if that moves nothing.
+        manager?.rejoinRiders()
         guard let w = window, let parent = w.parent, parent.childWindows?.last != w else { return }
         parent.removeChildWindow(w)
         parent.addChildWindow(w, ordered: .above)
@@ -3712,13 +3714,15 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
         return true
     }
 
-    /// The dashboard came back from the Dock: a window that let go of it for that pins again by the same rules as everywhere
-    /// else (shown, not minimized, still free, dashboard on this Space and display), so one the user minimized, closed or
-    /// moved to another display meanwhile stays free.
-    func repinAfterDashboardRestore() {
+    /// Back from the Dock, the dashboard takes a window that let go of it for that again (MainWindowController.rejoinRiders
+    /// says when) by the same rules as everywhere else (shown, not minimized, still free, dashboard on this Space and display),
+    /// so one the user minimized, closed or moved to another display meanwhile stays free. True when it pinned.
+    @discardableResult
+    func repinAfterDashboardRestore() -> Bool {
         guard let w = window, w.parent == nil, isShown, !hiding, !steppedAside, !w.isMiniaturized, hud.attached,
-              let parent = rideableDashboard(for: w) else { return }
+              let parent = rideableDashboard(for: w) else { return false }
         parent.addChildWindow(w, ordered: .above)
+        return true
     }
 
     /// The dashboard show() puts this window on as its child: wherever the window is when the user is on the dashboard (a card

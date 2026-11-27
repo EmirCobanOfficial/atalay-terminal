@@ -369,6 +369,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             }
         case "dragWindow":
             guard let w = window, let event = NSApp.currentEvent, event.type == .leftMouseDown, event.window === w else { return }
+            // Terminals still free since a minimize join first, so they ride this drag (only those it moves nothing for).
+            rejoinRiders()
             w.performDrag(with: event)
             // The release of that press goes to the drag, not the page: it gets one, or it would go on as a held button (a
             // move would select the bar's text).
@@ -496,20 +498,52 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     /// Chat windows ride the dashboard as its child windows, and AppKit takes a minimized parent's children into the Dock
     /// with it. Minimizing the dashboard must not hide a terminal on screen, so they let go first and stay where they are.
-    private var ridersBeforeMinimize: [String] = []
+    private var ridersToRejoin = Set<String>()
     func windowWillMiniaturize(_ notification: Notification) {
         guard let dash = window else { return }
-        ridersBeforeMinimize = chats.compactMap { $0.value.detachForDashboardMinimize(dash) ? $0.key : nil }
+        for (id, c) in chats where c.detachForDashboardMinimize(dash) { ridersToRejoin.insert(id) }
     }
 
-    func windowDidDeminiaturize(_ notification: Notification) {
-        let riders = ridersBeforeMinimize.compactMap { chats[$0] }
-        ridersBeforeMinimize = []
-        // Each pin goes on top of the dashboard's other children: back one first, so overlapping terminals keep the
-        // stacking they have now (the list is in the dictionary's order).
-        let order = (NSWindow.windowNumbers(options: []) ?? []).map(\.intValue)
-        func depth(_ c: ChatWindowController) -> Int { c.window.flatMap { order.firstIndex(of: $0.windowNumber) } ?? Int.max }
-        for c in riders.sorted(by: { depth($0) > depth($1) }) { c.repinAfterDashboardRestore() }
+    func windowDidDeminiaturize(_ notification: Notification) { rejoinRiders() }
+
+    /// The terminals that let go for a minimize ride the dashboard again, each only when that moves nothing. AppKit orders a
+    /// parent and its children as one group, and attaching a child orders that group: pinned the moment the dashboard came
+    /// back from the Dock (Orbiterm not the active app yet, Chrome clicked meanwhile) with the terminal behind Chrome, it took
+    /// the restored dashboard down behind Chrome. So a terminal pins only while Orbiterm is the active app and with no other
+    /// app's window between it and the dashboard: one right under the restored dashboard comes back on top of it, one behind
+    /// another app stays there, free. Those are asked again at the next chance: the app comes forward, the dashboard or a
+    /// terminal gets the keyboard, the dashboard is dragged.
+    @objc func rejoinRiders() {
+        ridersToRejoin = ridersToRejoin.filter { id in
+            guard let c = chats[id], let w = c.window else { return false }
+            // Pinned again some other way (a card, a menu closing, its own Dock trip), closed, or pinned on top: done here.
+            return w.parent == nil && c.isShown && c.hud.attached
+        }
+        guard !ridersToRejoin.isEmpty, NSApp.isActive, let dash = window, dash.isVisible, !dash.isMiniaturized else { return }
+        // An ordering reaches the window server when the run loop turn ends; the list must see this turn's (a click's).
+        CATransaction.flush()
+        let me = Int(ProcessInfo.processInfo.processIdentifier)
+        let info = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+        // The list is one stack for every display, and a terminal rides only on the dashboard's: Chrome used on the other
+        // display meanwhile sat between them and kept a terminal buried under the restored dashboard, though the pin moves
+        // nothing anyone sees there. (Quartz's frames count from the main display's top left, downwards.)
+        let main = NSScreen.screens.first?.frame ?? .zero
+        let display = dash.screen.map { CGRect(x: $0.frame.minX, y: main.maxY - $0.frame.maxY, width: $0.frame.width, height: $0.frame.height) } ?? .infinite
+        // Normal-level windows, front to back, and whether each may sit between a terminal and the dashboard: Orbiterm's, or
+        // another app's that is wholly on another display.
+        let stack = info.filter { $0[kCGWindowLayer as String] as? Int == 0 }.map { w -> (number: Int, ours: Bool) in
+            let bounds = (w[kCGWindowBounds as String] as? NSDictionary).flatMap { CGRect(dictionaryRepresentation: $0 as CFDictionary) } ?? .infinite
+            return (w[kCGWindowNumber as String] as? Int ?? 0, w[kCGWindowOwnerPID as String] as? Int == me || !bounds.intersects(display))
+        }
+        guard let d = stack.firstIndex(where: { $0.number == dash.windowNumber }) else { return }
+        let riders = ridersToRejoin.compactMap { id -> (id: String, chat: ChatWindowController, at: Int)? in
+            guard let c = chats[id], let n = c.window?.windowNumber, let at = stack.firstIndex(where: { $0.number == n }) else { return nil }
+            return (id, c, at)
+        }
+        // Each pin goes on top of the dashboard's other children: back one first, so overlapping terminals keep their stacking.
+        for r in riders.sorted(by: { $0.at > $1.at }) where stack[min(r.at, d) + 1 ..< max(r.at, d)].allSatisfy(\.ours) {
+            if r.chat.repinAfterDashboardRestore() { ridersToRejoin.remove(r.id) }
+        }
     }
 
     func windowWillEnterFullScreen(_ notification: Notification) {
@@ -997,6 +1031,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         for name in appNames {
             nc.addObserver(self, selector: #selector(dashboardVisibilityChanged), name: name, object: nil)
         }
+        // Orbiterm in front again (the Dock, ⌘-Tab, a click): terminals free since a minimize may ride the dashboard again.
+        nc.addObserver(self, selector: #selector(rejoinRiders), name: NSApplication.didBecomeActiveNotification, object: nil)
     }
 
     @objc func dashboardVisibilityChanged() {
@@ -1086,6 +1122,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     // Friend chats stay above the dashboard when it's clicked, like the terminals.
     func windowDidBecomeKey(_ notification: Notification) {
+        rejoinRiders()
         MessagePanel.pinAll()
         NoteWindow.pinAll()
     }
