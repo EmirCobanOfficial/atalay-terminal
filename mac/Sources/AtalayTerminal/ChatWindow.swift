@@ -3704,6 +3704,23 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
         parent.addChildWindow(w, ordered: .above)
     }
 
+    /// The dashboard was minimized: AppKit takes a parent's child windows into the Dock with it, so the window lets go first
+    /// and stays on screen where it is. Returns whether it was riding the dashboard (so restoring can pin it again).
+    func detachForDashboardMinimize(_ dash: NSWindow) -> Bool {
+        guard let w = window, w.parent === dash else { return false }
+        dash.removeChildWindow(w)
+        return true
+    }
+
+    /// The dashboard came back from the Dock: a window that let go of it for that pins again by the same rules as everywhere
+    /// else (shown, not minimized, still free, dashboard on this Space and display), so one the user minimized, closed or
+    /// moved to another display meanwhile stays free.
+    func repinAfterDashboardRestore() {
+        guard let w = window, w.parent == nil, isShown, !hiding, !steppedAside, !w.isMiniaturized, hud.attached,
+              let parent = rideableDashboard(for: w) else { return }
+        parent.addChildWindow(w, ordered: .above)
+    }
+
     /// The dashboard show() puts this window on as its child: wherever the window is when the user is on the dashboard (a card
     /// or its menu was clicked, so it is key), else only as rideableDashboard allows. A tab torn off, a merge or ⌘] on the
     /// desktop pulled the window onto a full-screen dashboard's Space elsewhere. Key but off the active Space (swiped to an

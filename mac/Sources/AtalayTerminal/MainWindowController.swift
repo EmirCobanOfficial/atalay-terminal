@@ -494,6 +494,24 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     func windowDidResize(_ notification: Notification) { positionTrafficLights() }
 
+    /// Chat windows ride the dashboard as its child windows, and AppKit takes a minimized parent's children into the Dock
+    /// with it. Minimizing the dashboard must not hide a terminal on screen, so they let go first and stay where they are.
+    private var ridersBeforeMinimize: [String] = []
+    func windowWillMiniaturize(_ notification: Notification) {
+        guard let dash = window else { return }
+        ridersBeforeMinimize = chats.compactMap { $0.value.detachForDashboardMinimize(dash) ? $0.key : nil }
+    }
+
+    func windowDidDeminiaturize(_ notification: Notification) {
+        let riders = ridersBeforeMinimize.compactMap { chats[$0] }
+        ridersBeforeMinimize = []
+        // Each pin goes on top of the dashboard's other children: back one first, so overlapping terminals keep the
+        // stacking they have now (the list is in the dictionary's order).
+        let order = (NSWindow.windowNumbers(options: []) ?? []).map(\.intValue)
+        func depth(_ c: ChatWindowController) -> Int { c.window.flatMap { order.firstIndex(of: $0.windowNumber) } ?? Int.max }
+        for c in riders.sorted(by: { depth($0) > depth($1) }) { c.repinAfterDashboardRestore() }
+    }
+
     func windowWillEnterFullScreen(_ notification: Notification) {
         radar.webView.evaluateJavaScript("document.documentElement.classList.add('mac-full'); true", completionHandler: nil)
     }
