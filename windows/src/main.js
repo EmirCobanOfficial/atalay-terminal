@@ -335,12 +335,22 @@ const limits = createLimits({
   accountsRoot: ACCOUNTS_ROOT,
   accountDirs: () => (accounts ? accounts.all().filter((a) => a.dir).map((a) => a.dir) : []),
 });
+// Where Claude's limits are read: the app's own limits.json, but a staging profile (npm run staging's --user-data-dir)
+// leaves Claude Code's status line to the installed app (only the usual profile hooks it: a staging hook would chain into
+// the installed app's), so nothing ever writes its own. It reads the installed app's instead, in %APPDATA%\Atalay's
+// Terminal (and each account's limits-claude-<8 hex>.json next to it), as the Mac's staging build reads the one folder every
+// build there shares (Limits.swift). Read only: Codex's, Antigravity's and Cursor's limits stay in its own folder (the
+// engine's limitsDir), and an account it takes out leaves the installed app's file be (claudeaccounts.js).
+const limitsFile =
+  process.platform === 'win32' && profileSuffix() && (STAGING || (!RELEASE && process.env.ORBITERM_STAGING === '1'))
+    ? path.join(app.getPath('appData'), "Atalay's Terminal", 'limits.json')
+    : limits.file;
 // Several Claude accounts (the Mac's ClaudeAccounts): none by itself unless the user adds a second one; nothing here ever
 // switches an account, reads a token or asks a usage endpoint. `acctWin` is what a terminal window shows of it (acctwin.js).
 accounts = createClaudeAccounts({
   dataDir: app.getPath('userData'),
   claudeDir: process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'),
-  limitsFile: limits.file,
+  limitsFile,
   names: () => [mcp.serverName('full'), mcp.serverName('notes')],
   // Only the app's usual profile hooks Claude Code's settings, as at launch (app.whenReady).
   installStatusLine: () => {
@@ -385,7 +395,8 @@ const discord = createDiscord({ settings, xp: () => cloud.json().xp, onChange: (
 let memTrees = new Map();
 const engine = createEngine({
   claudeDir: path.join(os.homedir(), '.claude'),
-  limitsFile: limits.file,
+  limitsFile,
+  limitsDir: path.dirname(limits.file),
   accounts,
   ensureScript: ensureStatusLine,
   codexHooks,

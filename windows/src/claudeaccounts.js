@@ -294,11 +294,13 @@ function createClaudeAccounts({ dataDir, claudeDir, limitsFile, names, installSt
     // Out of the list first (nothing polls, hooks or syncs it any more); its folder goes once Claude Code has signed it out,
     // so the sign-out finds it and a later account with the same name can't start signed in to this one.
     write(list.filter((x) => x.id !== id), Object.fromEntries(Object.entries(projects).filter(([, v]) => v !== id)));
-    const lim = limitsPath(a);
+    // Its limits file goes only from the app's own folder: a staging profile reads the installed app's (main.js) and leaves
+    // it be.
+    const lim = path.resolve(path.dirname(limitsFile)) === path.resolve(dataDir) ? limitsPath(a) : null;
     runClaude('auth logout', a.dir, () => {
       deleteFolder(a.dir);
       try {
-        fs.unlinkSync(lim);
+        if (lim) fs.unlinkSync(lim);
       } catch {}
     });
     return null;

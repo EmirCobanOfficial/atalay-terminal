@@ -1724,8 +1724,9 @@ class RadarEngine {
     this.otherSeen = new Set();
     this.otherCalls = new Map();
     // Account-wide Codex limits fetched from its authenticated app-server, not rollout history. The last one read is kept
-    // on disk, so the top bar shows them while no Codex runs too.
-    this.limitsDir = this.limitsFile ? path.dirname(this.limitsFile) : path.join(process.env.LOCALAPPDATA || path.join(HOME, 'AppData', 'Local'), 'atalay-terminal');
+    // on disk, so the top bar shows them while no Codex runs too. In `limitsDir`, the app's own folder: next to limitsFile,
+    // unless that is the installed app's, which a staging profile only reads Claude's limits from (main.js).
+    this.limitsDir = opts.limitsDir || (this.limitsFile ? path.dirname(this.limitsFile) : path.join(process.env.LOCALAPPDATA || path.join(HOME, 'AppData', 'Local'), 'atalay-terminal'));
     this.codexUsage = loadLimits(this.limitsDir, 'codex');
     this.codexUsagePending = false;
     // Antigravity's limits by group of models (agyPools), kept the same way, and the model its chats used last: the group
