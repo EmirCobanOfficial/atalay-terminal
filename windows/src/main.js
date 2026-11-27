@@ -2834,7 +2834,8 @@ function areaOf(f) {
  * The window's bar over a split (the Mac's header: ChatWindow.swift's TitleRow over its HUDRow), for the pane with the
  * keys: what its strip would show (its term:info), and the window's own state. The bar's page
  * (pages/tabs.js) shows and hides the pieces by the Mac's rules (the context, the counts, the star and End go with two tabs
- * or more, where each chip has its own). Null: no split in front, no bar.
+ * or more, where each chip has its own; with split panes, `split`, the Mac's hud.paneSplit, each pane's slim strip has its
+ * own figures, copy, env, star and ×, and they go from here too). Null: no split in front, no bar.
  */
 function hudOf(f) {
   const id = f.focus;
@@ -2843,7 +2844,7 @@ function hudOf(f) {
   const wc = pageOf(c.page);
   const ship = wc && shipWins.get(wc.id);
   return {
-    info: f.last.get(id) || {}, tabs: f.tabs.length, pinned: !!f.pinned,
+    info: f.last.get(id) || {}, tabs: f.tabs.length, split: true, pinned: !!f.pinned,
     env: { open: !!c.envOpen, dirty: !!c.envDirty },
     ship: ship && ship.sent ? JSON.parse(ship.sent) : null,
     keys: { copyReply: shortcuts.label(shortcuts.combo('copyReply')), envFiles: shortcuts.label(shortcuts.combo('envFiles')) },

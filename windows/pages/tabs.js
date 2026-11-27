@@ -308,8 +308,9 @@
   // For the pane with the keys: main sends what that pane's strip shows (its term:info) and the window's own state (hudOf),
   // and the pieces show by the Mac's rules: a plain terminal says where it is; an AI its context, model and effort, cost
   // (Claude's only), counts and the tool call it's on; one still starting says so. With two tabs or more the context and
-  // the counts are each chip's, and the star and End go (each chip has its ×). Its buttons act for that pane, which main
-  // gives the keys back to first.
+  // the counts are each chip's, and the star and End go (each chip has its ×); with split panes (Mac 2764fef) each pane's
+  // slim bar has its own figures, copy, env, star and ×, and this bar keeps the title row, the folder or "starting", the
+  // pin, and env while the view is open. Its buttons act for that pane, which main gives the keys back to first.
   const hud = document.getElementById('hud');
   const $ = (id) => document.getElementById(id);
   const hudTitle = $('title');
@@ -490,8 +491,11 @@
     drawAcct(i.acct);
     pill.classList.toggle('waiting', st === 'waiting');
     pill.title = st === 'waiting' && typeof i.waitingFor === 'string' ? i.waitingFor : '';
-    // HUDRow: with two tabs or more the context and the counts are each chip's.
-    const perTab = h.tabs > 1;
+    // HUDRow: with two tabs or more the context and the counts are each chip's; with split panes (`split`, the Mac's
+    // hud.paneSplit) each pane's slim bar has its own figures and its own copy, env, star and ×, so the model, cost, tool
+    // call, sparkline, copy, star and End go from here too, and env shows only while the env view is open.
+    const split = !!h.split;
+    const perTab = h.tabs > 1 || split;
     const s = i.stats;
     const brief = !term && !!i.chat;
     $('where').hidden = !term;
@@ -503,10 +507,10 @@
       ctx.querySelector('.n').textContent = fmtTok(s.ctx) + (s.ctxMax > 0 ? ` / ${fmtTok(s.ctxMax)}` : '');
     }
     const model = [i.model, i.effort].filter((x) => typeof x === 'string' && x).join(' · ');
-    $('model').hidden = !brief || !model;
+    $('model').hidden = !brief || !model || split;
     $('model').textContent = model;
     // Only Claude's is priced: another AI tool's would be a $0 it didn't cost.
-    const priced = brief && !i.tool && typeof i.cost === 'number' && Number.isFinite(i.cost);
+    const priced = brief && !split && !i.tool && typeof i.cost === 'number' && Number.isFinite(i.cost);
     $('cost').hidden = !priced;
     if (priced) $('cost').textContent = fmtUsd(i.cost);
     const counts = $('counts');
@@ -517,7 +521,7 @@
         (agents > 0 ? `<span class="ag"> · ⤷${agents}</span>` : '');
     }
     // The tool call it's on ("▸ Bash"), what it's doing (not in streamer mode: it can name a file or a command), how long.
-    const a = brief && i.action && i.action.name ? i.action : null;
+    const a = brief && !split && i.action && i.action.name ? i.action : null;
     hudAction = a;
     actionEl.hidden = !a;
     if (a) {
@@ -528,30 +532,32 @@
     }
     $('starting').hidden = term || !!i.chat || st !== 'starting';
     $('starting').textContent = 'starting claude…';
-    const spark = brief && Array.isArray(i.spark) ? i.spark.map(Number).filter(Number.isFinite) : [];
+    const spark = brief && !split && Array.isArray(i.spark) ? i.spark.map(Number).filter(Number.isFinite) : [];
     sparkEl.hidden = !spark.length;
     if (spark.length) drawSpark(spark);
-    // The buttons: copy (not in a plain terminal), env, the star (one tab only), the pin, End (one tab only).
+    // The buttons: copy (not in a plain terminal), env, the star (one tab only), the pin, End (one tab only); in a split
+    // only the pin, and env while its view is open.
     const keys = h.keys || {};
     const copy = $('copy');
-    copy.hidden = term;
+    copy.hidden = term || split;
     tip(copy, `Copy the AI's last reply, all of it${keys.copyReply ? ` (${keys.copyReply})` : ''}`);
     const env = $('env');
     const envOpen = !!(h.env && h.env.open), envDirty = !!(h.env && h.env.dirty);
+    env.hidden = split && !envOpen;
     env.classList.toggle('on', envOpen);
     env.classList.toggle('dirty', envDirty);
     const ek = keys.envFiles ? ` (${keys.envFiles})` : '';
     env.title = envOpen ? `Back to the terminal${ek}` : `The env files in this folder and the ones in it: open one to edit or copy from it${ek}.${envDirty ? ' It has changes not saved.' : ''}`;
     env.setAttribute('aria-label', envDirty ? 'env files, unsaved changes' : 'env files');
     const star = $('star');
-    star.hidden = h.tabs >= 2;
+    star.hidden = h.tabs >= 2 || split;
     star.classList.toggle('on', !!i.fav);
     tip(star, i.fav ? 'Remove this chat from your favorites' : 'Add this chat to your favorites in the sidebar');
     const pin = $('pin');
     pin.classList.toggle('on', !!h.pinned);
     tip(pin, h.pinned ? 'Stop keeping this window above all other apps' : 'Keep this window above all other apps');
     const end = $('end');
-    end.hidden = h.tabs > 1;
+    end.hidden = h.tabs > 1 || split;
     tip(end, term ? 'Close this terminal' : 'End this chat and stop the AI');
     tickHud();
     fitHud();

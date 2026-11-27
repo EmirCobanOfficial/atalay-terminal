@@ -714,13 +714,19 @@
     pinEl.hidden = typeof info.pinned !== 'boolean';
   };
   // In a split the strip is the Mac's pane title bar: its dot only while the AI in it works or needs you, in that colour,
-  // and saying so when the pointer rests on the strip.
+  // and saying so when the pointer rests on the strip. Its copy shows whenever an AI runs here, and its star says what the
+  // Mac's does (each pane's own: they act for this pane, term:copyReply and term:favorite).
   const paintSlim = () => {
     const split = document.body.classList.contains('pane-split');
     const st = !info.chat ? '' : info.status === 'terminal' && info.tool ? info.toolStatus || '' : info.status || '';
     const dot = st === 'busy' || st === 'waiting' ? st : '';
     hudEl.dataset.dot = dot;
     hudEl.title = split && dot ? (dot === 'busy' ? 'Working' : 'Needs you') : '';
+    document.getElementById('copyreply').hidden = split ? !info.chat : info.canCopyReply !== true;
+    const star = document.getElementById('star');
+    star.title = split ? (info.fav ? 'Remove this chat from your favorites' : 'Add this chat to your favorites in the sidebar')
+      : info.fav ? "Starred. Click to take it out of the chats list's favourites." : "Star this chat in the chats list's favourites.";
+    star.setAttribute('aria-label', star.title);
   };
   atl.on('term:info', (got) => {
     const i = (info = got || {});
@@ -987,9 +993,9 @@
   // with them is marked. A double click on its name renames it in place (Enter keeps it, empty goes back to the one it's
   // given, Esc drops it); a right click on the strip has Rename and the moves to a tab or a window of its own.
   // The tab in front has several panes, even while one is zoomed to the whole area (only then is `panes` 1): its strip drags.
-  // With several panes shown the strip is slim (terminal.css, the Mac's PaneTitleBar): the window's bar over the panes
-  // (pages/tabs.js) has the rest for the pane with the keys, and End here is the pane's ×. The account's disc shows when
-  // the window's panes use more than one account (`accounts`).
+  // With several panes shown the strip is slim (terminal.css, the Mac's PaneTitleBar): its own copy, env, star and × (End
+  // here), the window's bar over the panes (pages/tabs.js) the rest for the pane with the keys. The account's disc shows
+  // when the window's panes use more than one account (`accounts`).
   let inSplit = false;
   const endEl = document.getElementById('end');
   atl.on('term:pane', (p) => {
@@ -999,7 +1005,7 @@
     document.body.classList.toggle('pane-off', several && !p.focused);
     document.body.classList.toggle('pane-accts', several && !!p.accounts);
     endEl.textContent = several ? '×' : 'end';
-    endEl.title = several ? 'Close this pane' : 'End this terminal';
+    endEl.title = several ? 'End this chat and stop the AI (a terminal: close it)' : 'End this terminal';
     endEl.setAttribute('aria-label', endEl.title);
     paintSlim();
     fitHud();

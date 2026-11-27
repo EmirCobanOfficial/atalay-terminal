@@ -112,14 +112,15 @@ body.pane-off #term { opacity: 0.7; }
 /* In a split the strip is the Mac's pane title bar (Panes.swift PaneTitleBar): 20 px, its corners rounded 4, a 1 px line of
    the accent (0.6 with the keys, 0.18 without) round a tint of it (0.16) or black (0.28). From the left, 8 px in: a dot only
    while its AI works or needs you, the account's disc (when the window's panes use more than one account), the name; from
-   the right, 4 px in: the close ×, the context (a 36 px meter and its size), the counts (at most 170 px; they go first when
-   the name would get under 70 px, then the context). The window's bar over the panes (pages/tabs.js) carries the rest:
-   everything else on the strip is hidden here. A theme's dressing of the strip (MUR47, HK-416) stays off it, as on the Mac. */
+   the right, 4 px in: the close ×, the star, env, the copy (Mac 2764fef: each pane's own), 4 px, the context (a 36 px meter
+   and its size), the counts (at most 170 px; they go first when the name would get under 70 px, then the context). The
+   window's bar over the panes (pages/tabs.js) carries the rest: everything else on the strip is hidden here. A theme's
+   dressing of the strip (MUR47, HK-416) stays off it, as on the Mac. */
 body.pane-split #hud { height: 20px; box-sizing: border-box; gap: 0; padding: 0 4px 0 8px; border: 1px solid rgba(var(--accent-rgb, 248, 128, 8), 0.18); border-radius: 4px;
   background: rgba(0, 0, 0, 0.28); box-shadow: none; font: 10.5px "Cascadia Mono", Consolas, monospace; }
 body.pane-split:not(.pane-off) #hud { border-color: rgba(var(--accent-rgb, 248, 128, 8), 0.6); background: rgba(var(--accent-rgb, 248, 128, 8), 0.16); }
 body.pane-split #hud::before { display: none; }
-body.pane-split #hud > :not(#dot):not(#acct):not(#title):not(#rename):not(#ctx):not(#counts):not(#end):not(#copied):not(#announce) { display: none !important; }
+body.pane-split #hud > :not(#dot):not(#acct):not(#title):not(#rename):not(#ctx):not(#counts):not(#copyreply):not(#envbtn):not(#star):not(#end):not(#copied):not(#announce) { display: none !important; }
 body.pane-split #hud #dot { display: none; order: 0; width: 6px; height: 6px; margin-right: 5px; box-shadow: none; }
 body.pane-split #hud[data-dot="busy"] #dot, body.pane-split #hud[data-dot="waiting"] #dot { display: block; }
 body.pane-split #hud[data-dot="busy"] #dot { background: var(--accent, #f88008); }
@@ -131,20 +132,34 @@ body.pane-split #hud #acct { display: none !important; }
 body.pane-split.pane-accts #hud #acct:not([hidden]) { display: inline-flex !important; order: 1; height: 14px; margin: 0 4px 0 0; padding: 0; border: 0; border-radius: 50%;
   background: none; box-shadow: none; animation: none; pointer-events: none; }
 body.pane-split #hud #acct > :not(.ac) { display: none; }
-body.pane-split #hud #title, body.pane-split #hud #rename { order: 2; flex: 1 1 auto; min-width: 0; }
+body.pane-split #hud #title, body.pane-split #hud #rename { order: 2; flex: 1 1 auto; min-width: 0; margin-right: 4px; }
 body.pane-split #hud #title { color: var(--dim, #8f7a66); font: 400 10.5px "Cascadia Mono", Consolas, monospace; letter-spacing: 0; text-transform: none; text-shadow: none; }
 body.pane-split:not(.pane-off) #hud #title { color: var(--accent-soft, #ffb057); font-weight: 600; }
 body.pane-split #hud #rename { height: 16px; font-size: 10.5px; }
-body.pane-split #hud #counts { order: 3; max-width: 170px; margin-left: 8px; overflow: hidden; font-size: 10px; text-overflow: ellipsis; }
+body.pane-split #hud #counts { order: 3; max-width: 170px; margin: 0 4px; overflow: hidden; font-size: 10px; text-overflow: ellipsis; }
 body.pane-split #hud #counts b { font-weight: 600; }
 body.pane-split #hud #counts .ag { display: none; }
-body.pane-split #hud #ctx { order: 4; margin-left: 8px; font-size: 10px; }
+body.pane-split #hud #ctx { order: 4; margin: 0 4px; font-size: 10px; }
 body.pane-split #hud #ctx i, body.pane-split #hud #ctx .n { display: none; }
 body.pane-split #hud #ctx .s { display: inline; }
 body.pane-split #hud #ctx .bar { width: 36px; height: 5px; }
 body.pane-split #hud #ctx .bar span { box-shadow: none; }
-body.pane-split #hud #end, body.pane-split #hud #end:hover { order: 5; flex: none; width: 16px; height: 16px; margin-left: 4px; padding: 0; border: 0; border-radius: 0; background: none;
-  color: var(--dim, #8f7a66); font: 500 12px/16px "Cascadia Mono", Consolas, monospace; letter-spacing: 0; text-align: center; text-transform: none; }
+/* Its own buttons, side by side (Mac 2764fef): copy 18 px (an AI's pane only), env 26 px (30 with "•" for changes not saved),
+   the star 18 px (a chat's only: outline, or filled amber), the × 16 px; borderless, no hover look, as the Mac's. They act
+   for this pane (term:copyReply, its env view, term:favorite, term:end). */
+body.pane-split #hud :is(#copyreply, #envbtn, #star, #end), body.pane-split #hud :is(#copyreply, #envbtn, #star, #end):hover {
+  flex: none; align-items: center; justify-content: center; margin: 0; padding: 0; border: 0; border-radius: 0; background: none; box-shadow: none;
+  letter-spacing: 0; text-align: center; text-transform: none; text-shadow: none; }
+body.pane-split #hud #copyreply, body.pane-split #hud #copyreply:hover { order: 5; width: 18px; height: 18px; color: var(--accent-soft, #ffb057); }
+body.pane-split #hud #copyreply svg { width: 11px; height: 11px; stroke-width: 1.7; }
+body.pane-split #hud #envbtn, body.pane-split #hud #envbtn:hover, body.pane-split #hud #envbtn.on { order: 6; width: 26px; height: 18px; color: var(--amber, #ffc040); font: 600 10px/18px "Cascadia Mono", Consolas, monospace; }
+body.pane-split #hud #envbtn.dirty { width: 30px; }
+body.pane-split #hud #envbtn.dirty::after { content: '\2022'; position: static; width: auto; height: auto; border-radius: 0; background: none; box-shadow: none; }
+body.pane-split #hud #star, body.pane-split #hud #star:hover { display: inline-flex; order: 7; width: 18px; height: 18px; color: var(--accent-soft, #ffb057); }
+body.pane-split #hud #star.on, body.pane-split #hud #star.on:hover { color: color-mix(in srgb, var(--amber, #ffc040) 80%, white); }
+body.pane-split #hud #star svg { width: 11px; height: 11px; stroke-width: 1.7; }
+body.pane-split #hud #star[hidden] { display: none; }
+body.pane-split #hud #end, body.pane-split #hud #end:hover { order: 8; width: 16px; height: 16px; color: var(--dim, #8f7a66); font: 500 12px/16px "Cascadia Mono", Consolas, monospace; }
 body.pane-split:not(.pane-off) #hud #end, body.pane-split:not(.pane-off) #hud #end:hover { color: var(--accent-soft, #ffb057); }
 /* The selection's and the copy's badge: at the pane's bottom right over the terminal, as the Mac's. */
 body.pane-split #copied { position: fixed; right: 10px; bottom: 6px; z-index: 25; }
