@@ -136,6 +136,7 @@
         ${AIS.map((a, i) => `<button type="button" role="radio" aria-checked="${i === st.ai}" tabindex="${i === st.ai ? 0 : -1}" data-i="${i}" title="${a.id === 'terminal' ? 'A plain terminal in the worktree' : a.label + ' starts in the worktree'} (${MOD}${i + 1})">${a.label}</button>`).join('')}
       </div>
     </div>
+    ${st.accts ? `<div class="wt-acct" role="radiogroup" aria-label="Claude account"${ai.id === 'claude' ? '' : ' hidden'}><span class="wt-lab" id="wt-acct-l">Claude account</span><span class="pk-seg">${st.accts.accounts.map((a) => `<button type="button" role="radio" class="${a.id === st.account ? 'on' : ''}" aria-checked="${a.id === st.account}" data-id="${h(a.id)}" style="--ah:${h(a.hue)}"${busy ? ' disabled' : ''}><i class="ac" style="--ah:${h(a.hue)}">${h(a.initial)}</i>${h(a.label)}</button>`).join('')}</span></div>` : ''}
     ${notes}
     ${call}
     <div class="wt-act">
@@ -180,6 +181,16 @@
         if (st.busy || st.partial) return;
         st.ai = Number(b.dataset.i);
         refreshSeg(true);
+      };
+    });
+    box.querySelectorAll('.wt-acct button').forEach((b) => {
+      b.onclick = () => {
+        if (st.busy || st.partial) return;
+        st.account = b.dataset.id;
+        box.querySelectorAll('.wt-acct button').forEach((x) => {
+          x.classList.toggle('on', x === b);
+          x.setAttribute('aria-checked', String(x === b));
+        });
       };
     });
     const back = box.querySelector('#wt-back');
@@ -232,6 +243,8 @@
     });
     if (focus) seg.querySelector('[aria-checked="true"]').focus();
     const ai = AIS[st.ai];
+    const wa = st.box.querySelector('.wt-acct');
+    if (wa) wa.hidden = ai.id !== 'claude';
     const mv = st.box.querySelector('.wt-note.move span');
     if (mv && st.moving) mv.innerHTML = moveText(st.moving, ai);
     const msg = st.box.querySelector('#wt-go');
@@ -301,13 +314,13 @@
   // The worktree is there and its files are: hand over to whoever opened the sheet, which opens the AI in it.
   function finish() {
     if (!st) return;
-    const r = st.result, ai = AIS[st.ai].id, cb = st.onDone;
+    const r = st.result, ai = AIS[st.ai].id, cb = st.onDone, st0 = st;
     teardown(!st.alone);
-    cb && cb({ path: r.path, open: r.open || r.path, ai });
+    cb && cb({ path: r.path, open: r.open || r.path, ai, account: ai === 'claude' ? st0.account : undefined });
   }
 
   // ---------- opening and closing ----------
-  async function open({ dir, host, alone = false, ai, moving, onDone, onCancel } = {}) {
+  async function open({ dir, host, alone = false, ai, moving, account, onDone, onCancel } = {}) {
     if (st) return false;
     const opener = document.activeElement;
     let info = null;
@@ -324,12 +337,21 @@
       note(info.error === 'gone' ? 'Folder not found' : 'This folder isn’t in a git repo anymore.');
       return false;
     }
+    // Two or more Claude accounts: the "Open with" row gets an account choice (shown while Claude is picked).
+    let accts = null;
+    try {
+      accts = API.claudeAccounts ? await API.claudeAccounts(dir) : null;
+    } catch (e) {
+      accts = null;
+    }
+    if (!accts || !accts.multiple) accts = null;
     if (st || (host && !host.isConnected)) return false;
     // What's left of a sheet that was closing.
     document.querySelectorAll('.wt-veil, .pk .wt, .wt-alone').forEach((n) => n.remove());
     const lastAI = AIS.findIndex((a) => a.id === (ai || info.lastAI));
     st = { dir, info, host, alone, name: info.suggest, touched: false, ai: Math.max(0, lastAI), busy: false, k: 0, fail: null, fieldErr: null,
-      partial: null, result: null, moving: moving || null, onDone, onCancel, opener };
+      partial: null, result: null, moving: moving || null, onDone, onCancel, opener,
+      accts, account: accts ? (accts.accounts.some((a) => a.id === account) ? account : accts.last || accts.accounts[0].id) : null };
     if (alone) {
       const wrap = document.createElement('div');
       wrap.className = 'wt-alone on';

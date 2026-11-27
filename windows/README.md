@@ -73,7 +73,7 @@ in `src/main.js` and pushes to them with `window.__radar.*`, `window.__messages.
 | `src/engine.js` | Claude Code's sessions and transcripts (`%USERPROFILE%\.claude`) into the dashboard's state, and what the other AI tools do from their own records (Codex's logs, Antigravity's databases through `node:sqlite`, Cursor's hook events and transcripts), counted with Claude's; while a Codex runs, its account limits from `codex app-server` | Engine/*.swift |
 | `src/ledger.js` | spend.ledger's history: each past day's spend by project and model, read once from the transcripts and kept in `%LOCALAPPDATA%\atalay-terminal\ledger.json` (Claude Code deletes transcripts after 30 days) | Ledger.swift |
 | `src/tokenledger.js` | the leaderboard's Tokens view: tokens burned by Claude Code, Codex, Antigravity and Cursor, read from their own records (Cursor's from its hook events) by day, tool, model and effort, kept in `tokens.json` (+ `.seen` hashes) beside the spend ledger and sent to the API a day at a time (`node:sqlite` for Antigravity's older generations) | TokenLedger.swift |
-| `src/terminals.js` | shells and Claude in ConPTY, one per chat or terminal window, in the session host | ChatTerminal, Detached |
+| `src/terminals.js` | shells and Claude in ConPTY, one per chat or terminal (a window, a tab or a split pane), in the session host | ChatTerminal, Detached |
 | `src/host.cs`, `src/sessionhost.js` | the session host, which keeps them running without the app, and the app's line to it | Detached (screen) |
 | `src/mcp.js`, `src/mcpbridge.cs`, `src/mcpshared.js` | Settings › Claude, the local MCP server: Claude Desktop and Claude Code on this PC list and read the AI sessions in the app's terminals and, if allowed, type a prompt into one. `mcpbridge.cs`, compiled like the session host into `%LOCALAPPDATA%\atalay-terminal-mcp`, is both the bridge Claude runs (`orbiterm-mcp.exe`, `orbiterm-mcp-notes.exe`, `-s` for staging) and the owner-only named pipe's server the app starts; the token and `audit.log` are in `%APPDATA%\Atalay's Terminal\mcp` | Mcp.swift, Support.swift redactMore, LastReply |
 | `src/git.js` | Source Control's requests: the repos, diffs, history, commit, push | Git.swift |
@@ -93,7 +93,7 @@ in `src/main.js` and pushes to them with `window.__radar.*`, `window.__messages.
 | `src/cursorhooks.js`, `src/cursorhooks.cs` | Cursor's CLI (cursor-agent): a small program of the app's (compiled at first use, as the session host is) on its hooks in `%USERPROFILE%\.cursor\hooks.json`, beside the user's own, that keeps each conversation's events in `%LOCALAPPDATA%\atalay-terminal\cursor-events` for the engine and the token ledger; only the usual profile installs it | Engine/CursorHooks.swift |
 | `src/cursorusage.js` | Cursor's monthly usage limit for the top bar, asked of Cursor's server with the CLI's own token from `%APPDATA%\Cursor\auth.json` (read for the request, never kept) | Engine/CursorUsage.swift |
 | `src/overlay.js` | the Ring's and the folder picker's folders (overlay.html) | Overlay.swift |
-| `src/chatlist.js`, `pages/chats.*` | the chats list beside the dashboard (a view of its own in the dashboard window): every saved chat by project, each folder a card with the app's terminals in it, folders opened from the list, favourites, the archive (Settings lists it) | Sidebar.swift |
+| `src/chatlist.js`, `../mac/Resources/web/chats.*` | the chats list: a panel of the dashboard's page (shared with the Mac): the live chats' cards on top, every saved chat by project under them, each folder with the app's terminals in it, folders opened from the list, favourites, the archive (Settings lists it) | Sidebar.swift |
 | `src/notewindow.js` | a note out of the dashboard in a window of its own (web/note.html): above the dashboard, or pinned above every app; its place and pin kept, the notes left out at the last quit reopened; the dashboard's page stays the notes' one writer | NoteWindow.swift |
 | `src/notesstore.js` | the notes on this PC, encrypted (AES-256-GCM, the key sealed by Windows): a file for each note, a shared note's Yjs document beside it (`<id>.ydoc`), the files the notes hold (`files\<sha256>`), a copy of the folder before the notes become v4 (`Notes backups`) | NotesStore.swift, Attachments.swift (the files folder) |
 | `src/notessync.js` | the shared notes' side of the notes bridges: a note's socket ticket (the page opens the socket), its document file, the secrets check before a share, the file messages | NotesStore.swift (NotesSync) |
@@ -101,17 +101,18 @@ in `src/main.js` and pushes to them with `window.__radar.*`, `window.__messages.
 | `src/notesprojects.js` | the notes' projects: a folder's project (a repo's main folder, worktrees included; no git process), broad folders, the board's "move to project" list | NotesTools.swift (NotesProjects), Git.swift (projectDir, broad, covers) |
 | `src/notestools.js`, `src/notesai.js` | the notes as AI tools on the local MCP server (list, read, add, edit, rewrite, create, pin, show; an AI's own project first) and Settings' switch that lets the AIs have them | NotesTools.swift, NotesAI.swift |
 | `src/feedpanel.js` | the community feed's lines (web/feed.html) in a see-through, click-through window at the top left of the screen | FeedPanel.swift |
-| `src/shortcuts.js` | Settings › Shortcuts: the menu's keys as the user set them (`settings.json` `shortcuts`), recording new ones, the Ring's middle click (with Ctrl, alone or off) and its keys, Esc and the close keys swapped | Shortcuts.swift, EscClose.swift |
+| `src/shortcuts.js` | Settings › Shortcuts: the menu's keys as the user set them (`settings.json` `shortcuts`), recording new ones, the Ring's middle click (with Ctrl, alone or off) and its keys, Esc and the close keys swapped, the tab and pane keys a terminal window takes only when it has tabs or a split | Shortcuts.swift, EscClose.swift |
 | `src/envfiles.js`, `src/envbridge.js`, `pages/env.*` | the strip's env button (Ctrl+Shift+E): the .env, .env.*, *.env and .envrc files under the terminal's folder (4 folders down, 100 files, hidden and heavy folders skipped), a list, then one file's lines with the values masked until opened; Copy all, Save (a copy renamed over it, CRLF/LF, BOM and untouched lines kept), the file changing on disk; every read and write checks the path again (inside the folder, no link out, an env name, at most 1 MB) | EnvFiles.swift, EnvView.swift |
 | `src/sharecard.js` | the share card's picture to the clipboard or Downloads, shown in Explorer, and its badges and avatars fetched for it (an allow-list, every redirect checked) | Cloud.swift (CloudBridge share part) |
-| `pages/terminal.*` | a chat or terminal window: xterm.js and its header (the model and effort, the cost, the tool at work, the subagents running, what it waits for), its right-click menu (Copy, Paste, Select All, Find, Clear), Find, a dropped file's path, Copy Claude's last reply, pinned above every app, End's "End this chat?" | ChatWindow, ChatTerminal |
+| `pages/terminal.*` | a chat or terminal (a window's tab or pane): xterm.js and its header, which is also its pane's title bar in a split (the model and effort, the cost, the tool at work, the subagents running, what it waits for; dimmed without the keys, renamed with a double click, a right click to move it to a tab or a window), its right-click menu (Copy, Paste, Select All, Find, Clear), Find, a dropped file's path, Copy Claude's last reply, pinned above every app, End's "End this chat?" | ChatWindow, ChatTerminal |
+| `src/panes.js`, `pages/tabs.*` | a terminal window's tabs and split panes: each tab a tree of panes, each pane a terminal's own view (`WebContentsView`) that moves between tabs, splits and windows with its session running on; the tab bar (chips with the number, the busy / needs-you dot, the name, the context, ×; rename in place, a right-click menu, » when they don't fit) and the dividers, the window's own page under the views; the layouts kept in `settings.json` (`terminalLayout`, `tabNames`) for the sessions the host brings back | ChatWindow (tabs), Panes.swift, MainWindowController (merge, move) |
 
 ### The session host
 
 Windows has no `screen`, so the app brings its own: `src/host.cs`, compiled at first use by the C# compiler that comes
 with Windows (.NET Framework's `csc.exe`) into `%LOCALAPPDATA%\atalay-terminal-host`. Every chat and terminal runs in a
 pseudo console it holds, so the app can quit, update or crash and Claude keeps working; at the next launch the windows
-attach again (hidden, as on the Mac: a click on the dashboard opens one), starting from the end of the output the host
+attach again (hidden, as on the Mac: a click on the dashboard opens one; in the tabs and splits they were in), starting from the end of the output the host
 kept. What's typed into a session waits in a queue of its own, written by a thread of its own, so a big paste into one
 never holds up the others' typing, resizing or End. It runs outside the app's folder because an update's installer ends everything that runs from there; it ends by
 itself once its last session has and no app is connected, and uninstalling ends it (`build/installer.nsh`). The
@@ -122,12 +123,25 @@ chats run in the app, through node-pty, and end with it.
 
 - Closing the dashboard keeps the app going while a chat or terminal runs (starting the app again brings it back, as
   the Dock does on the Mac); with none, it quits.
-- No tabs or split panes: every terminal is a window of its own. Closing its window (Ctrl+W, Ctrl+Shift+W, its ×)
-  keeps what runs in it going as a planet or car on the orbit, as ⌘W and ⇧⌘W do on the Mac; a click opens it again.
-  Its End button (or Window > End This Terminal) ends it.
+- Tabs and split panes as on the Mac (File > New Tab, Split Vertically / Horizontally; the Window menu's tab and pane
+  items, Move Tab to New Window, Merge All Windows), but a tab or pane is moved with the menus only: no dragging a tab
+  out of the bar or onto another window. Ctrl+W closes the tab or pane with the keys (it keeps running, in a window of
+  its own out of sight, and Undo Close puts it back), or with only one the window; Ctrl+Shift+W the whole window; its
+  × hides it too. What runs goes on as a planet or car on the orbit, as ⌘W and ⇧⌘W do on the Mac; a click opens it
+  again, in its tab. Its End button (or Window > End This Terminal), or a chip's ×, ends it.
+- The Mac's tab and pane keys with ⌘ as Ctrl and ⌥ as Alt (Settings › Shortcuts lists them), but where a shell needs
+  the Ctrl key: ⌘D (Split Vertically) is Ctrl+Shift+D and ⇧⌘D Ctrl+Alt+Shift+D, as Ctrl+D is the end of input; ⌘T
+  (New Tab) is Windows Terminal's Ctrl+Shift+T, as Ctrl+T is Claude Code's (its task list) and Codex's (its
+  transcript), so ⇧⌘T (Undo Close) is Ctrl+Alt+Shift+T and ⌥⌘T (New Tab Next to Current Tab) Ctrl+Alt+Shift+N (Ctrl+Alt
+  and a letter alone is AltGr on many keyboards: AltGr+T is ₺ on a Turkish one); ⌃⌘ and an
+  arrow (a divider) is Ctrl+Alt+Shift and the arrow. The keys between tabs (Ctrl+Shift+] and [, Ctrl+1 to 9,
+  Windows' Ctrl+Tab too) act only in a window with two tabs or more, and the pane keys (Ctrl+Alt and an arrow,
+  Ctrl+Shift+Enter to maximize) only in a split tab: elsewhere they go to the shell as before. ⌘] and ⌘[ (the next and
+  previous pane) have no keys as they come, as Ctrl+[ is Esc in a terminal (vim, Claude Code, less) and Ctrl+] telnet's
+  escape; Settings › Shortcuts can give them some.
 - No four-finger click (Mac trackpads only): Ctrl and the middle mouse button (or Ctrl+K) open the Ring,
-  Ctrl+N a new file in Source Control's editor, Ctrl+Shift+N a new terminal, Ctrl+W and Ctrl+Shift+W close the
-  window, in the terminal windows too (where they'd otherwise go to the shell); Ctrl++ and Ctrl+- there are the terminals' text size,
+  Ctrl+N a new file in Source Control's editor, Ctrl+Shift+N a new terminal, Ctrl+Shift+T a new tab, Ctrl+W and Ctrl+Shift+W
+  close the tab or the window, in the terminal windows too (where they'd otherwise go to the shell); Ctrl++ and Ctrl+- there are the terminals' text size,
   as ⌘+ and ⌘− on the Mac. While Antigravity runs in one, its Ctrl+K is Antigravity's, which approves its subagents'
   steps with it.
   Ctrl+B (⌘B) opens and closes the chats list in the dashboard window only: in a terminal it stays the shell's (and

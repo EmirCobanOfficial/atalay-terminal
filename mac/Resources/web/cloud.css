@@ -74,10 +74,167 @@
 .wel-other { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 12px; padding: 8px 10px; border: 1px solid rgba(var(--glow), 0.3); border-radius: 6px; background: rgba(var(--glow), 0.06); color: var(--txt2); line-height: 1.45; }
 .wel-other b { color: var(--hi); }
 
-/* top bar: the brand opens settings; an update shows up as a pulsing button */
-.brand { cursor: pointer; }
-.brand .stack b.long { font-size: 0.9em; letter-spacing: 0.06em; }
-.brand .stack b .htag { margin-left: 2px; color: var(--accent-soft); font-size: 0.58em; font-style: normal; letter-spacing: 0.06em; text-shadow: none; }
+/* ===== The identity corner, top-left of the top bar (cloud.js renderId / paintOrb, badges.js paintTop) =====
+   You, as a player card: your picture with your status cut into its corner, your name#tag over your rank and XP,
+   the badge you display, then your ORB in a glass capsule. One place for each, nothing stacked, nothing moving at
+   rest: only a change of ORB animates, once. Sizes in rem: the app's text size (pageZoom) scales it all. */
+#top .brand.id {
+  --id-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  /* SwiftUI's .smooth with a 3.8% overshoot, the bell's --nf-pop */
+  --id-pop: linear(0, 0.042, 0.143, 0.275, 0.415, 0.55, 0.672, 0.774, 0.858, 0.922, 0.969, 1.001, 1.022, 1.033, 1.038, 1.038, 1.035, 1.03, 1.025, 1.02, 1.015, 1.011, 1.007, 1.004, 1);
+  --id-hair: rgba(var(--accent-rgb), 0.3);
+  --id-glass: rgba(var(--glass-top-rgb), 0.78);
+  --id-glass-lo: rgba(var(--glass-top-rgb), 0.46);
+  --id-edge: inset 0 1px 0 rgba(255, 236, 214, 0.13);
+  --id-cut: 0.5rem; /* the hole cut in the picture for the status dot (dot radius + 3px) */
+  /* over the screen's scanlines and vignette (body::before / ::after, z-index 50 / 49): the vignette is darkest in
+     this corner and took 40% off the name's brightness */
+  position: relative;
+  z-index: 51;
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 0.75rem;
+  min-width: 0;
+  font-size: 1rem;
+  letter-spacing: 0;
+  line-height: 1;
+  white-space: nowrap;
+}
+/* a hairline that closes the corner off from the clock and the numbers */
+#top .brand.id::after { content: ""; flex: none; width: 1px; height: 1.75rem; margin-left: 0.25rem; background: linear-gradient(180deg, transparent, var(--id-hair) 22%, var(--id-hair) 78%, transparent); }
+
+/* -- you: picture + name + rank, one button (opens your profile) -- */
+#top .id-me {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  min-width: 0;
+  margin: -0.25rem -0.125rem -0.25rem -0.3125rem;
+  padding: 0.25rem 0.5rem 0.25rem 0.3125rem;
+  border: 0;
+  border-radius: 0.75rem;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 120ms ease-out;
+  -webkit-app-region: no-drag;
+}
+#top .id-me:hover { background: rgba(var(--accent-rgb), 0.09); }
+#top .id-me:active { background: rgba(var(--accent-rgb), 0.15); }
+#top .id-me:focus-visible { outline: 2px solid var(--accent-soft); outline-offset: 1px; }
+
+/* the picture: your GitHub or own picture, or your name's first letter on your rank's colour, ringed in that colour */
+#top .id-av { position: relative; flex: none; width: 2rem; height: 2rem; }
+#top .id-face {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  border-radius: 0.4375rem;
+  background: linear-gradient(135deg, rgba(var(--rc), 0.72), rgba(var(--rc), 0.26));
+}
+#top .id-face::after { content: ""; position: absolute; inset: 0; border-radius: inherit; box-shadow: inset 0 0 0 1.5px rgba(var(--rc), 0.95), inset 0 0 0 2.5px rgba(0, 0, 0, 0.35); pointer-events: none; }
+#top .id-pic { display: block; width: 100%; height: 100%; object-fit: cover; }
+#top .id-mono { display: grid; width: 100%; height: 100%; place-items: center; color: var(--hi); font: 700 0.9375rem/1 var(--font-sans); text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5); -webkit-user-select: none; user-select: none; }
+/* the status is cut into the picture's corner, as Discord does: a real hole, whatever is behind it (bar, hover plate) */
+#top .id-av.has-st .id-face {
+  -webkit-mask: radial-gradient(circle at calc(100% - 0.3125rem) calc(100% - 0.3125rem), transparent var(--id-cut), #000 calc(var(--id-cut) + 0.5px));
+  mask: radial-gradient(circle at calc(100% - 0.3125rem) calc(100% - 0.3125rem), transparent var(--id-cut), #000 calc(var(--id-cut) + 0.5px));
+}
+
+/* -- your status: four shapes, not four colours (online dot, away moon, do-not-disturb bar, invisible ring) -- */
+#top .id-st { position: absolute; right: 0; bottom: 0; width: 0.625rem; height: 0.625rem; border-radius: 50%; transition: background-color 150ms ease-out; }
+#top .id-st[hidden] { display: none; }
+#top .id-st.p-online { background: var(--green); }
+#top .id-st.p-idle {
+  background: var(--amber);
+  -webkit-mask: radial-gradient(circle at 0.0625rem 0.0625rem, transparent 0.3125rem, #000 calc(0.3125rem + 0.5px));
+  mask: radial-gradient(circle at 0.0625rem 0.0625rem, transparent 0.3125rem, #000 calc(0.3125rem + 0.5px));
+}
+#top .id-st.p-dnd {
+  background: var(--red);
+  -webkit-mask: linear-gradient(#000 0 0) center / 0.375rem 0.125rem no-repeat, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) center / 0.375rem 0.125rem no-repeat exclude, linear-gradient(#000 0 0);
+}
+#top .id-st.p-invisible { background: transparent; box-shadow: inset 0 0 0 0.1875rem var(--dim); }
+/* can't reach the server: a broken ring, so it never reads as a status you picked */
+#top .id-st.p-offline { background: transparent; border: 0.125rem dashed var(--dim); }
+
+/* the words: name#tag, then rank · level and the XP bar */
+#top .id-txt { display: flex; flex-direction: column; gap: 0.25rem; min-width: 0; }
+#top .id-name { display: flex; align-items: baseline; min-width: 0; }
+#top .id-name b { overflow: hidden; max-width: 9.5rem; color: var(--hi); font: 650 0.9375rem/1.15 var(--font-sans); letter-spacing: -0.005em; text-overflow: ellipsis; }
+#top .id-tag { flex: none; margin-left: 0.3125rem; color: var(--txt3); font: 500 0.75rem/1 var(--font-sans); font-style: normal; font-variant-numeric: tabular-nums; letter-spacing: 0.02em; }
+#top .id-rank { display: flex; align-items: center; gap: 0.4375rem; color: rgb(var(--rc)); font: 700 0.6875rem/1 var(--font-sans); letter-spacing: 0.09em; text-transform: uppercase; }
+#top .id-xp { position: relative; flex: none; width: 2.75rem; height: 0.1875rem; overflow: hidden; border-radius: 99px; background: rgba(255, 244, 230, 0.12); }
+#top .id-xp > i { position: absolute; inset: 0 auto 0 0; border-radius: inherit; background: rgb(var(--rc)); box-shadow: 0 0 0.375rem rgba(var(--rc), 0.7); transition: width 600ms var(--id-ease); }
+
+/* -- the badge you display: its art at 28px over a still glow in its own metal (--q, BadgeArt.glow) -- */
+#top .id-bdg { position: relative; display: grid; flex: none; place-items: center; width: 1.75rem; height: 1.75rem; }
+#top .id-bdg:empty { display: none; }
+#top .id-bdg::before { content: ""; position: absolute; inset: -0.4375rem; border-radius: 50%; background: radial-gradient(closest-side, rgba(var(--q, var(--accent-rgb)), 0.34), rgba(var(--q, var(--accent-rgb)), 0.08) 62%, transparent); pointer-events: none; }
+#top .id-bdg .bdg-mini { position: relative; display: grid; margin: 0; vertical-align: 0; }
+#top .id-bdg .badge-art { display: block; width: 1.75rem; height: 1.75rem; filter: drop-shadow(0 0.0625rem 0.125rem rgba(0, 0, 0, 0.65)); }
+
+/* -- your ORB: a glass capsule (a control, so glass is right here), the icon, the balance -- */
+#top .orb-chip {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 0.3125rem;
+  height: 1.75rem;
+  padding: 0 0.6875rem 0 0.3125rem;
+  overflow: hidden;
+  border: 0;
+  border-radius: 999px;
+  background: linear-gradient(180deg, var(--id-glass), var(--id-glass-lo));
+  box-shadow: var(--id-edge), inset 0 0 0 1px rgba(var(--accent-rgb), 0.3), 0 1px 2px rgba(0, 0, 0, 0.45);
+  color: var(--hi);
+  font: inherit;
+  cursor: pointer;
+  transition: box-shadow 160ms ease-out;
+  -webkit-app-region: no-drag;
+  animation: id-in 200ms ease-out;
+}
+#top .orb-chip:hover { box-shadow: var(--id-edge), inset 0 0 0 1px rgba(var(--accent-rgb), 0.55), 0 1px 2px rgba(0, 0, 0, 0.45); }
+#top .orb-chip[aria-expanded="true"] { box-shadow: var(--id-edge), inset 0 0 0 1px rgba(var(--accent-rgb), 0.8), 0 0 0.625rem rgba(var(--accent-rgb), 0.25); }
+#top .orb-chip:focus-visible { outline: 2px solid var(--accent-soft); outline-offset: 2px; }
+#top .orb-chip img { flex: none; width: 1.125rem; height: 1.125rem; filter: drop-shadow(0 0 0.25rem rgba(255, 46, 70, 0.35)); }
+/* the number and the change share one cell: the change shows in the number's place, so nothing moves */
+#top .orb-v { position: relative; display: grid; }
+#top .orb-n { color: var(--hi); font: 650 0.875rem/1 var(--font-sans); font-variant-numeric: tabular-nums; letter-spacing: 0.01em; transition: opacity 160ms ease-out; }
+#top .orb-tick { position: absolute; top: 0; left: 50%; color: var(--amber); font: 750 0.875rem/1 var(--font-sans); font-style: normal; font-variant-numeric: tabular-nums; letter-spacing: 0.01em; opacity: 0; transform: translateX(-50%); transition: opacity 160ms ease-out; pointer-events: none; }
+#top .orb-tick.neg { color: var(--red-soft); }
+#top .orb-chip.delta .orb-n { opacity: 0; }
+#top .orb-chip.delta .orb-tick { opacity: 1; }
+/* a gain (a grant, a refund; not the minute's pay): the ring warms, one light crosses the capsule, the icon pops */
+#top .orb-chip::after { content: ""; position: absolute; inset: 0; background: linear-gradient(100deg, transparent 32%, rgba(255, 222, 160, 0.42) 50%, transparent 68%); opacity: 0; transform: translateX(-120%); pointer-events: none; }
+#top .orb-chip.gain { box-shadow: var(--id-edge), inset 0 0 0 1px rgba(var(--amber-rgb), 0.7), 0 0 0.75rem rgba(var(--amber-rgb), 0.28); }
+#top .orb-chip.gain::after { opacity: 1; animation: id-sweep 700ms var(--id-ease) 80ms both; }
+#top .orb-chip.gain img { animation: id-pop 420ms var(--id-pop); }
+@keyframes id-sweep { from { transform: translateX(-120%); } to { transform: translateX(120%); } }
+@keyframes id-pop { 40% { transform: scale(1.22); } }
+@keyframes id-in { from { opacity: 0; } }
+
+/* -- signed out, or no name yet (the welcome): the app's logo and name, still, one picture -- */
+#top .brand.id .id-logo { flex: none; width: auto; height: 1.375rem; border-radius: 0; filter: drop-shadow(0 0 0.25rem rgba(var(--logo-rgb), 0.45)); }
+#top .brand.id .id-word { color: var(--hi); font: 700 1.0625rem/1 var(--font); letter-spacing: 0.2em; text-shadow: 0 0 0.875rem rgba(var(--accent-rgb), 0.55); }
+
+/* -- narrow windows (the same breakpoint as the top bar's own): the rank's name goes to the tooltip, "LV 14" stays -- */
+@media (max-width: 1250px) {
+  #top .id-rn { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #top .brand.id *, #top .brand.id *::before, #top .brand.id *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; animation-delay: 0s !important; }
+  #top .orb-chip.gain::after { opacity: 0; }
+}
+
+/* top bar: an update shows up as a pulsing button */
 #update[hidden] { display: none; }
 .topbtn.icon { display: inline-flex; align-items: center; padding: 3px 6px; }
 .topbtn svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
@@ -132,11 +289,6 @@
 .mn-empty b { color: var(--accent-soft); }
 .pk-foot .pk-ok[hidden] { display: none; }
 
-/* the logo: your status (what waits for you is counted on the left edge's icons) */
-.brand { position: relative; }
-.brand .bme[hidden] { display: none; }
-.brand .bme { position: absolute; left: 19px; top: 15px; z-index: 2; width: 8px; height: 8px; --dot-bg: rgb(var(--panel-rgb)); outline: 2px solid rgb(var(--panel-rgb)); }
-
 /* friend right-click menu and the "remove?" question */
 .mn-ctx { position: absolute; z-index: 30; display: flex; flex-direction: column; width: 180px; padding: 5px; border: 1px solid rgba(var(--glow), 0.45); border-radius: 7px; background: rgba(var(--surface-rgb), var(--glass-a)); -webkit-backdrop-filter: blur(16px) saturate(1.4); backdrop-filter: blur(16px) saturate(1.4); box-shadow: 0 14px 36px rgba(0, 0, 0, 0.6), 0 0 18px rgba(var(--glow), 0.22); animation: slidein 0.12s ease-out; }
 .mn-ctx button { padding: 6px 9px; border: 0; border-radius: 4px; background: transparent; color: var(--txt); font: inherit; text-align: left; cursor: pointer; }
@@ -153,31 +305,6 @@
 .atk-shield[hidden] { display: none; }
 .atk-shield svg { width: 13px; height: 13px; fill: rgba(var(--accent-rgb), 0.16); stroke: currentColor; stroke-width: 1.4; stroke-linejoin: round; }
 .atk-shield b { font-weight: 600; }
-/* The reticle closing onto the map's centre while a lock builds (attack.js reticle()): four corner brackets, orange while
-   closing, amber once locked, steady until the blast; no flashing. Warm fixed colours, as the DANGER strip's. */
-#atk-ret { position: fixed; z-index: 47; transform: translate(-50%, -50%); pointer-events: none; }
-#atk-ret .rt { position: absolute; inset: 0; --c: #ff6a1a; transform: scale(1.4); animation: atk-close 1s cubic-bezier(0.2, 0.7, 0.3, 1) backwards; }
-#atk-ret.locked .rt { --c: #ffb020; animation: atk-seat 0.2s ease-out; }
-#atk-ret .rt i { position: absolute; width: 24%; height: 24%; border: 0 solid var(--c); transition: border-color 0.2s; filter: drop-shadow(0 0 4px rgba(255, 120, 20, 0.6)); }
-#atk-ret .b1 { left: 0; top: 0; border-width: 3px 0 0 3px; }
-#atk-ret .b2 { right: 0; top: 0; border-width: 3px 3px 0 0; }
-#atk-ret .b3 { right: 0; bottom: 0; border-width: 0 3px 3px 0; }
-#atk-ret .b4 { left: 0; bottom: 0; border-width: 0 0 3px 3px; }
-@keyframes atk-close { from { transform: scale(3); opacity: 0.2; } to { transform: scale(1.4); opacity: 1; } }
-@keyframes atk-seat { from { transform: scale(1.52); } to { transform: scale(1.4); } }
-#atk-ret.still .rt { animation: none; }
-@media (prefers-reduced-motion: reduce) { #atk-ret .rt { animation: none; } }
-/* The raiding ship's taunt (attack.js taunt()): a comic speech bubble kept over the ship, its tail pointing down at it.
-   The DANGER strip's dark plate, orange edge and cream words, slanted a little; it pops up once, then holds still. */
-#atk-taunt { position: fixed; z-index: 47; transform: translate(-50%, -100%); pointer-events: none; }
-#atk-taunt[hidden] { display: none; }
-#atk-taunt span { position: relative; display: block; padding: 7px 14px 8px; border: 2px solid #ff6a1a; border-radius: 14px; background: rgba(18, 7, 2, 0.94); color: #fff1de; font: 800 15px/1.2 var(--font-sans); letter-spacing: 0.02em; white-space: nowrap; transform: rotate(-3deg); box-shadow: 0 0 16px rgba(255, 96, 20, 0.35), 0 8px 22px rgba(0, 0, 0, 0.55); animation: atk-pop 0.26s cubic-bezier(0.3, 1.6, 0.5, 1) backwards; }
-#atk-taunt span::after { content: ''; position: absolute; left: 50%; bottom: -9px; width: 14px; height: 14px; margin-left: -7px; border: solid #ff6a1a; border-width: 0 2px 2px 0; border-bottom-right-radius: 3px; background: rgba(18, 7, 2, 0.94); transform: rotate(45deg); }
-#atk-taunt.out span { opacity: 0; transform: rotate(-3deg) scale(0.85); transition: opacity 0.25s, transform 0.25s; }
-@keyframes atk-pop { from { opacity: 0; transform: rotate(-3deg) scale(0.4); } }
-#atk-taunt.still span { animation: none; }
-#atk-taunt.still.out span { transition: none; }
-@media (prefers-reduced-motion: reduce) { #atk-taunt span { animation: none; } #atk-taunt.out span { transition: none; } }
 .mn-ctx button.danger:hover { background: rgba(var(--red-rgb), 0.14); }
 .mn-ctx hr { width: 100%; margin: 4px 0; border: 0; border-top: 1px solid rgba(var(--glow), 0.2); }
 .mn-confirm { position: absolute; inset: 0; z-index: 40; display: flex; align-items: center; justify-content: center; border-radius: 12px; background: rgba(var(--deep-rgb), 0.6); -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px); animation: slidein 0.14s ease-out; }
@@ -208,9 +335,6 @@
 .wn-tip .mb-x { position: absolute; top: 5px; right: 5px; }
 
 /* ===== levels (xp.js): the top bar's rank and XP bar, your profile, a friend's card ===== */
-.brand .stack small.rk { color: rgb(var(--rc)); letter-spacing: 0.3em; text-shadow: 0 0 8px rgba(var(--rc), 0.6); }
-.brand .stack .xpb { position: relative; display: block; height: 2px; margin-top: 4px; overflow: hidden; border-radius: 1px; background: rgba(255, 255, 255, 0.1); }
-.brand .stack .xpb i { display: block; height: 100%; background: rgb(var(--rc)); box-shadow: 0 0 8px rgba(var(--rc), 0.9); transition: width 0.8s ease; }
 
 .pf-head { display: flex; align-items: center; gap: 18px; padding: 2px 4px 14px; }
 .pf-band { flex: none; width: 112px; }
@@ -382,7 +506,7 @@
 #activity .vs-ab.vs-ab-foot:hover { background: var(--accent); box-shadow: 0 0 22px rgba(var(--accent-rgb), 0.75); }
 #activity .vs-ab.vs-ab-foot:hover .vs-ci { color: var(--ink); }
 @keyframes fbk-beacon { 50% { opacity: 1; } }
-#app.cloud-mode #sessions, #app.cloud-mode #mapwrap, #app.cloud-mode #right, #app.cloud-mode #bottom { display: none; }
+#app.cloud-mode #chats, #app.cloud-mode #mapwrap, #app.cloud-mode #right, #app.cloud-mode #bottom { display: none; }
 .cv { --glow: var(--accent-rgb); position: relative; grid-row: 2 / 4; grid-column: 2 / -1; display: none; gap: 8px; min-width: 0; min-height: 0; }
 .cv.on { display: flex; }
 .cv .body { overflow: auto; padding: 12px 14px; }
@@ -470,18 +594,13 @@
 .bh-name { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .bh-name b { color: rgb(var(--q)); font-size: 18px; font-weight: 700; line-height: 1.15; filter: brightness(1.3); }
 .bh-name .q { color: #8b929b; font-size: 12px; }
-.bh-name .steps { display: flex; gap: 3px; width: 120px; }
-.bh-name .steps i { flex: 1; height: 4px; background: #33373d; }
-.bh-name .steps i.on { background: rgb(var(--q)); box-shadow: 0 0 6px rgba(var(--q), 0.7); }
 .bdg-hover p { margin: 2px 0 0; color: #e6e8eb; }
 .bdg-hover small { color: #8b929b; font-size: 12px; }
+.bdg-hover .tp-top, .sc-tip .tp-top { color: #e6e8eb; font-weight: 600; }
 .bdg-hover .tp-rare.rare { color: #ffd23f; font-weight: 700; }
 .bdg-mini[data-bid] { cursor: help; }
 .sc-tip b { color: rgb(var(--q)); font-size: 1.3em; filter: brightness(1.3); }
 .sc-tip .q { color: #8b929b; font-size: 0.92em; letter-spacing: 0.04em; }
-.sc-tip .steps { display: flex; gap: 3px; }
-.sc-tip .steps i { flex: 1; height: 4px; background: #33373d; }
-.sc-tip .steps i.on { background: rgb(var(--q)); box-shadow: 0 0 6px rgba(var(--q), 0.7); }
 .sc-tip p { margin: 3px 0; color: #e6e8eb; line-height: 1.45; }
 .tp-prog { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 8px; font-size: 0.9em; }
 .tp-prog label { color: #8b929b; }
@@ -646,12 +765,7 @@
 /* over the main menu (#cloudui, 2700), as the archive is */
 .acct-merge, .acct-conflict, .acct-terms-box { --glow: var(--accent-rgb); position: fixed; z-index: 2800; border-radius: 0; background: rgba(0, 0, 0, 0.62); }
 
-/* the account's icon on the activity bar, above feedback; a green dot while signed in */
-#activity .vs-ab.vs-ab-acct { margin-top: auto; }
-#activity .vs-ab.vs-ab-acct + .vs-ab-foot { margin-top: 12px; }
-#activity .acct-dot { position: absolute; right: 4px; bottom: 4px; z-index: 1; width: 6px; height: 6px; border: 1.5px solid var(--side); border-radius: 50%; background: var(--green); box-shadow: 0 0 4px rgba(var(--green-rgb), 0.7); }
-#activity .acct-dot[hidden] { display: none; }
-/* its menu, beside the icon (account.js menu) */
+/* the account menu, under the identity card in the top bar (account.js menu) */
 .acct-menu { --glow: var(--accent-rgb); position: fixed; z-index: 2600; width: 280px; padding: 6px; border: 1px solid rgba(var(--accent-rgb), 0.55); border-radius: 8px; background: rgba(var(--surface-rgb), 0.96); box-shadow: 0 14px 40px rgba(0, 0, 0, 0.6), 0 0 20px rgba(var(--accent-rgb), 0.18); font-size: 1.05em; }
 .acct-menu button { display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 10px; border: 0; border-radius: 5px; background: none; color: var(--txt); font: inherit; text-align: left; cursor: pointer; }
 .acct-menu button:hover { background: rgba(var(--accent-rgb), 0.14); color: var(--hi); }
@@ -702,8 +816,6 @@
 .mn-main b.mn-nick { color: var(--hi); }
 .nick-ask { width: 380px; border-color: rgba(var(--accent-rgb), 0.55); }
 .nick-ask .hk-field { margin: 4px 0 14px; }
-/* the GitHub picture in place of the account icon */
-#activity .vs-ab-acct img.acct-avatar { width: 28px; height: 28px; border: 1px solid rgba(var(--accent-rgb), 0.55); border-radius: 50%; object-fit: cover; }
 #activity .vs-ci[hidden] { display: none; }
 .mn-main .mn-name i.mn-real { margin-left: 6px; color: var(--dim); font-style: normal; font-size: 0.88em; }
 .nick-ask { width: 420px; }
@@ -711,21 +823,10 @@
 /* ===== Badges (badges.js / badge-art.js): the inventory in the profile, a friend's in their card, the displayed one
    beside names. The art keeps its own colours whatever the theme; only the frames around it follow the theme. */
 .badge-art.locked { filter: grayscale(1) brightness(0.42) contrast(0.95); }
+/* A tier nobody holds yet (badge-art.js draw): a dark silhouette in the metal, no emblem. */
+.badge-art.veiled { filter: brightness(0.38) saturate(0.6); }
 .bdg-mini { display: inline-flex; align-items: center; margin: 0 4px 0 6px; vertical-align: -4px; }
 .bdg-mini .badge-art { filter: drop-shadow(0 0 3px rgba(0, 0, 0, 0.6)); }
-/* The Orb, the app's money, after your name and badge in the top bar (cloud.js). */
-.brand b .orb-chip { display: inline-flex; align-items: center; gap: 3px; margin-left: 8px; vertical-align: -3px; }
-.brand b .bdg-mini + .orb-chip { margin-left: 4px; }
-.brand b .orb-chip img { width: 18px; height: 18px; filter: drop-shadow(0 0 3px rgba(0, 0, 0, 0.6)); }
-.brand b .orb-n { color: var(--hi); font-size: 0.62em; font-weight: 700; letter-spacing: 0.04em; font-variant-numeric: tabular-nums; text-shadow: 0 0 8px rgba(255, 40, 60, 0.45); }
-.brand b .orb-chip { position: relative; padding: 1px 4px 1px 2px; border-radius: 999px; cursor: pointer; -webkit-app-region: no-drag; }
-.brand b .orb-chip:hover, .brand b .orb-chip[aria-expanded="true"] { background: rgba(255, 255, 255, 0.1); }
-.brand b .orb-chip:focus-visible { outline: 2px solid var(--accent-soft); outline-offset: 1px; }
-/* The change, quietly: it fades in beside the number and out again; no movement. */
-.brand b .orb-tick { position: absolute; left: 50%; top: 100%; margin-top: 1px; color: var(--accent-soft); font: 700 0.5em var(--font-sans); font-style: normal; font-variant-numeric: tabular-nums; white-space: nowrap; text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8); opacity: 0; pointer-events: none; transform: translateX(-50%); }
-.brand b .orb-tick.neg { color: #ff9a8a; }
-.brand b .orb-tick.go { animation: orb-tick 1.6s ease-out; }
-@keyframes orb-tick { 0% { opacity: 0; } 15% { opacity: 1; } 70% { opacity: 1; } 100% { opacity: 0; } }
 /* Its popover: balance, what you earn, the attack's price and how many are left. */
 .orb-pop { position: fixed; z-index: 3000; width: 17.5rem; padding: 0.875rem 1rem 0.75rem; border: 1px solid rgba(var(--glow), 0.45); border-radius: 12px; background: rgba(var(--surface-rgb), 0.94); -webkit-backdrop-filter: blur(16px) saturate(1.4); backdrop-filter: blur(16px) saturate(1.4); box-shadow: 0 14px 36px rgba(0, 0, 0, 0.6), 0 0 18px rgba(var(--glow), 0.18); color: var(--txt); font: 0.8125rem/1.4 var(--font-sans); animation: slidein 0.12s ease-out; }
 .orb-bal { display: flex; align-items: baseline; gap: 0.375rem; margin-bottom: 0.625rem; }
@@ -736,7 +837,7 @@
 .orb-r span { color: var(--txt2); }
 .orb-r b { color: var(--hi); font-weight: 700; font-variant-numeric: tabular-nums; text-align: right; }
 .orb-r small { grid-column: 1 / -1; color: var(--txt3); font-size: 0.75rem; }
-@media (prefers-reduced-motion: reduce) { .brand b .orb-tick.go { animation-duration: 0.01s; animation-fill-mode: forwards; opacity: 1; } .orb-pop { animation: none; } }
+@media (prefers-reduced-motion: reduce) { .orb-pop { animation: none; } }
 .bdg-sum { margin: 0 0 10px; color: var(--txt2); line-height: 1.5; }
 .bdg-sum b { color: var(--hi); }
 .bdg-guest { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 10px 12px; border: 1px dashed rgba(var(--accent-rgb), 0.45); border-radius: 8px; }
@@ -895,10 +996,9 @@ img.pf-pic, img.me-pic { cursor: zoom-in; }
 .acct-terms .mn-ask-btns { align-items: center; }
 .acct-terms .acct-terms-del { margin-right: auto; padding: 0; border: 0; background: none; color: var(--txt3); font: inherit; font-size: 0.9em; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
 .acct-terms .acct-terms-del:hover { color: var(--red); }
-/* Damage on the cards (attack.js damage()): cracked glass drawn over them, a glitch, then it seals. Warm cream cracks with
+/* Cracks on a friend's row (attack.js strike(), the attacker's side): cracked glass drawn over it, a glitch, then it seals. Warm cream cracks with
    a dark edge, a faint amber glass tint; glitch edges in amber and a muted teal. A box that takes no clicks, under the
    banner. Only transform and opacity move. */
-#atk-dmg { position: fixed; inset: 0; z-index: 49; pointer-events: none; overflow: hidden; }
 .atk-hit { position: fixed; overflow: hidden; opacity: 0; background: radial-gradient(circle at var(--ix) var(--iy), rgba(255, 190, 110, 0.14), rgba(255, 150, 60, 0.04) 60%, transparent 80%);
   animation: atk-hit-in 0.12s linear var(--wait) forwards, atk-hit-out var(--fade) ease-in calc(var(--wait) + var(--end)) forwards; }
 .atk-hit svg { position: absolute; inset: 0; width: 100%; height: 100%; fill: none; stroke-linecap: round; stroke-linejoin: round; }
@@ -931,3 +1031,12 @@ img.pf-pic, img.me-pic { cursor: zoom-in; }
 .atk-sk .sk-fire canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
 .atk-sk .sk-glow { position: absolute; inset: 0; opacity: 0; background: radial-gradient(ellipse 50% 72% at 50% 100%, rgba(255, 112, 20, 0.3), rgba(255, 84, 10, 0.11) 55%, transparent 76%); }
 @keyframes atk-prog { from { width: 0; } to { width: 100%; } }
+
+/* Who fired at me (messages.css has the card and the chat line): the friend's row says it until you open the chat. */
+/* ---------- 3. the friend's row ---------- */
+.fr-atk { color: var(--atk-amber, #ffb020); }
+.fr-atk i { margin-right: 4px; font-style: normal; }
+small.fr-new .fr-atk { font-weight: 600; }
+/* A nudge (messages.css has the button, the line and the card): its mark and "nudged you · 2m", bold accent-soft until read. */
+.fr-ndg .ndg-g { width: 12px; height: 12px; margin-right: 4px; vertical-align: -2px; }
+small.fr-new .fr-ndg { color: var(--accent-soft); font-weight: 600; }

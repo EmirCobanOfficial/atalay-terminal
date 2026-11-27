@@ -51,6 +51,8 @@ window.Settings = (() => {
   const last = () => (panes.some((p) => p.id === stored('settings.pane')) ? stored('settings.pane') : 'account');
   let current = last();
   let page = null;
+  let ndgOff = null; // the "let friends nudge me" switch's Social listener (the same)
+  let hitOff = null; // the "show who fired at me" switch's Social listener, one at a time (mount() runs at every opening)
 
   // ---------- the pieces: a group, a row, a switch, the advanced fold ----------
   const group = (title, body, cls = '') => `<section class="st-group${cls ? ` ${cls}` : ''}">${title ? `<h3 class="st-h">${title}</h3>` : ''}<div class="st-box">${body}</div></section>`;
@@ -150,6 +152,8 @@ window.Settings = (() => {
     // in the Mac's menu bar, in Windows' system tray.
     const MCP_MODES = [['off', 'Off'], ['watch', 'Watch only'], ['write', 'Watch and type']];
     const claude =
+      // The accounts group (claude-accounts.js fills it, in the Mac app: the accounts bridge).
+      (window.ClaudeAcct && window.webkit?.messageHandlers?.claudeAccounts ? '<div class="ca-mount"></div>' : '') +
       group('claude can use orbiterm',
         row('let Claude use my chats', { cls: 'mcp-note', text: '…' },
           `<span class="lb-seg ui-seg st-mcp-mode">${MCP_MODES.map(([m, n]) => `<button type="button" data-mode="${m}">${n}</button>`).join('')}</span>`)) +
@@ -166,18 +170,27 @@ window.Settings = (() => {
       `<p class="st-note">Claude only sees Claude Code, Codex, Antigravity and Cursor chats, never a plain terminal. Passwords, keys and tokens are masked before anything leaves Orbiterm. It can't answer approvals, and can't type into a chat started with permissions bypassed. While it's on, ${WIN ? 'an icon shows in the system tray' : 'a sign shows in the menu bar'} with a way to turn it off.</p>`;
 
     const privacy =
+      group('your profile',
+        row('show my profile to everyone', { cls: 'wp-pub-hint', text: 'anyone can open your page on orbiterm.dev and find you by name \u00b7 off: only friends see it' }, sw('pub', 'Show my profile to everyone', true)) +
+        row('your page', { cls: 'st-url wp-url', text: '\u2026' }, '<span class="st-two"><button type="button" class="st-btn wp-copy">copy link</button><a class="st-btn wp-open" href="https://orbiterm.dev" target="_blank" rel="noopener noreferrer">open \u2197</a></span>') +
+        row('show my hours', 'how long you work, your calendar and your flame \u00b7 friends see them too', sw('act', 'Show my hours', true), 'st-sub') +
+        row('show when I work', 'the hours of the day and the days of the week you work', sw('whn', 'Show when I work', true), 'st-sub') +
+        row('show which AI tools and models I use', 'your time with each AI, your models and tokens \u00b7 on the Tokens board too', sw('tkd', 'Show which AI tools and models I use', true), 'st-sub') +
+        row('show all my badges', 'off: only the badge beside your name', sw('bdg', 'Show all my badges', true), 'st-sub')) +
+      '<p class="st-note wp-note"></p>' +
       group('friends and leaderboard',
-        row('show my active time to friends', 'today, this week and in total · your level shows either way', sw('act', 'Show my active time to friends', true)) +
         row('show my name on the leaderboard', 'off: you show as Anonymous, and nobody can add you from there', sw('brd', 'Show my name on the leaderboard', true)) +
         // Kept by the app on this computer, not by the API (Cloud.swift, the Windows app's cloud.js): off, no token counts
         // leave it at all. The two under it are about how the counts it sent show on the board.
         row('share my token counts for the Tokens board', `how many tokens each AI, model and effort used a day, never what was in them · off: none leave this ${MACHINE}, not even later · what was sent stays`, sw('tks', 'Share my token counts for the Tokens board', true)) +
         row('show my name on the Tokens board', 'off: Anonymous on the Tokens board only · your total still counts', sw('tkn', 'Show my name on the Tokens board', true)) +
-        row('let friends see which AI and model I use', 'opening your row on the Tokens board · off: only your total shows, to everyone', sw('tkd', 'Let friends see which AI and model I use', true)) +
         // A friend's spaceship attack (attack.js): the switch's clicks and its state are attack.js's; its words too.
         (window.Attack?.on
           ? row(window.Attack.text.setting.title, window.Attack.text.setting.hint, sw(`atk-on${window.Attack.on() ? ' on' : ''}`, window.Attack.text.setting.aria, window.Attack.on()))
-          : '')) +
+          : '') +
+        // A friend's nudge (messages.js, nudge.ts): `social.nudges`, kept with the account like the others; mutual, so off stops you sending too.
+        row('let friends nudge me', "a friend's nudge shakes your chat with them for half a second and buzzes once \u00b7 off: nobody can nudge you, and you can't nudge them either", sw('ndg-on on', 'Let friends nudge me', true))) +
+      '<p class="st-note">Do not disturb stops nudges too: friends see the button greyed out until it\u2019s off.</p>' +
       (c.notesai
         ? group('notes and AI',
             row('what AI can do with my notes', { cls: 'na-note', text: '…' },
@@ -201,7 +214,10 @@ window.Settings = (() => {
       // notices off (Atalay, 2026-11-15; it used to sit in Privacy as "community feed").
       (window.Community
         ? group('notifications',
-            row('announcements', "a friend on fire, a friend's rare badge, a new #1 this week, the weekly goal · short lines at the top left of the screen and in the bell", sw('cf-feed', 'Show announcements', true)))
+            row('announcements', "a friend on fire, a friend's rare badge, a new #1 this week, the weekly goal · short lines at the top left of the screen and in the bell", sw('cf-feed', 'Show announcements', true)) +
+            // Who fired at me (messages.js, attack.js): the card in the corner that waits until it's seen.
+            row('show who fired at me', "when a friend's spaceship hits you, a card in the corner says who, until you close it \u00b7 off: only the alarm and the line in your chat with them", sw('cf-hit', 'Show who fired at me', true)) +
+            '<p class="st-note">Attacks themselves are in <button type="button" class="st-ln st-atk-priv">Privacy \u203a let friends fire spaceships at me</button>.</p>')
         : '') +
       group('updates', '<div class="hk-info"></div>') +
       (pw
@@ -222,9 +238,9 @@ window.Settings = (() => {
       pane('account', 'Account', '', account) +
       pane('appearance', 'Appearance', '', appearance) +
       pane('chats', 'Chats', '', chats) +
-      pane('claude', 'Claude', `let Claude on this ${MACHINE} see your AI chats, and type into them`, claude) +
+      pane('claude', 'Claude', window.ClaudeAcct && window.webkit?.messageHandlers?.claudeAccounts ? 'your Claude accounts, and what Claude can do with your chats' : `let Claude on this ${MACHINE} see your AI chats, and type into them`, claude) +
       (c.keys ? pane('shortcuts', 'Shortcuts', 'click a shortcut, then press the new keys · esc cancels, delete takes them off', shortcuts) : '') +
-      pane('privacy', 'Privacy', 'what friends, the leaderboard and Discord can see', privacy) +
+      pane('privacy', 'Privacy', 'who can see your profile, and what friends, the leaderboard and Discord see', privacy) +
       pane('general', 'General', '', general) +
       '</div>'
     );
@@ -385,6 +401,54 @@ window.Settings = (() => {
       window.dispatchEvent(new Event('mascotchange'));
       window.webkit?.messageHandlers?.radar?.postMessage({ type: 'mascotMischief', level });
     };
+    // Who fired at me: its switch, kept with the account (`social.hitCard`) and synced like the others.
+    const hit = page.querySelector('.hk-sw.cf-hit');
+    const paintHit = () => {
+      if (!hit || !hit.isConnected) return;
+      const v = Social.prefs().hitCard !== false;
+      hit.classList.toggle('on', v);
+      hit.setAttribute('aria-checked', String(v));
+      hit.disabled = !Social.state();
+    };
+    if (hit) {
+      hit.onclick = async () => {
+        const v = Social.prefs().hitCard === false;
+        hit.disabled = true;
+        const r = await Social.setPref('hitCard', v);
+        hit.disabled = false;
+        if (r.error) return typeof window.toast === 'function' && window.toast(r.error === 'offline' ? "can't reach the server" : "couldn't change it");
+        paintHit();
+        if (typeof window.toast === 'function') window.toast(v ? 'the card for who fired at you is on' : 'the card for who fired at you is off');
+      };
+      if (hitOff) hitOff();
+      hitOff = Social.on((ev) => ['prefs', 'settings', 'snapshot'].includes(ev.type) && paintHit());
+      paintHit();
+    }
+    // Let friends nudge me: its switch, kept with the account (`social.nudges`) and synced like the others.
+    const ndg = page.querySelector('.hk-sw.ndg-on');
+    const paintNdg = () => {
+      if (!ndg || !ndg.isConnected) return;
+      const v = Social.nudgeOn();
+      ndg.classList.toggle('on', v);
+      ndg.setAttribute('aria-checked', String(v));
+      ndg.disabled = !Social.state();
+    };
+    if (ndg) {
+      ndg.onclick = async () => {
+        const v = !Social.nudgeOn();
+        ndg.disabled = true;
+        const r = await Social.setNudges(v);
+        ndg.disabled = false;
+        if (r.error) return typeof window.toast === 'function' && window.toast(r.error === 'offline' ? "can't reach the server" : "couldn't change it");
+        paintNdg();
+        if (typeof window.toast === 'function') window.toast(v ? 'friends can nudge you' : 'nudges are off · nobody can nudge you, and you can\u2019t nudge them');
+      };
+      if (ndgOff) ndgOff();
+      ndgOff = Social.on((ev) => ['prefs', 'settings', 'snapshot'].includes(ev.type) && paintNdg());
+      paintNdg();
+    }
+    const toPriv = page.querySelector('.st-atk-priv');
+    if (toPriv) toPriv.onclick = () => show('privacy');
     const mcpMode = page.querySelector('.st-mcp-mode');
     if (mcpMode) mcpMode.onclick = (e) => {
       const b = e.target.closest('button[data-mode]');
@@ -401,6 +465,7 @@ window.Settings = (() => {
     paintSound();
     paintTheme();
     paintMascot();
+    window.WebPriv?.mountSettings(page);
   }
 
   // What takes the keys when Settings shows (cloud.js showTab): in Account the e-mail sign-in's field if it's open,

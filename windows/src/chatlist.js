@@ -60,8 +60,10 @@ function labels(cwds) {
 /**
  * `settings`: { get(key), set(key, value) }, where the stars, the archive and the deleted chats are kept. `trashOps`:
  * what deletes a conversation's files (chattrash.js); `onErased()`: files were deleted, the engine reads the list again.
+ * `renamedAt(file, title, until)`: when a Claude chat got its newest /rename name (engine.js); `onNames()`: a name typed
+ * here gave way to it after that was read.
  */
-function createChatList({ settings, trashOps, onErased }) {
+function createChatList({ settings, trashOps, onErased, renamedAt, onNames }) {
   const saved = settings.get('chatList') || {};
   const kept = (k) => new Set(Array.isArray(saved[k]) ? saved[k].filter((x) => typeof x === 'string') : []);
   const favorites = kept('favorites');
@@ -81,8 +83,14 @@ function createChatList({ settings, trashOps, onErased }) {
   }
   // Chats whose files are being deleted right now: out of the trash already, not back in the list.
   const erasing = new Set();
+  // When each name was typed (ms), to weigh it against the AI's own rename. Names typed before this was kept have none.
+  const titlesAt = new Map(Object.entries(saved.titlesAt && typeof saved.titlesAt === 'object' ? saved.titlesAt : {}).filter(([id, v]) => Number.isFinite(v) && titles.has(id)));
+  // The last /rename value the engine saw in each Claude chat, kept across launches, so a new one can be told from one already
+  // there: the newest name wins, whether it was typed here or in the AI (as the Mac's ChatNames).
+  const customSeen = new Map(Object.entries(saved.customSeen && typeof saved.customSeen === 'object' ? saved.customSeen : {}).filter(([, v]) => typeof v === 'string'));
   const save = () => settings.set('chatList', {
     favorites: [...favorites], archived: [...archived], folders: [...folders], restored: [...restored], titles: Object.fromEntries(titles),
+    titlesAt: Object.fromEntries(titlesAt), customSeen: Object.fromEntries(customSeen),
     pinned: [...pinned],
     trash: Object.fromEntries([...trash].map(([id, c]) => [id, { title: c.title, cwd: c.cwd, tool: c.tool, path: c.path, at: c.at }])),
   });
@@ -152,6 +160,42 @@ function createChatList({ settings, trashOps, onErased }) {
     save();
   };
 
+  // The AI's own /rename of a Claude chat (`title` as the engine shows it). A value not seen before is weighed once against a
+  // name typed here, and the newer wins (the Mac's ChatNames.noteCustom): one just written (`live`) is newer; else its time,
+  // read from the transcript (`file`), against the time the name was typed. A name typed before typed names kept their time
+  // gives way to it. The value is remembered once weighed. True when anything here changed (to be saved).
+  const weighing = new Set();
+  function noteCustom(id, title, live, file) {
+    if (!id || typeof title !== 'string' || !title || customSeen.get(id) === title) return false;
+    const typed = titles.get(id), at = titlesAt.get(id), before = customSeen.get(id);
+    if (typed !== undefined && !live && Number.isFinite(at) && file && typeof renamedAt === 'function') {
+      const key = `${id}\n${title}`;
+      if (weighing.has(key)) return false;
+      weighing.add(key);
+      renamedAt(file, title, at).catch(() => null).then((t) => {
+        weighing.delete(key);
+        // Another rename was taken meanwhile (one just written): that one stands.
+        if (customSeen.get(id) !== before) return;
+        customSeen.set(id, title);
+        // The typed name stays when it's the newer, or when one was typed again meanwhile.
+        const drop = !(Number.isFinite(t) && t < at) && titles.get(id) === typed && titlesAt.get(id) === at;
+        if (drop) {
+          titles.delete(id);
+          titlesAt.delete(id);
+        }
+        changed();
+        if (drop && onNames) onNames();
+      });
+      return false;
+    }
+    customSeen.set(id, title);
+    if (typed !== undefined) {
+      titles.delete(id);
+      titlesAt.delete(id);
+    }
+    return true;
+  }
+
   // The live session a chat of the list is (its own, or the conversation another AI tool's process is in).
   const liveOf = (item) => live.find((b) => b.sessionId === item.id || (b.convId && b.convId === item.id));
   // Whether a chat can be deleted here: a saved conversation of Claude Code's, Codex's or Antigravity's, not running
@@ -186,6 +230,8 @@ function createChatList({ settings, trashOps, onErased }) {
       archived.delete(c.id);
       restored.delete(c.id);
       titles.delete(c.id);
+      titlesAt.delete(c.id);
+      customSeen.delete(c.id);
     }
     // Gone from the list now, not when the engine has read it again.
     items = items.filter((i) => failed.has(i.id) || !chats.some((c) => c.id === i.id));
@@ -196,7 +242,24 @@ function createChatList({ settings, trashOps, onErased }) {
   return {
     setItems(list) {
       items = Array.isArray(list) ? list : [];
+      let dirty = false;
+      for (const i of items) if (i && i.custom) dirty = noteCustom(i.id, i.title, false, i.path) || dirty;
+      // The renames remembered of chats no longer on disk are forgotten.
+      const ids = new Set(items.map((i) => i && i.id));
+      for (const id of customSeen.keys()) {
+        if (ids.has(id)) continue;
+        customSeen.delete(id);
+        dirty = true;
+      }
+      if (dirty) save();
       version++;
+    },
+    /** The AI's own /rename, just written into a running chat: it takes over from a name typed here. True when one gave way. */
+    renamedLive(id, title) {
+      const typed = titles.has(id);
+      if (!noteCustom(id, title, true)) return false;
+      changed();
+      return typed;
     },
     /** What the list shows of the live sessions changed: true. */
     setLive(list) {
@@ -285,8 +348,13 @@ function createChatList({ settings, trashOps, onErased }) {
     rename(id, name) {
       if (!id) return;
       const clean = String(name || '').trim().slice(0, 120);
+      // When it was typed: against the AI's own rename, the newer wins.
+      if (clean && titles.get(id) !== clean) titlesAt.set(id, Date.now());
       if (clean) titles.set(id, clean);
-      else titles.delete(id);
+      else {
+        titles.delete(id);
+        titlesAt.delete(id);
+      }
       changed();
     },
     setFolder(cwd, on) {

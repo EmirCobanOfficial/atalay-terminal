@@ -59,8 +59,9 @@ body { display: flex; flex-direction: column; overflow: hidden; background: var(
 #counts b { font-weight: 700; }
 #counts b.err { color: var(--red, #ff4d4d); }
 #counts .ag { color: var(--violet, #b48cff); font-weight: 700; }
-@media (max-width: 720px) { #counts { display: none !important; } }
-@media (max-width: 520px) { #ctx { display: none !important; } }
+@media (max-width: 720px) { body:not(.pane-split) #counts { display: none !important; } }
+@media (max-width: 520px) { body:not(.pane-split) #ctx { display: none !important; } }
+#ctx .s { display: none; }
 /* A linked worktree (spec 4.1; the Mac's WorktreeChipView and WorktreeShipButton): the chip after the title and the
    split button before the star, in the theme's own tokens over the header as it is. The header's height doesn't change. */
 #hud #wt { display: inline-flex; flex: none; align-items: center; gap: 5px; max-width: 40%; height: 20px; margin: 2px 0; padding: 0 6px;
@@ -104,6 +105,68 @@ body { display: flex; flex-direction: column; overflow: hidden; background: var(
 @media (max-width: 639px) { #wt .nums { display: none !important; } }
 #announce { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 #term { flex: 1; min-height: 0; padding: 6px 4px 4px 8px; }
+/* One pane of a split (the app's tabs and panes): without the keys it dims a little, as in iTerm2. Its name, renamed in
+   place, in a field where the title was. */
+body.pane-off #term { opacity: 0.7; }
+#rename { flex: 0 1 24ch; min-width: 8ch; height: 20px; padding: 0 5px; border: 1px solid var(--accent, #f88008); border-radius: 3px; outline: none; background: rgba(0, 0, 0, 0.45); color: var(--hi, #fff8f0); font: inherit; }
+/* In a split the strip is the Mac's pane title bar (Panes.swift PaneTitleBar): 20 px, its corners rounded 4, a 1 px line of
+   the accent (0.6 with the keys, 0.18 without) round a tint of it (0.16) or black (0.28). From the left, 8 px in: a dot only
+   while its AI works or needs you, the account's disc (when the window's panes use more than one account), the name; from
+   the right, 4 px in: the close ×, the star, env, the copy (Mac 2764fef: each pane's own), 4 px, the context (a 36 px meter
+   and its size), the counts (at most 170 px; they go first when the name would get under 70 px, then the context). The
+   window's bar over the panes (pages/tabs.js) carries the rest: everything else on the strip is hidden here. A theme's
+   dressing of the strip (MUR47, HK-416) stays off it, as on the Mac. */
+body.pane-split #hud { height: 20px; box-sizing: border-box; gap: 0; padding: 0 4px 0 8px; border: 1px solid rgba(var(--accent-rgb, 248, 128, 8), 0.18); border-radius: 4px;
+  background: rgba(0, 0, 0, 0.28); box-shadow: none; font: 10.5px "Cascadia Mono", Consolas, monospace; }
+body.pane-split:not(.pane-off) #hud { border-color: rgba(var(--accent-rgb, 248, 128, 8), 0.6); background: rgba(var(--accent-rgb, 248, 128, 8), 0.16); }
+body.pane-split #hud::before { display: none; }
+body.pane-split #hud > :not(#dot):not(#acct):not(#title):not(#rename):not(#ctx):not(#counts):not(#copyreply):not(#envbtn):not(#star):not(#end):not(#copied):not(#announce) { display: none !important; }
+body.pane-split #hud #dot { display: none; order: 0; width: 6px; height: 6px; margin-right: 5px; box-shadow: none; }
+body.pane-split #hud[data-dot="busy"] #dot, body.pane-split #hud[data-dot="waiting"] #dot { display: block; }
+body.pane-split #hud[data-dot="busy"] #dot { background: var(--accent, #f88008); }
+body.pane-split #hud[data-dot="waiting"] #dot { background: var(--warn, #ffb000); animation: pane-pulse 0.8s ease-in-out infinite alternate; }
+@keyframes pane-pulse { to { opacity: 0.3; } }
+@media (prefers-reduced-motion: reduce) { body.pane-split #hud[data-dot="waiting"] #dot { animation: none; } }
+/* The disc only (14 px), 4 px before the name; a click on it is a click on the strip (the Mac's is a picture). */
+body.pane-split #hud #acct { display: none !important; }
+body.pane-split.pane-accts #hud #acct:not([hidden]) { display: inline-flex !important; order: 1; height: 14px; margin: 0 4px 0 0; padding: 0; border: 0; border-radius: 50%;
+  background: none; box-shadow: none; animation: none; pointer-events: none; }
+body.pane-split #hud #acct > :not(.ac) { display: none; }
+body.pane-split #hud #title, body.pane-split #hud #rename { order: 2; flex: 1 1 auto; min-width: 0; margin-right: 4px; }
+body.pane-split #hud #title { color: var(--dim, #8f7a66); font: 400 10.5px "Cascadia Mono", Consolas, monospace; letter-spacing: 0; text-transform: none; text-shadow: none; }
+body.pane-split:not(.pane-off) #hud #title { color: var(--accent-soft, #ffb057); font-weight: 600; }
+body.pane-split #hud #rename { height: 16px; font-size: 10.5px; }
+body.pane-split #hud #counts { order: 3; max-width: 170px; margin: 0 4px; overflow: hidden; font-size: 10px; text-overflow: ellipsis; }
+body.pane-split #hud #counts b { font-weight: 600; }
+body.pane-split #hud #counts .ag { display: none; }
+body.pane-split #hud #ctx { order: 4; margin: 0 4px; font-size: 10px; }
+body.pane-split #hud #ctx i, body.pane-split #hud #ctx .n { display: none; }
+body.pane-split #hud #ctx .s { display: inline; }
+body.pane-split #hud #ctx .bar { width: 36px; height: 5px; }
+body.pane-split #hud #ctx .bar span { box-shadow: none; }
+/* Its own buttons, side by side (Mac 2764fef): copy 18 px (an AI's pane only), env 26 px (30 with "•" for changes not saved),
+   the star 18 px (a chat's only: outline, or filled amber), the × 16 px; borderless, no hover look, as the Mac's. They act
+   for this pane (term:copyReply, its env view, term:favorite, term:end). */
+body.pane-split #hud :is(#copyreply, #envbtn, #star, #end), body.pane-split #hud :is(#copyreply, #envbtn, #star, #end):hover {
+  flex: none; align-items: center; justify-content: center; margin: 0; padding: 0; border: 0; border-radius: 0; background: none; box-shadow: none;
+  letter-spacing: 0; text-align: center; text-transform: none; text-shadow: none; }
+body.pane-split #hud #copyreply, body.pane-split #hud #copyreply:hover { order: 5; width: 18px; height: 18px; color: var(--accent-soft, #ffb057); }
+body.pane-split #hud #copyreply svg { width: 11px; height: 11px; stroke-width: 1.7; }
+body.pane-split #hud #envbtn, body.pane-split #hud #envbtn:hover, body.pane-split #hud #envbtn.on { order: 6; width: 26px; height: 18px; color: var(--amber, #ffc040); font: 600 10px/18px "Cascadia Mono", Consolas, monospace; }
+body.pane-split #hud #envbtn.dirty { width: 30px; }
+body.pane-split #hud #envbtn.dirty::after { content: '\2022'; position: static; width: auto; height: auto; border-radius: 0; background: none; box-shadow: none; }
+body.pane-split #hud #star, body.pane-split #hud #star:hover { display: inline-flex; order: 7; width: 18px; height: 18px; color: var(--accent-soft, #ffb057); }
+body.pane-split #hud #star.on, body.pane-split #hud #star.on:hover { color: color-mix(in srgb, var(--amber, #ffc040) 80%, white); }
+body.pane-split #hud #star svg { width: 11px; height: 11px; stroke-width: 1.7; }
+body.pane-split #hud #star[hidden] { display: none; }
+body.pane-split #hud #end, body.pane-split #hud #end:hover { order: 8; width: 16px; height: 16px; color: var(--dim, #8f7a66); font: 500 12px/16px "Cascadia Mono", Consolas, monospace; }
+body.pane-split:not(.pane-off) #hud #end, body.pane-split:not(.pane-off) #hud #end:hover { color: var(--accent-soft, #ffb057); }
+/* The selection's and the copy's badge: at the pane's bottom right over the terminal, as the Mac's. */
+body.pane-split #copied { position: fixed; right: 10px; bottom: 6px; z-index: 25; }
+/* Under a slim strip: the frosted glass, the find bar and the env view start 20 px down. */
+body.pane-split #veil { top: 20px; }
+body.pane-split #find { top: 27px; }
+body.pane-split #env { top: 20px; }
 /* Streamer mode: frosted glass over the terminal, under the strip (what a terminal prints can't be swapped for made-up
    text). The terminal runs on under it, and the mouse and the keys still reach it. */
 #veil { position: fixed; inset: 33px 0 0; z-index: 20; pointer-events: none; background: color-mix(in srgb, var(--code-bg, #251200) 45%, transparent); -webkit-backdrop-filter: blur(16px) saturate(1.2); backdrop-filter: blur(16px) saturate(1.2); }
@@ -121,3 +184,45 @@ body { display: flex; flex-direction: column; overflow: hidden; background: var(
 #find button svg { fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
 @media (max-width: 420px) { #find input { width: 110px; } }
 .xterm .xterm-viewport { scrollbar-color: rgba(var(--accent-rgb, 248, 128, 8), 0.35) transparent; }
+
+/* Claude accounts (spec 4 to 7; the Mac's AccountChip and AccountNoteBar): shown with two or more accounts only. --ah is the
+   account's colour as "r, g, b". */
+#hud #acct { display: inline-flex; flex: none; align-items: center; gap: 5px; max-width: 46%; height: 20px; margin: 2px 0; padding: 0 6px 0 3px; overflow: hidden;
+  border: 1px solid rgba(var(--ah, 255, 176, 87), 0.55); border-radius: 10px; background: rgba(var(--ah, 255, 176, 87), 0.1);
+  color: rgb(var(--ah, 255, 176, 87)); font: 600 10.5px "Cascadia Mono", Consolas, monospace; white-space: nowrap; cursor: pointer; }
+#hud #acct[hidden] { display: none !important; }
+#hud #acct:hover, #hud #acct.open { border-color: rgb(var(--ah, 255, 176, 87)); background: rgba(var(--ah, 255, 176, 87), 0.2); color: rgb(var(--ah, 255, 176, 87)); }
+#hud #acct.open { box-shadow: 0 0 0 3px rgba(var(--ah, 255, 176, 87), 0.18); }
+#hud #acct.out { border-color: color-mix(in srgb, var(--red, #ff4d4d) 70%, transparent); background: color-mix(in srgb, var(--red, #ff4d4d) 10%, transparent); }
+#hud #acct.pending { border-style: dashed; }
+.ac { display: inline-grid; flex: none; place-items: center; width: 14px; height: 14px; border-radius: 50%; background: rgb(var(--ah, 255, 176, 87)); color: #180e07; font: 800 8.5px/1 "Segoe UI", sans-serif; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35); }
+#acct .lab { overflow: hidden; text-overflow: ellipsis; }
+#acct .sep { flex: none; width: 1px; height: 10px; background: rgba(var(--ah, 255, 176, 87), 0.35); }
+#acct .pct { color: var(--red, #ff4d4d); font-weight: 700; }
+#acct .next { display: inline-flex; align-items: center; gap: 4px; color: var(--txt2, var(--dim, #8f7a66)); font-weight: 500; }
+#acct .next svg { width: 11px; height: 11px; fill: none; stroke: rgb(var(--ah2, 255, 176, 87)); stroke-width: 1.4; stroke-linecap: round; }
+#acct .chev { width: 8px; height: 8px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+#hud #acct.flash { animation: ac-flash 900ms ease-out 1; }
+@keyframes ac-flash { from { box-shadow: 0 0 0 0 rgba(var(--ah, 255, 176, 87), 0.6); } to { box-shadow: 0 0 0 8px rgba(var(--ah, 255, 176, 87), 0); } }
+@media (prefers-reduced-motion: reduce) { #hud #acct.flash { animation: none; } }
+/* A narrow strip keeps the initial and the chevron only (fitHud adds .narrow). */
+#hud #acct.narrow .lab, #hud #acct.narrow .sep, #hud #acct.narrow .pct, #hud #acct.narrow .words { display: none; }
+#acctnote { display: flex; flex: none; align-items: center; gap: 10px; min-height: 34px; padding: 5px 12px; box-sizing: border-box; border-top: 1px solid rgba(255, 77, 77, 0.2); border-bottom: 1px solid rgba(255, 77, 77, 0.4);
+  background: rgba(255, 77, 77, 0.08); color: var(--txt2, var(--dim, #8f7a66)); font: 12px "Segoe UI", sans-serif; }
+#acctnote[hidden] { display: none; }
+#acctnote.low { border-top-color: rgba(255, 192, 64, 0.2); border-bottom-color: rgba(255, 192, 64, 0.42); background: rgba(255, 192, 64, 0.06); }
+#acctnote.went, #acctnote.switching { border-top-color: rgba(var(--accent-rgb, 248, 128, 8), 0.2); border-bottom-color: rgba(var(--accent-rgb, 248, 128, 8), 0.42); background: rgba(var(--accent-rgb, 248, 128, 8), 0.08); }
+#acctnote svg { flex: none; width: 13px; height: 13px; fill: none; stroke: var(--red-soft, var(--red, #ff4d4d)); stroke-width: 1.4; stroke-linecap: round; }
+#acctnote.low svg { stroke: var(--amber, #ffc040); }
+#acctnote.went svg, #acctnote.switching svg { stroke: var(--accent-soft, #ffb057); }
+#acctnote .msg { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#acctnote .msg b { color: var(--hi, #fff8f0); font-weight: 600; }
+#acctnote button { display: inline-flex; flex: none; align-items: center; gap: 6px; height: 24px; padding: 0 9px; border: 1px solid var(--accent, #f88008); border-radius: 6px; background: transparent; color: var(--accent-soft, #ffb057); font: inherit; cursor: pointer; }
+#acctnote button:hover { background: rgba(var(--accent-rgb, 248, 128, 8), 0.14); }
+#acctnote button.quiet { border-color: transparent; color: var(--txt3, var(--dim, #8f7a66)); }
+#acctnote button.quiet:hover { background: transparent; color: var(--txt, #f5ebe0); }
+#acctnote .ac { background: rgb(var(--ah)); }
+@media (max-width: 420px) { #acctnote .msg .more { display: none; } }
+
+/* While a pane's strip is dragged the pointer holds a closed hand wherever it is over this page, the strip's buttons included. */
+body.dragging, body.dragging * { cursor: grabbing !important; }

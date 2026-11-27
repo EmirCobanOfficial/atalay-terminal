@@ -1121,6 +1121,7 @@ const SKIP_TYPES = ['attachment', 'file-history-snapshot', 'progress', 'queue-op
 const DATA_KEY = Buffer.from('"data":"');
 const CWD_KEY = Buffer.from('"cwd":"');
 const AI_TITLE = Buffer.from('"type":"ai-title"');
+const CUSTOM_TITLE = Buffer.from('"type":"custom-title"');
 const LAST_PROMPT = Buffer.from('"type":"last-prompt"');
 
 function skipped(data, off, end) {
@@ -1277,16 +1278,28 @@ async function readChat(item) {
       return null;
     }
   };
-  const scan = (list) => {
+  let customSeen = false;
+  const scan = (list, tail) => {
     for (let i = list.length - 1; i >= 0; i--) {
-      if (item.title && item.lastPrompt && item.cwd) return;
+      if (item.title && item.lastPrompt && item.cwd && customSeen) return;
       const head = list[i].subarray(0, 800);
+      // Claude's own /rename: the newest custom-title record is the chat's name, over any AI-written title. Only the tail's is
+      // its newest (the head's may be an old one): the list weighs that one against a name typed there (chatlist.js).
+      if (!customSeen && head.indexOf(CUSTOM_TITLE) >= 0) {
+        const c = parse(list[i]);
+        if (c && typeof c.customTitle === 'string' && c.customTitle) {
+          item.title = clip(redact(c.customTitle), 90);
+          item.custom = tail;
+          customSeen = true;
+          continue;
+        }
+      }
       const isTitle = head.indexOf(AI_TITLE) >= 0, isPrompt = head.indexOf(LAST_PROMPT) >= 0;
       if (!isTitle && !isPrompt && (item.cwd || head.indexOf(CWD_KEY) < 0)) continue;
       const rec = parse(list[i]);
       if (!rec) continue;
       // The list sits on the dashboard, which may be on a stream: no credentials, as everywhere on it.
-      if (isTitle && !item.title && typeof rec.aiTitle === 'string') item.title = clip(redact(rec.aiTitle), 90);
+      if (isTitle && !item.title && !customSeen && typeof rec.aiTitle === 'string') item.title = clip(redact(rec.aiTitle), 90);
       if (isPrompt && !item.lastPrompt && typeof rec.lastPrompt === 'string') item.lastPrompt = clip(redact(rec.lastPrompt), 160);
       if (!item.cwd && typeof rec.cwd === 'string') item.cwd = rec.cwd;
     }
@@ -1295,6 +1308,7 @@ async function readChat(item) {
     item.cwd = '';
     item.title = '';
     item.lastPrompt = '';
+    item.custom = false;
     let rest = null;
     for (let off = 0; !item.cwd && off < Math.min(size, 8 << 20); ) {
       const chunk = await read(off, 256 << 10);
@@ -1317,11 +1331,79 @@ async function readChat(item) {
       }
     }
     const tail = size > 96 << 10 ? size - (96 << 10) : 0;
-    scan(lines(await read(tail, 96 << 10), tail));
-    if (!item.title && !item.lastPrompt && size > 96 << 10) scan(lines(await read(0, 96 << 10), 0));
+    scan(lines(await read(tail, 96 << 10), tail), true);
+    if (!item.title && !item.lastPrompt && size > 96 << 10) scan(lines(await read(0, 96 << 10), 0), false);
     return true;
   } catch {
     return false;
+  } finally {
+    await fh.close().catch(() => {});
+  }
+}
+
+const TIMESTAMP_KEY = Buffer.from('"timestamp":"');
+
+// When a Claude chat got its newest /rename name, to weigh it against a name typed in the list (chatlist.js; the Mac's
+// RadarEngine.renamedAt). Claude writes the name as a record with no time, then the /rename command's own record with one,
+// and the name again on every turn after: the earliest record of the newest run of that name is the rename, and the first
+// time written after it dates it (the file's last change when none is). Read backward from the end a MB at a time; it stops
+// at a record of the name older than `until` (the typed name is the newer then). `title`: the name as the list has it
+// (clipped, without credentials). Null when the file can't be read or the name isn't its newest.
+async function renamedAt(file, title, until) {
+  let fh;
+  try {
+    fh = await fsp.open(file, 'r');
+  } catch {
+    return null;
+  }
+  try {
+    const st = await fh.stat();
+    const time = (head) => {
+      const m = head && /"timestamp":"(\d{4}-\d\d-\d\dT[^"]+)"/.exec(head.toString('utf8'));
+      const t = m ? parseISO(m[1]) : 0;
+      return t > 0 ? t : st.mtimeMs;
+    };
+    let end = st.size, carry = null, newest = false, renamed = st.mtimeMs;
+    // The head of the nearest record after the one at hand that has a time.
+    let timed = null;
+    scan: while (end > 0) {
+      const start = Math.max(0, end - (1 << 20));
+      const buf = Buffer.allocUnsafe(end - start);
+      const { bytesRead } = await fh.read(buf, 0, buf.length, start);
+      if (bytesRead !== buf.length) return null;
+      const data = carry ? Buffer.concat([buf, carry]) : buf;
+      const parts = [];
+      for (let off = 0; ; ) {
+        const nl = data.indexOf(10, off);
+        parts.push(data.subarray(off, nl < 0 ? data.length : nl));
+        if (nl < 0) break;
+        off = nl + 1;
+      }
+      // The piece before the chunk's first newline is the end of a line that begins further back: it goes with the next.
+      carry = start > 0 ? Buffer.from(parts.shift()) : null;
+      for (let i = parts.length - 1; i >= 0; i--) {
+        const line = parts[i];
+        if (!line.length) continue;
+        const head = line.subarray(0, 4096);
+        if (head.subarray(0, 200).indexOf(CUSTOM_TITLE) >= 0) {
+          let rec = null;
+          try {
+            rec = JSON.parse(line.toString('utf8'));
+          } catch {}
+          if (!isObj(rec) || typeof rec.customTitle !== 'string' || !rec.customTitle) continue;
+          if (clip(redact(rec.customTitle), 90) !== title) break scan;
+          newest = true;
+          renamed = time(timed);
+          if (renamed < until) break scan;
+        } else if (head.indexOf(TIMESTAMP_KEY) >= 0) {
+          timed = head;
+        }
+      }
+      end = start;
+    }
+    return newest ? renamed : null;
+  } catch {
+    return null;
   } finally {
     await fh.close().catch(() => {});
   }
@@ -1533,6 +1615,9 @@ class Session extends Track {
     // `updatedAt` of the registry entry that carries this chat. Two live processes can hold one conversation (a
     // `--resume` that didn't fork); the one updated last carries the card.
     this.regUpdated = 0;
+    // The Claude account whose registry holds it, when this process started, and when its usage limit last answered 429
+    // (0 after a normal reply).
+    this.account = ''; this.procStartedAt = 0; this.limitHitAt = 0;
     this.tty = null;
     this.cpu = 0;
     this.mem = 0;
@@ -1608,6 +1693,11 @@ class RadarEngine {
     this.registry = path.join(this.claudeDir, 'sessions');
     this.userSettings = path.join(this.claudeDir, 'settings.json');
     this.limitsFile = opts.limitsFile || null;
+    // The Claude accounts (claudeaccounts.js): every account's registry is read, a session knowing which one it was found in.
+    // Without it (or with one account) the engine reads the one folder, as it always did.
+    this.accounts = opts.accounts || null;
+    // Put the status line script back when an older app that shares its folder swapped it (cheap: one file compare).
+    this.ensureScript = typeof opts.ensureScript === 'function' ? opts.ensureScript : null;
     // Spend by day and project past today (the spend panel's history), kept by the app (ledger.js).
     this.ledger = createLedger({
       file: opts.ledgerFile || path.join(process.env.LOCALAPPDATA || path.join(HOME, 'AppData', 'Local'), 'atalay-terminal', 'ledger.json'),
@@ -1616,7 +1706,11 @@ class RadarEngine {
     this.isAppPid = typeof opts.isAppPid === 'function' ? opts.isAppPid : null;
     // What an AI's whole tree holds, as Clean Up measured it (cleanup.js): { bytes, top: [[name, bytes]] } or null.
     this.memTree = typeof opts.memTree === 'function' ? opts.memTree : null;
-    this.handlers = { onInit: opts.onInit, onState: opts.onState, onEvents: opts.onEvents, onHistory: opts.onHistory };
+    // The name typed for a chat in the list (chatlist.js), by its id or the conversation's (`alt`), else null: what the engine
+    // hands out carries it in place of the AI's title, as the Mac's ChatNames.resolve, so every screen shows the same name.
+    this.nameOf = typeof opts.nameOf === 'function' ? opts.nameOf : null;
+    this.handlers = { onInit: opts.onInit, onState: opts.onState, onEvents: opts.onEvents, onHistory: opts.onHistory, onSessionIdle: opts.onSessionIdle, onCustomTitle: opts.onCustomTitle };
+    this.busyPids = new Set(); // the AI sessions busy at the last state: the notes hear when one leaves
 
     this.started = false;
     this.stopped = false;
@@ -1630,8 +1724,9 @@ class RadarEngine {
     this.otherSeen = new Set();
     this.otherCalls = new Map();
     // Account-wide Codex limits fetched from its authenticated app-server, not rollout history. The last one read is kept
-    // on disk, so the top bar shows them while no Codex runs too.
-    this.limitsDir = this.limitsFile ? path.dirname(this.limitsFile) : path.join(process.env.LOCALAPPDATA || path.join(HOME, 'AppData', 'Local'), 'atalay-terminal');
+    // on disk, so the top bar shows them while no Codex runs too. In `limitsDir`, the app's own folder: next to limitsFile,
+    // unless that is the installed app's, which a staging profile only reads Claude's limits from (main.js).
+    this.limitsDir = opts.limitsDir || (this.limitsFile ? path.dirname(this.limitsFile) : path.join(process.env.LOCALAPPDATA || path.join(HOME, 'AppData', 'Local'), 'atalay-terminal'));
     this.codexUsage = loadLimits(this.limitsDir, 'codex');
     this.codexUsagePending = false;
     // Antigravity's limits by group of models (agyPools), kept the same way, and the model its chats used last: the group
@@ -1709,7 +1804,7 @@ class RadarEngine {
     this.firstCwd = new Map();
     this.bootPumps = [];
     this.timers = [];
-    this.watchers = { projects: null, registry: null, agy: null, codex: null, codexWaiting: null, codexHome: null, cursorEvents: null, cursorProjects: null, cursorChats: null };
+    this.watchers = { projects: null, registry: null, agy: null, codex: null, codexWaiting: null, codexHome: null, cursorEvents: null, cursorProjects: null, cursorChats: null, accounts: null };
     this.lastRun = {};
     this.lastScan = 0;
     this.scanning = false;
@@ -1787,7 +1882,7 @@ class RadarEngine {
     const out = [];
     for (const S of this.sessions.values()) {
       if (!S.cwd || !(S.live || S.lastTs >= this.day0)) continue;
-      out.push({ id: S.id, name: S.name || S.id.slice(0, 8), title: S.title || '', status: this.shownStatus(S, bySession.get(S.id) || [], now), live: !!S.live, cwd: S.cwd });
+      out.push({ id: S.id, name: S.name || S.id.slice(0, 8), title: this.named(S.id, null, S.title || ''), status: this.shownStatus(S, bySession.get(S.id) || [], now), live: !!S.live, cwd: S.cwd });
     }
     return out;
   }
@@ -1824,8 +1919,11 @@ class RadarEngine {
       const call = firstPending(S) || mine.map(firstPending).find(Boolean);
       out.push({
         sessionId: S.id, pid: S.pid, cwd: S.cwd, status: this.shownStatus(S, mine, now),
-        name: S.name || S.id.slice(0, 8), title: S.title || '', prompt: S.lastPrompt || '', waitingFor: S.waitingFor ?? null,
+        name: S.name || S.id.slice(0, 8), title: this.named(S.id, null, S.title || ''), prompt: S.lastPrompt || '', waitingFor: S.waitingFor ?? null,
         host: this.hostLabel(S), tab: typeof S.hostTab === 'string' ? S.hostTab : null, statusSince: S.statusSince || 0,
+        // Its Claude account, and a usage limit hit by the process running it now (after a switch the old account's error is
+        // still the transcript's last record until the next reply, and it is not the new account's).
+        account: S.account || '', limitHit: S.limitHitAt > 0 && S.limitHitAt >= S.procStartedAt && now - S.limitHitAt < 6 * 3_600_000,
         // Its context and today's counts, for the strip of the window it runs in (terminal.js).
         ctx: S.ctx, ctxMax: S.ctxMax, tools: S.tools, web: S.web, errors: S.errors,
         model: shortModel(S.model), effort: S.effort || '', cost: S.cost, spark: spark30(S.spark, now),
@@ -1839,7 +1937,7 @@ class RadarEngine {
       if (O.endedAt > 0) continue;
       const { status, waiting } = this.otherStatus(O);
       out.push({
-        sessionId: O.id, convId: otherConv(O), pid: O.pid, cwd: O.cwd, status, waitingFor: waiting, name: O.tool, title: O.title || O.prompt || baseName(O.cwd),
+        sessionId: O.id, convId: otherConv(O), pid: O.pid, cwd: O.cwd, status, waitingFor: waiting, name: O.tool, title: this.named(O.id, otherConv(O), O.title || O.prompt || baseName(O.cwd)),
         host: O.hostTab != null ? 'app' : 'term', tab: typeof O.hostTab === 'string' ? O.hostTab : null, ai: true,
         statusSince: O.statusSince || 0, ctx: O.ctx, ctxMax: O.ctxMax, tools: O.tools, web: O.web, errors: O.errors,
         // What its records give (Codex's log, Antigravity's databases): its model (the tool's name until they tell), its
@@ -2289,6 +2387,13 @@ class RadarEngine {
       } catch (e) { report(e); }
     });
     watch('registry', this.registry, {}, () => this.registryChanged());
+    // Another Claude account's folder: its registry (its chats come and go); the rest of it, the history included, is the
+    // default account's by links.
+    if (this.accounts && fs.existsSync(this.accounts.root)) {
+      watch('accounts', this.accounts.root, { recursive: true }, (_event, name) => {
+        if (/(^|[\\/])sessions([\\/]|$)/.test(String(name || ''))) this.registryChanged();
+      });
+    }
     // Codex's approval requests (codexhooks.js), the moment its hook writes or drops one, and its own log, where the
     // user's answer to one lands.
     watch('codexWaiting', this.codexHooks.dir, {}, () => this.codexWaitChanged());
@@ -2417,7 +2522,8 @@ class RadarEngine {
           const items = [...this.history.values()]
             .filter((i) => i.cwd && (i.title || i.lastPrompt))
             .sort((a, b) => b.mtime - a.mtime)
-            .map(({ id, path: file, cwd, mtime, size, title, lastPrompt, tool }) => ({ id, path: file, cwd, mtime, size, title, lastPrompt, tool: tool || 'claude' }));
+            // `custom`: its title is Claude's own /rename (chatlist.js weighs it against a name typed in the list).
+            .map(({ id, path: file, cwd, mtime, size, title, lastPrompt, tool, custom }) => ({ id, path: file, cwd, mtime, size, title, lastPrompt, tool: tool || 'claude', custom: custom === true }));
           this.call('onHistory', items);
         }
       } while (this.historyAgain && !this.stopped);
@@ -2476,7 +2582,8 @@ class RadarEngine {
         const size = st ? st.size : 0;
         const mtime = Math.max(parseISO(r.last_modified_time) || 0, st ? st.mtimeMs : 0);
         const old = this.history.get(id);
-        if (old && old.mtime === mtime && old.size === size) continue;
+        // A rename (/rename) may not move the times: the title is compared too.
+        if (old && old.mtime === mtime && old.size === size && old.title === clip(redact(r.title || ''), 90)) continue;
         let lastPrompt = clip(redact(r.preview || ''), 160);
         try {
           if (fs.existsSync(tPath)) {
@@ -2575,8 +2682,9 @@ class RadarEngine {
         present.add(id);
         const mtime = Math.max(Number(r.at) || 0, st.mtimeMs);
         const old = this.history.get(id);
-        if (old && old.mtime === mtime && old.size === st.size) continue;
         const title = [r.name, r.title, r.first].find((s) => typeof s === 'string' && s) || '';
+        // Codex's /rename sets `name` without moving the times: the title is compared too.
+        if (old && old.mtime === mtime && old.size === st.size && old.title === clip(redact(title), 90)) continue;
         const prompt = (typeof r.preview === 'string' && r.preview) || (typeof r.first === 'string' ? r.first : '');
         this.history.set(id, {
           id, path: file, cwd: path.resolve(cwd), mtime, size: st.size, title: clip(redact(title), 90), lastPrompt: clip(redact(prompt), 160), tool: 'codex',
@@ -2808,7 +2916,16 @@ class RadarEngine {
 
     switch (rec.type) {
       case 'ai-title':
-        if (typeof rec.aiTitle === 'string') S.title = clip(redact(rec.aiTitle), 90);
+        if (!S.titleIsCustom && typeof rec.aiTitle === 'string') S.title = clip(redact(rec.aiTitle), 90);
+        break;
+      case 'custom-title':
+        // Claude's own /rename: it becomes the chat's title, and a later AI-written one doesn't replace it. One just written
+        // (not the file's past, read first) is newer than a name typed in the list, which gives way to it (chatlist.js).
+        if (typeof rec.customTitle === 'string' && rec.customTitle) {
+          S.title = clip(redact(rec.customTitle), 90);
+          S.titleIsCustom = true;
+          if (c.caughtUp) this.call('onCustomTitle', { id: S.id, title: S.title });
+        }
         break;
       case 'last-prompt':
         if (!A && typeof rec.lastPrompt === 'string') S.lastPrompt = clip(redact(rec.lastPrompt), 220);
@@ -2840,13 +2957,19 @@ class RadarEngine {
     if (rec.isApiErrorMessage === true || model === '<synthetic>') {
       const txt = clip(redact(content.map((b) => str(b.text)).filter((x) => x !== undefined).join(' ')), 100);
       this.emit(this.ev('sys', ts, S, A, { l: txt || 'API error', err: true }), today);
+      // A 429 on the account's usage limit: the terminal window offers to go on with another account, on a click.
+      if (!A && rec.error === 'rate_limit') S.limitHitAt = Math.max(S.limitHitAt, ts);
       // A subagent that died on a quota or API error writes nothing more.
       if (A) A.end(ts);
       return;
     }
     if (model !== undefined) {
       actor.model = model;
-      if (!A) S.model = model;
+      // A normal reply after the limit's error: the limit is over.
+      if (!A) {
+        S.model = model;
+        S.limitHitAt = 0;
+      }
     }
     if (!A && typeof rec.effort === 'string') S.effort = rec.effort;
 
@@ -3138,7 +3261,7 @@ class RadarEngine {
   }
 
   newCursor(fp) {
-    const c = { path: fp, off: 0, rest: null, sid: null, agentId: null, started: false, skipLine: false, busy: false, again: false };
+    const c = { path: fp, off: 0, rest: null, sid: null, agentId: null, started: false, skipLine: false, busy: false, again: false, caughtUp: false };
     const rel = path.relative(this.projects, fp);
     const parts = !rel || rel.startsWith('..') || path.isAbsolute(rel) ? [] : rel.split(path.sep);
     if (parts.length === 2) {
@@ -3199,6 +3322,7 @@ class RadarEngine {
         if (st.size < c.off) {
           c.off = 0;
           c.rest = null;
+          c.caughtUp = false;
         }
         if (!c.started) {
           c.started = true;
@@ -3208,6 +3332,8 @@ class RadarEngine {
           }
         }
         if (st.size > c.off) await this.readFrom(c, st.size);
+        // Its first read (the file's past, from 0 or today) is done: what comes now was just written.
+        if (c.off >= st.size) c.caughtUp = true;
       } while (c.again && !this.stopped);
     } catch {
       // Locked or removed for a moment: read again on the next change or poll.
@@ -3314,16 +3440,48 @@ class RadarEngine {
   // Claude Code keeps one small JSON file per running process in sessions/<pid>.json. Unchanged files (same mtime)
   // are not read again.
   pollRegistry() {
-    let names = [];
-    try {
-      names = fs.readdirSync(this.registry);
-    } catch {}
     const seen = new Set();
     const present = new Set();
-    for (const n of names) {
-      if (!REG_FILE.test(n)) continue;
+    // Each real registry folder once: two accounts whose folders lead to one place (a link) are not read twice.
+    const regs = new Set();
+    const acc = this.accounts && this.accounts.multiple() ? this.accounts.dirs() : [{ id: '', dir: null }];
+    if (acc.length > 1 && this.ensureScript) this.ensureScript();
+    for (const { id, dir } of acc) {
+      const registry = dir ? path.join(dir, 'sessions') : this.registry;
+      let real = registry;
+      try {
+        real = fs.realpathSync.native(registry);
+      } catch {}
+      if (regs.has(real.toLowerCase())) continue;
+      regs.add(real.toLowerCase());
+      this.pollRegistryOf(id, registry, seen, present);
+    }
+    for (const n of this.regCache.keys()) if (!present.has(n)) this.regCache.delete(n);
+    const entries = new Set([...this.regCache.values()].map((c) => `${c.pid}:${c.procStart}`));
+    for (const key of this.verified.keys()) if (!entries.has(key)) this.verified.delete(key);
+    for (const S of this.sessions.values()) {
+      if (S.live && !seen.has(S.id)) {
+        S.live = false;
+        S.reg = null;
+        S.hostTab = null;
+        S.endedAt = Date.now();
+        this.stateDirty = true;
+      }
+    }
+  }
+
+  // One account's registry folder: its files are known by the account too (the same pid can't be in two, but the cache is
+  // kept apart all the same).
+  pollRegistryOf(account, registryDir, seen, present) {
+    let names = [];
+    try {
+      names = fs.readdirSync(registryDir);
+    } catch {}
+    for (const fname of names) {
+      if (!REG_FILE.test(fname)) continue;
+      const n = `${account}/${fname}`;
       present.add(n);
-      const file = path.join(this.registry, n);
+      const file = path.join(registryDir, fname);
       let st;
       try {
         st = fs.statSync(file);
@@ -3375,6 +3533,8 @@ class RadarEngine {
       const updated = typeof j.updatedAt === 'number' ? j.updatedAt : 0;
       if (S.live && S.pid != null && S.pid !== pid && alive(S.pid) && S.regUpdated > updated) continue;
       S.regUpdated = updated;
+      S.account = account;
+      S.procStartedAt = typeof j.startedAt === 'number' ? j.startedAt : 0;
       this.stateDirty = true;
       S.live = true;
       S.endedAt = 0;
@@ -3392,18 +3552,6 @@ class RadarEngine {
       if (S.reg === 'idle' || S.reg === 'shell') S.pending.clear();
       const fp = this.transcriptFor(S.cwd, sid);
       if (!this.cursors.has(this.cursorKey(fp)) && fs.existsSync(fp)) this.pumpSoon(fp);
-    }
-    for (const n of this.regCache.keys()) if (!present.has(n)) this.regCache.delete(n);
-    const entries = new Set([...this.regCache.values()].map((c) => `${c.pid}:${c.procStart}`));
-    for (const key of this.verified.keys()) if (!entries.has(key)) this.verified.delete(key);
-    for (const S of this.sessions.values()) {
-      if (S.live && !seen.has(S.id)) {
-        S.live = false;
-        S.reg = null;
-        S.hostTab = null;
-        S.endedAt = Date.now();
-        this.stateDirty = true;
-      }
     }
   }
 
@@ -4945,7 +5093,7 @@ class RadarEngine {
       const item = {
         id: S.id, name: this.displayName(S),
         tool: 'Claude Code',
-        title: S.title, lastPrompt: S.lastPrompt, cwd: cwdLabel(S.cwd), branch: S.branch,
+        title: this.named(S.id, null, S.title), lastPrompt: S.lastPrompt, cwd: cwdLabel(S.cwd), branch: S.branch,
         model: shortModel(S.model), effort: S.effort, status, live: S.live,
         statusSince: S.live ? S.statusSince : S.endedAt > 0 ? S.endedAt : S.lastTs,
         cpu: S.cpu, mem: S.mem, kind: S.kind, entry: S.entry,
@@ -4954,6 +5102,8 @@ class RadarEngine {
         byCat: S.byCat, pending, spark, flags, agents: subs, agentsRunning: nRun,
         waitingFor: S.waitingFor ?? null, tty: S.tty ?? null, pid: S.pid ?? null, host,
         tab: typeof S.hostTab === 'string' ? S.hostTab : null,
+        account: S.account || '',
+        limitHit: S.live && S.limitHitAt > 0 && S.limitHitAt >= S.procStartedAt && now - S.limitHitAt < 6 * 3_600_000,
         ...(S.live ? this.memOf(S.pid) : {}),
       };
       if (S.last) item.last = S.last;
@@ -4977,7 +5127,7 @@ class RadarEngine {
       for (let k = k0 - 29; k <= k0; k++) spark.push(O.spark.get(k) || 0);
       const flags = O.ctxMax > 0 && O.ctx / O.ctxMax > 0.8 ? ['ctx 80%+'] : [];
       list.push({
-        id: O.id, name: O.tool, title: O.title || baseName(O.cwd), lastPrompt: O.prompt || '', cwd: cwdLabel(O.cwd), branch: '',
+        id: O.id, name: O.tool, title: this.named(O.id, otherConv(O), O.title || baseName(O.cwd)), lastPrompt: O.prompt || '', cwd: cwdLabel(O.cwd), branch: '',
         tool: O.tool,
         model: O.model || O.tool, effort: O.effort || '', status, live, statusSince: live ? O.statusSince : O.endedAt,
         cpu: O.cpu, mem: O.mem || 0, kind: '', entry: '', firstTs: O.firstTs, lastTs: O.lastTs, ctx: O.ctx || 0, ctxMax: O.ctxMax || 0, turnMs: 0,
@@ -5071,11 +5221,36 @@ class RadarEngine {
     // Every AI's usage limits for the top bar, in its order, whichever chat is in front: Claude's from its status line,
     // Codex's, Antigravity's and Cursor's as last read, Antigravity's a column per group in use (agyPools), Cursor's a
     // monthly one (its plan's included usage). One not heard from in a week is left out.
-    const pools = [['Claude Code', limits && { ...limits, id: 'claude', name: 'claude' }], ['Codex', this.codexUsage && { ...this.codexUsage, id: 'codex', name: 'codex' }],
+    const pools = [...this.claudePools(limits), ['Codex', this.codexUsage && { ...this.codexUsage, id: 'codex', name: 'codex' }],
       ...(this.agyUsage ? agyPools(this.agyUsage, this.agyModel) : []).map((p) => ['Antigravity', p]),
       ['Cursor', this.cursorUsage && { ...this.cursorUsage, id: 'cursor', name: 'cursor' }]];
-    out.limitsByAI = pools.filter(([, v]) => v && now - (Number(v.at) || 0) < 7 * 24 * 3_600_000).map(([tool, v]) => ({ ...v, tool }));
+    out.limitsByAI = pools.filter(([, v]) => v && (v.accounts || now - (Number(v.at) || 0) < 7 * 24 * 3_600_000)).map(([tool, v]) => ({ ...v, tool }));
     return out;
+  }
+
+  // Claude's limit pools for the top bar. One account: the status line's file, as before. Two or more: a pool per quota, one
+  // per organization (accounts of one organization share it), else one per account; the accounts' order is Settings'. A column
+  // for each account, even before it has data.
+  claudePools(limits) {
+    const A = this.accounts;
+    if (!A || !A.multiple()) return [['Claude Code', limits && { ...limits, id: 'claude', name: 'claude' }]];
+    const order = [];
+    const byKey = new Map();
+    for (const a of A.all()) {
+      const k = a.orgId ? a.orgId : a.id;
+      const data = A.limits(a);
+      const pool = byKey.get(k) || { id: `claude:${k}`, name: 'claude', accounts: [], at: 0 };
+      pool.accounts.push({ id: a.id, label: a.label, initial: a.initial, hue: a.hue, email: a.email, plan: a.plan, orgName: a.orgName });
+      // The newest reading of the pool's accounts (one organization, one quota).
+      if (data && (data.at || 0) >= pool.at) {
+        pool.fiveHour = data.fiveHour;
+        pool.week = data.week;
+        pool.at = data.at;
+      }
+      if (!byKey.has(k)) order.push(k);
+      byKey.set(k, pool);
+    }
+    return order.map((k) => ['Claude Code', byKey.get(k)]);
   }
 
   // The usage limits, read again when the file changes; none while there is no file (the page then hides them).
@@ -5104,6 +5279,15 @@ class RadarEngine {
     }
   }
 
+  // A chat's shown name: the one typed for it in the list, else `raw` (the AI's own).
+  named(id, alt, raw) {
+    let n = null;
+    try {
+      n = this.nameOf ? this.nameOf(id) || (alt ? this.nameOf(alt) : null) : null;
+    } catch {}
+    return typeof n === 'string' && n ? n : raw;
+  }
+
   sendInit() {
     this.initWanted = false;
     this.call('onInit', JSON.stringify({ state: this.snapshot(), log: this.log.slice(-160) }));
@@ -5117,7 +5301,12 @@ class RadarEngine {
     if (!this.stateDirty && now - this.lastStateAt <= 5000) return;
     this.stateDirty = false;
     this.lastStateAt = now;
-    const js = JSON.stringify(this.snapshot());
+    const snap = this.snapshot();
+    // An AI session that was busy and no longer is: the notes drop it from the notes it was working in.
+    const busyNow = new Set(snap.sessions.filter((s) => s.status === 'busy' && Number.isInteger(s.pid)).map((s) => s.pid));
+    for (const pid of this.busyPids) if (!busyNow.has(pid)) this.call('onSessionIdle', pid);
+    this.busyPids = busyNow;
+    const js = JSON.stringify(snap);
     if (js === this.lastStateJSON) return;
     this.lastStateJSON = js;
     this.call('onState', js);
@@ -5146,6 +5335,10 @@ function createEngine(opts = {}) {
     sessionTool: (sessionId) => e.sessionTool(sessionId),
     // Chats were deleted from the disk (chattrash.js): the list is read again now, not at the engine's next look.
     refreshHistory: () => e.scanHistory(false).catch(report),
+    // A chat's name was typed or gave way (nameOf): the state goes out again at the next tick, with it.
+    namesChanged: () => {
+      e.stateDirty = true;
+    },
     dismiss: (sessionId, pid) => e.dismiss(sessionId, pid),
     transcriptItems: (sessionId, limit) => e.transcriptItems(sessionId, limit),
     spendHistory: (range) => e.spendHistory(range),
@@ -5158,4 +5351,4 @@ function createEngine(opts = {}) {
 }
 
 // redact and clip go to the local MCP server too: mcpshared.js's redactMore masks on top of redact, as Support.swift's does.
-module.exports = { createEngine, redact, clip };
+module.exports = { createEngine, redact, clip, renamedAt };

@@ -8,7 +8,7 @@ const path = require('path');
 
 // PowerShell, as Claude Code can run the command from Git Bash or from PowerShell. A status line the user had runs as
 // Claude Code would run it: through Git Bash when it's installed, else PowerShell (cmd would break a bash command).
-const SCRIPT = `# Orbiterm: Claude Code passes its status JSON here (statusLine in its settings.json). The latest one that
+const script = (root) => `# Orbiterm: Claude Code passes its status JSON here (statusLine in its settings.json). The latest one that
 # carries the account's usage limits is kept for the dashboard. A status line of your own (statusline-next) still gets
 # the JSON and shows what it prints, run as Claude Code runs one: through Git Bash when it's installed, else PowerShell.
 $ErrorActionPreference = 'SilentlyContinue'
@@ -19,9 +19,23 @@ $buf = New-Object IO.MemoryStream
 $bytes = $buf.ToArray()
 $json = [Text.Encoding]::UTF8.GetString($bytes)
 if ($json -match '"rate_limits"') {
+  # Run with CLAUDE_CONFIG_DIR set to one of Orbiterm's accounts (Orbiterm sets it for that account's terminals) it writes
+  # limits-claude-<first 8 hex of the sha256 of the folder's path>.json, so each account's limits stay apart; any other
+  # (unset, the default folder, a folder of the user's own) writes limits.json, as before there were accounts.
+  # The folder is baked in as Base64 of its UTF-8: Windows PowerShell reads a script without a BOM in the ANSI code page, which
+  # would garble a user folder with a letter outside ASCII, and every account's limits would land in limits.json. The script
+  # itself stays ASCII.
+  $name = 'limits.json'
+  $cfg = $env:CLAUDE_CONFIG_DIR
+  $root = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${Buffer.from(root, 'utf8').toString('base64')}'))
+  if ($cfg -and $cfg.Length -gt $root.Length + 1 -and $cfg.StartsWith($root + [char]92, [StringComparison]::OrdinalIgnoreCase)) {
+    $sha = [Security.Cryptography.SHA256]::Create()
+    $hex = [BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($cfg))).Replace('-', '').ToLower()
+    $name = 'limits-claude-' + $hex.Substring(0, 8) + '.json'
+  }
   $tmp = Join-Path $dir ('limits.' + $PID + '.tmp')
   [IO.File]::WriteAllBytes($tmp, $bytes)
-  Move-Item -Force -LiteralPath $tmp -Destination (Join-Path $dir 'limits.json')
+  Move-Item -Force -LiteralPath $tmp -Destination (Join-Path $dir $name)
 }
 $next = Join-Path $dir 'statusline-next'
 if (-not (Test-Path -LiteralPath $next) -or (Get-Item -LiteralPath $next).Length -eq 0) { exit 0 }
@@ -43,13 +57,16 @@ exit 0
 `;
 
 /**
- * createLimits({ dir, claudeDir }): `dir` is the app's data folder (limits.json lands in it), `claudeDir` Claude Code's.
- * install() writes the script and hooks it into Claude Code's settings; it never throws.
+ * createLimits({ dir, claudeDir, accountsRoot, accountDirs }): `dir` is the app's data folder (limits.json lands in it),
+ * `claudeDir` Claude Code's; `accountsRoot` Orbiterm's accounts folder (baked into the script), `accountDirs()` the other
+ * accounts' folders. install() writes the script and hooks it into every account's settings; it never throws.
+ * ensure() is the cheap check (a file compare) that the script installed is this build's: an older app that shares the
+ * folder (the installed one next to staging) writes its own at its launch, which sends every account's limits to limits.json.
  */
-function createLimits({ dir, claudeDir }) {
+function createLimits({ dir, claudeDir, accountsRoot, accountDirs }) {
+  const SCRIPT = script(accountsRoot || '');
   const scriptFile = path.join(dir, 'statusline.ps1');
   const nextFile = path.join(dir, 'statusline-next');
-  const settingsFile = path.join(claudeDir, 'settings.json');
   // Forward slashes: the same command works from Git Bash, cmd and PowerShell.
   const ours = `powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${scriptFile.replace(/\\/g, '/')}"`;
 
@@ -65,7 +82,8 @@ function createLimits({ dir, claudeDir }) {
 
   // Points Claude Code's statusLine at the script, or the limits never reach the dashboard. A settings file that doesn't
   // read as JSON is left alone.
-  function hook() {
+  function hook(settingsFile) {
+    const folder = path.dirname(settingsFile);
     let settings = {};
     let raw = null;
     try {
@@ -87,18 +105,58 @@ function createLimits({ dir, claudeDir }) {
       fs.writeFileSync(nextFile, current);
     }
     settings.statusLine = { ...line, type: 'command', command: ours };
-    fs.mkdirSync(claudeDir, { recursive: true });
+    fs.mkdirSync(folder, { recursive: true });
     const tmp = settingsFile + '.atl.tmp';
     fs.writeFileSync(tmp, JSON.stringify(settings, null, 2));
     fs.renameSync(tmp, settingsFile);
+  }
+
+  // Every account's settings.json, once per real file: a link (or a junction's file) is written through to what it points
+  // at, so the link stays one, and a copy made without Developer Mode is hooked on its own.
+  function settingsFiles() {
+    const out = new Map();
+    const add = (file) => {
+      let real = file;
+      try {
+        real = fs.realpathSync.native(file);
+      } catch {}
+      out.set(process.platform === 'win32' ? real.toLowerCase() : real, real);
+    };
+    add(path.join(claudeDir, 'settings.json'));
+    for (const d of typeof accountDirs === 'function' ? accountDirs() : []) {
+      // Another account's folder that isn't there (being removed): not made again for a settings file.
+      if (fs.existsSync(d)) add(path.join(d, 'settings.json'));
+    }
+    return [...out.values()];
+  }
+
+  function installAll() {
+    writeScript();
+    for (const f of settingsFiles()) {
+      try {
+        hook(f);
+      } catch (e) {
+        console.error('limits:', e.message);
+      }
+    }
   }
 
   return {
     file: path.join(dir, 'limits.json'),
     install() {
       try {
-        writeScript();
-        hook();
+        installAll();
+      } catch (e) {
+        console.error('limits:', e.message);
+      }
+    },
+    ensure() {
+      try {
+        let have = null;
+        try {
+          have = fs.readFileSync(scriptFile, 'utf8');
+        } catch {}
+        if (have !== SCRIPT) installAll();
       } catch (e) {
         console.error('limits:', e.message);
       }

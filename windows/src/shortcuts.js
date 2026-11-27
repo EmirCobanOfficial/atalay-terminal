@@ -2,8 +2,18 @@
 // The keyboard shortcuts the user can change (the dashboard's Settings › Shortcuts), the Mac's Shortcuts.swift and its
 // KeysBridge: the menu's actions with the keys they come with or the ones the user set, kept in settings.json
 // ("shortcuts": action id → combo). A combo is "ctrl+shift+n" (ctrl, alt, shift, then the key, as Windows Terminal
-// writes them); "" takes the keys off. Only the actions this app has on Windows (no tabs or panes: each terminal is a
-// window of its own). The system's and the app's fixed keys (Copy, Paste, Quit, Minimize…) stay as they are.
+// writes them); "" takes the keys off. Only the actions this app has on Windows. The system's and the app's fixed keys
+// (Copy, Paste, Quit, Minimize…, Ctrl+1–Ctrl+9 for a window's tabs) stay as they are.
+//
+// The Mac's keys with ⌘ as Ctrl and ⌥ as Alt, as far as a terminal lets them be: one whose Ctrl key the shell or the AI
+// needs takes Shift as well (⌘D would be Ctrl+D, the end of input: Split Vertically is Ctrl+Shift+D), and its Shift
+// variant then Alt too (⇧⌘D, Split Horizontally: Ctrl+Alt+Shift+D). No Ctrl+Alt with a letter alone: that is AltGr on many
+// keyboards (AltGr+T types ₺ on a Turkish one). ⌘T, New Tab, is Windows Terminal's Ctrl+Shift+T rather than Ctrl+T,
+// which Claude Code (its task list) and Codex (its transcript) use: Undo Close (⇧⌘T) is then Ctrl+Alt+Shift+T, and
+// ⌥⌘T, New Tab Next to Current Tab, Ctrl+Alt+Shift+N. The tab keys act
+// only in a window with two tabs or more, the pane keys only in a split tab (TAB_ACTIONS, PANE_ACTIONS): elsewhere they
+// stay the shell's. ⌘] and ⌘[ (the next and previous pane) have no keys as they come: Ctrl+[ is Esc in a terminal (vim,
+// Claude Code, less) and Ctrl+] telnet's escape, even in a split; Ctrl+Alt and an arrow move between panes.
 //
 // The Ring opens two ways, as on the Mac: the mouse (the Mac's trackpad click; here the middle button, with Ctrl or
 // without, or not at all: "ringMouse") and keys set for it (Ctrl+K as it came). Esc and the close keys can swap places
@@ -16,15 +26,43 @@ const ACTIONS = [
   // Its keys (its mouse button is the card's other row). Antigravity approves its subagents' steps with Ctrl+K: in a
   // terminal it runs in, the Ring's keys stay its own (pages/terminal.js).
   { id: 'shortcutsWheel', group: 'Chats', title: 'Ring', combo: 'ctrl+k' },
-  // The window in front closes; a terminal's only hides (what runs in it goes on). Ctrl+Shift+W does the same, as ⇧⌘W
-  // on the Mac.
+  // A tab in the terminal window in front (the Mac's ⌘T): Windows Terminal's Ctrl+Shift+T, so Ctrl+T stays Claude Code's
+  // (its task list) and Codex's (its transcript). ⌥⌘T, beside the current tab: Ctrl+Alt+Shift+N (Ctrl+Alt+N alone would
+  // be AltGr+N on many keyboards).
+  { id: 'newTab', group: 'Chats', title: 'New tab', combo: 'ctrl+shift+t' },
+  { id: 'newTabNext', group: 'Chats', title: 'New tab next to the current one', combo: 'ctrl+alt+shift+n' },
+  // ⌘D's Ctrl+D is the shell's end of input (and Claude's exit): Shift is added, and ⇧⌘D takes Alt as well.
+  { id: 'splitVertically', group: 'Chats', title: 'Split vertically', combo: 'ctrl+shift+d' },
+  { id: 'splitHorizontally', group: 'Chats', title: 'Split horizontally', combo: 'ctrl+alt+shift+d' },
   // The strip's env button: the env files in the terminal's folder (pages/env.js), the Mac's ⇧⌘E.
   { id: 'envFiles', group: 'Chats', title: 'Env files', combo: 'ctrl+shift+e' },
-  { id: 'closePane', group: 'Chats', title: 'Close the window', combo: 'ctrl+w' },
-  { id: 'closeWindow', group: 'Chats', title: 'Close the window (other keys)', combo: 'ctrl+shift+w' },
-  // iTerm2's Undo Close (the Mac's ⇧⌘T): the terminal hidden last, still running, comes back. Ctrl+Shift+T, as a
-  // browser reopens its closed tab.
-  { id: 'undoClose', group: 'Chats', title: 'Undo close', combo: 'ctrl+shift+t' },
+  // The tab or pane with the keys closes, or with only one the window in front; a terminal's only hides (what runs in it
+  // goes on). Ctrl+Shift+W closes the whole window, as ⇧⌘W on the Mac.
+  { id: 'closePane', group: 'Chats', title: 'Close the tab or pane', combo: 'ctrl+w' },
+  { id: 'closeWindow', group: 'Chats', title: 'Close the terminal window', combo: 'ctrl+shift+w' },
+  // iTerm2's Undo Close (the Mac's ⇧⌘T): the terminal hidden last, still running, comes back. Ctrl+Alt+Shift+T: it was
+  // Ctrl+Shift+T until that became New Tab, as in Windows Terminal.
+  { id: 'undoClose', group: 'Chats', title: 'Undo close', combo: 'ctrl+alt+shift+t' },
+  // The Mac's tab and pane keys (iTerm2's), ⌘ as Ctrl and ⌥ as Alt. ⌃⌘ and an arrow (a divider) can't be told from ⌘ and
+  // an arrow here: Ctrl+Alt+Shift and the arrow. Move to a new window and merge have no keys, as on the Mac.
+  { id: 'nextTab', group: 'Tabs and panes', title: 'Next tab', combo: 'ctrl+shift+]' },
+  { id: 'previousTab', group: 'Tabs and panes', title: 'Previous tab', combo: 'ctrl+shift+[' },
+  { id: 'moveTabLeft', group: 'Tabs and panes', title: 'Move the tab left', combo: 'ctrl+alt+shift+[' },
+  { id: 'moveTabRight', group: 'Tabs and panes', title: 'Move the tab right', combo: 'ctrl+alt+shift+]' },
+  { id: 'moveTabToNewWindow', group: 'Tabs and panes', title: 'Move the tab to a new window', combo: '' },
+  { id: 'mergeAllWindows', group: 'Tabs and panes', title: 'Merge all windows', combo: '' },
+  // No keys as they come (Ctrl+] and Ctrl+[ are the terminal's, Ctrl+[ its Esc): Ctrl+Alt and an arrow do it.
+  { id: 'nextPane', group: 'Tabs and panes', title: 'Next pane', combo: '' },
+  { id: 'previousPane', group: 'Tabs and panes', title: 'Previous pane', combo: '' },
+  { id: 'paneAbove', group: 'Tabs and panes', title: 'Pane above', combo: 'ctrl+alt+up' },
+  { id: 'paneBelow', group: 'Tabs and panes', title: 'Pane below', combo: 'ctrl+alt+down' },
+  { id: 'paneLeft', group: 'Tabs and panes', title: 'Pane on the left', combo: 'ctrl+alt+left' },
+  { id: 'paneRight', group: 'Tabs and panes', title: 'Pane on the right', combo: 'ctrl+alt+right' },
+  { id: 'dividerUp', group: 'Tabs and panes', title: 'Move the divider up', combo: 'ctrl+alt+shift+up' },
+  { id: 'dividerDown', group: 'Tabs and panes', title: 'Move the divider down', combo: 'ctrl+alt+shift+down' },
+  { id: 'dividerLeft', group: 'Tabs and panes', title: 'Move the divider left', combo: 'ctrl+alt+shift+left' },
+  { id: 'dividerRight', group: 'Tabs and panes', title: 'Move the divider right', combo: 'ctrl+alt+shift+right' },
+  { id: 'maximizePane', group: 'Tabs and panes', title: 'Maximize the pane', combo: 'ctrl+shift+return' },
   // No keys as it comes: the Mac's ⇧⌘C would be Ctrl+Shift+C here, which is Copy in a terminal.
   { id: 'copyReply', group: 'Chats', title: "Copy Claude's last reply", combo: '' },
   // File › Create Pull Request… for the terminal window in front when it's in a worktree (worktreeship.js), the Mac's
@@ -57,6 +95,14 @@ const ACTIONS = [
 
 // The actions whose keys are the dashboard's only: in a terminal they stay the shell's (Ctrl+B, Ctrl+R).
 const DASHBOARD_ONLY = new Set(['chatsList', 'reloadDashboard']);
+// The keys a terminal window takes before its page only while it has two tabs or more (TAB_ACTIONS) or the tab in front
+// is split (PANE_ACTIONS): main.js's paneKeys. Elsewhere they go on to the shell.
+const TAB_ACTIONS = new Set(['nextTab', 'previousTab', 'moveTabLeft', 'moveTabRight']);
+const PANE_ACTIONS = new Set(['nextPane', 'previousPane', 'paneAbove', 'paneBelow', 'paneLeft', 'paneRight', 'dividerUp', 'dividerDown', 'dividerLeft', 'dividerRight', 'maximizePane']);
+// Fixed, as the Mac's ⌘1–⌘9: Ctrl+1–Ctrl+9 a window's tab, and Windows' own Ctrl+Tab and Ctrl+Shift+Tab the next and the
+// previous one, with the tab keys' rule.
+const TAB_KEYS = { 'ctrl+tab': 'nextTab', 'ctrl+shift+tab': 'previousTab' };
+for (let n = 1; n <= 9; n++) TAB_KEYS[`ctrl+${n}`] = `tab${n}`;
 
 /** Keys Windows or the app keeps for itself, with what they do. */
 const RESERVED = {
@@ -64,7 +110,9 @@ const RESERVED = {
   'ctrl+shift+c': 'Copy in a terminal', 'ctrl+shift+v': 'Paste in a terminal', 'ctrl+q': 'Quit', 'ctrl+m': 'Minimize',
   'ctrl+shift+i': 'the developer tools', 'alt+f4': "Windows' close", 'alt+space': "the window's menu", 'alt+tab': "Windows' switcher",
   'ctrl+esc': 'Start', 'ctrl+shift+esc': 'Task Manager', 'ctrl+alt+delete': 'Windows',
+  'ctrl+tab': 'the next tab', 'ctrl+shift+tab': 'the previous tab',
 };
+for (let n = 1; n <= 9; n++) RESERVED[`ctrl+${n}`] = `the window's tab ${n}`;
 
 const RING_MOUSE = ['ctrl', 'plain', 'off'];
 
@@ -269,9 +317,22 @@ function createShortcuts({ settings, onChange }) {
     recording: () => !!recorder,
     recordInput,
     state,
-    /** What a terminal page needs (pages/terminal.js): the combos the app takes there, and the Esc swap. */
+    /**
+     * A tab or pane key, for a terminal window (main.js's paneKeys): { id, tabs } (`tabs`: it needs two tabs, else a
+     * split tab; `id` "tab3" for Ctrl+3), or null.
+     */
+    windowKey(c) {
+      if (!c) return null;
+      if (TAB_KEYS[c]) return { id: TAB_KEYS[c], tabs: true };
+      const a = ACTIONS.find((x) => (TAB_ACTIONS.has(x.id) || PANE_ACTIONS.has(x.id)) && combo(x.id) === c);
+      return a ? { id: a.id, tabs: TAB_ACTIONS.has(a.id) } : null;
+    },
+    /**
+     * What a terminal page needs (pages/terminal.js): the combos the app takes there, and the Esc swap. Not the tab and
+     * pane keys: the app takes those before the page when the window has something for them (windowKey).
+     */
     forTerminal: () => ({
-      app: ACTIONS.filter((a) => !DASHBOARD_ONLY.has(a.id)).map((a) => combo(a.id)).filter(Boolean),
+      app: ACTIONS.filter((a) => !DASHBOARD_ONLY.has(a.id) && !TAB_ACTIONS.has(a.id) && !PANE_ACTIONS.has(a.id)).map((a) => combo(a.id)).filter(Boolean),
       ring: combo('shortcutsWheel'),
       closePane: combo('closePane'),
       escClose: escCloses(),

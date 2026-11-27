@@ -28,7 +28,7 @@ const SERVER_NAME = /^[A-Za-z0-9_-]{1,64}$/;
  * isn't there): register, ensureBridge, serverName, refresh, mode. folderOf(id): the folder one of the app's terminals is
  * in (main.js), for the notes' projects.
  */
-function createNotesAI({ settings, dialog, parent, notesStore, noteWindows, terminals, folderOf, dataDir, which, childEnvironment, usable, mcp }) {
+function createNotesAI({ settings, dialog, parent, notesStore, noteWindows, terminals, folderOf, dataDir, which, childEnvironment, usable, mcp, claudeDirs }) {
   const HOME = os.homedir();
   const CLAUDE_DIR = process.env.CLAUDE_CONFIG_DIR || path.join(HOME, '.claude');
   const codexHome = () => process.env.CODEX_HOME || path.join(HOME, '.codex');
@@ -63,6 +63,7 @@ function createNotesAI({ settings, dialog, parent, notesStore, noteWindows, term
     folderOf,
     dataDir,
     claudeDir: CLAUDE_DIR,
+    claudeDirs,
   });
 
   // The notes' eleven tools on the server, once (the Mac's AppDelegate loop over NotesTools.all). Each is checked against the
@@ -396,13 +397,13 @@ function createNotesAI({ settings, dialog, parent, notesStore, noteWindows, term
     asking = true;
     try {
       const write = want === 'write';
-      // The Mac's NotesAIBridge words (its list of AIs as this app has them; shared notes only with their owner's leave).
+      // The Mac's NotesAIBridge words (its list of AIs as this app has them; a shared note by its owner's AI, others' only with the owner's leave).
       const options = {
         type: write ? 'warning' : 'info',
         message: write ? 'Let AI read and edit your notes?' : 'Let AI read your notes?',
         detail: write
-          ? "AI in Orbiterm's terminals (Claude Code, Codex, Antigravity, Cursor) and Claude Desktop, if you connect it, will be able to read all your notes, add to them, change them, make new ones and pin or open them on your screen. Shared notes are read only when their owner allows it. What they read goes to their provider. Passwords and keys are hidden first, but everything else in a note is sent. Every change shows on the note with Undo. You can turn this off at any time."
-          : "AI in Orbiterm's terminals (Claude Code, Codex, Antigravity, Cursor) and Claude Desktop, if you connect it, will be able to read all your notes, never change them. Shared notes are read only when their owner allows it. What they read goes to their provider. Passwords and keys are hidden first, but everything else in a note is sent. Hide a note from AI with its eye. You can turn this off at any time.",
+          ? "AI in Orbiterm's terminals (Claude Code, Codex, Antigravity, Cursor) and Claude Desktop, if you connect it, will be able to read all your notes, add to them, change them, make new ones and pin or open them on your screen. A shared note is read by the AI of its owner, and by others' AI only when its owner allows it. What they read goes to their provider. Passwords and keys are hidden first, but everything else in a note is sent. Every change shows on the note with Undo. You can turn this off at any time."
+          : "AI in Orbiterm's terminals (Claude Code, Codex, Antigravity, Cursor) and Claude Desktop, if you connect it, will be able to read all your notes, never change them. A shared note is read by the AI of its owner, and by others' AI only when its owner allows it. What they read goes to their provider. Passwords and keys are hidden first, but everything else in a note is sent. Hide a note from AI with its eye. You can turn this off at any time.",
         buttons: ['Cancel', write ? 'Allow reading and editing' : 'Allow reading'],
         // Cancel is the one Enter presses, and Esc's.
         defaultId: 0,
@@ -427,6 +428,8 @@ function createNotesAI({ settings, dialog, parent, notesStore, noteWindows, term
     mode,
     // For mcp.js (deps.notesAccess): the pipe stays open while this is on, even with the Claude access off.
     access: () => mode() !== 'off',
+    // The engine's "this AI session went idle": the notes it was working in let it go (notestools.js).
+    sessionIdle: (pid) => notesTools.sessionIdle(pid),
   };
 }
 

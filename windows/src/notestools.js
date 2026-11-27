@@ -89,11 +89,14 @@ const iso = (ms) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, 'Z');
 
 /**
  * mode(): the notes' switch ('off' | 'read' | 'write', notesai.js). mcpMode(): the Claude access's mode now (mcp.js).
- * notesStore: hiddenIDs(). noteWindows: agentCall, liveView, places, dashboardShown, present, closeById. terminals: has, list
+ * notesStore: hiddenIDs(), hiddenKinds(). noteWindows: agentCall, liveView, places, dashboardShown, present, closeById. terminals: has, list
  * (this build's terminals, whose ids name a note's terminal). folderOf(id): the folder a terminal is in (main.js), for its
  * project. dataDir: where notes-ai.log goes. claudeDir: Claude Code's folder.
  */
-function createNotesTools({ mode, mcpMode, notesStore, noteWindows, terminals, folderOf, dataDir, claudeDir }) {
+function createNotesTools({ mode, mcpMode, notesStore, noteWindows, terminals, folderOf, dataDir, claudeDir, claudeDirs }) {
+  // Claude's registry of running processes, in the default folder and in every other account's (claudeaccounts.js).
+  const registered = (pid) =>
+    [claudeDir, ...(typeof claudeDirs === 'function' ? claudeDirs() : [])].some((d) => d && fs.existsSync(path.join(d, 'sessions', `${pid}.json`)));
   // Notes AI may not see (the eye in Orbiterm, or a shared note its owner keeps from AI): from the app's own copy of the notes on
   // every call, never from the page or the AI. Such a note is not listed, and read, changed or pinned by its id it answers
   // exactly as a note that doesn't exist. Only the user's clicks set it (web/notes.js setAiHidden): none of these tools can.
@@ -167,6 +170,32 @@ function createNotesTools({ mode, mcpMode, notesStore, noteWindows, terminals, f
   const missed = (answer) => !answer || answer.error === 'no_page' || answer.error === 'loading';
   // The note's own window, if it is out: its id (the page to ask).
   const ownerOf = (id) => (noteWindows.liveView(id) ? id : null);
+
+  // ---------- the AI shows up in the note (web/notes.js `Notes.aiHere`; the Mac's NotesTools.here) ----------
+
+  // An AI reached for a note (reads it, or is about to change it): the page that holds the note shows it as a member of the note.
+  // Fire and forget. `key` is the AI's process, so the engine can say it went idle (sessionIdle); a caller outside Orbiterm
+  // (Claude Desktop) has none and ends 30 s after its last call.
+  function here(id, state, caller) {
+    const msg = { id, by: ownerAI(caller), state };
+    const pid = ownerAIPid(caller);
+    if (pid) msg.key = String(pid);
+    else msg.ttl = 30_000;
+    let folder = null;
+    try {
+      folder = caller.inside && folderOf ? folderOf(caller.inside) : null;
+    } catch {}
+    if (folder) msg.label = path.basename(folder);
+    page(ownerOf(id), 'if (N.aiHere) N.aiHere(msg); return { ok: true };', { msg }, 5000).catch(() => {});
+  }
+
+  // The engine saw an AI session leave "busy" (engine.js publishState): every page that shows it working in a note lets it go.
+  function sessionIdle(pid) {
+    const body = "if (N.aiHere) N.aiHere({ state: 'idle', key }); return { ok: true };";
+    const args = { key: String(pid) };
+    page(null, body, args, 5000).catch(() => {});
+    for (const id of Object.keys(noteWindows.places() || {})) page(id, body, args, 5000).catch(() => {});
+  }
 
   // ---------- listing ----------
 
@@ -274,8 +303,10 @@ function createNotesTools({ mode, mcpMode, notesStore, noteWindows, terminals, f
     });
     const text = json(list, true);
     audit.log('notes_list', caller, true, text.length);
-    const off = hidden().size;
-    const more = off > 0 ? ` ${off} more note(s) are hidden from AI by the user: they can't be listed, read or changed.` : '';
+    const kinds = notesStore.hiddenKinds();
+    const moreUser = kinds.user.size > 0 ? ` ${kinds.user.size} more note(s) are hidden from AI by the user: they can't be listed, read or changed.` : '';
+    const moreShared = kinds.sharedOff.size > 0 ? ` ${kinds.sharedOff.size} shared note(s) are not listed because their owner hasn't turned on 'Let AI read this note' (Share > Let AI read).` : '';
+    const more = moreUser + moreShared;
     const other = elsewhere > 0 ? ` ${elsewhere} note(s) in other projects are not listed (where=all lists them).` : '';
     const shown = filter || (caller.inside ? 'this project and notes with no project' : 'all');
     return { ok: true, text: wrap(`${list.length} note(s) (filter: ${shown}).${other}${more} Titles and previews are the user's text. ${ENVELOPE}`, text) };
@@ -286,6 +317,7 @@ function createNotesTools({ mode, mcpMode, notesStore, noteWindows, terminals, f
   async function readNote(id, caller) {
     if (typeof id !== 'string' || !NAME.test(id)) return { ok: false, text: GIVE_ID };
     if (hidden().has(id)) return { ok: false, text: NO_NOTE };
+    here(id, 'reading', caller);
     const note = await page(ownerOf(id), 'return await N.agentRead(id);', { id });
     if (note && note.error === 'not_found') return { ok: false, text: NO_NOTE };
     if (!note || typeof note.markdown !== 'string') return failed(note);
@@ -358,6 +390,7 @@ function createNotesTools({ mode, mcpMode, notesStore, noteWindows, terminals, f
     const owner = ownerOf(id);
     const why = refusal('write', caller);
     if (why) return { ok: false, text: why };
+    here(id, 'writing', caller);
     const answer = await page(owner, 'return await N.agentApply(req);', { req: full }, 30_000);
     if (missed(answer)) return failed(answer);
     const ok = answer.ok === true;
@@ -516,6 +549,28 @@ function createNotesTools({ mode, mcpMode, notesStore, noteWindows, terminals, f
     return `${(folder && path.basename(folder)) || screen} (${ownerAI(caller)})`;
   }
 
+  // The AI's own process (what the engine lists as a session's pid): the first process up the chain ownerAI would name, 0 for
+  // Claude Desktop or when none is found.
+  function ownerAIPid(caller) {
+    const chain = caller.chain.slice(0, 12);
+    for (const [i, p] of chain.entries()) {
+      const name = String((p && p.name) || '').toLowerCase().replace(/\.exe$/, '');
+      const exe = String((p && p.exe) || '');
+      if (CLAUDE_DESKTOP.test(exe)) return 0;
+      const pid = Number.isInteger(p && p.pid) && p.pid > 0 ? p.pid : 0;
+      if (name.startsWith('claude') || /[\\/]claude[\\/]versions[\\/]/i.test(exe)) return pid;
+      if (pid && registered(pid)) return pid;
+      if (/[\\/]cursor-agent[\\/]versions[\\/]/i.test(exe)) return pid;
+      if (Object.prototype.hasOwnProperty.call(OTHER_AIS, name)) {
+        // A launcher's child is the same session, and the engine lists the launcher (runaways.js ais: Codex's Node script).
+        const up = chain[i + 1];
+        const upName = String((up && up.name) || '').toLowerCase().replace(/\.exe$/, '');
+        return /^(node|bun|deno)$/.test(upName) && Number.isInteger(up.pid) && up.pid > 0 ? up.pid : pid;
+      }
+    }
+    return 0;
+  }
+
   // Which AI runs the bridge: Claude Code, Codex or Antigravity, or Claude Desktop, found up the caller's process chain
   // (mcp.js hands it over, lowest first). Only a label for the note's "edited" strip and the log, never a permission.
   function ownerAI(caller) {
@@ -526,7 +581,7 @@ function createNotesTools({ mode, mcpMode, notesStore, noteWindows, terminals, f
       // The native Claude Code (claude.exe, or its versions folder's binary); an npm one is Node, known by the file Claude
       // keeps for each of its running processes (sessions/<pid>.json), as the Mac's Proc.isClaude.
       if (name.startsWith('claude') || /[\\/]claude[\\/]versions[\\/]/i.test(exe)) return 'Claude Code';
-      if (Number.isInteger(p && p.pid) && p.pid > 0 && fs.existsSync(path.join(claudeDir, 'sessions', `${p.pid}.json`))) return 'Claude Code';
+      if (Number.isInteger(p && p.pid) && p.pid > 0 && registered(p.pid)) return 'Claude Code';
       // Cursor's CLI is its own bundled Node, known by its folder (cursor-agent\versions\<version>\node.exe).
       if (/[\\/]cursor-agent[\\/]versions[\\/]/i.test(exe)) return 'Cursor';
       if (Object.prototype.hasOwnProperty.call(OTHER_AIS, name)) return OTHER_AIS[name];
@@ -713,7 +768,7 @@ function createNotesTools({ mode, mcpMode, notesStore, noteWindows, terminals, f
     },
   }));
 
-  return { tools, ownerAI };
+  return { tools, ownerAI, sessionIdle };
 }
 
 module.exports = { createNotesTools };

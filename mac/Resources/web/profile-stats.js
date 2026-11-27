@@ -271,7 +271,7 @@ window.ProfileStats = (() => {
   }
 
   // ---------- UP NEXT (badges.js puts it over your badges) ----------
-  /** The badges nearest their next tier, in one row; nothing before your badges come or while you're signed out (the
+  /** The badges not earned yet nearest their first tier (a held one's next tier stays hidden), in one row; nothing before your badges come or while you're signed out (the
    *  badges box says why). */
   function next() {
     const B = window.Badges && window.Badges.mine();
@@ -279,15 +279,15 @@ window.ProfileStats = (() => {
     const head = '<h3 class="ps-ch">UP NEXT</h3>';
     const Art = window.BadgeArt;
     const list = B.badges
-      .filter((b) => b.progress && b.tier < b.tiers && !NOT_NEXT.has(b.id) && !(b.tiers === 1 && b.progress.next === 1))
+      .filter((b) => b.progress && !b.tier && !(b.top ?? b.tier >= b.tiers) && !NOT_NEXT.has(b.id) && !(!(b.tiered ?? b.tiers > 1) && b.progress.next === 1))
       .map((b) => ({ b, pct: Math.max(0, Math.min(1, b.progress.value / b.progress.next)) }))
       .sort((a, c) => c.pct - a.pct || (a.b.progress.next - a.b.progress.value) - (c.b.progress.next - c.b.progress.value))
       .slice(0, 3);
-    if (!list.length) return `<div class="ps-next">${head}<p class="ps-empty">Every badge you can work toward is at its top.</p></div>`;
+    if (!list.length) return `<div class="ps-next">${head}<p class="ps-empty">No new badges to work toward right now.</p></div>`;
     return `<div class="ps-next">${head}` + list.map(({ b, pct }) => {
-      const tier = Art.tierName(b.id, b.tier + 1, b.tiers);
+      const tier = Art.tierName(b.id, b.tier + 1, b.tiered ?? b.tiers);
       return `<div class="ps-nx" style="--q:${Art.glow(b.id, b.tier + 1)[0]}" title="${esc(b.how)}">` +
-        `<span class="ps-nart">${Art.svg(b.id, b.tier + 1, 32)}</span>` +
+        `<span class="ps-nart">${Art.svg(b.id, b.tier + 1, 32, { veil: true })}</span>` +
         `<div class="ps-nt"><p><span class="ps-nn"><b>${esc(b.name)}</b>${tier ? ` · ${esc(tier)}` : ''}</span><em>${esc(window.Badges.amount(b.progress))}</em></p>` +
         `<i class="ps-nbar" role="progressbar" aria-label="${esc(`${b.name}${tier ? ` ${tier}` : ''}`)}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(pct * 100)}"><i style="width:${(pct * 100).toFixed(1)}%"></i></i></div></div>`;
     }).join('') + '</div>';

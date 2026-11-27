@@ -217,7 +217,7 @@ window.PanelLayout = (() => {
   // ---------- sizing: the right column's width, the bottom row's height, the sessions list's width ----------
   // Lines over the gaps between the page's parts, placed from where those parts are.
   const grid = {};
-  for (const [k, title] of [['right', 'Drag: the right column’s width'], ['bottom', 'Drag: the bottom row’s height'], ['sess', 'Drag: the sessions list’s width']]) {
+  for (const [k, title] of [['right', 'Drag: the right column’s width'], ['bottom', 'Drag: the bottom row’s height'], ['sess', 'Drag: the chats list’s width']]) {
     const g = document.createElement('div');
     g.className = `pl-gsash ${k === 'bottom' ? 'y' : 'x'}`;
     g.dataset.k = k;
@@ -243,13 +243,13 @@ window.PanelLayout = (() => {
     const r = app.getBoundingClientRect();
     const pad = 8; // #app's padding
     if (drag.k === 'right') {
-      const left = document.getElementById('sessions').getBoundingClientRect();
+      const left = document.getElementById('chats').getBoundingClientRect();
       L.rightW = Math.max(200, Math.min(r.right - pad - e.clientX - 4, r.right - left.right - 320));
     } else if (drag.k === 'bottom') {
       const top = document.getElementById('mapwrap').getBoundingClientRect();
       L.bottomH = Math.max(90, Math.min(r.bottom - pad - 22 - 8 - e.clientY - 4, r.bottom - top.top - 22 - 8 - 160));
     } else {
-      const s = document.getElementById('sessions').getBoundingClientRect();
+      const s = document.getElementById('chats').getBoundingClientRect();
       L.sessW = Math.max(180, Math.min(e.clientX - s.left - 4, r.width * 0.45));
     }
     applyGrid();
@@ -263,7 +263,7 @@ window.PanelLayout = (() => {
       const r = el.getBoundingClientRect();
       return r.width > 0 && r.height > 0 ? r : null;
     };
-    const ses = rect('sessions'), map = rect('mapwrap'), right = rect('right'), bottom = rect('bottom');
+    const ses = rect('chats'), map = rect('mapwrap'), right = rect('right'), bottom = rect('bottom');
     const put = (g, box) => {
       g.hidden = off || !box;
       if (g.hidden) return;
@@ -274,7 +274,7 @@ window.PanelLayout = (() => {
     put(grid.sess, ses && map ? { x: ses.right, y: ses.top, w: map.left - ses.right, h: ses.height } : null);
   }
   const ro = new ResizeObserver(() => placeGridSashes());
-  for (const id of ['sessions', 'mapwrap', 'right', 'bottom']) {
+  for (const id of ['chats', 'mapwrap', 'right', 'bottom']) {
     const el = document.getElementById(id);
     if (el) ro.observe(el);
   }

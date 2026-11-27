@@ -362,9 +362,11 @@
   // everything in twice).
   // The keys the app takes in a terminal (Settings › Shortcuts, the app's shortcuts.js): every action's but the
   // dashboard's own (Ctrl+B, Ctrl+R stay the shell's). As it came: Ctrl+N (a new file in Source Control's editor),
-  // Ctrl+Shift+N (a new terminal), Ctrl+K (the Ring), Ctrl+W and Ctrl+Shift+W (close the window: what runs in it goes
-  // on), as ⌘N, ⇧⌘N, ⌘K, ⌘W and ⇧⌘W are on the Mac. Changes come on term:keys, and
-  // whether Esc and the close keys are swapped (below).
+  // Ctrl+Shift+N (a new terminal), Ctrl+K (the Ring), Ctrl+Shift+T (a new tab), Ctrl+Shift+D (a split), Ctrl+W and
+  // Ctrl+Shift+W (close the tab or pane, the window: what runs in it goes on), as ⌘N, ⇧⌘N, ⌘K, ⌘T, ⌘D, ⌘W and ⇧⌘W are on
+  // the Mac. Ctrl+T stays the shell's: Claude Code's task list, Codex's transcript. The
+  // keys between tabs and panes aren't here: the app takes them before this page, and only in a window that has tabs or a
+  // split (main.js's paneKeys). Changes come on term:keys, and whether Esc and the close keys are swapped (below).
   let keys = window.__keys || { app: ['ctrl+shift+n', 'ctrl+n', 'ctrl+k', 'ctrl+w', 'ctrl+shift+w'] };
   atl.on('term:keys', (k) => {
     if (k && Array.isArray(k.app)) keys = k;
@@ -463,7 +465,7 @@
   // Its end, said as the Mac's window says it (processTerminated): a chat's when an AI was what ran in it last, else a
   // terminal's.
   let wasAI = false;
-  atl.on('term:exit', () => term.write(`\r\n\x1b[2m[${wasAI ? 'chat' : 'terminal'} ended · close this window to remove it]\x1b[0m\r\n`));
+  atl.on('term:exit', () => term.write(`\r\n\x1b[2m[${wasAI ? 'chat' : 'terminal'} ended · close it to remove it]\x1b[0m\r\n`));
   // The bell (BEL) to the app, which rings it; a program spilling bells (binary output) rings it a few times a second.
   let bellAt = 0;
   term.onBell(() => {
@@ -659,6 +661,7 @@
   const actionEl = document.getElementById('action');
   const sparkEl = document.getElementById('spark');
   const pinEl = document.getElementById('pin');
+  const acctEl = document.getElementById('acct');
   // A narrow window drops the strip's pieces one at a time, the least needed first, rather than wrapping it or cutting
   // off its buttons: the sparkline, model and effort, today's counts, the cost, why it waits, the tool call, the context.
   // The folder, the tool call's own words and the title give way on their own before that (the title slowest, and only
@@ -666,11 +669,17 @@
   const DROPS = ['#spark', '#model', '#counts', '#cost', '#status .why', '#action', '#ctx'].map((s) => hudEl.querySelector(s));
   const fitHud = () => {
     for (const el of DROPS) el.classList.remove('dropped');
-    const cramped = () => hudEl.scrollWidth > hudEl.clientWidth || titleEl.clientWidth < Math.min(titleEl.scrollWidth, 72);
+    // In a split the slim strip keeps 70 px for the name, as the Mac's pane title bar does (its counts go first, then the
+    // context; the rest isn't on it).
+    const keep = document.body.classList.contains('pane-split') ? 70 : 72;
+    const cramped = () => hudEl.scrollWidth > hudEl.clientWidth || titleEl.clientWidth < Math.min(titleEl.scrollWidth, keep);
+    acctEl.classList.remove('narrow');
     for (const el of DROPS) {
       if (!cramped()) break;
       el.classList.add('dropped');
     }
+    // The account's chip keeps its initial and chevron (spec 10): its words go before the title's room does.
+    if (!acctEl.hidden && cramped()) acctEl.classList.add('narrow');
   };
   new ResizeObserver(fitHud).observe(hudEl);
   // The status's and the tool call's clocks, every second (the Mac's header redraws as often).
@@ -698,6 +707,26 @@
   const setPin = (on) => {
     pinEl.classList.toggle('on', on);
     pinEl.title = on ? 'Stop keeping this window above all other apps' : 'Keep this window above all other apps';
+  };
+  // The pin is the window's, once (the Mac's HUD pin): in a split the window's bar over the panes has it, and the slim
+  // strips don't (terminal.css).
+  const showPin = () => {
+    pinEl.hidden = typeof info.pinned !== 'boolean';
+  };
+  // In a split the strip is the Mac's pane title bar: its dot only while the AI in it works or needs you, in that colour,
+  // and saying so when the pointer rests on the strip. Its copy shows whenever an AI runs here, and its star says what the
+  // Mac's does (each pane's own: they act for this pane, term:copyReply and term:favorite).
+  const paintSlim = () => {
+    const split = document.body.classList.contains('pane-split');
+    const st = !info.chat ? '' : info.status === 'terminal' && info.tool ? info.toolStatus || '' : info.status || '';
+    const dot = st === 'busy' || st === 'waiting' ? st : '';
+    hudEl.dataset.dot = dot;
+    hudEl.title = split && dot ? (dot === 'busy' ? 'Working' : 'Needs you') : '';
+    document.getElementById('copyreply').hidden = split ? !info.chat : info.canCopyReply !== true;
+    const star = document.getElementById('star');
+    star.title = split ? (info.fav ? 'Remove this chat from your favorites' : 'Add this chat to your favorites in the sidebar')
+      : info.fav ? "Starred. Click to take it out of the chats list's favourites." : "Star this chat in the chats list's favourites.";
+    star.setAttribute('aria-label', star.title);
   };
   atl.on('term:info', (got) => {
     const i = (info = got || {});
@@ -730,6 +759,8 @@
     if (st) {
       ctxEl.querySelector('.bar span').style.width = `${st.ctxMax > 0 ? Math.min(1, st.ctx / st.ctxMax) * 100 : 0}%`;
       ctxEl.querySelector('.n').textContent = fmtTok(st.ctx) + (st.ctxMax > 0 ? ` / ${fmtTok(st.ctxMax)}` : '');
+      // The slim strip's (a split's) shows the size alone, as the Mac's pane title bar.
+      ctxEl.querySelector('.s').textContent = fmtTok(st.ctx);
       // Its subagents at work after the counts, as the Mac's "⤷2".
       const agents = Math.trunc(Number(i.agentsRunning) || 0);
       countsEl.innerHTML = `<b>${st.tools}</b><i> tools · </i><b>${st.web}</b><i> web · </i><b${st.errors > 0 ? ' class="err"' : ''}>${st.errors}</b><i> err</i>` +
@@ -759,11 +790,108 @@
     if (spark.length) drawSpark(spark);
     // Copy the last reply (once there's one to copy), and keep the window on top.
     document.getElementById('copyreply').hidden = i.canCopyReply !== true;
-    pinEl.hidden = typeof i.pinned !== 'boolean';
-    if (!pinEl.hidden) setPin(i.pinned);
+    if (typeof i.pinned === 'boolean') setPin(i.pinned);
+    showPin();
+    paintSlim();
     tick();
+    drawAcct(i.acct, i.status);
     fitHud();
   });
+  // ---------- the Claude account (spec 4 to 7; the Mac's AccountChip and AccountNoteBar) ----------
+  // The app sends `acct` with the strip (term:info): null with one account only or when another AI runs here, else the chip
+  // ({ mark, left, out, pending }) and the note under it. A click opens the app's menu; a note's buttons are the user's
+  // clicks too: nothing here switches by itself.
+  const acctNote = document.getElementById('acctnote');
+  const escA = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+  const hueOf = (h) => (typeof h === 'string' && /^\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}\s*$/.test(h) ? h : '255, 176, 87');
+  const disc = (m) => `<i class="ac" style="--ah:${hueOf(m.hue)}">${escA(m.initial)}</i>`;
+  const GAUGE = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 11.5a5.5 5.5 0 1 1 11 0M8 11.5 5.6 7.4"/></svg>';
+  const TICK = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 8.5l3 3 6-7"/></svg>';
+  const CLOCK = '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.6"/><path d="M8 4.8V8l2.2 1.4"/></svg>';
+  let acctWas = '';
+  let noteSaid = '';
+  function drawAcct(a, status) {
+    const c = a && a.chip;
+    acctEl.hidden = !c;
+    if (!c) {
+      acctNote.hidden = true;
+      acctNote.innerHTML = '';
+      acctWas = noteSaid = '';
+      return;
+    }
+    const m = c.mark;
+    const low = typeof c.left === 'number' && c.left < 20;
+    let words = '';
+    if (c.pending) words = `<span class="sep"></span><span class="next words">${CLOCK}<span>→</span>${disc(c.pending)}<span>after this reply</span></span>`;
+    else if (c.out) words = '<span class="sep"></span><span class="pct">limit</span>';
+    else if (low) words = `<span class="sep"></span><span class="pct">${Math.round(c.left)}%</span>`;
+    const label = `Claude account: ${m.label}${c.out ? ', out of its limit' : low ? `, ${Math.round(c.left)}% left` : ''}${c.pending ? `, moves to ${c.pending.label} when this reply ends` : ''}`;
+    const html = `${disc(m)}<span class="lab">${escA(m.label)}</span>${words}<svg class="chev" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 6l4.5 4.5L12.5 6"/></svg>`;
+    acctEl.style.setProperty('--ah', hueOf(m.hue));
+    if (c.pending) acctEl.style.setProperty('--ah2', hueOf(c.pending.hue));
+    acctEl.classList.toggle('out', !!c.out);
+    acctEl.classList.toggle('pending', !!c.pending);
+    acctEl.title = label;
+    acctEl.setAttribute('aria-label', label);
+    if (html !== acctEl.__html) {
+      // After a switch: one ring pulse in the new colour.
+      if (acctEl.__mark && acctEl.__mark !== m.id) {
+        acctEl.classList.remove('flash');
+        void acctEl.offsetWidth;
+        acctEl.classList.add('flash');
+      }
+      acctEl.innerHTML = html;
+      acctEl.__html = html;
+    }
+    acctEl.__mark = m.id;
+    drawNote(a.note);
+  }
+  const noteHTML = (n) => {
+    const btn = (act, to, label, cls) => `<button type="button" class="${cls || ''}" data-act="${act}"${to ? ` data-to="${escA(to.id)}"` : ''}>${to ? disc(to) : ''}<span>${label}</span></button>`;
+    if (n.kind === 'limit') {
+      const text = n.to
+        ? `<b>${escA(n.from.label)} is out of its ${n.what}.</b> <span class="more">It fills again ${escA(n.fills)}.</span>`
+        : `<b>${escA(n.from.label)} is out of its ${n.what} until ${escA(n.fills.replace(/^(at|on) /, ''))}.</b> <span class="more">${escA(n.otherOut || '')}</span>`;
+      return { cls: 'limit', say: `${n.from.label} is out of its ${n.what}.`, html: `${GAUGE}<span class="msg">${text}</span>${n.to ? btn('continue', n.to, `Continue with ${escA(n.to.label)}`) + btn('notNow', null, 'Not now', 'quiet') : btn('notNow', null, 'Not now', 'quiet')}` };
+    }
+    if (n.kind === 'low') {
+      const week = n.what === 'week';
+      const text = `<b>${escA(n.from.label)} has 5% ${week ? 'of its week ' : ''}left.</b> <span class="more">${n.idle ? `Continue with ${escA(n.to.label)}?` : `Switch to ${escA(n.to.label)} when this reply ends?`}</span>`;
+      return { cls: 'low', say: `${n.from.label} has 5% left.`, html: `${GAUGE}<span class="msg">${text}</span>${btn('continue', n.to, n.idle ? `Continue with ${escA(n.to.label)}` : 'After this reply')}${btn('notNow', null, 'Not now', 'quiet')}` };
+    }
+    if (n.kind === 'switching') return { cls: 'switching', say: '', html: `${CLOCK}<span class="msg"><b>Switching to ${escA(n.to.label)}…</b></span>` };
+    return { cls: 'went', say: `This chat went on with ${n.to.label}.`, html: `${TICK}<span class="msg"><b>This chat went on with ${escA(n.to.label)}.</b>${n.fromLabel ? ` <span class="more">${escA(n.fromLabel)} fills again ${escA(n.fills || 'later')}.</span>` : ''}</span><button type="button" class="quiet" data-act="dismiss">Dismiss</button>` };
+  }
+  function drawNote(n) {
+    if (!n) {
+      acctNote.hidden = true;
+      acctNote.innerHTML = '';
+      noteSaid = '';
+      return;
+    }
+    const v = noteHTML(n);
+    const key = v.cls + v.html;
+    if (key === noteSaid) return;
+    noteSaid = key;
+    acctNote.className = v.cls;
+    acctNote.innerHTML = v.html;
+    acctNote.hidden = false;
+    // Said once (WCAG 4.1.3), politely.
+    if (v.say) announce.textContent = v.say;
+    acctNote.querySelectorAll('button').forEach((b) => {
+      b.onclick = () => {
+        term.focus();
+        atl.send('term:acctNote', { action: b.dataset.act, to: b.dataset.to || '' });
+      };
+    });
+  }
+  acctEl.onclick = () => {
+    term.focus();
+    const r = acctEl.getBoundingClientRect();
+    acctEl.classList.add('open');
+    atl.send('term:acctMenu', { x: Math.round(r.left), y: Math.round(r.bottom + 2) });
+  };
+  atl.on('term:acctMenu', (open) => acctEl.classList.toggle('open', !!open));
   // ---------- a linked worktree: the chip and the split button (the Mac's WorktreeChip.swift) ----------
   // The app sends what to show (term:ship, from its worktreeship.js; null: not in a worktree) and does what a click asks:
   // the chip shows the changes in Source Control, the main face opens the next step's sheet, ▾ a menu of everything.
@@ -860,6 +988,149 @@
     atl.ask('term:pin').then((r) => r && typeof r.pinned === 'boolean' && setPin(r.pinned), () => {});
   };
   document.getElementById('end').onclick = () => atl.send('term:end');
+  // ---------- one of several panes (the app's tabs and splits, the Mac's pane title bar) ----------
+  // The strip is the pane's title bar: in a split, the panes without the keys dim a little, as in iTerm2, and the one
+  // with them is marked. A double click on its name renames it in place (Enter keeps it, empty goes back to the one it's
+  // given, Esc drops it); a right click on the strip has Rename and the moves to a tab or a window of its own.
+  // The tab in front has several panes, even while one is zoomed to the whole area (only then is `panes` 1): its strip drags.
+  // With several panes shown the strip is slim (terminal.css, the Mac's PaneTitleBar): its own copy, env, star and × (End
+  // here), the window's bar over the panes (pages/tabs.js) the rest for the pane with the keys. The account's disc shows
+  // when the window's panes use more than one account (`accounts`).
+  let inSplit = false;
+  const endEl = document.getElementById('end');
+  atl.on('term:pane', (p) => {
+    inSplit = !!p && (p.panes > 1 || !!p.split);
+    const several = !!p && p.panes > 1;
+    document.body.classList.toggle('pane-split', several);
+    document.body.classList.toggle('pane-off', several && !p.focused);
+    document.body.classList.toggle('pane-accts', several && !!p.accounts);
+    endEl.textContent = several ? '×' : 'end';
+    endEl.title = several ? 'End this chat and stop the AI (a terminal: close it)' : 'End this terminal';
+    endEl.setAttribute('aria-label', endEl.title);
+    paintSlim();
+    fitHud();
+  });
+  let renaming = false;
+  const renameTitle = () => {
+    if (renaming) return;
+    renaming = true;
+    const input = document.createElement('input');
+    input.id = 'rename';
+    input.value = info.title || '';
+    input.setAttribute('aria-label', 'Name');
+    titleEl.hidden = true;
+    titleEl.after(input);
+    let done = false;
+    const finish = (keep) => {
+      if (done) return;
+      done = true;
+      renaming = false;
+      if (keep) atl.send('term:rename', input.value);
+      input.remove();
+      titleEl.hidden = false;
+      term.focus();
+      fitHud();
+    };
+    input.addEventListener('keydown', (e) => {
+      if (e.isComposing) return;
+      if (e.key === 'Enter') finish(true);
+      else if (e.key === 'Escape') finish(false);
+      e.stopPropagation();
+    });
+    input.addEventListener('blur', () => finish(false));
+    input.focus();
+    input.select();
+  };
+  titleEl.addEventListener('dblclick', renameTitle);
+  atl.on('term:renameStart', renameTitle);
+  hudEl.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    atl.send('term:paneMenu');
+  });
+  // ---------- dragging the strip (the Mac's pane title bar drag) ----------
+  // As with the app's tab chips: a press that moves more than a few pixels drags the pane, anything less stays a click.
+  // The strip takes the pointer only then, so a double click on the name still reaches it; main reads the pointer itself and
+  // this page says only which phase the drag is in.
+  const DRAG_SLOP = 5;
+  let pd = null; // { x0, y0, pointerId, started, cancelled, finished, seq, raf }
+  let pdSeq = 0;
+  let pdSwallow = false;
+  let pdLastEnd = 0;
+  const tellDrag = (m) => atl.send('term:drag', { kind: 'pane', ...m });
+  hudEl.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0 || pd || renaming || !inSplit) return;
+    if (e.target.closest('button, input')) return;
+    pd = { x0: e.clientX, y0: e.clientY, pointerId: e.pointerId, started: false, cancelled: false, finished: false, seq: 0, raf: 0 };
+    tellDrag({ phase: 'arm', seq: 0 });
+  });
+  window.addEventListener('pointermove', (e) => {
+    if (!pd || e.pointerId !== pd.pointerId || pd.finished) return;
+    // The button came up where no pointerup reached this page: the drag is over, or disarmed.
+    if (!(e.buttons & 1)) return endPaneDrag(e, true);
+    if (!pd.started) {
+      if (Math.hypot(e.clientX - pd.x0, e.clientY - pd.y0) <= DRAG_SLOP) return;
+      pd.started = true;
+      pd.seq = ++pdSeq;
+      try { hudEl.setPointerCapture(e.pointerId); } catch (_) { /* lostpointercapture cancels */ }
+      document.body.classList.add('dragging');
+      tellDrag({ phase: 'start', seq: pd.seq });
+    }
+    // One report for each frame is enough: main reads the pointer itself when it gets it.
+    if (pd.cancelled || pd.raf) return;
+    const d = pd;
+    d.raf = requestAnimationFrame(() => {
+      d.raf = 0;
+      if (!d.cancelled && !d.finished) tellDrag({ phase: 'move', seq: d.seq });
+    });
+  });
+  const endPaneDrag = (e, up) => {
+    if (!pd || e.pointerId !== pd.pointerId || pd.finished) return;
+    const d = pd;
+    d.finished = true;
+    if (d.started) {
+      // A cancel always ends the drag: after a pointercancel the pointer never comes back, so the drop must not run.
+      if (!d.cancelled) tellDrag({ phase: up ? 'end' : 'cancel', seq: d.seq });
+      pdSwallow = true;
+      pdLastEnd = performance.now();
+    }
+    if (hudEl.hasPointerCapture(d.pointerId)) hudEl.releasePointerCapture(d.pointerId);
+    document.body.classList.remove('dragging');
+    pd = null;
+  };
+  window.addEventListener('pointerup', (e) => endPaneDrag(e, true));
+  window.addEventListener('pointercancel', (e) => endPaneDrag(e, false));
+  // Capture lost while the button is still down is a drag that can't go on.
+  window.addEventListener('lostpointercapture', (e) => {
+    if (pd && pd.started && !pd.finished && e.pointerId === pd.pointerId) endPaneDrag(e, false);
+  });
+  // A drag that ended by pointercancel or lost capture gets no click: the flag must not eat the next, unrelated one.
+  window.addEventListener('pointerdown', () => { pdSwallow = false; }, true);
+  // The click that follows a drag must not press a button or start a rename.
+  window.addEventListener('click', (e) => {
+    if (!pdSwallow) return;
+    pdSwallow = false;
+    e.stopPropagation();
+    e.preventDefault();
+  }, true);
+  window.addEventListener('dblclick', (e) => {
+    if (performance.now() - pdLastEnd < 500) e.stopPropagation();
+  }, true);
+  const cancelPaneDrag = () => {
+    pd.cancelled = true;
+    document.body.classList.remove('dragging');
+  };
+  // Esc drops the drag: nothing moves, and the shell never sees that Esc.
+  window.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape' || !pd || !pd.started || pd.cancelled || pd.finished) return;
+    e.preventDefault();
+    e.stopPropagation();
+    cancelPaneDrag();
+    tellDrag({ phase: 'cancel', seq: pd.seq });
+  }, true);
+  // Main dropped the drag (Esc in another window, the source went away): stop reporting, and the click still gets swallowed.
+  atl.on('term:dragCancel', (m) => {
+    if (m && pd && pd.started && !pd.cancelled && m.seq === pd.seq) cancelPaneDrag();
+  });
   term.focus();
   atl.send('term:ready', size());
 })();

@@ -1,0 +1,23 @@
+/* The drag overlays: transparent windows that never take the pointer, so nothing here may catch it either. */
+html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; pointer-events: none; user-select: none; }
+
+/* The ghost: the Mac's TabDragGhost chip, centred in its 260 x 26 window. */
+body.ghost { display: flex; align-items: center; justify-content: center; }
+#chip {
+  display: inline-flex; align-items: center; box-sizing: border-box; height: 26px; min-width: 110px; max-width: 260px; padding: 0 12px;
+  border: 1px solid rgba(var(--accent-rgb, 248, 128, 8), 0.85); border-radius: 6px; background: rgba(var(--accent-rgb, 248, 128, 8), 0.32);
+  font: 600 11px "Cascadia Mono", Consolas, monospace; color: var(--accent-soft, #ffb057);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+#chip[hidden], #box[hidden] { display: none; }
+
+/* The box: the drop zone is a div at a rect of the target window; the tear-off outline is the window itself. */
+#box { position: absolute; box-sizing: border-box; opacity: 1; }
+#box.zone { border: 2px solid rgba(var(--accent-rgb, 248, 128, 8), 0.9); background: rgba(var(--accent-rgb, 248, 128, 8), 0.2); border-radius: 6px; }
+/* A slot marker (a chip boundary, 3 px wide) is a solid bar, not a framed box. */
+#box.zone.marker { border: 0; background: rgba(var(--accent-rgb, 248, 128, 8), 0.9); border-radius: 1.5px; }
+#box.outline { border: 2px solid rgba(var(--accent-rgb, 248, 128, 8), 0.9); background: rgba(var(--accent-rgb, 248, 128, 8), 0.07); border-radius: 8px; }
+
+/* Only a window drag's preview over a pane animates (the Mac's 150 ms fade in, 70 ms slide between places). */
+#box.anim { transition: opacity 150ms ease-out, left 70ms ease-out, top 70ms ease-out, width 70ms ease-out, height 70ms ease-out; }
+@media (prefers-reduced-motion: reduce) { #box.anim { transition: none; } }

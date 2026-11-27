@@ -248,19 +248,25 @@ function createNotesStore({ dir, keyFile, safeStorage }) {
   }
 
   // The notes AI may not see, from the files' own content as read or written here (what the page last saved): the AI tools
-  // ask this on every call and don't take the page's word for it (the Mac's NotesStore.hiddenIDs). Two kinds: a note the user
-  // hid (the eye), and a shared note whose owner hasn't let AI read it (`shared.ai` isn't true, whoever's PC this is).
-  function hiddenIDs() {
-    const out = new Set();
+  // ask this on every call and don't take the page's word for it (the Mac's NotesStore.hiddenKinds). Two kinds, kept apart so
+  // the answer can say which switch to flip: `user`, a note the user hid (the eye); `sharedOff`, a shared note whose owner
+  // hasn't let AI read it (`shared.ai` isn't true: the default). The owner's own AI always sees their shared notes (`shared.mine`).
+  function hiddenKinds() {
+    const user = new Set(), sharedOff = new Set();
     for (const [name, plain] of known) {
       if (name === INDEX || (!plain.includes('"aiHidden":true') && !plain.includes('"shared":'))) continue;
       try {
         const o = JSON.parse(plain);
-        if (o && o.aiHidden === true) out.add(name);
-        else if (o && o.shared && typeof o.shared === 'object' && o.shared.ai !== true) out.add(name);
+        if (o && o.aiHidden === true) user.add(name);
+        else if (o && o.shared && typeof o.shared === 'object' && o.shared.ai !== true && o.shared.mine !== true) sharedOff.add(name);
       } catch {}
     }
-    return out;
+    return { user, sharedOff };
+  }
+
+  function hiddenIDs() {
+    const k = hiddenKinds();
+    return new Set([...k.user, ...k.sharedOff]);
   }
 
   // ---------- a shared note's document (the Mac's loadY / saveY) ----------
@@ -411,7 +417,7 @@ function createNotesStore({ dir, keyFile, safeStorage }) {
   }
 
   return {
-    handle, hiddenIDs, serial, loadY, saveY, hasFile, putFile, getFile, pendingAdds, removeFiles,
+    handle, hiddenIDs, hiddenKinds, serial, loadY, saveY, hasFile, putFile, getFile, pendingAdds, removeFiles,
     validName: (s) => typeof s === 'string' && NAME.test(s),
   };
 }

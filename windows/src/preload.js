@@ -12,11 +12,22 @@ const boot = ipcRenderer.sendSync('atl:boot') || {};
 const full = !boot.mascot;
 const handlers = {};
 // `mcp`: Settings > Claude, the local MCP server (mcp.js); `notesai`: Settings > Privacy > AI tools and my notes
-// (notesai.js); `keys`: Settings › Shortcuts (shortcuts.js). main.js answers them for the dashboard's page only.
+// (notesai.js); `keys`: Settings › Shortcuts (shortcuts.js); `claudeAccounts`: Settings › Claude's accounts and the top bar's
+// limits popover (claudeaccounts.js). main.js answers them for the dashboard's page only.
 for (const name of full
-  ? ['radar', 'cloud', 'git', 'theme', 'overlay', 'messages', 'savers', 'chats', 'archive', 'trash', 'spend', 'files', 'notes', 'noteWindow', 'feed', 'mcp', 'notesai', 'keys']
+  ? ['radar', 'cloud', 'git', 'theme', 'overlay', 'messages', 'savers', 'chats', 'archive', 'trash', 'spend', 'files', 'notes', 'noteWindow', 'feed', 'mcp', 'notesai', 'keys', 'claudeAccounts']
   : ['mascot']) {
   handlers[name] = { postMessage: (body) => ipcRenderer.invoke('atl:post', name, body) };
+}
+// Settings › Claude shows the app's own words when a request is refused ("A chat is running with this account. End it
+// first."), as the Mac's reply does, without Electron's "Error invoking remote method 'atl:post': Error: " before them.
+if (handlers.claudeAccounts) {
+  handlers.claudeAccounts = {
+    postMessage: (body) =>
+      ipcRenderer.invoke('atl:post', 'claudeAccounts', body).catch((e) => {
+        throw new Error(String((e && e.message) || e).replace(/^Error invoking remote method '[^']*': (?:Error: )?/, ''));
+      }),
+  };
 }
 contextBridge.exposeInMainWorld('webkit', { messageHandlers: handlers });
 // The pages name the computer and the command key by it ("this PC", Ctrl+).

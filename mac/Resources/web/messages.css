@@ -598,3 +598,188 @@ body.danger-on #msgbox { display: none; }
 }
 .mb-x.mb-expand { display: inline-flex; align-items: center; justify-content: center; }
 .mb-x.mb-expand svg { width: 13px; height: 13px; display: block; }
+
+/* =====================================================================================================================
+   WHO FIRED AT ME (attack.js + messages.js). Three pieces, one look: the attack's own slanted plate (DANGER, LOCKED ON,
+   HIT), amber #ffb020 and cream #fff1de on near-black, never the theme's colours (an alarm, not decoration).
+   1. .mb.peek.fired   the corner card in the notices panel: waits until you've seen it.
+   2. the line in the chat is the nudge's (.fc-ndg.atk).
+   3. .fr-atk          the friend's row says it until you open the chat.
+   Sizes in px like messages.css: the app's text size is the page's zoom (Themes.swift pageZoom), which scales px too.
+   ===================================================================================================================== */
+:root {
+  --atk-hot: 255, 106, 26;      /* the attack's orange-red: borders and glow (#ff6a1a) */
+  --atk-amber: #ffb020;         /* DANGER's amber: the tag, the rocket mark, the outcome */
+  --atk-cream: #fff1de;         /* text on the plate: 17.8:1 */
+  --atk-plate: rgba(18, 7, 2, 0.94);
+  --atk-haz: repeating-linear-gradient(-45deg, var(--atk-amber) 0 4px, #1c0d04 4px 8px);
+}
+
+/* ---------- 1. the corner card ---------- */
+.mb.peek.fired { width: 372px; --glow: var(--atk-hot); cursor: pointer; }
+.mb.peek.fired .mb-border { background: conic-gradient(from var(--ang), #ff6a1a, var(--atk-amber), #ff3d1a, #ff6a1a); }
+.mb.peek.fired .mb-tag { gap: 6px; background: var(--atk-amber); color: #1a0d00; }
+.mb.peek.fired .mb-time { font-variant-numeric: tabular-nums; }
+/* one attack */
+.fd-one { display: grid; grid-template-columns: 44px minmax(0, 1fr); align-items: center; gap: 12px; padding: 12px 12px 4px; }
+.fd-pic { position: relative; width: 44px; height: 44px; }
+.fd-pic .fc-pic { border-radius: 4px; font-size: 18px; }
+/* The rocket on the picture's corner, as Apple badges a sender's picture with the app's mark (HIG Notifications). */
+.fd-mark { position: absolute; right: -6px; bottom: -6px; display: grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; background: #1c0d04; font-size: 12px; line-height: 1; font-style: normal; box-shadow: 0 0 0 2px rgb(var(--surface-rgb)), 0 0 0 3px rgba(var(--atk-hot), 0.9), 0 0 12px rgba(var(--atk-hot), 0.6); }
+.fd-line { display: block; color: var(--hi); font-size: 14px; font-weight: 700; line-height: 1.35; overflow-wrap: anywhere; }
+.fd-meta { display: block; margin-top: 2px; overflow: hidden; color: var(--txt3); font-size: 12px; line-height: 1.4; white-space: nowrap; text-overflow: ellipsis; }
+.fd-meta q { color: var(--txt2); quotes: "\201C" "\201D"; }
+.fd-meta b { color: var(--atk-amber); font-weight: 600; }
+.fd-foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; padding: 10px 12px 12px; }
+/* several: one card, newest first (HIG: never several notifications for one thing) */
+.fd-list { margin: 0; padding: 6px 6px 0; list-style: none; }
+.fd-row { display: grid; grid-template-columns: 28px minmax(0, 1fr) auto auto; align-items: center; gap: 10px; min-height: 40px; padding: 4px 6px; border-radius: 5px; cursor: pointer; }
+.fd-row + .fd-row { border-top: 1px solid rgba(var(--atk-hot), 0.14); }
+.fd-row:hover { background: rgba(var(--atk-hot), 0.1); }
+.fd-row .fd-pic { width: 28px; height: 28px; }
+.fd-row .fd-pic .fc-pic { font-size: 12px; }
+.fd-row .fd-mark { right: -5px; bottom: -5px; width: 15px; height: 15px; font-size: 8px; box-shadow: 0 0 0 1.5px rgb(var(--surface-rgb)), 0 0 0 2.5px rgba(var(--atk-hot), 0.9); }
+.fd-row .fd-line { overflow: hidden; font-size: 13px; white-space: nowrap; text-overflow: ellipsis; }
+.fd-row time { color: var(--txt3); font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+/* Fire back: the one action (HIG: an action, not "open the app"; the card's own click opens the chat). The same states as
+   every 🚀 button (attack.js button()): Locking on… · Cancel, In flight · 0:07, dimmed with its reason. */
+.fd-fire { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 12px; border: 1px solid #ff6a1a; border-radius: 4px; background: linear-gradient(180deg, rgba(255, 140, 40, 0.3), rgba(255, 90, 20, 0.14)); color: var(--atk-cream); font: 700 12px/1 var(--font-sans); white-space: nowrap; cursor: pointer; }
+.fd-fire:hover { border-color: var(--atk-amber); box-shadow: 0 0 12px rgba(var(--atk-hot), 0.55); }
+.fd-fire:focus-visible, .fd-row:focus-visible { outline: 2px solid var(--accent-soft); outline-offset: 2px; }
+.fd-fire small { color: var(--atk-amber); font-weight: 600; font-size: 11px; }
+.fd-fire.atk-off { border-color: rgba(255, 176, 87, 0.35); background: transparent; color: var(--txt3); cursor: default; box-shadow: none; }
+.fd-fire.atk-off small { color: var(--txt3); }
+.fd-fire.mini { width: 28px; padding: 0; justify-content: center; }
+.fd-fire.mini.atk-off { opacity: 0.6; }
+/* your shield's countdown (cloud.css .atk-shield, copied for the notices and chat pages) */
+.fd-shield { display: inline-flex; align-items: center; gap: 5px; color: var(--accent-pale); font: 600 12px/16px var(--font-mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.fd-shield svg { width: 13px; height: 13px; fill: rgba(var(--accent-rgb), 0.16); stroke: currentColor; stroke-width: 1.4; stroke-linejoin: round; }
+
+/* ---------- 2. the line in the chat ---------- */
+/* The line is the nudge's (.fc-ndg, NUDGE section below): one component for both; the rocket only tints its mark amber. */
+.fc-ndg.atk .fc-ndg-i { background: rgba(var(--atk-hot), 0.14); box-shadow: inset 0 0 0 1px rgba(var(--atk-hot), 0.55); color: var(--atk-amber); }
+.fc-ndg-i .rk { font-size: 12px; line-height: 1; font-style: normal; }
+/* the newest one fired at you, while firing back means something: the shield and Fire back, under the line, in the words' column */
+.fc-atk-act { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin: 2px 0 10px 33px; }
+
+.fd-shield[hidden] { display: none; }
+
+/* =====================================================================================================================
+   NUDGE (messages.js, with the window's own shake in Messages.swift and windows/src/main.js). A friend's "look at me",
+   friendly, like MSN's (it costs a little ORB, nudge_price): their chat with you shakes and buzzes once, and a line stays in the history.
+   1. .ndg-btn         the Nudge button, the third tool in the chat's well (emoji, code, nudge), with its cooldown sweep.
+   2. .fc-ndg          the line in the chat, both sides, kept in the history: "kerem sent you a nudge".
+   3. .mb.peek.nudge   the corner card, only when their chat isn't on screen: jolts once, goes after 12 s like a message.
+   4. .fc-tab.ndg      their tab, when the chat window is open on someone else: jolts once and says so.
+   The chat WINDOW's shake is native (the whole frame moves, frost and all) and follows the same keyframes as ndg-jolt.
+   The theme's own soft accent only (--accent-soft): round, calm, never the attack's hazard family (slant, stripes,
+   fixed amber). Sizes in px like messages.css: the app's text size is the page's zoom, which scales px too.
+   ===================================================================================================================== */
+#chatwin, #msgbox { --ndg: var(--accent-soft-rgb); }
+
+/* One jolt: two-dimensional and dying out, so it reads as a buzz, not as the Mac's side-to-side "wrong password" shake.
+   --ndg-a scales it: 1 = the window (±8 px across, ±5 px up and down), .75 the card, .5 the line's mark, .4 a tab.
+   1400 ms (MSN-like, strong first then settling), ease-in-out on every leg (the timing function applies between each pair of keyframes). */
+@keyframes ndg-jolt {
+  0%, 100% { transform: none; }
+  3.21% { transform: translate(calc(7.7px * var(--ndg-a, 1)), calc(-4.8px * var(--ndg-a, 1))); }
+  6.57% { transform: translate(calc(-7.3px * var(--ndg-a, 1)), calc(-3.7px * var(--ndg-a, 1))); }
+  10.00% { transform: translate(calc(7px * var(--ndg-a, 1)), calc(4.4px * var(--ndg-a, 1))); }
+  13.64% { transform: translate(calc(-6.6px * var(--ndg-a, 1)), calc(2.5px * var(--ndg-a, 1))); }
+  17.36% { transform: translate(calc(6.2px * var(--ndg-a, 1)), calc(-3.1px * var(--ndg-a, 1))); }
+  21.29% { transform: translate(calc(-5.9px * var(--ndg-a, 1)), calc(-2.2px * var(--ndg-a, 1))); }
+  25.36% { transform: translate(calc(5.5px * var(--ndg-a, 1)), calc(1.4px * var(--ndg-a, 1))); }
+  29.57% { transform: translate(calc(-5.1px * var(--ndg-a, 1)), calc(1.3px * var(--ndg-a, 1))); }
+  33.93% { transform: translate(calc(4.7px * var(--ndg-a, 1)), calc(-2.9px * var(--ndg-a, 1))); }
+  38.43% { transform: translate(calc(-4.3px * var(--ndg-a, 1)), calc(-2.1px * var(--ndg-a, 1))); }
+  43.21% { transform: translate(calc(3.8px * var(--ndg-a, 1)), calc(2.4px * var(--ndg-a, 1))); }
+  48.07% { transform: translate(calc(-3.4px * var(--ndg-a, 1)), calc(1.3px * var(--ndg-a, 1))); }
+  53.21% { transform: translate(calc(3px * var(--ndg-a, 1)), calc(-1.5px * var(--ndg-a, 1))); }
+  58.50% { transform: translate(calc(-2.5px * var(--ndg-a, 1)), calc(-1px * var(--ndg-a, 1))); }
+  64.00% { transform: translate(calc(2.1px * var(--ndg-a, 1)), calc(0.5px * var(--ndg-a, 1))); }
+  69.79% { transform: translate(calc(-1.7px * var(--ndg-a, 1)), calc(0.4px * var(--ndg-a, 1))); }
+  75.71% { transform: translate(calc(1.3px * var(--ndg-a, 1)), calc(-0.8px * var(--ndg-a, 1))); }
+  81.93% { transform: translate(calc(-0.9px * var(--ndg-a, 1)), calc(-0.4px * var(--ndg-a, 1))); }
+  88.36% { transform: translate(calc(0.5px * var(--ndg-a, 1)), calc(0.3px * var(--ndg-a, 1))); }
+  95.00% { transform: translate(calc(-0.2px * var(--ndg-a, 1)), calc(0.1px * var(--ndg-a, 1))); }
+}
+/* Reduce Motion: nothing moves; one soft ring swells and fades instead (a single slow change, never a flash). */
+@keyframes ndg-ring {
+  0% { box-shadow: 0 0 0 0 rgba(var(--ndg), 0); }
+  35% { box-shadow: 0 0 0 4px rgba(var(--ndg), 0.38); }
+  100% { box-shadow: 0 0 0 0 rgba(var(--ndg), 0); }
+}
+
+/* the mark: a chat bubble with two buzz lines, drawn like the well's other tools */
+.ndg-g { fill: none; stroke: currentColor; stroke-width: 1.3; stroke-linecap: round; stroke-linejoin: round; }
+
+/* ---------- 1. the Nudge button ---------- */
+/* Third in the well, after the two that write (emoji, code), a hair apart: this one acts. */
+.fc-well .ndg-btn { position: relative; margin-left: 4px; }
+.ndg-btn svg { overflow: visible; }
+/* with its price ("4.23" ORB, as the attack button shows its own): wider, the number after the mark */
+.ndg-btn.priced { width: auto; gap: 5px; padding: 0 10px 0 8px; }
+.ndg-p { color: var(--accent-pale); font: 600 11px/1 var(--font-mono); font-variant-numeric: tabular-nums; }
+.ndg-btn[aria-disabled="true"] .ndg-p { color: var(--txt3); opacity: 0.8; }
+/* Can't now (they're offline, on do not disturb, turned nudges off; you did): dimmed, the reason in its tooltip. */
+.ndg-btn[aria-disabled="true"] { cursor: default; }
+.ndg-btn[aria-disabled="true"]:hover { background: rgba(var(--glass-top-rgb), 0.55); color: var(--txt3); }
+.ndg-btn[aria-disabled="true"] svg { opacity: 0.32; }
+/* Just sent: a countdown ring in place of the mark, like a game's cooldown or the Clock app's timer. The lit arc is
+   what's left of the minute, from twelve o'clock clockwise (--left, set once a second: a state, not an animation), and
+   the seconds sit in the middle. */
+.ndg-btn.wait svg { opacity: 0; }
+.ndg-btn.wait::before { content: ""; position: absolute; left: 50%; top: 50%; width: 28px; height: 28px; margin: -14px 0 0 -14px; border-radius: 50%; background: conic-gradient(rgba(var(--ndg), 0.9) var(--left, 100%), rgba(var(--dim2-rgb), 0.95) 0); -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 calc(100% - 1.5px)); mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 calc(100% - 1.5px)); }
+.ndg-cd { position: absolute; inset: 0; display: grid; place-items: center; color: var(--txt2); font: 700 11px/1 var(--font-sans); font-variant-numeric: tabular-nums; }
+
+/* ---------- 2. the line in the chat ---------- */
+/* In the conversation's own columns, like a message (the mark where a picture goes, the words where text goes), so it
+   reads as part of the talk; the attack's line is this same line (.fc-ndg.atk, its mark amber). It ends the block: the
+   next message starts a new one with its header. */
+.fc-ndg { display: flex; align-items: center; gap: 10px; min-width: 0; margin: 14px 0 4px; padding: 2px 6px 2px 0; }
+.fc-ndg + .fc-ndg { margin-top: 6px; }
+.fc-ndg-i { display: grid; place-items: center; flex: none; width: 23px; height: 23px; border-radius: 50%; background: rgba(var(--ndg), 0.13); box-shadow: inset 0 0 0 1px rgba(var(--ndg), 0.4); color: var(--accent-soft); }
+.fc-ndg-i svg { width: 15px; height: 15px; overflow: visible; }
+.fc-ndg-t { min-width: 0; color: var(--txt2); font-size: 13px; line-height: 18px; overflow-wrap: anywhere; }
+.fc-ndg-t b { color: var(--hi); font-weight: 600; }
+.fc-ndg time { flex: none; align-self: flex-end; color: var(--dim); font-size: 10px; line-height: 15px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+/* yours: quieter, as your own lines are (Steam) */
+.fc-ndg.mine .fc-ndg-i { background: transparent; box-shadow: inset 0 0 0 1px rgba(var(--dim2-rgb), 0.95); color: var(--txt3); }
+.fc-ndg.mine .fc-ndg-t { color: var(--txt3); }
+.fc-ndg.mine .fc-ndg-t b { color: var(--txt2); }
+/* arriving: the row slides in like a message, then its mark jolts once */
+.fc-ndg.new { animation: mb-line 0.25s ease-out both; }
+.fc-ndg.new:not(.mine:not(.atk)) .fc-ndg-i { --ndg-a: 0.5; animation: ndg-jolt 1.4s ease-in-out 0.12s; }
+
+/* ---------- 3. the corner card (their chat isn't on screen) ---------- */
+/* The message pop-up's frame and quick reply; its own tag, the friend's picture with the mark on its corner (HIG:
+   a communication notification shows the sender, badged), their last words for context. */
+.mb.peek.nudge { --glow: var(--ndg); cursor: pointer; }
+.mb.peek.nudge .mb-tag { gap: 6px; background: var(--accent-soft); }
+.mb.peek.nudge .mb-tag svg { width: 13px; height: 13px; overflow: visible; }
+.mb.peek.nudge .mb-time { font-variant-numeric: tabular-nums; }
+/* in, then one jolt as it lands (the window's keyframes at three quarters); `quiet`: one that waited under a takeover, the flames or
+   DANGER's banner comes in without the jolt */
+.mb.peek.nudge.in { --ndg-a: 0.75; animation: mb-in 0.42s cubic-bezier(0.2, 0.8, 0.25, 1) both, ndg-jolt 1.4s ease-in-out 0.4s; }
+.mb.peek.nudge.in.quiet { animation: mb-in 0.42s cubic-bezier(0.2, 0.8, 0.25, 1) both; }
+.nd-one { display: grid; grid-template-columns: 44px minmax(0, 1fr); align-items: center; gap: 12px; padding: 12px 12px 4px; }
+.nd-pic { position: relative; width: 44px; height: 44px; }
+.nd-pic .fc-pic { border-radius: 4px; font-size: 18px; }
+.nd-mark { position: absolute; right: -6px; bottom: -6px; display: grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; background: rgb(var(--glass-top-rgb)); color: var(--accent-soft); box-shadow: 0 0 0 2px rgb(var(--surface-rgb)), inset 0 0 0 1px rgba(var(--ndg), 0.55); }
+.nd-mark svg { width: 14px; height: 14px; overflow: visible; }
+.nd-line { display: block; color: var(--hi); font-size: 14px; font-weight: 700; line-height: 1.35; overflow-wrap: anywhere; }
+.nd-meta { display: block; margin-top: 2px; overflow: hidden; color: var(--txt3); font-size: 12px; line-height: 1.4; white-space: nowrap; text-overflow: ellipsis; }
+.nd-meta q { color: var(--txt2); quotes: "\201C" "\201D"; }
+
+/* ---------- 4. their tab, the window open on someone else ---------- */
+.fc-tab.ndg .fc-tl small { color: var(--accent-soft); }
+.fc-tab.ndg.jolt { --ndg-a: 0.4; animation: ndg-jolt 1.4s ease-in-out; }
+
+/* ---------- focus, reduced motion ---------- */
+.ndg-btn:focus-visible, .mb.peek.nudge:focus-visible { outline: 2px solid var(--accent-soft); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) {
+  .mb.peek.fired.in, .fc-ndg.new, .mb.peek.nudge.in, .mb.peek.nudge.in.quiet, .fc-tab.ndg.jolt { animation: none; }
+  .fc-ndg.new:not(.mine:not(.atk)) .fc-ndg-i { animation: ndg-ring 0.9s ease-out; }
+  .mb.peek.nudge.in .nd-pic, .fc-tab.ndg.jolt .fc-tav { border-radius: 4px; animation: ndg-ring 0.9s ease-out; }
+}

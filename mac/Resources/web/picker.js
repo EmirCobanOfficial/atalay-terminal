@@ -84,7 +84,7 @@
           <aside class="pk-side"><div class="pk-h">FAVORITES</div><div class="pk-skel"></div><div class="pk-skel"></div></aside>
           <div class="pk-list"><div class="pk-skel"></div><div class="pk-skel"></div><div class="pk-skel"></div></div>
         </div>
-        <div class="pk-foot"><span class="pk-sel"></span><button class="pk-cancel">Cancel</button>
+        <div class="pk-foot"><span class="pk-sel"></span><span class="pk-acct" hidden></span><button class="pk-cancel">Cancel</button>
           <button class="pk-wt" hidden title="A separate copy of the repo, on a branch of its own (${WIN ? 'Alt+↩' : '⌥↩'})"><svg class="i-br" viewBox="0 0 16 16"><circle cx="4.5" cy="3" r="1.6"/><circle cx="4.5" cy="13" r="1.6"/><circle cx="11.5" cy="5" r="1.6"/><path d="M4.5 4.6v6.8M11.5 6.6c0 3.2-7 2.4-7 4.8"/></svg>New worktree…</button>
           <button class="pk-use pk-ok">Use this folder</button></div>
       </div>`;
@@ -248,6 +248,7 @@
     const working = ais.length ? `<span class="ai">· <i></i>${esc(who)} ${ais.length > 2 ? 'are' : ais.length === 2 ? 'are' : 'is'} working here</span>` : '';
     const tail = g ? (g.repo ? `<span class="br">⎇ ${esc(g.branch)}</span>${working}` : '<span class="nogit">· not a git repo</span>') : '';
     root.querySelector('.pk-sel').innerHTML = `<b>${label}</b><span class="p"><bdi>${esc(tild(t))}</bdi></span>${tail}`;
+    acctFoot(t);
     // ⎇ New worktree…: only where the app can make one; live in a git repo, faint (and the line says why) when not.
     const wt = root.querySelector('.pk-wt'), use = root.querySelector('.pk-use');
     wt.hidden = !st.wtOk || st.assign >= 0 || !window.Worktree;
@@ -257,6 +258,39 @@
     // Opened with ⌥⇧⌘N, the two buttons swap weight.
     wt.classList.toggle('pk-ok', st.mode === 'wt' && !wt.hidden);
     use.classList.toggle('pk-ok', st.mode !== 'wt' || wt.hidden);
+  }
+
+  // The Claude account a new terminal's `claude` uses: a chip in the bottom bar, only with two or more accounts. It starts on the
+  // account last used in the folder's repo (else the default one); a pick of the user's stays while the picker is open.
+  const AH = (a) => esc(a.hue);
+  async function acctFoot(path) {
+    const box = root.querySelector('.pk-acct');
+    if (!box || !st || !API.claudeAccounts || st.assign >= 0) return;
+    let r = st.acctCache && st.acctCache[path];
+    if (!r) {
+      r = await API.claudeAccounts(path).catch(() => null);
+      if (!st) return;
+      (st.acctCache = st.acctCache || {})[path] = r;
+    }
+    if (!r || !r.multiple) return void (box.hidden = true);
+    st.accts = r.accounts;
+    if (!st.picked) st.account = (r.accounts.find((a) => a.id === r.last) || r.accounts[0]).id;
+    const cur = r.accounts.find((a) => a.id === st.account) || r.accounts[0];
+    box.hidden = false;
+    box.innerHTML = `claude <button type="button" class="acct-chip" style="--ah:${AH(cur)}" aria-haspopup="menu" aria-label="Claude account: ${esc(cur.label)}"><i class="ac">${esc(cur.initial)}</i>${esc(cur.label)}<svg class="chev" viewBox="0 0 8 8"><path d="M1 2.5 4 5.5 7 2.5"/></svg></button>`;
+    box.querySelector('.acct-chip').onclick = (e) => {
+      e.stopPropagation();
+      const old = box.querySelector('.pk-acct-menu');
+      if (old) return old.remove();
+      const m = document.createElement('div');
+      m.className = 'pk-acct-menu';
+      m.setAttribute('role', 'menu');
+      m.innerHTML = r.accounts.map((a) => `<button type="button" role="menuitemradio" aria-checked="${a.id === cur.id}" data-id="${esc(a.id)}"><span class="ck">${a.id === cur.id ? '\u2713' : ''}</span><i class="ac" style="--ah:${AH(a)}">${esc(a.initial)}</i>${esc(a.label)}</button>`).join('');
+      box.appendChild(m);
+      m.querySelectorAll('button').forEach((b) => (b.onclick = () => ((st.account = b.dataset.id), (st.picked = true), m.remove(), acctFoot(path))));
+      const away = (ev) => { if (!m.contains(ev.target)) (m.remove(), document.removeEventListener('pointerdown', away, true)); };
+      setTimeout(() => document.addEventListener('pointerdown', away, true), 0);
+    };
   }
 
   // ⎇ New worktree… (or ⌥↩): the name sheet drops from the title bar over the picker; when the worktree is there, the
@@ -271,7 +305,8 @@
     await window.Worktree.open({
       dir: from,
       host: root.querySelector('.pk'),
-      onDone: (r) => close(() => API.worktreeOpen(r.open, r.ai)),
+      account: st.account || undefined,
+      onDone: (r) => close(() => API.worktreeOpen(r.open, r.ai, undefined, r.account)),
       onCancel: () => root.querySelector('.pk-wt')?.focus(),
     });
     btn.classList.remove('loading');
@@ -282,7 +317,7 @@
     if (st.assign >= 0) return saveAssign();
     // told: the bottom bar said who works here, so the new chat doesn't say it again.
     const t = target(), g = gitCache.get(t);
-    pickDir(t, { told: !!(g && g.repo && g.ais && g.ais.length) });
+    pickDir(t, { told: !!(g && g.repo && g.ais && g.ais.length), account: st.account || undefined });
   }
 
   function pickDir(dir, meta) {

@@ -26,7 +26,7 @@ MANIFEST=Sources/AtalayTerminal/WebManifest+Build.swift
 # The bundle carries none of Viktoria's files (her model, clips and Live2D): the app downloads her (MascotAsset.swift).
 # The pages' folder is staged without them, and both the integrity list and the bundle's copy come from the stage.
 WEBSRC="$(mktemp -d)/web"
-rsync -a --exclude '/mascot/vrm' --exclude '/mascot/live2d' Resources/web/ "$WEBSRC/"
+rsync -a --exclude '/mascot/vrm' --exclude '/mascot/live2d' --exclude '/attack3d/show.webm' --exclude '/attack3d/video.js' Resources/web/ "$WEBSRC/"
 FLAGS=()
 # The shared staging API answers only requests with its access key (the API's src/gate.ts): ~/.atalay-terminal/
 # staging-access-key, written into a gitignored source file like the client key (Sources/AtalayTerminal/AccessKey.swift).
@@ -209,6 +209,26 @@ if [ "${DEVELOPER_ID:-}" = 1 ]; then
   codesign --verify --deep --strict "$APP"
 else
   codesign --force --deep --options runtime --entitlements Orbiterm.entitlements --sign "$SIGN" "$APP" >/dev/null
+fi
+# One staging per Mac, or one signature. macOS keeps a single permission record per app id (Documents folder, screen
+# recording…), tied to the signature of the copy last allowed. Another staging copy signed otherwise (an old
+# DEVELOPER_ID=1 build in /Applications beside the self-signed ones in ~/Applications) takes the record over each time
+# it's allowed; the first then asks again, and the two ask in turn without end (2026-11-27: Documents, ~20 times). So
+# the build names every such copy; quitting and deleting it ends the asking.
+if [ "${STAGING:-}" = 1 ]; then
+  BUNDLE_ID=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Contents/Info.plist")
+  MINE=$(codesign -d -r- "$APP" 2>/dev/null | sed -n 's/^designated => //p')
+  SELF=$(cd "$APP" && pwd -P)
+  { mdfind "kMDItemCFBundleIdentifier == '$BUNDLE_ID'" 2>/dev/null || true
+    for D in /Applications "$HOME/Applications"; do if [ -d "$D/$NAME.app" ]; then echo "$D/$NAME.app"; fi; done; } \
+    | sort -u | while IFS= read -r OTHER; do
+      [ -d "$OTHER" ] && [[ "$OTHER" != */.Trash/* ]] || continue
+      [ "$(cd "$OTHER" && pwd -P)" != "$SELF" ] || continue
+      [ "$(codesign -d -r- "$OTHER" 2>/dev/null | sed -n 's/^designated => //p')" != "$MINE" ] || continue
+      RUNNING=; pgrep -f "$OTHER/Contents/MacOS/atalay-terminal" >/dev/null 2>&1 && RUNNING=" (running now)"
+      echo "build-app: WARNING another $NAME is signed differently: $OTHER$RUNNING. macOS will keep asking both for" \
+           "the same permissions (Documents…) until it's quit and deleted." >&2
+    done
 fi
 echo "built $APP"
 

@@ -5,7 +5,7 @@
 // goes out, and for your own choices a happy "accepted" and a falling "declined". Your progress has its own: a coin
 // for the daily bonus, for the level-up takeover a burst of static, then a ringing "ding" for a new level or a brass
 // fanfare for a new rank, a fire catching for five hours of work in a day; a new badge's reveal plays recorded sounds
-// (sounds/, from Artlist). Do not disturb silences what comes in, not what you do (the level-up, the badges and the
+// (sounds/, from Artlist; so is the nudge). Do not disturb silences what comes in, not what you do (the level-up, the badges and the
 // flames wait for it to end and then play).
 window.Sfx = (() => {
   let ctx = null;
@@ -127,7 +127,87 @@ window.Sfx = (() => {
 
   // How long the longer sounds ring, so the audio doesn't rest before they end.
   let slotGain = 1; // the relative level of the attack feedback synths (slot())
-  const LENGTH = { 'attack-launch': 1100, 'attack-hitmark': 200, 'attack-confirm': 1400, levelup: 3000, rankup: 4200, glitch: 1200, fire: 3200, alarm: 2800, lockon: 1700, locktick: 300, hit: 800, boom: 2000 };
+  const LENGTH = { 'attack-launch': 1100, 'attack-hitmark': 200, 'attack-confirm': 1400, levelup: 3000, rankup: 4200, glitch: 1200, fire: 3200, alarm: 2800, lockon: 1700, locktick: 300, hit: 800, boom: 2000, nudge: 1800 };
+  let nudgeEnd = 0; // when the nudge's buzz playing now ends (performance.now)
+
+  // PROTOTYPE, not wired to anything yet (the user picks a variant first): a phone's vibration motor buzzing on a desk, synthesized
+  // in real time to match araştırma/durtme-ses/buzz prototype (Python). variant 'A' = two 0.62 s pulses, 'B' = three 0.38 s pulses
+  // with more rattle, 'C' = one 1.34 s buzz whose rattle swells. Each pulse = a harmonic stack (a PeriodicWave with 1/h^1.4 rolloff
+  // and scattered phases, so it hums instead of clicking) at 160-195 Hz that sags at spin-up and spin-down, an amplitude wobble
+  // (23 Hz, the off-centre weight), and band-passed noise chopped once per turn (the chatter against the wood), all through a
+  // small desk body (high-pass 210, peaks at 320 Hz and 1.8 kHz, low-pass 3.2 kHz). 18 ms attack, 45 ms release: no clicks.
+  const BUZZ = {
+    A: { p: [[0.03, 0.62], [0.76, 0.62]], f0: 170, wob: 0.28, rat: 0.30, swell: false },
+    B: { p: [[0.03, 0.38], [0.51, 0.38], [0.99, 0.38]], f0: 195, wob: 0.35, rat: 0.60, swell: false },
+    C: { p: [[0.03, 1.34]], f0: 160, wob: 0.30, rat: 0.30, swell: true },
+  };
+  function nudgeBuzz(variant) {
+    const c = ctx, v = BUZZ[variant] || BUZZ.A, t0 = c.currentTime + 0.01, LEVEL = 0.16;
+    // The desk: one shared filter chain for every pulse.
+    const hp = c.createBiquadFilter(), pk1 = c.createBiquadFilter(), pk2 = c.createBiquadFilter(), lp = c.createBiquadFilter(), master = c.createGain();
+    hp.type = 'highpass'; hp.frequency.value = 210; hp.Q.value = 0.7;
+    pk1.type = 'peaking'; pk1.frequency.value = 320; pk1.Q.value = 2; pk1.gain.value = 6;
+    pk2.type = 'peaking'; pk2.frequency.value = 1800; pk2.Q.value = 1.2; pk2.gain.value = 4;
+    lp.type = 'lowpass'; lp.frequency.value = 3200; lp.Q.value = 0.7;
+    master.gain.value = LEVEL;
+    hp.connect(pk1).connect(pk2).connect(lp).connect(master).connect(out);
+    // Harmonic stack: sum sin(h*theta + 0.37*h*h)/h^1.4 up to 3.6 kHz (PeriodicWave: real = a*sin(phi), imag = a*cos(phi)).
+    const H = Math.min(29, Math.floor(3600 / v.f0)), re = new Float32Array(H + 1), im = new Float32Array(H + 1);
+    for (let h = 1; h <= H; h++) { const a = 1 / Math.pow(h, 1.4), ph = 0.37 * h * h; re[h] = a * Math.sin(ph); im[h] = a * Math.cos(ph); }
+    const wave = c.createPeriodicWave(re, im);
+    // One second of noise for the chatter, shared.
+    const nb = c.createBuffer(1, Math.ceil(c.sampleRate * 1.5), c.sampleRate), nd = nb.getChannelData(0);
+    for (let i = 0; i < nd.length; i++) nd[i] = Math.random() * 2 - 1;
+    // chatter shape: max(0, sin)^3, a knock once per turn.
+    const curve = new Float32Array(257);
+    for (let i = 0; i < 257; i++) curve[i] = Math.pow(Math.max(0, (i - 128) / 128), 3);
+    let end = 0;
+    for (const [st, d] of v.p) {
+      const t = t0 + st, e = t + d;
+      end = Math.max(end, e);
+      // Motor speed curve: starts 28% low (spin-up, tau 90 ms), drops 14% over the last 100 ms (spin-down).
+      const N = Math.max(8, Math.round(d * 200)), fc = new Float32Array(N);
+      for (let i = 0; i < N; i++) {
+        const x = (i / (N - 1)) * d, td = Math.min(1, Math.max(0, (x - (d - 0.1)) / 0.1));
+        fc[i] = v.f0 * (1 - 0.28 * Math.exp(-x / 0.09)) * (1 - 0.14 * td * td) * (1 + 0.012 * Math.sin(2 * Math.PI * 3.1 * x));
+      }
+      // Pulse envelope.
+      const env = c.createGain();
+      env.gain.setValueAtTime(0, t);
+      env.gain.linearRampToValueAtTime(1, t + 0.018);
+      env.gain.setValueAtTime(1, e - 0.045);
+      env.gain.linearRampToValueAtTime(0, e);
+      env.connect(hp);
+      // The motor tone with its wobble.
+      const o = c.createOscillator(), wg = c.createGain(), lfo = c.createOscillator(), ld = c.createGain(), tg = c.createGain();
+      o.setPeriodicWave(wave);
+      o.frequency.setValueCurveAtTime(fc, t, d);
+      wg.gain.value = 1;
+      lfo.frequency.value = 23; ld.gain.value = v.wob;
+      lfo.connect(ld).connect(wg.gain);
+      tg.gain.value = 0.9;
+      o.connect(wg).connect(tg).connect(env);
+      // The chatter: noise through a band-pass, gated by a once-per-turn knock that follows the same speed curve.
+      const ns = c.createBufferSource(), bp = c.createBiquadFilter(), knock = c.createGain(), co = c.createOscillator(), shaper = c.createWaveShaper(), rg = c.createGain();
+      ns.buffer = nb;
+      bp.type = 'bandpass'; bp.frequency.value = 1600; bp.Q.value = 0.8;
+      co.type = 'sine';
+      co.frequency.setValueCurveAtTime(fc, t, d);
+      shaper.curve = curve;
+      knock.gain.value = 0;
+      co.connect(shaper).connect(knock.gain);
+      rg.gain.setValueAtTime(v.swell ? v.rat * 0.35 : v.rat, t);
+      if (v.swell) rg.gain.linearRampToValueAtTime(v.rat, e);
+      ns.connect(bp).connect(knock).connect(rg).connect(env);
+      ns.start(t, 0.05);
+      ns.stop(e + 0.02);
+      o.start(t); o.stop(e + 0.02);
+      lfo.start(t); lfo.stop(e + 0.02);
+      co.start(t); co.stop(e + 0.02);
+    }
+    setTimeout(() => { try { master.disconnect(); } catch (_) {} }, (end - c.currentTime) * 1000 + 300);
+    return (end - t0) * 1000;
+  }
 
   const SOUNDS = {
     // A chat needs you (an approval): two short even beeps and a higher one, like a console asking for a key.
@@ -140,6 +220,55 @@ window.Sfx = (() => {
     message() {
       note(880, 0, { dur: 0.32 });
       note(1318.5, 0.085, { dur: 0.5 });
+    },
+    // A friend's nudge (nudge.ts): a buzzing rattle of 1.4 s that lasts as long as the shake (MSN-like, synthesized): twelve
+    // short bursts 115 ms apart (each 85 ms of a square wave through a 900 Hz low-pass, its gain trembling at 30 Hz), the
+    // pitch alternating 150 / 175 Hz like a phone shuddering on a desk, strong at first and fading over the last third.
+    // Low and buzzy, so it's unlike the message's two rising pings, the request arpeggio and every attack sound.
+    nudge() {
+      const c = ctx;
+      // One at a time, as the shake: a second (another friend's, or yours going out) while one rings adds nothing.
+      if (performance.now() < nudgeEnd) return;
+      nudgeEnd = performance.now() + 1400;
+      // The recorded buzz (sounds/nudge.m4a, Artlist, 0.77 s) twice back to back, a phone buzzing twice, so it fills the 1.4 s
+      // shake; through the same output as the synths. The synthesized one below is the fallback if it can't be loaded or decoded.
+      buffer('nudge').then((buf) => {
+        if (!buf) return SOUNDS.nudgeSynth();
+        const g = c.createGain();
+        g.gain.value = 0.9;
+        g.connect(out);
+        const t = c.currentTime;
+        for (const at of [0, 1.4 - buf.duration]) {
+          const src = c.createBufferSource();
+          src.buffer = buf;
+          src.connect(g);
+          src.start(t + Math.max(0, at));
+        }
+      }).catch(() => SOUNDS.nudgeSynth());
+    },
+    nudgeSynth() {
+      const c = ctx;
+      for (let i = 0; i < 12; i++) {
+        const t = c.currentTime + i * 0.115;
+        const peak = 0.09 * (i < 6 ? 1 : Math.max(0.25, 1 - (i - 5) * 0.12));
+        const o = c.createOscillator(), f = c.createBiquadFilter(), g = c.createGain(), lfo = c.createOscillator(), depth = c.createGain();
+        o.type = 'square';
+        o.frequency.value = i % 2 ? 175 : 150;
+        f.type = 'lowpass';
+        f.frequency.value = 900;
+        g.gain.setValueAtTime(0.0001, t);
+        g.gain.linearRampToValueAtTime(peak, t + 0.012);
+        g.gain.setValueAtTime(peak, t + 0.07);
+        g.gain.linearRampToValueAtTime(0.0001, t + 0.088);
+        lfo.frequency.value = 30;
+        depth.gain.value = peak * 0.39;
+        lfo.connect(depth).connect(g.gain);
+        o.connect(f).connect(g).connect(out);
+        o.start(t);
+        lfo.start(t);
+        o.stop(t + 0.1);
+        lfo.stop(t + 0.1);
+      }
     },
     // Friend request: a rising arpeggio.
     request() {
@@ -514,7 +643,7 @@ window.Sfx = (() => {
 
   // A sound that is another's unless the theme gives it one of its own (hooks.js): two chats writing the same file sound
   // as a chat that needs you.
-  const SAME = { clash: 'wait' };
+  const SAME = { clash: 'wait', nudgeOut: 'nudge' };
   // Moments the app marks without a sound of its own (hooks.js): only a theme's file plays for them.
   const THEMED = ['streak', 'streak-break', 'back', 'theme-kept'];
 
@@ -597,7 +726,7 @@ window.Sfx = (() => {
       });
     },
     play(name) {
-      const yours = ['send', 'accept', 'decline', 'levelup', 'rankup', 'glitch', 'fire', 'hit', 'boom', 'theme-kept', 'locktick', 'attack-launch', 'attack-hitmark', 'attack-confirm'].includes(name);
+      const yours = ['send', 'accept', 'decline', 'levelup', 'rankup', 'glitch', 'fire', 'hit', 'boom', 'theme-kept', 'locktick', 'attack-launch', 'attack-hitmark', 'attack-confirm', 'nudgeOut'].includes(name);
       const base = SOUNDS[name] ? name : SAME[name];
       if ((!base && !THEMED.includes(name)) || (window.Social && window.Social.dnd() && !yours)) return;
       // The theme's own sound, or its silence, instead of the app's (a theme-only one has nothing else).

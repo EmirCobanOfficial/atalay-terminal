@@ -177,19 +177,24 @@ final class NotesStore {
     }
 
     /// The notes AI may not see, from the files' own content as read or written here (what the page last saved): the native
-    /// side asks this on every tool call and doesn't take the page's word for it. Two kinds: a note the user hid (the eye),
-    /// and a shared note whose owner hasn't let AI read it (`shared.ai` isn't true: the default, whoever's computer this is).
-    func hiddenIDs() -> Set<String> {
+    /// side asks this on every tool call and doesn't take the page's word for it. Two kinds, kept apart so the answer can say
+    /// which switch to flip: `user`, a note the user hid (the eye); `sharedOff` is always empty now:
+    /// every member's AI reads a shared note, there is no per-note switch any more.
+    func hiddenKinds() -> (user: Set<String>, sharedOff: Set<String>) {
         queue.sync {
-            var out = Set<String>()
-            let mark = Data("\"aiHidden\":true".utf8), shared = Data("\"shared\":".utf8)
-            for (name, plain) in known where name != Self.indexName && (plain.range(of: mark) != nil || plain.range(of: shared) != nil) {
+            var user = Set<String>(); let sharedOff = Set<String>()
+            let mark = Data("\"aiHidden\":true".utf8)
+            for (name, plain) in known where name != Self.indexName && plain.range(of: mark) != nil {
                 guard let o = (try? JSONSerialization.jsonObject(with: plain)) as? [String: Any] else { continue }
-                if o["aiHidden"] as? Bool == true { out.insert(name) }
-                else if let s = o["shared"] as? [String: Any], s["ai"] as? Bool != true { out.insert(name) }
+                if o["aiHidden"] as? Bool == true { user.insert(name) }
             }
-            return out
+            return (user, sharedOff)
         }
+    }
+
+    func hiddenIDs() -> Set<String> {
+        let k = hiddenKinds()
+        return k.user.union(k.sharedOff)
     }
 
     // MARK: a shared note's document

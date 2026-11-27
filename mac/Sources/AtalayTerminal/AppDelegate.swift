@@ -6,6 +6,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let engine = RadarEngine()
     private var controller: MainWindowController!
     private var monitors: [Any] = []
+    /// Chat › Claude Account…, shown only with two or more Claude accounts.
+    private var claudeAccountItem: NSMenuItem?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // A build an earlier run staged but never restarted into goes in first: nothing runs yet, so nothing can stop
@@ -214,8 +216,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // once its lock is over, a key ends it.
         if let m = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp], handler: { event in
             if MessagePanel.holds(event) { return nil }
+            // Esc while a window is dragged by its header cancels its merge; the terminal never sees it.
+            if event.type == .keyDown, event.keyCode == 53, ChatWindowController.headerDragActive {
+                ChatWindowController.cancelHeaderMerge()
+                return nil
+            }
             // ⌘V, ⌘C, ⌘X and ⌘A in the message panels (MessagePanel.editKey).
             if event.type == .keyDown, MessagePanel.editKey(event) { return nil }
+            // A pinned terminal over another app: the app isn't active, so the menu's keys (⌘C ⌘V ⌘W ⌘F…) don't fire
+            // by themselves. Offer them to the menu, which keeps the user's remapped shortcuts.
+            if event.type == .keyDown, !NSApp.isActive, event.modifierFlags.contains(.command),
+               let w = event.window as? TerminalWindow, w.pinnedTop, w.isKeyWindow,
+               NSApp.mainMenu?.performKeyEquivalent(with: event) == true { return nil }
             return event
         }) { monitors.append(m) }
 
@@ -259,13 +271,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Editing keys the Mac way, in Claude's prompt and the shell's line: Shift/Option+Return a new line (ESC CR),
         // Option+Delete deletes a word back, Option+fn+Delete a word ahead, Option+←/→ jump a word. Option types
-        // characters otherwise, so these go as Meta by hand. Not when the program enabled the kitty keyboard
-        // protocol: SwiftTerm encodes keys itself then.
+        // characters otherwise, so these go as Meta by hand, also when the program enabled the kitty keyboard
+        // protocol (Claude, Codex, agy do) because SwiftTerm drops Option then. Shift+Return is the exception:
+        // with the protocol on, SwiftTerm sends CSI 13;2u itself.
         if let m = NSEvent.addLocalMonitorForEvents(matching: .keyDown, handler: { event in
             if MessagePanel.holds(event) { return nil }
             let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask).subtracting([.numericPad, .function, .capsLock])
             guard mods == .shift || mods == .option, let tv = event.window?.firstResponder as? ChatTerminalView,
-                  tv.keyboardEnhancementFlags.isEmpty else { return event }
+                  !tv.hasMarkedText() else { return event }
+            if mods == .shift && !tv.keyboardEnhancementFlags.isEmpty { return event }
             let bytes: [UInt8]
             switch (event.keyCode, mods == .option) {
             case (36, _), (76, _): bytes = [0x1B, 0x0D]
@@ -335,6 +349,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         keyed(file, "newTerminal", "New Terminal…", #selector(newTerminal), target: self)
         keyed(file, "newWorktree", "New Worktree…", #selector(newWorktree), target: self)
         keyed(file, "moveToWorktree", "Open in a Worktree…", #selector(moveToWorktree), target: self)
+        // Two or more Claude accounts: the title button's menu, from the menu bar too (no key: nothing switches by a slip).
+        // Hidden with one account (validateMenuItem of the item above it, which is always shown).
+        claudeAccountItem = add(file, "Claude Account…", #selector(claudeAccountMenu), "", target: self)
+        claudeAccountItem?.isHidden = !ClaudeAccounts.multiple
         // The window in front, when it is in a worktree: send its work as a pull request, merge it here, or delete the worktree
         // (WorktreeShip.swift). Merge and Delete have no key: rare, and Delete can't be undone by a slip of the finger.
         file.addItem(.separator())
@@ -345,7 +363,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // VS Code's: a new file in Source Control's editor.
         keyed(file, "newFile", "New File", #selector(newFile), target: self)
         keyed(file, "newTab", "New Tab", #selector(newTab), target: self)
-        keyed(file, "newTabNext", "New Tab Next to Current Tab", #selector(newTab), target: self)
+        keyed(file, "newTabNext", "New Tab Next to Current Tab", #selector(newTabNext), target: self)
         keyed(file, "splitVertically", "Split Vertically", #selector(splitVertically), target: self)
         keyed(file, "splitHorizontally", "Split Horizontally", #selector(splitHorizontally), target: self)
         keyed(file, "shortcutsWheel", "Ring", #selector(showShortcuts), target: self)
@@ -401,6 +419,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         keyed(window, "previousTab", "Select Previous Tab", #selector(previousTab), target: self)
         keyed(window, "moveTabLeft", "Move Tab Left", #selector(moveTabLeft), target: self)
         keyed(window, "moveTabRight", "Move Tab Right", #selector(moveTabRight), target: self)
+        keyed(window, "moveTabToNewWindow", "Move Tab to New Window", #selector(moveTabToNewWindow), target: self)
+        keyed(window, "mergeAllWindows", "Merge All Windows", #selector(mergeAllWindows), target: self)
         keyed(window, "nextPane", "Next Pane", #selector(nextPane), target: self)
         keyed(window, "previousPane", "Previous Pane", #selector(previousPane), target: self)
         keyed(window, "paneAbove", "Select Pane Above", #selector(paneAbove), target: self)
@@ -441,8 +461,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             item.title = ready ? "Show Viktoria" : "Get Viktoria…"
             item.state = ready && Mascot.isEnabled ? .on : .off
         }
+        // Move Tab to New Window needs a tab that can leave; Merge All Windows another window that can join the one in front.
+        if item.action == #selector(moveTabToNewWindow) { return controller.canMoveTabToNewWindow }
+        if item.action == #selector(mergeAllWindows) { return controller.canMergeAll }
         // Open in a Worktree…: for the AI chat in front (live, in a git folder), whatever the note's setting says; else shown, not usable.
-        if item.action == #selector(moveToWorktree) { return controller.movableChat() != nil }
+        if item.action == #selector(moveToWorktree) {
+            claudeAccountItem?.isHidden = !ClaudeAccounts.multiple
+            return controller.movableChat() != nil
+        }
+        if item.action == #selector(claudeAccountMenu) { return ClaudeAccounts.multiple }
         // The pull request, merge and delete items: usable when the window in front is a worktree's and its status allows it.
         let shipIds: [Selector: String] = [#selector(createPR): "create", #selector(mergeWorktree): "merge", #selector(deleteWorktree): "delete"]
         if let id = item.action.flatMap({ shipIds[$0] }) {
@@ -463,9 +490,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func deleteWorktree() { shipMenu("delete") }
     @objc private func newTerminal() { controller.overlay.showNewTerminal() }
     @objc private func moveToWorktree() { controller.moveToWorktree() }
+    @objc private func claudeAccountMenu() { controller.showClaudeAccountMenu() }
     @objc private func newWorktree() { controller.overlay.showNewTerminal(worktree: true) }
     @objc private func newFile() { controller.newFile() }
     @objc private func newTab() { controller.newTab() }
+    @objc private func newTabNext() { controller.newTab(next: true) }
     @objc private func splitVertically() { controller.split(vertical: true) }
     @objc private func splitHorizontally() { controller.split(vertical: false) }
     @objc private func closePane() { controller.closePane() }
@@ -473,6 +502,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func previousTab() { controller.selectPane(step: -1, tabs: true) }
     @objc private func moveTabLeft() { controller.moveTab(step: -1) }
     @objc private func moveTabRight() { controller.moveTab(step: 1) }
+    @objc private func moveTabToNewWindow() { controller.moveTabToNewWindow() }
+    @objc private func mergeAllWindows() { controller.mergeAllWindows() }
     @objc private func undoClose() { controller.undoClose() }
     @objc private func nextPane() { controller.selectPane(step: 1) }
     @objc private func previousPane() { controller.selectPane(step: -1) }

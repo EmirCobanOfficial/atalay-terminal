@@ -650,7 +650,11 @@ function handleInit(d) {
       lastPrompts.set(s.id, s.prompts || 0);
     }
     $('log').innerHTML = '';
+    LOGQ.length = 0;
     LOGEL.clear();
+    // What waited while hidden is in this log and state already.
+    HELD.lines.length = 0;
+    HELD.render = false;
     // The demo's log has its own lines only.
     const past = DEMO ? [] : d.log;
     for (const ev of past) {
@@ -669,7 +673,32 @@ function handleState(next) {
     if (!DEMO) transitions(next);
     RAW = next;
     STATE = view(next);
+    if (!hidden()) return renderAll();
+    // Hidden, only what shows elsewhere goes on: the window's title (the Dock, the Window menu), a collision's notice in
+    // the screen's corner, the map's state. The panels are drawn once the dashboard shows again.
+    HELD.render = true;
+    renderTitle();
+    tellClashes();
+    map('state', STATE);
+}
+
+// While the dashboard is hidden (html.paused: minimized, or under other windows altogether) its log and panels aren't
+// drawn: the newest state and the log's new lines wait, and are drawn once it shows. Laying out a page no one sees cost
+// more than drawing it (each line restyles the page, and more so in a minimized window). The sounds, the theme's moments,
+// the streak and the map go on as before.
+const HELD = { render: false, lines: [] };
+const hidden = () => document.documentElement.classList.contains('paused');
+function drawn(line) {
+  if (!hidden()) return line(true);
+  HELD.lines.push(line);
+  if (HELD.lines.length > 400) HELD.lines.shift(); // the log keeps 220 lines
+}
+function showHeld() {
+  for (const line of HELD.lines.splice(0)) line(false);
+  if (HELD.render) {
+    HELD.render = false;
     renderAll();
+  }
 }
 
 // The map's two switches: streamer mode (made-up names) and party mode (the names, and a show of made-up sessions).
@@ -722,6 +751,7 @@ function setVisibility(visible, focused, covered) {
   document.documentElement.classList.toggle('behind', visible && !focused);
   document.documentElement.classList.toggle('covered', visible && !!covered);
   map('activity', visible, focused, covered);
+  if (visible) showHeld();
 }
 // Power save (the app decides and keeps it: PowerSaver.swift, the Windows app's power.js): the switch at the map's top
 // right, on when the map draws fewer and smaller frames, with why when it came on by itself (a low battery, the
@@ -774,6 +804,11 @@ function setDiscord(s) {
 // follows it.
 function connect() {
   window.__radar = { init: handleInit, state: handleState, events: (list) => list.forEach(onEvent), visibility: setVisibility, power: (on) => map('power', on), powerSave: setPowerSave, discord: setDiscord, mcp: (s) => { window.__mcp = s; window.dispatchEvent(new Event('mcpchange')); }, activeSession: () => {}, cloud: (c) => window.Cloud?.render(c), social: (ev) => window.Social?.event(ev), terminals: (list) => { TERMS = list; map('terminals', Streamer.terminals(list)); }, terminalGone: (id) => map('terminalGone', id), idle: (s) => { map('idle', s); setIdle(Number(s)); }, openUpdate: () => window.Cloud?.openUpdate(), openProfile: () => window.Cloud?.openProfile(), openFriend: (id) => window.Cloud?.openFriend(id), openView: (v) => window.GitView?.view(v), runaways: (list) => { RUNS = list; const runs = Streamer.runaways(list); window.Danger?.update(runs); map('runaways', runs); }, openDanger: () => window.Danger?.open(), memory: (m) => window.Cleanup?.memory(m), cleanup: (j) => window.Cleanup?.update(j), cleanupStep: (s) => window.Cleanup?.step(s), cleanupPrefs: (p) => window.Cleanup?.prefs(p), openCleanup: () => window.GitView?.view('cleanup') };
+  // A friend's nudge while the dashboard is full screen (messages.js, Swift/main.js "nudgeShake"): the map's centre circle shakes.
+  window.__radar.nudgeCore = () => window.Orbit?.nudge?.();
+  // The chats list (chats.js): the app's snapshot of it, and ⌘B folding its saved chats.
+  window.__radar.chats = (d) => window.__chats?.update(d);
+  window.__radar.chatsFold = (on) => window.__chats?.fold(on);
   native({ type: 'ready' });
   // A reloaded page in streamer mode: the app's chats list and windows stay in it too.
   native({ type: 'streamer', on: Streamer.on });
@@ -785,16 +820,16 @@ function onEvent(ev) {
   switch (ev.k) {
     case 'tool':
     case 'prompt':
-      logLine(ev, true);
+      drawn((live) => logLine(ev, live));
       marqueePush(ev);
       break;
     case 'result':
-      logResult(ev);
+      drawn(() => logResult(ev));
       setStreak(Hooks.logic.streak(streak, !!ev.ok));
       break;
     case 'say':
     case 'sys':
-      logLine(ev, true);
+      drawn((live) => logLine(ev, live));
       break;
   }
 }
@@ -1103,9 +1138,24 @@ function paintLine(el) {
   setText(el.querySelector('.txt'), lineParts(ev)[2]);
   if (ev.k === 'tool') markResult(el, ev);
 }
-function logLine(raw, live) {
+// New lines go into the log once a frame, and whether it was scrolled to its end is measured then, once: measured at
+// every line, the browser laid the page out again for each one.
+const LOGQ = [];
+let logFrame = 0;
+function logFlush() {
+  logFrame = 0;
   const box = $('log');
   const stick = box.scrollTop + box.clientHeight >= box.scrollHeight - 14;
+  box.append(...LOGQ.splice(0));
+  // Party mode's lines (made up) take room of their own, and go first: the real ones stay.
+  while (box.childElementCount > (Party.on ? 380 : 220)) {
+    const x = box.querySelector('.ln.fake') || box.firstElementChild;
+    if (x.__id) LOGEL.delete(x.__id);
+    x.remove();
+  }
+  if (stick) box.scrollTop = box.scrollHeight;
+}
+function logLine(raw, live) {
   const ev = Streamer.event(raw);
   const [cat, col, text] = lineParts(ev);
   const el = document.createElement('div');
@@ -1121,14 +1171,13 @@ function logLine(raw, live) {
     LOGEL.set(ev.id, el);
     markResult(el, ev);
   }
-  box.appendChild(el);
-  // Party mode's lines (made up) take room of their own, and go first: the real ones stay.
-  while (box.childElementCount > (Party.on ? 380 : 220)) {
-    const x = box.querySelector('.ln.fake') || box.firstElementChild;
+  LOGQ.push(el);
+  // No frame comes while the page is hidden: what waits is never more than the log keeps.
+  if (LOGQ.length > 380) {
+    const x = LOGQ.shift();
     if (x.__id) LOGEL.delete(x.__id);
-    x.remove();
   }
-  if (stick) box.scrollTop = box.scrollHeight;
+  if (!logFrame) logFrame = requestAnimationFrame(logFlush);
 }
 function logResult(ev) {
   const el = LOGEL.get(ev.id);
@@ -1138,7 +1187,8 @@ function logResult(ev) {
   markResult(el, Streamer.event(ev));
 }
 function logState(s, text, cls) {
-  logLine({ k: 'state', t: Date.now(), s: s.id, l: text, cls }, true);
+  const ev = { k: 'state', t: Date.now(), s: s.id, l: text, cls };
+  drawn((live) => logLine(ev, live));
 }
 
 // ---------- marquee ----------
@@ -1248,7 +1298,13 @@ function renderLimits() {
   box.hidden = !list.length;
   if (!list.length) return;
   let html = '<span class="lim-h"></span>' + LIMIT_ROWS.map(([, short]) => `<span class="lim-h">${short}</span>`).join('');
+  // Claude's columns open the limits popover on a click (claude-accounts.js); the last of two or more sets the group apart.
+  const claudeCols = list.filter((x) => x.tool === 'Claude Code');
   for (const a of list) {
+    // Only where the app has the accounts bridge (the Mac app; Windows later): elsewhere the column stays as it was.
+    const isClaude = a.tool === 'Claude Code' && !!window.ClaudeAcct?.on;
+    const gap = isClaude && claudeCols.length > 1 && a === claudeCols[claudeCols.length - 1];
+    const cc = isClaude ? ` lim-claude${gap ? ' gap-after' : ''}` : '';
     const wins = LIMIT_ROWS.map(([key, , long]) => ({ w: a[key], left: limitLeft(a[key]), long: (a.labels && a.labels[key]) || long, none: !!a.windows && !a.windows.includes(key) }));
     // A monthly one (Cursor's billing cycle) says its reset as a date, not a weekday.
     const reset = (w, full) => (a.monthly ? new Date(w.resetsAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }).toLowerCase() : resetAt(w.resetsAt, full));
@@ -1261,15 +1317,16 @@ function renderLimits() {
     if (a.at) tip.push(`as of ${hhmmss(a.at).slice(0, 5)}`);
     const title = esc(tip.join('\n'));
     html +=
-      `<span class="lim-n" title="${title}">${esc(a.name)}${a.monthly ? ' · mo' : ''}</span>` +
+      (isClaude ? window.ClaudeAcct.nameCell(a, tip.join('\n'), gap) : `<span class="lim-n" title="${title}">${esc(a.name)}${a.monthly ? ' · mo' : ''}</span>`) +
       wins
         .map(
           ({ w, left }) =>
-            `<span class="lim-c ${limitClass(left)}" title="${title}">${left === null ? '<i></i>' : `<i class="lim-b"><i style="width:${left}%"></i></i>`}<b>${left === null ? '—' : Math.round(left) + '%'}</b>${left !== null && left < 50 && w.resetsAt ? `<small>↻${reset(w)}</small>` : ''}</span>`,
+            `<span class="lim-c ${limitClass(left)}${cc}" title="${title}">${left === null ? '<i></i>' : `<i class="lim-b"><i style="width:${left}%"></i></i>`}<b>${left === null ? '—' : Math.round(left) + '%'}</b>${left !== null && left < 50 && w.resetsAt ? `<small>↻${reset(w)}</small>` : ''}</span>`,
         )
         .join('');
   }
   setHTML(box, html);
+  if (window.ClaudeAcct) window.ClaudeAcct.after();
 }
 
 function actionHTML(s) {
@@ -1354,7 +1411,7 @@ async function endSession(id) {
 
 function createCard() {
   const el = document.createElement('div');
-  el.className = 'card';
+  el.className = 'card sl-mini';
   el.__born = Date.now();
   el.innerHTML = `<div class="ch"><span class="lights"><i class="l-close"></i><i class="l-min"></i></span><b class="nm"></b><span class="kind"></span><span class="pill"></span></div>
 <div class="title"></div><div class="path"></div><div class="act"></div>
@@ -1471,7 +1528,6 @@ function renderSessions() {
   CLASH = clashes();
   tellClashes();
   const box = $('sessions');
-  if (!STATE.sessions.length) return placeholder(box, 'no Claude Code session in the last 30 min');
   // Party mode's cards change places often: each one glides to its new place, without its entrance again.
   const glide = Party.on && !document.documentElement.classList.contains('paused');
   const was = new Map();
@@ -1482,6 +1538,8 @@ function renderSessions() {
     }
   }
   keyed(box, STATE.sessions, (s) => s.id, createCard, updateCard);
+  // The chats list (chats.js) lists no chat twice: these cards are its top.
+  window.__chats?.cards(STATE.sessions);
   if (!glide) return;
   // A glide on its way goes on from where the card is now.
   const cards = [...box.children];
@@ -1933,14 +1991,20 @@ function renderSpend() {
   );
 }
 
+// The window's title: how many chats need you, or wait for your next prompt.
+function renderTitle() {
+  const nW = STATE.sessions.filter((s) => s.status === 'waiting').length;
+  const n = nW + STATE.sessions.filter((s) => s.status === 'idle').length;
+  const title = nW ? `⚠ ${nW} needs you · Orbiterm` : n ? `◆ ${n} your turn · Orbiterm` : 'Orbiterm';
+  if (document.title !== title) document.title = title;
+}
 function renderCall() {
   const need = STATE.sessions
     .filter((s) => s.status === 'waiting' || s.status === 'idle')
     .sort((a, b) => (a.status === 'waiting' ? 0 : 1) - (b.status === 'waiting' ? 0 : 1) || a.statusSince - b.statusSince);
   const nW = need.filter((s) => s.status === 'waiting').length;
   $('p-call').classList.toggle('hot', nW > 0);
-  const title = nW ? `⚠ ${nW} needs you · Orbiterm` : need.length ? `◆ ${need.length} your turn · Orbiterm` : 'Orbiterm';
-  if (document.title !== title) document.title = title;
+  renderTitle();
   setText($('m-call'), nW ? `${nW} blocked on you` : need.length ? `${need.length} waiting for your next prompt` : 'nothing needs you');
   const box = $('call');
   if (!need.length)
@@ -2130,6 +2194,11 @@ connect();
         const r = rectOf(el);
         if (r) panels.push({ id: el.id || '', ...r });
       });
+      // The chats list's folder strips (chats.js): she stands on them and taps them to fold.
+      for (const c of window.__chatsRects?.() || []) {
+        panels.push(c);
+        if (c.id !== 'side:favorites') nav.push({ ...c, id: `fold:${c.id.slice(5)}` });
+      }
       document.querySelectorAll('#spend-tabs button[data-r]').forEach((el) => {
         if (!SPEND_RANGES.has(el.dataset.r)) return;
         const r = rectOf(el);
@@ -2188,6 +2257,7 @@ connect();
 
   window.__mascotNav = (id) => {
     if (typeof id !== 'string') return;
+    if (id.startsWith('fold:')) return window.__mascotFold?.(id.slice(5));
     if (id.startsWith('view:')) {
       const v = id.slice(5);
       if (NAV_VIEWS.has(v)) document.querySelector(`.vs-ab[data-view="${v}"]`)?.click();
@@ -2220,5 +2290,7 @@ connect();
   addEventListener('themechange', () => schedule(true));
   addEventListener('mascotchange', () => schedule(true));
   addEventListener('mascotasset', () => schedule(true));
+  // The chats list drew its folders again, or folded its saved chats (chats.js): her strips moved without a panel's size.
+  addEventListener('chatsdraw', () => schedule());
   if (isAnime()) schedule(true);
 })();

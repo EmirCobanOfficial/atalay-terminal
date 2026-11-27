@@ -15,13 +15,15 @@
   <b id="title">terminal</b>
   <!-- In a linked worktree (the Mac's WorktreeChipView): "⎇ vega │ +42 −7"; a click shows its changes in Source Control. -->
   <button id="wt" type="button" hidden></button>
+  <!-- The Claude account of this pane, with two or more accounts (the Mac's AccountChip): its initial, name and what is left; a click opens the menu. -->
+  <button id="acct" type="button" hidden aria-haspopup="menu"></button>
   <!-- The status, why it waits when it does, and for how long it's been so (the Mac's status pill). -->
   <span id="status"><span class="lbl"></span><span class="why"></span><span class="t"></span></span>
   <span id="where"></span>
   <!-- The tool call the AI is on, what it's doing and for how long (the Mac HUD's "▸ Bash …"). -->
   <span id="action" hidden><b class="name"></b><span class="label"></span><i class="dur"></i></span>
   <!-- The AI session in it (Claude, Codex, Antigravity): its context and today's counts, as each tab's chip on the Mac. -->
-  <span id="ctx" hidden><i>ctx</i><span class="bar"><span></span></span><span class="n"></span></span>
+  <span id="ctx" hidden><i>ctx</i><span class="bar"><span></span></span><span class="n"></span><span class="s"></span></span>
   <span id="model" hidden></span>
   <span id="cost" hidden></span>
   <span id="counts" hidden></span>
@@ -35,6 +37,8 @@
   <button id="star" type="button" hidden><svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M8 1.8l1.9 3.9 4.3.6-3.1 3 .7 4.3L8 11.6l-3.8 2 .7-4.3-3.1-3 4.3-.6z"/></svg></button>
   <button id="end" type="button" title="End this terminal">end</button>
 </header>
+<!-- The limit note, the 5% note and the quiet note after a switch (the Mac's AccountNoteBar); each button is the user's click. -->
+<div id="acctnote" hidden></div>
 <main id="term"></main>
 <div id="veil" hidden></div>
 <!-- Find in the terminal (the right-click menu's Find…, Ctrl+Shift+F, F3): the Mac's find bar over its terminal. -->

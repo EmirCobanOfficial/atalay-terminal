@@ -68,6 +68,12 @@ window.Social = (() => {
     });
   }
 
+  // The API's clock against this computer's (ms, the API ahead when positive), from the friends list and a nudge's answer: the
+  // nudge button counts its minute down against it (nudge.ts), so a clock a few seconds off still starts at 59.
+  let nudgeSkew = 0;
+  const syncNow = (r) => {
+    if (r && typeof r.now === 'number' && Number.isFinite(r.now)) nudgeSkew = r.now - Date.now();
+  };
   let loading = null;
   function load() {
     loading =
@@ -76,6 +82,8 @@ window.Social = (() => {
         loading = null;
         if (r && !r.error) {
           S = r;
+          syncNow(r);
+          for (const a of (r.me && r.me.attacksUnseen) || []) atkOwner.set(a.id, a.from.id);
           if (r.me && r.me.orb && typeof r.me.orb === 'object') (O = { ...(O || {}), ...r.me.orb }), (orbAt = Date.now());
           emit({ type: 'snapshot' });
         }
@@ -117,13 +125,40 @@ window.Social = (() => {
   }
 
   const friend = (id) => (S ? S.friends.find((f) => f.id === id) : null);
+  // What this app can show, told to the API on every connect (POST v1/social/caps; the API's live.ts CAPS): friends' nudge and
+  // fire buttons grey out with "needs to update" for an app that doesn't say it (an older one), so nobody spends ORB for nothing.
+  // `nudge`: shows a nudge it gets. `attack-screen`: the full-screen ship attack (Mac and Windows both; the same
+  // condition as attack.js SCREEN). `nudge-chat`: this app reports which chats are open (messages.js, POST v1/social/chats), so a
+  // friend's nudge only works while their chat with that friend is open (Mac and Windows both: Messages.swift / main.js chatSeen).
+  // Only the main page says it (the notices and chat panels share the app's connection).
+  const NUDGE_CHAT = true;
+  // `attack-revenge`: a fire back shows even on do not disturb (attack.js arrive).
+  const CAPS = ['nudge', ...(NUDGE_CHAT ? ['nudge-chat'] : []), 'attack-screen', 'attack-revenge'];
+  const announceCaps = () => {
+    if (window.__MESSAGES_ROLE__) return;
+    api('POST', 'v1/social/caps', { caps: CAPS }).catch(() => {});
+  };
+  announceCaps();
+  // Who fired at me (attack.js, messages.js): which friend each unseen attack on you is from, so a seen one (`attack_seen`,
+  // from another of your computers too) lowers that friend's count. Filled from the live `attack_landed` and from the
+  // friends list's `me.attacksUnseen`; one not known here (a count beyond the list's five) makes the list load again.
+  const atkOwner = new Map();
+  // The ones already counted down here (your own × or chat, then the API's echo of it): not counted again, no reload.
+  const atkSeen = new Set();
+  // A friend wrote or nudged you (nudge.ts): your three unanswered nudges are answered, so only the minute after your last one
+  // still waits (the API decides on send all the same).
+  const answered = (f, had) => {
+    if (!had || had.why !== 'unanswered') return;
+    const mineAt = had.last && had.last.mine ? new Date(had.last.at).getTime() : 0;
+    f.nudge = { ...(f.nudge || had), why: 'cooldown', readyAt: mineAt ? mineAt + 60_000 : null };
+  };
   const drop = (list, id) => list.filter((r) => r.id !== id);
 
   // A live event updates the snapshot in place, then every view re-renders from it.
   function event(ev) {
     if (!ev || !ev.type) return;
     // (Re)connected: anything that happened while the line was down is in a fresh snapshot.
-    if (ev.type === 'hello') loadNotes(), loadNoteInvites(), loadOrb();
+    if (ev.type === 'hello') loadNotes(), loadNoteInvites(), loadOrb(), announceCaps();
     // Your ORB changed (an earn, a grant, an attack's cost or refund) or the economy's numbers did: kept before anything else.
     if (ev.type === 'orb' && ev.orb) (O = { ...(O || {}), ...ev.orb }), (orbAt = Date.now());
     // The price or the rules changed (CONTRACT v3): /v1/orb/me and the friends list again.
@@ -192,21 +227,116 @@ window.Social = (() => {
         f.attack = { ...(f.attack || {}) };
         if ('off' in ev) f.attack.off = !!ev.off;
         if ('shieldUntil' in ev) f.attack.shieldUntil = ev.shieldUntil;
+        // Your right to fire back at them (they fired at you): given, used up, or given back by a cancel (attack.ts).
+        if ('revengeUntil' in ev) f.attack.revengeUntil = ev.revengeUntil;
         // Your cooldown on them: cleared (staging's reset) or the longer one after you cancelled (attack.ts).
         if ('cooldownUntil' in ev) f.attack.cooldownUntil = ev.cooldownUntil;
+        break;
+      }
+      // A fired attack's line in a chat, live (the API sends it 10 s after the fire, once the blast came): the friend's row says
+      // it (`attack.last`) and, when it was theirs, counts it as unseen until you look.
+      case 'attack_landed': {
+        const a = ev.attack;
+        const f = a && friend(a.with);
+        if (!f) break;
+        f.attack = { ...(f.attack || {}), last: { mine: !!a.mine, at: a.at } };
+        // Once: a friends list loaded just after it landed already counted it (and named it in `attacksUnseen`).
+        if (!a.mine && !atkOwner.has(a.id) && !atkSeen.has(a.id)) {
+          f.attack.unseen = (f.attack.unseen || 0) + 1;
+          atkOwner.set(a.id, f.id);
+        }
+        break;
+      }
+      // Seen on one of your computers (the card's ×, a chat opened): the count follows on all of them.
+      case 'attack_seen': {
+        let unknown = false;
+        for (const id of ev.ids || []) {
+          if (atkSeen.has(id)) continue;
+          const f = friend(atkOwner.get(id));
+          if (!f || !f.attack) {
+            unknown = true;
+            continue;
+          }
+          f.attack = { ...f.attack, unseen: Math.max(0, (f.attack.unseen || 0) - 1) };
+          atkOwner.delete(id);
+          atkSeen.add(id);
+        }
+        if (unknown) load();
+        break;
+      }
+      // A friend's nudge, or yours from another of your computers (nudge.ts): the row says it (`nudge.last`) and, when it was
+      // theirs, counts it as unread until you open the chat. `floored`: a second one from the same friend within a minute (by
+      // the nudges' own times, so every page of the app agrees): its line and count, but no shake, card or sound.
+      case 'nudge': {
+        const n = ev.nudge;
+        const f = n && friend(n.with);
+        if (!f) break;
+        const at = new Date(n.at).getTime();
+        const had = f.nudge || {};
+        // The same one again: no second buzz, shake or card.
+        if (had.lastId === n.id) {
+          n.floored = true;
+          break;
+        }
+        f.nudge = { ...had, lastId: n.id, last: { mine: !!n.mine, at: n.at } };
+        if (n.mine) {
+          if (n.readyAt) (f.nudge.readyAt = n.readyAt), (f.nudge.why = n.why === 'unanswered' ? 'unanswered' : 'cooldown');
+        } else {
+          f.nudge.unread = (had.unread || 0) + 1;
+          n.floored = !!(had.lastIn && at - had.lastIn < 60_000);
+          f.nudge.lastIn = at;
+          answered(f, had);
+        }
+        break;
+      }
+      // Staging test reset (nudge.ts, POST v1/friends/nudge/reset): the limits on that friend's row are gone.
+      case 'nudge_reset': {
+        const f = friend(ev.id);
+        if (f && f.nudge) f.nudge = { ...f.nudge, why: null, readyAt: null, unread: 0, last: null, lastId: null, lastIn: null };
+        break;
+      }
+      // What a friend's app can show changed (the API's `caps`, sent as they connect): "needs to update" goes or comes on their
+      // nudge and fire buttons. Only for a friend the API says is online.
+      case 'caps': {
+        const f = friend(ev.id);
+        if (!f) break;
+        const caps = Array.isArray(ev.caps) ? ev.caps : [];
+        f.nudge = { ...(f.nudge || {}), outdated: !caps.includes('nudge'), away: caps.includes('nudge-chat') && !!ev.away };
+        f.attack = { ...(f.attack || {}), outdated: !caps.includes('attack-screen') };
+        break;
+      }
+      // A friend opened or closed their chat with you (the API's `nudge_chat`, only for their apps that report it): the nudge button
+      // is ready or greys out with "away" live.
+      case 'nudge_chat': {
+        const f = friend(ev.id);
+        if (f) f.nudge = { ...(f.nudge || {}), away: !!ev.away };
+        break;
+      }
+      // A friend's nudge switch changed (nudge.ts): their button greys out or comes back.
+      case 'nudge_state': {
+        const f = friend(ev.id);
+        if (f) f.nudge = { ...(f.nudge || {}), off: !!ev.off };
         break;
       }
       case 'message': {
         const f = friend(ev.with);
         if (!f) break;
         f.last = { body: ev.message.body, at: ev.message.at, mine: ev.message.mine, sealed: ev.message.sealed, enc: ev.message.enc };
-        if (!ev.message.mine) f.unread = (f.unread || 0) + 1;
+        if (!ev.message.mine) {
+          f.unread = (f.unread || 0) + 1;
+          answered(f, f.nudge);
+        }
         S.friends = [f, ...S.friends.filter((x) => x !== f)];
         break;
       }
       case 'read': {
         const f = friend(ev.with);
-        if (f) f.unread = 0;
+        if (f) {
+          f.unread = 0;
+          // Opening a chat sees that friend's attacks on you too (the API's messages/read).
+          if (f.attack && f.attack.unseen) f.attack = { ...f.attack, unseen: 0 };
+          if (f.nudge && f.nudge.unread) f.nudge = { ...f.nudge, unread: 0 };
+        }
         break;
       }
       case 'notification':
@@ -241,6 +371,7 @@ window.Social = (() => {
       // Your community feed switch, changed on another of your computers (synced settings, account.js).
       case 'settings':
         if (ev.set) S.me.prefs = { ...prefs(), ...prefsFrom(ev.set) };
+        if (ev.set && 'social.nudges' in ev.set) S.me.nudges = ev.set['social.nudges'] !== false;
         break;
     }
     emit(ev);
@@ -248,8 +379,8 @@ window.Social = (() => {
 
   // Settings' "community feed" and the Tokens board's two switches (the API's feed.ts): on unless turned off, kept with
   // the account's synced settings (social.feed, social.tokensName, social.tokensDetail).
-  const prefs = () => ({ feed: true, tokensName: true, tokensDetail: true, ...((S && S.me && S.me.prefs) || {}) });
-  const prefsFrom = (set) => Object.fromEntries(['feed', 'tokensName', 'tokensDetail']
+  const prefs = () => ({ feed: true, tokensName: true, tokensDetail: true, hitCard: true, ...((S && S.me && S.me.prefs) || {}) });
+  const prefsFrom = (set) => Object.fromEntries(['feed', 'tokensName', 'tokensDetail', 'hitCard']
     .filter((k) => `social.${k}` in set).map((k) => [k, set[`social.${k}`] !== false]));
 
   return {
@@ -303,7 +434,36 @@ window.Social = (() => {
         if (!r.error) event({ type: 'nickname', id, nick: r.nick });
         return r;
       }),
-    unread: () => (S ? S.friends.reduce((n, f) => n + (f.unread || 0), 0) : 0),
+    // Unread messages and unseen attacks on you, together (the Friends badge).
+    unread: () => (S ? S.friends.reduce((n, f) => n + (f.unread || 0) + ((f.attack && f.attack.unseen) || 0) + ((f.nudge && f.nudge.unread) || 0), 0) : 0),
+    // One friend's: what their row's count and the chat's "new messages" marker count.
+    unreadOf: (f) => (f ? (f.unread || 0) + ((f.attack && f.attack.unseen) || 0) + ((f.nudge && f.nudge.unread) || 0) : 0),
+    // Nudges (nudge.ts): the API's clock, your switch, and the send (its refusals answer 200 with `sent: false` and `why`).
+    now: () => Date.now() + nudgeSkew,
+    nudgeOn: () => !(S && S.me && S.me.nudges === false),
+    setNudges: (on) =>
+      api('PUT', 'v1/settings', { set: { 'social.nudges': !!on } }).then((r) => {
+        if (!r.error && S) {
+          S.me.nudges = !!on;
+          emit({ type: 'prefs' });
+        }
+        return r;
+      }),
+    // Which friends' chats are open on screen, told to the API (messages.js; it relays it to those friends only, `nudge-chat`).
+    nudgeChat: NUDGE_CHAT,
+    chats: (ids) => api('POST', 'v1/social/chats', { with: ids }),
+    nudge: (id) =>
+      api('POST', `v1/friends/${id}/nudge`, {}).then((r) => {
+        syncNow(r);
+        return r;
+      }),
+    // Seen: the card's ×, or a click that opens the chat. Here at once; the API tells your other computers.
+    attacksSeen: (ids) => {
+      ids = (ids || []).filter(Boolean);
+      if (!ids.length) return Promise.resolve({ ok: true });
+      event({ type: 'attack_seen', ids });
+      return api('POST', 'v1/attacks/seen', { ids });
+    },
     requests: () => (S ? S.incoming.length : 0),
     dnd: () => !!(S && S.me.status === 'dnd'),
     // In a chat panel the chat opens right there; anywhere else (dashboard, notices) Swift opens its chat panel.

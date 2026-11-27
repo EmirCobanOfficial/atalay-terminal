@@ -5,7 +5,11 @@
 #notes { padding: 0; }
 
 /* ---------- the page ---------- */
-.np-ed { box-sizing: border-box; height: 100%; overflow-y: auto; scrollbar-width: thin; padding: 8px 12px 28px 28px; line-height: 1.6; cursor: text; }
+.np-ed { box-sizing: border-box; height: 100%; overflow-y: auto; scrollbar-width: thin; padding: 8px 12px 28px 28px; cursor: text;
+  /* Notion's default text style: its system sans (SF Pro on a Mac, Segoe UI on Windows), 13px / 1.5 (Apple macOS body size, one step above the 12px UI). In rem so the app's text size still scales it. */
+  --note-font: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, "Apple Color Emoji", Arial, sans-serif, "Segoe UI Emoji", "Segoe UI Symbol";
+  --note-mono: SFMono-Regular, Consolas, "Liberation Mono", Menlo, Courier, monospace;
+  font-family: var(--note-font); font-size: 0.8125rem; line-height: 1.5; font-weight: 400; letter-spacing: normal; }
 /* Blocks selected (Ctrl+A twice, or a drag from one block into another): they light up, as Notion shows them, instead
    of the text. */
 .nb.sel { background: rgba(var(--accent-rgb), 0.16); }
@@ -26,16 +30,16 @@
    the next block, and the text jumped up under the pointer, ending the selection lines further down. */
 .nb-text.is-empty[contenteditable="false"]::after { content: '\200b'; }
 
-.nb-h1 .nb-text, .nb-h2 .nb-text, .nb-h3 .nb-text { color: var(--hi); font-weight: 700; line-height: 1.3; }
+.nb-h1 .nb-text, .nb-h2 .nb-text, .nb-h3 .nb-text { color: var(--hi); font-weight: 600; line-height: 1.3; }
 .nb-h1 { margin: 10px 0 2px; }
-.nb-h1 .nb-text { font-size: 1.5em; }
+.nb-h1 .nb-text { font-size: 1.875em; }
 .nb-h2 { margin: 8px 0 1px; }
-.nb-h2 .nb-text { font-size: 1.28em; }
+.nb-h2 .nb-text { font-size: 1.5em; }
 .nb-h3 { margin: 6px 0 0; }
-.nb-h3 .nb-text { font-size: 1.12em; }
+.nb-h3 .nb-text { font-size: 1.25em; }
 .np-ed > .nb:first-child { margin-top: 0; }
 
-.nb-mark { flex: none; display: flex; align-items: center; justify-content: center; min-width: 14px; height: 1.6em; color: var(--accent); user-select: none; }
+.nb-mark { flex: none; display: flex; align-items: center; justify-content: center; min-width: 14px; height: 1.5em; color: var(--accent); user-select: none; }
 .nb-num .nb-mark { min-width: 18px; justify-content: flex-end; font-variant-numeric: tabular-nums; }
 .nb-cb { position: relative; box-sizing: border-box; width: 12px; height: 12px; border: 1px solid var(--accent); cursor: pointer; }
 .nb-cb:hover { box-shadow: 0 0 6px rgba(var(--accent-rgb), 0.5); }
@@ -44,7 +48,7 @@
 .nb-todo.done .nb-text { color: var(--dim); text-decoration: line-through; }
 .nb-quote .nb-text { padding-left: 10px; border-left: 3px solid var(--accent); color: var(--hi); }
 .nb-code { margin: 4px 0; }
-.nb-code .nb-text { padding: 7px 10px; border: 1px solid var(--line-soft); border-radius: 4px; background: var(--code-bg); color: var(--code-fg); line-height: 1.5; tab-size: 2; }
+.nb-code .nb-text { padding: 7px 10px; border: 1px solid var(--line-soft); border-radius: 4px; background: var(--code-bg); color: var(--code-fg); font-family: var(--note-mono); font-size: 0.85em; line-height: 1.5; tab-size: 2; }
 .nb-divider { padding: 9px 0; cursor: default; }
 .nb-divider hr { flex: 1; margin: 0; border: 0; border-top: 1px solid var(--line); }
 /* A block from a newer Orbiterm: kept as it is, shown as a grey line with nothing to write in. */
@@ -395,39 +399,170 @@ html.np-dragging, html.np-dragging * { cursor: grabbing !important; }
 #notes { position: relative; }
 #notes.sh-on { display: flex; flex-direction: column; }
 #notes.sh-on > .np-ed { flex: 1; min-height: 0; height: auto; }
-/* the share button: on the panel's header and the window's strip, a quiet icon until the note is shared */
-.np-share { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 5px; background: none; color: var(--dim); cursor: pointer; }
-.np-share[hidden] { display: none; }
-.np-share:hover, .np-share[aria-expanded="true"] { background: rgba(var(--accent-rgb), 0.16); color: var(--hi); }
-.np-share.on { color: var(--accent); }
-.np-share:focus-visible, .sh-sheet button:focus-visible, .sh-strip:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
-.npw-bar .np-share { margin-left: auto; }
-.npw-bar .np-share:not([hidden]) ~ button { margin-left: 2px; }
-#p-notes > header .np-share { margin-left: auto; }
-/* the connection strip: who's in, and whether the line is up */
-.sh-strip { flex: none; display: flex; align-items: center; gap: 8px; min-height: 26px; padding: 0 12px; border-bottom: 1px solid var(--line-soft); font-size: 11px; color: var(--dim); cursor: pointer; user-select: none; }
-.sh-strip[hidden] { display: none; }
-.sh-faces { display: inline-flex; }
-.sh-faces i { box-sizing: border-box; display: inline-grid; place-items: center; width: 18px; height: 18px; margin-left: -5px; border: 1.5px solid rgb(var(--surface-rgb)); border-radius: 50%; color: #1a1209; font: 700 9.5px/1 var(--font-sans, sans-serif); font-style: normal; }
-.sh-faces i:first-child { margin-left: 0; }
-.sh-faces i.more { background: var(--line); color: var(--txt2); }
-.sh-state { display: inline-flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.sh-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--dim2); }
-.sh-state.live .sh-dot { background: #6fdc8c; box-shadow: 0 0 6px rgba(111, 220, 140, 0.7); }
-.sh-state.wait .sh-dot { background: var(--accent); }
-.sh-state.off .sh-dot { background: var(--dim2); }
-.sh-state.ai { color: var(--accent); }
-.sh-state.ai .sh-dot { background: var(--accent); }
-.sh-ai { margin-left: auto; padding: 1px 7px; border-radius: 9px; background: rgba(var(--accent-rgb), 0.16); color: var(--accent); font-size: 11px; white-space: nowrap; }
-/* a block an AI of a friend just changed */
-.nb.sh-glow { animation: sh-glow 2s ease-out; }
-@keyframes sh-glow { 0% { background: rgba(var(--accent-rgb), 0.28); } 100% { background: transparent; } }
-@media (prefers-reduced-motion: reduce) { .nb.sh-glow { animation: none; background: rgba(var(--accent-rgb), 0.12); } }
+.sh-sheet button:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
 /* the others' cursors and selections: a layer over the editor that takes no clicks */
 .rc-layer { position: absolute; z-index: 5; overflow: hidden; pointer-events: none; }
-.rc-sel { position: absolute; background: var(--c); opacity: 0.25; border-radius: 2px; }
+.rc-sel { position: absolute; background: var(--c); opacity: 0.22; border-radius: 2px; }
 .rc-caret { position: absolute; width: 2px; margin-left: -1px; background: var(--c); border-radius: 1px; }
-.rc-caret b { position: absolute; left: -1px; bottom: 100%; max-width: 120px; padding: 1px 5px; overflow: hidden; border-radius: 4px 4px 4px 0; background: var(--c); color: #1a1209; font: 600 10px/14px var(--font-sans, sans-serif); white-space: nowrap; text-overflow: ellipsis; }
+.rc-caret::before { content: ''; position: absolute; top: -3px; left: -2px; width: 6px; height: 6px; border-radius: 50%; background: var(--c); }
+.rc-bar { position: absolute; left: 2px; width: 3px; border-radius: 2px; background: var(--c); opacity: 0.9; }
+.rc-tag { position: absolute; box-sizing: border-box; max-width: 96px; height: 12px; padding: 0 4px; overflow: hidden; border-radius: 3px 3px 3px 0; background: var(--c); color: #1a1209; font: 600 10px/12px var(--font-sans, sans-serif); white-space: nowrap; text-overflow: ellipsis; animation: rc-tag 2.2s linear forwards; }
+.rc-tag.below { border-radius: 0 3px 3px 3px; }
+.rc-tag.r { border-radius: 3px 3px 0 3px; }
+.rc-tag.below.r { border-radius: 3px 0 3px 3px; }
+.rc-tag.on { animation: none; opacity: 1; }
+@keyframes rc-tag { 0%, 91% { opacity: 1; } 100% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .rc-tag { animation-name: rc-tag-cut; } }
+@keyframes rc-tag-cut { 0%, 99.9% { opacity: 1; } 100% { opacity: 0; } }
+/* =====================================================================================================================
+   NEW · the online note (notes.js: the presence capsule, the status chip, the AI as a member of the note, the AI bar,
+   the AI's marks in the text). Tokens of style.css only, so every theme recolours it; rem, so the text size scales it.
+   ===================================================================================================================== */
+:root {
+  --np-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --np-pop: linear(0, 0.042, 0.143, 0.275, 0.415, 0.55, 0.672, 0.774, 0.858, 0.922, 0.969, 1.001, 1.022, 1.033, 1.038, 1.038, 1.035, 1.03, 1.025, 1.02, 1.015, 1.011, 1.007, 1.004, 1);
+  /* the AI's own look: molten, the bell's version tile (the brand, fixed in every theme) */
+  --np-molten: linear-gradient(155deg, #ffe08a 0%, #ffb057 28%, #f88008 62%, #b83c00 100%);
+  --np-ai-line: linear-gradient(180deg, #ffd23f, #f88008);
+  --np-glass: rgba(var(--glass-top-rgb), 0.9);
+}
+#p-notes, .np-win { container: np / inline-size; }
+
+/* ---- the capsule: who is in the note now, and the door to the share sheet (it replaces the share icon and the strip) ---- */
+.np-cap { display: inline-flex; flex: none; align-items: center; gap: 0.3125rem; height: 1.0625rem; margin-left: 0.25rem; padding: 0 0.4375rem 0 0.125rem; border: 1px solid rgba(var(--accent-rgb), 0.3); border-radius: 999px; background: rgba(var(--accent-rgb), 0.08); color: var(--txt2); font: 600 0.6875rem/1 var(--font-sans); white-space: nowrap; cursor: pointer; transition: background-color 0.12s, border-color 0.12s, color 0.12s; }
+.np-cap:hover { border-color: rgba(var(--accent-rgb), 0.65); background: rgba(var(--accent-rgb), 0.16); color: var(--hi); }
+.np-cap:focus-visible { outline: 2px solid var(--accent-soft); outline-offset: 1px; }
+.np-cap.solo { padding: 0 0.5rem 0 0.375rem; }
+.np-cap.solo svg { flex: none; width: 0.8125rem; height: 0.8125rem; color: var(--accent-soft); }
+.np-cap.dim { border-style: dashed; background: transparent; color: var(--txt3); }
+.np-cap.dim svg { color: var(--txt3); }
+.np-faces { display: inline-flex; align-items: center; }
+.np-face { position: relative; flex: none; display: inline-grid; place-items: center; width: 0.9375rem; height: 0.9375rem; margin-left: -0.1875rem; border-radius: 50%; background: var(--c); color: #1a1209; font: 750 0.5625rem/1 var(--font-sans); font-style: normal; box-shadow: 0 0 0 1.5px rgb(var(--panel-rgb)); }
+.np-faces > :first-child { margin-left: 0; }
+.np-face.more { width: auto; min-width: 0.9375rem; padding: 0 0.1875rem; border-radius: 999px; background: rgb(var(--glass-top-rgb)); color: var(--accent-pale); font-size: 0.5625rem; }
+.np-cap .who { color: var(--txt); font-weight: 600; }
+/* the last line dropped: the faces are who was here, greyed, until the line is back */
+.np-cap.stale .np-face { filter: grayscale(0.85) brightness(0.75); }
+/* the note's window has room: bigger faces, a taller capsule */
+.npw-bar .np-cap { height: 1.375rem; margin-left: auto; padding-right: 0.5rem; font-size: 0.75rem; }
+.np-cap.one { padding-right: 0.5rem; }
+.np-cap.one .np-faces { margin-right: 0.125rem; }
+.npw-bar .np-cap.solo { padding: 0 0.625rem 0 0.5rem; }
+.npw-bar .np-cap.solo svg { width: 0.9375rem; height: 0.9375rem; }
+.npw-bar .np-face { width: 1.125rem; height: 1.125rem; font-size: 0.625rem; box-shadow: 0 0 0 2px rgb(var(--glass-top-rgb)); }
+.npw-bar .np-face.more { min-width: 1.125rem; padding: 0 0.25rem; font-size: 0.625rem; }
+/* a hairline between the people and the window's own buttons (HIG Toolbars: at most three groups) */
+.np-sep { flex: none; width: 1px; height: 0.75rem; margin: 0 0.125rem; background: var(--line); }
+.npw-bar .np-sep { height: 1rem; margin: 0 0.25rem; }
+.npw-bar .np-cap ~ button { margin-left: 0; }
+.npw-bar { gap: 0.375rem; }
+.npw-bar .npw-name { margin-right: 0.25rem; }
+
+/* ---- the AI as a member of the note while it works: a molten squircle with a spark, its owner's colour as a dot ---- */
+.np-aiface { position: relative; flex: none; display: inline-grid; place-items: center; width: 0.875rem; height: 0.875rem; border-radius: 30%; background: var(--np-molten); color: var(--ink); box-shadow: 0 0 0 1.5px rgb(var(--panel-rgb)), 0 0 0.5rem rgba(var(--accent-rgb), 0.55); }
+.np-aiface .g { font: normal normal normal 0.5625rem/1 codicon; }
+.np-aiface::after { content: ""; position: absolute; right: -0.1875rem; bottom: -0.1875rem; width: 0.375rem; height: 0.375rem; border-radius: 50%; background: var(--owner); box-shadow: 0 0 0 1.5px rgb(var(--panel-rgb)); }
+.npw-bar .np-aiface { width: 1.125rem; height: 1.125rem; box-shadow: 0 0 0 2px rgb(var(--glass-top-rgb)), 0 0 0.625rem rgba(var(--accent-rgb), 0.6); }
+.npw-bar .np-aiface .g { font-size: 0.6875rem; }
+.np-faces .np-aiface + .np-face { margin-left: 0.1875rem; }
+/* an ember on its orbit while it works: Orbiterm's own sign for "busy" */
+.np-orbit { position: absolute; inset: -0.25rem; border-radius: 50%; animation: np-orbit 1.6s linear infinite; pointer-events: none; }
+.np-orbit::after { content: ""; position: absolute; top: -1px; left: 50%; width: 3px; height: 3px; margin-left: -1.5px; border-radius: 50%; background: #fff3cf; box-shadow: 0 0 3px 1px #ffd23f, 0 0 7px 2px rgba(248, 128, 8, 0.85); }
+@keyframes np-orbit { to { transform: rotate(1turn); } }
+/* waiting for the user to stop typing: a ring that runs out (10 s at most, agentApply) */
+.np-wait { position: absolute; inset: -0.25rem; border-radius: 50%; background: conic-gradient(var(--amber) calc(var(--p, 0.7) * 1turn), rgba(var(--amber-rgb), 0.16) 0); -webkit-mask: radial-gradient(closest-side, transparent calc(100% - 1.5px), #000 calc(100% - 1px)); mask: radial-gradient(closest-side, transparent calc(100% - 1.5px), #000 calc(100% - 1px)); }
+
+/* ---- the status chip: only when the line isn't fine (fine says nothing: the faces are the sign) ---- */
+.np-stat { display: inline-flex; flex: none; align-items: center; gap: 0.3125rem; color: var(--amber); font: 600 0.6875rem/1 var(--font-sans); white-space: nowrap; }
+.np-stat i { flex: none; box-sizing: border-box; width: 0.5625rem; height: 0.5625rem; border-radius: 50%; }
+.np-stat.wait i { border: 1.5px solid rgba(var(--amber-rgb), 0.3); border-top-color: var(--amber); animation: np-spin 0.9s linear infinite; }
+.np-stat.off { color: var(--txt3); }
+.np-stat.off i { border: 1.5px solid var(--txt3); }
+.np-stat.big { color: var(--red-soft); }
+.np-stat.big i { background: var(--red); }
+.np-stat small { color: var(--txt3); font-weight: 500; font-size: 1em; }
+.panel .np-stat small { display: none; }
+/* a line in trouble outranks "edited 4m ago" in the window's bar */
+.npw-bar:has(.np-stat:not([hidden])) .npw-meta { display: none; }
+@keyframes np-spin { to { transform: rotate(1turn); } }
+
+/* ---- the AI bar: floats over the note's foot while an AI works in it, and holds its result after (glass: it floats) ---- */
+.np-aibar { position: absolute; z-index: 7; left: 50%; bottom: 0.625rem; display: flex; align-items: center; gap: 0.5rem; box-sizing: border-box; width: max-content; max-width: calc(100% - 1rem); min-height: 2rem; padding: 0.25rem 0.25rem 0.25rem 0.375rem; border-radius: 999px; background: var(--np-glass); -webkit-backdrop-filter: blur(18px) saturate(1.5); backdrop-filter: blur(18px) saturate(1.5); box-shadow: inset 0 1px 0 rgba(255, 236, 214, 0.12), 0 0 0 1px rgba(var(--accent-soft-rgb), 0.32), 0 0.75rem 2rem rgba(0, 0, 0, 0.55), 0 0 1.5rem rgba(var(--accent-rgb), 0.16); color: var(--txt2); font: 0.75rem/1.25 var(--font-sans); transform: translateX(-50%); animation: np-bar-in 0.36s var(--np-pop) both; }
+.np-aibar.text-only { padding-right: 0.875rem; }
+.np-aibar .np-aiface { width: 1.25rem; height: 1.25rem; margin: 0 0.125rem; box-shadow: 0 0 0.75rem rgba(var(--accent-rgb), 0.55); }
+.np-aibar .np-aiface .g { font-size: 0.75rem; }
+.np-aibar .np-aiface::after { width: 0.4375rem; height: 0.4375rem; box-shadow: 0 0 0 1.5px rgb(var(--glass-top-rgb)); }
+.np-aibar .t { min-width: 0; overflow: hidden; padding: 0; border: 0; background: none; color: inherit; font: inherit; text-align: left; white-space: nowrap; text-overflow: ellipsis; }
+.np-aibar button.t { cursor: pointer; }
+.np-aibar button.t:hover b { text-decoration: underline; text-underline-offset: 2px; }
+.np-aibar b { color: var(--hi); font-weight: 650; }
+.np-aibar small { flex: none; color: var(--txt3); font-size: 0.6875rem; font-variant-numeric: tabular-nums; }
+/* "is working": a light runs through the words, as Claude Code's own spinner words do */
+.np-shim { background: linear-gradient(90deg, var(--txt2) 0%, var(--txt2) 35%, var(--accent-pale) 50%, var(--txt2) 65%, var(--txt2) 100%) 0 0 / 250% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; animation: np-shim 1.8s linear infinite; }
+@keyframes np-shim { from { background-position: 100% 0; } to { background-position: -150% 0; } }
+.np-acts { flex: none; display: flex; gap: 0.25rem; }
+.np-btn { height: 1.5rem; padding: 0 0.75rem; border: 0; border-radius: 999px; font: 650 0.75rem/1 var(--font-sans); white-space: nowrap; cursor: pointer; }
+.np-btn.glass { background: rgba(255, 244, 230, 0.07); color: var(--txt); box-shadow: inset 0 0 0 1px rgba(var(--accent-rgb), 0.38); }
+.np-btn.glass:hover { background: rgba(var(--accent-rgb), 0.2); color: var(--hi); }
+.np-btn.primary { background: linear-gradient(180deg, #ffb057, #f88008); color: var(--ink); box-shadow: inset 0 1px 0 rgba(255, 243, 207, 0.5); }
+.np-btn.primary:hover { background: linear-gradient(180deg, #ffc277, #ff9420); }
+.np-btn:focus-visible { outline: 2px solid var(--accent-soft); outline-offset: 2px; }
+@keyframes np-bar-in { from { opacity: 0; transform: translateX(-50%) translateY(0.5rem) scale(0.96); } }
+/* the note's last line scrolls up above the bar while it shows */
+#notes.has-bar .np-ed { padding-bottom: 3.5rem; -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 4.25rem), rgba(0, 0, 0, 0.18) calc(100% - 1.75rem)); mask-image: linear-gradient(to bottom, #000 calc(100% - 4.25rem), rgba(0, 0, 0, 0.18) calc(100% - 1.75rem)); }
+@container np (max-width: 26rem) {
+  .np-aibar { left: 0.5rem; right: 0.5rem; flex-wrap: wrap; row-gap: 0.25rem; width: auto; max-width: none; border-radius: 0.875rem; transform: none; animation-name: np-bar-in-n; }
+  .np-aibar .t { flex: 1 1 auto; }
+  .np-aibar.text-only { border-radius: 999px; }
+  .np-aibar.text-only .t { flex-basis: 0; }
+  .np-acts { margin-left: auto; }
+  .np-aibar .where, .np-aibar .when { display: none; }
+  .np-btn { padding: 0 0.625rem; }
+}
+/* very narrow: the chip keeps its dot (its words in the tooltip and for VoiceOver), the window drops "edited …" */
+@container np (max-width: 21rem) {
+  .np-stat span { display: none; }
+  .npw-meta { display: none; }
+}
+@keyframes np-bar-in-n { from { opacity: 0; transform: translateY(0.5rem) scale(0.96); } }
+
+/* ---- the AI's marks in the text: a molten bar in the margin, where a friend's bar sits, and a warm wash on what it
+   wrote; a "✦ Claude Code" tag on the first one for a moment, as a cursor's name. They stay while the bar does. ---- */
+.nb.ai-mark { background: linear-gradient(90deg, rgba(var(--accent-soft-rgb), 0.11), rgba(var(--accent-soft-rgb), 0.035) 65%, transparent); border-radius: 0.25rem; }
+.ai-bar { position: absolute; left: 2px; width: 3px; border-radius: 2px; background: var(--np-ai-line); box-shadow: 0 0 6px rgba(var(--accent-rgb), 0.55); }
+.ai-bar.first::before { content: "\ec21"; position: absolute; top: -0.75rem; left: 50%; transform: translateX(-50%); color: var(--amber); font: normal normal normal 9px/1 codicon; text-shadow: 0 0 6px rgba(var(--accent-rgb), 0.9); }
+.ai-bar.soon { width: 0; border-left: 2px dashed rgba(var(--accent-soft-rgb), 0.85); border-radius: 0; background: none; box-shadow: none; }
+.ai-bar.soon.first::before { color: var(--accent-soft); text-shadow: none; }
+.ai-tag { position: absolute; display: inline-flex; align-items: center; gap: 3px; box-sizing: border-box; height: 12px; padding: 0 5px 0 3px; border-radius: 3px 3px 3px 0; background: var(--np-molten); color: var(--ink); font: 650 10px/12px var(--font-sans); white-space: nowrap; }
+.ai-tag .g { font: normal normal normal 9px/1 codicon; }
+.ai-tag.soon { background: rgba(var(--glass-top-rgb), 0.9); color: var(--accent-soft); box-shadow: inset 0 0 0 1px rgba(var(--accent-soft-rgb), 0.8); }
+/* landing: a warm light crosses each block it wrote, once; a new block rises in */
+.nb.ai-sweep::after { content: ""; position: absolute; inset: 0; border-radius: 0.25rem; background: linear-gradient(100deg, transparent 0%, transparent 35%, rgba(var(--amber-rgb), 0.32) 50%, transparent 65%, transparent 100%) 0 0 / 260% 100% no-repeat; pointer-events: none; animation: ai-sweep 0.7s var(--np-out) var(--d, 0s) both; }
+@keyframes ai-sweep { from { background-position: 100% 0; } to { background-position: -60% 0; } }
+.nb.ai-new { animation: ai-rise 0.32s var(--np-out) var(--d, 0s) both; }
+@keyframes ai-rise { from { opacity: 0; transform: translateY(0.25rem); } }
+/* what it will change once you stop typing */
+.ai-target { border-radius: 2px; background: rgba(var(--accent-soft-rgb), 0.08); text-decoration: underline dashed rgba(var(--accent-soft-rgb), 0.85); text-underline-offset: 3px; text-decoration-thickness: 1px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .np-orbit, .np-shim, .np-stat.wait i { animation: none; }
+  .np-shim { color: var(--txt2); background: none; }
+  .np-aibar, .nb.ai-new, .nb.ai-sweep::after { animation-duration: 0.01ms; }
+}
+.np-face img { width: 100%; height: 100%; border-radius: 50%; object-fit: cover; }
+.np-aibar.out { animation: none; opacity: 0; transform: translateX(-50%) translateY(0.25rem); transition: opacity 0.16s ease-in, transform 0.16s ease-in; pointer-events: none; }
+@container np (max-width: 26rem) { .np-aibar.out { transform: translateY(0.25rem); } }
+.ai-tag.below { border-radius: 0 3px 3px 3px; }
+/* the sheet: who is here now, one tap to go there */
+.sh-hereNow { margin-bottom: 8px; padding-bottom: 6px; border-bottom: 1px solid var(--line-soft); }
+.sh-hereNow h4 { margin: 0 0 2px; color: var(--txt3); font: 650 10px/1.6 var(--font-sans, sans-serif); letter-spacing: 0.06em; text-transform: uppercase; }
+.sh-jump { width: 100%; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.sh-jump:hover:not(:disabled) { background: rgba(var(--accent-rgb), 0.12); }
+.sh-jump:disabled { cursor: default; }
+.sh-line { margin: 0 0 8px; color: var(--txt3); }
+.np-cap[hidden], .np-stat[hidden], .np-sep[hidden], .np-aibar[hidden] { display: none; }
+.npw-bar .np-cap:not([hidden]) ~ button { margin-left: 0; }
+#p-notes > header .np-cap { margin-left: 0.25rem; }
 /* the sheet: share, who's in, leave */
 .sh-sheet { position: absolute; z-index: 20; top: 34px; right: 8px; box-sizing: border-box; width: min(330px, calc(100% - 16px)); max-height: calc(100% - 44px); overflow-y: auto; padding: 12px 14px 12px; border-radius: 10px; background: rgb(var(--surface-rgb)); box-shadow: 0 0 0 1px rgba(var(--accent-rgb), 0.4), 0 18px 48px rgba(0, 0, 0, 0.55); color: var(--txt); font: 12px/1.45 var(--font-sans, sans-serif); user-select: none; scrollbar-width: thin; }
 .sh-sheet h3 { margin: 0 0 6px; font-size: 13px; font-weight: 600; color: var(--hi); }

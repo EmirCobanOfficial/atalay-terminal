@@ -109,6 +109,7 @@ final class RadarEngine {
     /// Everything after it runs at utility priority, which macOS keeps on the efficiency cores.
     func start() {
         Limits.installScript()
+        queue.async { ClaudeAccounts.syncMcp() }
         CodexHooks.install()
         CursorHooks.install()
         let activity = ProcessInfo.processInfo.beginActivity(options: [.userInitiated], reason: "Indexing Claude Code transcripts")
@@ -417,6 +418,10 @@ final class RadarEngine {
                     if p.hasSuffix("conversation_summaries.db") || p.hasSuffix("conversation_summaries.db-wal") || p.hasSuffix("transcript.jsonl") {
                         engine.historyChanged()
                     }
+                } else if p.hasPrefix(ClaudeAccounts.root + "/") {
+                    // Another Claude account's folder: its registry (its chats come and go); the rest of it, the
+                    // history included, is the default account's by links.
+                    if p.contains("/sessions/") { engine.registryChanged() }
                 } else if p.hasSuffix(".jsonl") {
                     if engine.cursors[p] == nil { engine.historyChanged() }
                     engine.pump(p)
@@ -433,6 +438,7 @@ final class RadarEngine {
         let flags = UInt32(kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagUseCFTypes | kFSEventStreamCreateFlagNoDefer)
         // Also watch ~/.gemini/antigravity-cli so conversation_summaries.db and step changes arrive immediately.
         var watched: [String] = [projects, registry]
+        if FileManager.default.fileExists(atPath: ClaudeAccounts.root) { watched.append(ClaudeAccounts.root) }
         if FileManager.default.fileExists(atPath: Self.codexSessionsRoot) { watched.append(Self.codexSessionsRoot) }
         if FileManager.default.fileExists(atPath: agyRoot) { watched.append(agyRoot) }
         // And Codex's approval requests (CodexHooks), the moment its hook writes or drops one, and its own log, where the
@@ -624,7 +630,12 @@ final class RadarEngine {
 
         switch rec["type"] as? String {
         case "ai-title":
-            if let t = rec["aiTitle"] as? String { S.title = clip(redact(t), 90) }
+            if !S.titleIsCustom, let t = rec["aiTitle"] as? String { S.title = clip(redact(t), 90) }
+        case "custom-title":
+            // Claude's own /rename: it becomes the chat's title. Against a name given here, the newer one wins (ChatNames): one
+            // just written is newer; the file's past (a first read, after launch too: a chat resumed later) is left to the list's
+            // scan, which can date it (readTail).
+            if let t = rec["customTitle"] as? String, !t.isEmpty { S.title = clip(redact(t), 90); S.titleIsCustom = true; if f.caughtUp { ChatNames.noteCustom(S.id, t, live: true) } }
         case "last-prompt":
             if A == nil, let p = rec["lastPrompt"] as? String { S.lastPrompt = clip(redact(p), 220) }
         case "api-request":
@@ -645,13 +656,16 @@ final class RadarEngine {
         if (rec["isApiErrorMessage"] as? Bool) == true || model == "<synthetic>" {
             let txt = clip(redact(content.compactMap { $0["text"] as? String }.joined(separator: " ")), 100)
             emit(ev("sys", ts, S, A, ["l": txt.isEmpty ? "API error" : txt, "err": true]), today)
+            // A 429 on the account's usage limit: the chat window offers to go on with another account, on a click.
+            if A == nil, rec["error"] as? String == "rate_limit" { S.limitHitAt = max(S.limitHitAt, ts) }
             // A subagent that died on a quota or API error writes nothing more.
             if let A { A.end(ts) }
             return
         }
         if let model {
             actor.model = model
-            if A == nil { S.model = model }
+            // A normal reply after the limit's error: the limit is over.
+            if A == nil { S.model = model; S.limitHitAt = 0 }
         }
         if A == nil, let e = rec["effort"] as? String { S.effort = e }
 
@@ -1042,6 +1056,7 @@ final class RadarEngine {
         if st.size < c.off {
             c.off = 0
             c.rest = Data()
+            c.caughtUp = false
         }
         if !c.started {
             c.started = true
@@ -1050,7 +1065,11 @@ final class RadarEngine {
                 c.skipLine = c.off > 0
             }
         }
-        guard st.size > c.off, let fh = FileHandle(forReadingAtPath: fp) else { return }
+        guard st.size > c.off else {
+            c.caughtUp = true
+            return
+        }
+        guard let fh = FileHandle(forReadingAtPath: fp) else { return }
         defer { try? fh.close() }
         try? fh.seek(toOffset: c.off)
         var pos = c.off
@@ -1091,6 +1110,7 @@ final class RadarEngine {
             }
         }
         c.off = pos
+        if pos >= st.size { c.caughtUp = true }
     }
 
     private func collectFiles(since: Double) -> [String] {
@@ -1124,13 +1144,36 @@ final class RadarEngine {
         kill(pid, 0) == 0
     }
 
+    /// Every Claude account's registry (the default's `~/.claude/sessions`, the others' under ~/.claude-accounts/<id>), a
+    /// session knowing which one it was found in.
     private func pollRegistry() {
-        let names = (try? FileManager.default.contentsOfDirectory(atPath: registry)) ?? []
+        if ClaudeAccounts.multiple { Limits.ensureScript() }
         var seen = Set<String>()
         var present = Set<String>()
-        for n in names where n.hasSuffix(".json") && n.dropLast(5).allSatisfy(\.isNumber) {
+        // Each real registry folder once: two accounts whose folders lead to one place (a link) are not read twice.
+        var registries = Set<String>()
+        for (account, dir) in ClaudeAccounts.dirs {
+            let registry = (dir as NSString).appendingPathComponent("sessions")
+            guard registries.insert(URL(fileURLWithPath: registry).resolvingSymlinksInPath().path).inserted else { continue }
+            pollRegistry(account: account, registry: registry, seen: &seen, present: &present)
+        }
+        for n in regCache.keys where !present.contains(n) { regCache.removeValue(forKey: n) }
+        for S in sessions.values where S.live && !seen.contains(S.id) {
+            S.live = false
+            S.reg = nil
+            S.ppid = nil
+            S.hostTab = nil
+            S.endedAt = nowMs()
+            stateDirty = true
+        }
+    }
+
+    private func pollRegistry(account: String, registry: String, seen: inout Set<String>, present: inout Set<String>) {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: registry)) ?? []
+        for file in names where file.hasSuffix(".json") && file.dropLast(5).allSatisfy(\.isNumber) {
+            let n = account + "/" + file
             present.insert(n)
-            let path = (registry as NSString).appendingPathComponent(n)
+            let path = (registry as NSString).appendingPathComponent(file)
             guard let st = fileStat(path) else { continue }
             if let c = regCache[n], c.mtime == st.mtime {
                 guard c.chat, alive(c.pid) else { continue }
@@ -1169,6 +1212,7 @@ final class RadarEngine {
             let updated = (j["updatedAt"] as? NSNumber)?.doubleValue ?? 0
             if S.live, let cur = S.pid, cur != pid, alive(cur), S.regUpdated > updated { continue }
             S.regUpdated = updated
+            S.account = account
             stateDirty = true
             S.live = true
             S.endedAt = 0
@@ -1183,18 +1227,10 @@ final class RadarEngine {
             S.entry = j["entrypoint"] as? String ?? ""
             if S.cwd.isEmpty, let cwd = j["cwd"] as? String { S.cwd = cwd }
             if S.firstTs == 0 { S.firstTs = (j["startedAt"] as? NSNumber)?.doubleValue ?? 0 }
+            S.procStartedAt = (j["startedAt"] as? NSNumber)?.doubleValue ?? 0
             if S.reg == "idle" || S.reg == "shell" { S.pending.removeAll() }
             let fp = transcriptFor(S.cwd, sid)
             if cursors[fp] == nil, FileManager.default.fileExists(atPath: fp) { pump(fp) }
-        }
-        for n in regCache.keys where !present.contains(n) { regCache.removeValue(forKey: n) }
-        for S in sessions.values where S.live && !seen.contains(S.id) {
-            S.live = false
-            S.reg = nil
-            S.ppid = nil
-            S.hostTab = nil
-            S.endedAt = nowMs()
-            stateDirty = true
         }
     }
 
@@ -2852,7 +2888,7 @@ final class RadarEngine {
             // hears that it ended, and it comes back if the conversation is resumed.
             if !S.live, S.endedAt > 0 {
                 guard now - S.lastTs < 30 * Self.MIN else { continue }
-                var brief = SessionBrief(id: S.id, name: S.name.isEmpty ? String(S.id.prefix(8)) : S.name, title: S.title.isEmpty ? S.lastPrompt : S.title,
+                var brief = SessionBrief(id: S.id, name: S.name.isEmpty ? String(S.id.prefix(8)) : S.name, title: ChatNames.resolve(S.id, S.title.isEmpty ? S.lastPrompt : S.title),
                                          status: "ended", waitingFor: nil, cwd: S.cwd, live: false, pid: S.pid, host: nil, tab: nil)
                 brief.model = shortModel(S.model)
                 brief.effort = S.effort
@@ -2898,7 +2934,7 @@ final class RadarEngine {
             var item: [String: Any] = [
                 "id": S.id, "name": displayName(S),
                 "tool": "Claude Code",
-                "title": S.title, "lastPrompt": S.lastPrompt, "cwd": cwdLabel(S.cwd), "branch": S.branch,
+                "title": ChatNames.resolve(S.id, S.title), "lastPrompt": S.lastPrompt, "cwd": cwdLabel(S.cwd), "branch": S.branch,
                 "wt": orNull(Worktrees.info(of: S.cwd).flatMap { $0.linked ? $0.json : nil }),
                 "model": shortModel(S.model), "effort": S.effort, "status": status, "live": S.live,
                 "statusSince": S.live ? S.statusSince : (S.endedAt > 0 ? S.endedAt : S.lastTs),
@@ -2916,8 +2952,12 @@ final class RadarEngine {
             if let last = S.last { item["last"] = last.dict }
             list.append(item)
 
-            var brief = SessionBrief(id: S.id, name: S.name.isEmpty ? String(S.id.prefix(8)) : S.name, title: S.title.isEmpty ? S.lastPrompt : S.title,
+            var brief = SessionBrief(id: S.id, name: S.name.isEmpty ? String(S.id.prefix(8)) : S.name, title: ChatNames.resolve(S.id, S.title.isEmpty ? S.lastPrompt : S.title),
                                      status: status, waitingFor: S.waitingFor, cwd: S.cwd, live: S.live, pid: S.pid, host: host, tab: S.hostTab)
+            brief.account = S.account
+            // Only a hit of the process running it now: after a switch, the old account's error is still the transcript's
+            // last record until the next reply, and it is not the new account's.
+            brief.limitHit = S.limitHitAt > 0 && S.limitHitAt >= S.procStartedAt && S.live && now - S.limitHitAt < 6 * 3_600_000
             brief.model = shortModel(S.model)
             brief.effort = S.effort
             brief.fresh = S.lastPrompt.isEmpty && S.title.isEmpty && S.prompts == 0
@@ -2962,7 +3002,7 @@ final class RadarEngine {
             let spark = ((k0 - 29)...k0).map { O.spark[$0] ?? 0 }
             let flags = O.ctxMax > 0 && Double(O.ctx) / O.ctxMax > 0.8 ? ["ctx 80%+"] : [String]()
             var item: [String: Any] = [
-                "id": O.id, "name": O.tool, "title": O.title.isEmpty ? folder : O.title, "lastPrompt": O.prompt, "cwd": cwdLabel(O.cwd), "branch": Worktrees.info(of: O.cwd)?.branch ?? "",
+                "id": O.id, "name": O.tool, "title": ChatNames.resolve(O.id, O.convId ?? (O.tool == "Codex" ? O.log.flatMap(CodexHooks.session(ofLog:)) : nil), O.title.isEmpty ? folder : O.title), "lastPrompt": O.prompt, "cwd": cwdLabel(O.cwd), "branch": Worktrees.info(of: O.cwd)?.branch ?? "",
                 "wt": orNull(Worktrees.info(of: O.cwd).flatMap { $0.linked ? $0.json : nil }),
                 "tool": O.tool,
                 "model": O.model.isEmpty ? O.tool : O.model, "effort": O.effort, "status": status, "live": live,
@@ -2985,7 +3025,7 @@ final class RadarEngine {
             if live { list.append(item) }
             // A Codex's conversation is its log's: the chats list shows a running one once, as that saved conversation.
             let conv = O.convId ?? (O.tool == "Codex" ? O.log.flatMap(CodexHooks.session(ofLog:)) : nil)
-            var brief = SessionBrief(id: O.id, name: O.tool, title: !O.title.isEmpty ? O.title : O.prompt.isEmpty ? folder : O.prompt, status: status, waitingFor: waiting,
+            var brief = SessionBrief(id: O.id, name: O.tool, title: ChatNames.resolve(O.id, conv, !O.title.isEmpty ? O.title : O.prompt.isEmpty ? folder : O.prompt), status: status, waitingFor: waiting,
                                      cwd: O.cwd, live: live, pid: O.pid, host: host, tab: O.hostTab, convId: conv)
             brief.model = O.model.isEmpty ? O.tool : O.model
             brief.effort = O.effort
@@ -3091,17 +3131,55 @@ final class RadarEngine {
         // line, Codex's and Antigravity's as last read, Antigravity's a column per group in use (AgyUsage.pools). One not
         // heard from in a week is left out.
         var limitsByAI: [[String: Any]] = []
-        var pools: [(tool: String, value: [String: Any]?)] = [("Claude Code", limits.json?.merging(["id": "claude", "name": "claude"]) { $1 }),
-                                                             ("Codex", codexUsage?.merging(["id": "codex", "name": "codex"]) { $1 })]
+        var pools: [(tool: String, value: [String: Any]?)] = claudePools()
+        pools.append(("Codex", codexUsage?.merging(["id": "codex", "name": "codex"]) { $1 }))
         pools += (agyUsage.map { AgyUsage.pools($0, model: agyModel) } ?? []).map { ("Antigravity", $0) }
         pools.append(("Cursor", cursorUsage))
         for (tool, value) in pools {
-            guard var v = value, now - ((v["at"] as? NSNumber)?.doubleValue ?? 0) < 7 * 24 * 3_600_000 else { continue }
+            // Claude's, with two or more accounts: a column for each signed-in account, even before it has data.
+            guard var v = value, v["accounts"] != nil || now - ((v["at"] as? NSNumber)?.doubleValue ?? 0) < 7 * 24 * 3_600_000 else { continue }
             v["tool"] = tool
             limitsByAI.append(v)
         }
         out["limitsByAI"] = limitsByAI
         return (out, briefs)
+    }
+
+    /// Claude's limit pools for the top bar. One account: the status line's file, as before. Two or more: a pool per quota,
+    /// one per organization (accounts of one organization share it), else one per account; the accounts' order is Settings'.
+    private func claudePools() -> [(tool: String, value: [String: Any]?)] {
+        guard ClaudeAccounts.multiple else {
+            return [("Claude Code", limits.json?.merging(["id": "claude", "name": "claude"]) { $1 })]
+        }
+        var order: [String] = []
+        var byKey: [String: [String: Any]] = [:]
+        for a in ClaudeAccounts.all {
+            let key = a.orgId.isEmpty ? a.id : a.orgId
+            let data = accountLimits(a)
+            var pool = byKey[key] ?? ["id": "claude:" + key, "name": "claude", "accounts": [[String: Any]](), "at": 0.0]
+            pool["accounts"] = (pool["accounts"] as? [[String: Any]] ?? []) + [["id": a.id, "label": a.label, "initial": a.initial, "hue": a.hue,
+                                                                                 "email": a.email, "plan": a.plan, "orgName": a.orgName]]
+            // The newest reading of the pool's accounts (one organization, one quota).
+            if let data, (data["at"] as? Double ?? 0) >= (pool["at"] as? Double ?? 0) {
+                pool["fiveHour"] = data["fiveHour"]
+                pool["week"] = data["week"]
+                pool["at"] = data["at"]
+            }
+            if byKey[key] == nil { order.append(key) }
+            byKey[key] = pool
+        }
+        return order.compactMap { k in byKey[k].map { ("Claude Code", $0) } }
+    }
+
+    /// An account's limits (its status line's file), read again only when the file changed.
+    private var acctLimits: [String: (mtime: Double, json: [String: Any]?)] = [:]
+    private func accountLimits(_ a: ClaudeAccount) -> [String: Any]? {
+        let path = ClaudeAccounts.limitsPath(of: a)
+        guard let st = fileStat(path) else { return nil }
+        if let c = acctLimits[path], c.mtime == st.mtime { return c.json }
+        let json = Limits.parse(path: path, mtime: st.mtime)
+        acctLimits[path] = (st.mtime, json)
+        return json
     }
 
     // MARK: publishing
@@ -3124,6 +3202,8 @@ final class RadarEngine {
         }
     }
 
+    private var lastBusyPids = Set<Int32>()
+
     /// Builds and sends the state when something changed (and every few seconds for the time-based
     /// figures), and skips the main thread and the page entirely when the result is identical.
     private func publishState() {
@@ -3132,6 +3212,10 @@ final class RadarEngine {
         stateDirty = false
         lastStateAt = now
         let snap = snapshot()
+        // An AI session that was busy and no longer is: the notes drop it from the notes it was working in.
+        let busyNow = Set(snap.briefs.filter { $0.status == "busy" }.compactMap { $0.pid })
+        for pid in lastBusyPids.subtracting(busyNow) { NotesTools.sessionIdle(pid: pid) }
+        lastBusyPids = busyNow
         guard let js = encode(snap.json), js != lastStateJSON else { return }
         lastStateJSON = js
         DispatchQueue.main.async { self.onState?(js, snap.briefs) }
@@ -3177,11 +3261,11 @@ final class RadarEngine {
         queue.async {
             let now = nowMs()
             var list = self.sessions.values.filter { !$0.cwd.isEmpty && ($0.live || $0.lastTs >= self.day0) }.map { S in
-                GitSession(id: S.id, name: self.displayName(S), title: S.title, status: self.statusOf(S, now), live: S.live, cwd: S.cwd)
+                GitSession(id: S.id, name: self.displayName(S), title: ChatNames.resolve(S.id, S.title), status: self.statusOf(S, now), live: S.live, cwd: S.cwd)
             }
             // Cursor's too: its hooks name the files it writes, so its repo shows with its chip and its files carry its mark.
             for O in self.others.values where O.tool == "Cursor" && !O.cwd.isEmpty && (O.endedAt == 0 || O.lastTs >= self.day0) {
-                list.append(GitSession(id: O.id, name: O.tool, title: O.title.isEmpty ? O.prompt : O.title, status: self.otherStatus(O, now).status,
+                list.append(GitSession(id: O.id, name: O.tool, title: ChatNames.resolve(O.id, O.convId, O.title.isEmpty ? O.prompt : O.title), status: self.otherStatus(O, now).status,
                                        live: O.endedAt == 0, cwd: O.cwd))
             }
             var written: [String: [String]] = [:]
@@ -3222,6 +3306,8 @@ final class RadarEngine {
             history.removeValue(forKey: sid)
             changed = true
         }
+        // The renames remembered of chats whose transcript is gone (deleted, or Claude's own clean-up) go too.
+        ChatNames.prune(keeping: present)
         // Scan Antigravity conversations from its SQLite database and merge into the same list.
         changed = scanAgyHistory(present: &present) || changed
         // And Codex's.
@@ -3229,10 +3315,31 @@ final class RadarEngine {
         // And Cursor's.
         changed = scanCursorHistory() || changed
         guard changed else { return }
+        publishHistory()
+    }
+
+    /// The saved chats for the sidebar, with the names given to them (Rename) in place of their own titles.
+    private func publishHistory() {
         let items = history.values
             .filter { !$0.cwd.isEmpty && (!$0.title.isEmpty || !$0.lastPrompt.isEmpty) }
             .sorted { $0.mtime > $1.mtime }
+            .map { item -> ChatItem in
+                var i = item
+                i.origTitle = item.title
+                i.title = ChatNames.resolve(item.id, item.title)
+                return i
+            }
         DispatchQueue.main.async { self.onHistory?(items) }
+    }
+
+    /// A chat was renamed (or its name cleared): the state and the saved chats go out again with the new names.
+    func republishNames() {
+        queue.async {
+            self.stateDirty = true
+            self.lastStateJSON = ""   // the page's JSON may be unchanged (ended chats aren't in it): the windows still need the names
+            self.publishState()
+            self.publishHistory()
+        }
     }
 
     /// Reads Antigravity's conversation_summaries.db and upserts items into `history`.
@@ -3288,7 +3395,8 @@ final class RadarEngine {
             let size = Int(tStat?.size ?? 0)
             let mtime = max(row.mtime, tStat?.mtime ?? 0)
             // Only update when mtime or transcript size changed.
-            if let old = history[id], old.mtime == mtime, old.size == size { continue }
+            // A rename may not move the times: the title is compared too.
+            if let old = history[id], old.mtime == mtime, old.size == size, old.title == clip(row.title, 90) { continue }
             var item = history[id] ?? ChatItem(id: id, path: tPath, cwd: cwd, mtime: 0, size: 0, title: "", lastPrompt: "", tool: "antigravity")
             item.path = tPath
             item.mtime = mtime
@@ -3369,8 +3477,9 @@ final class RadarEngine {
             guard !cwd.isEmpty else { return true }
             present.insert(id)
             let mtime = max(Double(col(7)) ?? 0, st.mtime)
-            if let old = history[id], old.mtime == mtime, old.size == Int(st.size) { return true }
             let title = [col(3), col(4), col(5)].first { !$0.isEmpty } ?? ""
+            // Codex's /rename sets `name` without moving the times: the title is compared too.
+            if let old = history[id], old.mtime == mtime, old.size == Int(st.size), old.title == clip(title, 90) { return true }
             let prompt = col(6).isEmpty ? col(5) : col(6)
             history[id] = ChatItem(id: id, path: path, cwd: URL(fileURLWithPath: cwd).standardizedFileURL.path, mtime: mtime, size: Int(st.size),
                                    title: clip(title, 90), lastPrompt: clip(prompt, 160), tool: "codex")
@@ -3433,15 +3542,26 @@ final class RadarEngine {
             if from > 0, !parts.isEmpty { parts.removeFirst() }
             return parts.map { Data($0) }
         }
-        func scan(_ ls: [Data]) {
+        var customSeen = false
+        let path = item.path, id = item.id
+        func scan(_ ls: [Data], tail: Bool) {
             for line in ls.reversed() {
-                if !item.title.isEmpty, !item.lastPrompt.isEmpty, !item.cwd.isEmpty { return }
+                if !item.title.isEmpty, !item.lastPrompt.isEmpty, !item.cwd.isEmpty, customSeen { return }
                 let head = line.prefix(800)
-                let isTitle = head.range(of: Data("\"type\":\"ai-title\"".utf8)) != nil
-                let isPrompt = head.range(of: Data("\"type\":\"last-prompt\"".utf8)) != nil
+                let isCustom = head.range(of: Data("\"type\":\"custom-title\"".utf8)) != nil
+                if isCustom, !customSeen, let rec = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
+                   let t = rec["customTitle"] as? String, !t.isEmpty {
+                    item.title = clip(t, 90)
+                    // The newest name only (the head's may be an old one): against a name typed here, dated by the file.
+                    if tail { ChatNames.noteCustom(id, t) { Self.renamedAt(path, t, until: $0) } }
+                    customSeen = true
+                    continue
+                }
+                let isTitle = item.title.isEmpty && head.range(of: Data("\"type\":\"ai-title\"".utf8)) != nil
+                let isPrompt = item.lastPrompt.isEmpty && head.range(of: Data("\"type\":\"last-prompt\"".utf8)) != nil
                 let hasCwd = item.cwd.isEmpty && head.range(of: Data("\"cwd\":\"".utf8)) != nil
                 guard isTitle || isPrompt || hasCwd, let rec = try? JSONSerialization.jsonObject(with: line) as? [String: Any] else { continue }
-                if isTitle, item.title.isEmpty, let t = rec["aiTitle"] as? String { item.title = clip(t, 90) }
+                if isTitle, item.title.isEmpty, !customSeen, let t = rec["aiTitle"] as? String { item.title = clip(t, 90) }
                 if isPrompt, item.lastPrompt.isEmpty, let p = rec["lastPrompt"] as? String { item.lastPrompt = clip(p, 160) }
                 if item.cwd.isEmpty, let c = rec["cwd"] as? String { item.cwd = c }
             }
@@ -3472,9 +3592,54 @@ final class RadarEngine {
                 }
             }
         }
-        scan(lines(from: size > 96 << 10 ? size - (96 << 10) : 0, count: 96 << 10))
+        scan(lines(from: size > 96 << 10 ? size - (96 << 10) : 0, count: 96 << 10), tail: true)
         if item.title.isEmpty && item.lastPrompt.isEmpty, size > 96 << 10 {
-            scan(lines(from: 0, count: 96 << 10))
+            scan(lines(from: 0, count: 96 << 10), tail: false)
         }
+    }
+
+    /// When a Claude chat got its newest /rename name `value`, to weigh it against a name typed here (ChatNames.noteCustom).
+    /// Claude writes the name as a record with no time, then the /rename command's own record with one, and the name again on
+    /// every turn after: the earliest record of the newest run of that name is the rename, and the first time written after
+    /// it dates it (the file's last change when none is). Read backward from the end a MB at a time, and only asked for when a
+    /// name typed here (with its time) meets a name not seen before; it stops at a record of the name older than `until` (the
+    /// typed name is the newer then). Nil when the file can't be read or `value` isn't its newest.
+    private static func renamedAt(_ path: String, _ value: String, until: Double) -> Double? {
+        guard let st = fileStat(path), let fh = FileHandle(forReadingAtPath: path) else { return nil }
+        defer { try? fh.close() }
+        let nameKey = Data("\"type\":\"custom-title\"".utf8), timeKey = Data("\"timestamp\":\"".utf8)
+        func time(_ head: Data?) -> Double {
+            let s = head.map { String(decoding: $0, as: UTF8.self) } ?? ""
+            guard let r = s.range(of: #""timestamp":"\d{4}-\d\d-\d\dT[^"]+""#, options: .regularExpression) else { return st.mtime }
+            let t = parseISO(String(s[r].dropFirst(13).dropLast()))
+            return t > 0 ? t : st.mtime
+        }
+        var end = st.size, carry = Data()
+        var newest = false, renamed = st.mtime
+        // The head of the nearest record after the one at hand that has a time.
+        var timed: Data?
+        scan: while end > 0 {
+            let start = end > 1 << 20 ? end - (1 << 20) : 0
+            try? fh.seek(toOffset: start)
+            guard let chunk = try? fh.read(upToCount: Int(end - start)), !chunk.isEmpty else { return nil }
+            // The piece before the chunk's first newline is the end of a line that begins further back: it goes with the next.
+            var parts = (chunk + carry).split(separator: 10, omittingEmptySubsequences: false)
+            carry = start > 0 ? Data(parts.removeFirst()) : Data()
+            for line in parts.reversed() where !line.isEmpty {
+                let head = line.prefix(4096)
+                if head.prefix(200).range(of: nameKey) != nil {
+                    guard let rec = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any],
+                          let t = rec["customTitle"] as? String, !t.isEmpty else { continue }
+                    if t != value { break scan }
+                    newest = true
+                    renamed = time(timed)
+                    if renamed < until { break scan }
+                } else if head.range(of: timeKey) != nil {
+                    timed = head
+                }
+            }
+            end = start
+        }
+        return newest ? renamed : nil
     }
 }

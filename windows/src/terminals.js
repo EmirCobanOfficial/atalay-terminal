@@ -56,7 +56,7 @@ const commandLine = (file, args) =>
  * as ChatTerminal.swift has it: started with `npm start` from a Claude session's shell or from Windows Terminal, the
  * app would otherwise hand those on to every chat.
  */
-function childEnvironment(extraPath) {
+function childEnvironment(extraPath, accountDir) {
   const env = {};
   for (const [k, v] of Object.entries(process.env)) {
     // Codex's tool environment too (the app started from a Codex command): NO_COLOR turned every chat's Claude white. What
@@ -80,7 +80,24 @@ function childEnvironment(extraPath) {
   // clearing the screen, which takes the top of a long conversation out of the terminal's scrollback. A user who chose
   // the classic one (/tui default) keeps it.
   if (claudeTUI() !== 'default') env.CLAUDE_CODE_NO_FLICKER = '1';
+  // Another Claude account's terminal (claudeaccounts.js): its folder, and no key or token of the environment, which would
+  // override the account's own sign-in. The default account's terminals are as they always were.
+  if (accountDir) {
+    for (const k of Object.keys(env)) if (/^(ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN|CLAUDE_CONFIG_DIR)$/i.test(k)) delete env[k];
+    env.CLAUDE_CONFIG_DIR = accountDir;
+  }
   return { ...env, TERM: 'xterm-256color', COLORTERM: 'truecolor', TERM_PROGRAM: 'Orbiterm' };
+}
+
+/**
+ * What goes before `claude` on its own command line for another account (the shell's rc and PowerShell profile run after the
+ * app's environment, and may set their own): its folder, and no key or token. Nothing for the default account.
+ */
+function accountPrefix(dir) {
+  if (!dir) return '';
+  return WIN
+    ? `Remove-Item Env:ANTHROPIC_API_KEY, Env:ANTHROPIC_AUTH_TOKEN -ErrorAction SilentlyContinue; $env:CLAUDE_CONFIG_DIR = ${quote(dir)}; `
+    : `env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN CLAUDE_CONFIG_DIR=${quote(dir)} `;
 }
 
 /** The renderer the user picked in Claude Code (`/tui`, "tui" in its settings.json): "fullscreen", "default" or null. */
@@ -101,6 +118,8 @@ function claudeTUI() {
  */
 function createTerminals({ onData, onExit, host, extraPath }) {
   const all = new Map(); // id -> { cwd, claude, title, pid, startedAt, lastIO, pty (only when it runs in the app) }
+  // Host sessions a restart gave up on (restart below): the pane was already told it ended, so their late end is not told again.
+  const gaveUp = new Set();
   const shell = shellFor();
   let link = null;
   const ready = !host
@@ -114,6 +133,9 @@ function createTerminals({ onData, onExit, host, extraPath }) {
             onData(id, data);
           });
           l.on('exit', (id, code) => {
+            const t = all.get(id);
+            if (t && t.restart) return again(id, t);
+            if (gaveUp.delete(id) && !t) return;
             all.delete(id);
             onExit(id, code);
           });
@@ -137,20 +159,46 @@ function createTerminals({ onData, onExit, host, extraPath }) {
 
   function spawnHere(id, t, args, cols, rows) {
     if (!pty) throw new Error('node-pty is not available');
-    const p = pty.spawn(shell.file, args, { name: 'xterm-256color', cols, rows, cwd: t.cwd, env: childEnvironment(extraPath), useConpty: true });
+    const p = pty.spawn(shell.file, args, { name: 'xterm-256color', cols, rows, cwd: t.cwd, env: childEnvironment(extraPath, t.accountDir), useConpty: true });
     t.pty = p;
     t.pid = p.pid;
     p.onData((data) => {
+      // A process a restart already replaced (it didn't end in time): what it still prints is not the pane's any more.
+      if (t.replaced) return;
       t.lastIO = Date.now();
       onData(id, data);
     });
     p.onExit(({ exitCode }) => {
+      // Its late end, after the pane went on with a new process: the new one's record stays, nobody is told.
+      if (t.replaced) return;
+      if (t.restart && all.get(id) === t) return again(id, t);
       all.delete(id);
       onExit(id, exitCode);
     });
   }
 
-  return {
+  // The old process of a pane that goes on with another Claude account is gone: the same terminal starts again with the new
+  // environment (the window and its id stay; nobody is told that the old one ended).
+  function again(id, t) {
+    const r = t.restart;
+    t.restart = null;
+    t.replaced = true;
+    all.delete(id);
+    onData(id, '\r\n');
+    const { done, ...rest } = r;
+    api.spawn({ id, ...rest }).then(() => {
+      // The window's size now, should it have changed while the new process was being started.
+      const n = all.get(id);
+      if (n && (n.cols !== rest.cols || n.rows !== rest.rows)) api.resize(id, n.cols, n.rows);
+      if (typeof done === 'function') done();
+    }, (e) => {
+      if (typeof done === 'function') done();
+      onData(id, `\r\n\x1b[31m${e.message}\x1b[0m\r\n`);
+      onExit(id, 1);
+    });
+  }
+
+  const api = {
     available: !!pty || !!host,
     /** Whether the sessions go on when the app quits (they're in the session host). */
     get persistent() {
@@ -162,17 +210,20 @@ function createTerminals({ onData, onExit, host, extraPath }) {
      * "cursor-agent": a saved conversation of theirs, resumed); without, it's a plain terminal. `title` goes with it, for
      * its window after a restart. Known at once (`has`); its process a moment later.
      */
-    spawn({ id, cwd, claudeArgs, cols = 100, rows = 30, title }) {
+    spawn({ id, cwd, claudeArgs, cols = 100, rows = 30, title, account }) {
       const dir = cwd && fs.existsSync(cwd) ? cwd : os.homedir();
-      const cmdParts = claudeArgs ? (['agy', 'codex', 'cursor-agent'].includes(claudeArgs[0]) ? claudeArgs : ['claude', ...claudeArgs]) : null;
-      const args = cmdParts ? shell.run(cmdParts.map((a, i) => (i ? quote(a) : a)).join(' ')) : shell.args;
-      const t = { cwd: dir, claude: !!claudeArgs, title, pid: null, startedAt: Date.now(), lastIO: Date.now(), pty: null };
+      const isClaude = !!claudeArgs && !['agy', 'codex', 'cursor-agent'].includes(claudeArgs[0]);
+      const cmdParts = claudeArgs ? (isClaude ? ['claude', ...claudeArgs] : claudeArgs) : null;
+      // `account`: { id, dir } of another Claude account (dir null: the default one).
+      const accountDir = account && account.dir ? account.dir : null;
+      const args = cmdParts ? shell.run((isClaude ? accountPrefix(accountDir) : '') + cmdParts.map((a, i) => (i ? quote(a) : a)).join(' ')) : shell.args;
+      const t = { cwd: dir, claude: !!claudeArgs, title, pid: null, startedAt: Date.now(), lastIO: Date.now(), pty: null, account: account ? account.id : null, accountDir, cols, rows };
       all.set(id, t);
       return ready.then(async () => {
         if (!link) return spawnHere(id, t, args, cols, rows);
         const r = await link.request({
-          t: 'spawn', id, cmd: commandLine(shell.file, args), cwd: dir, env: childEnvironment(extraPath), cols, rows,
-          meta: JSON.stringify({ cwd: dir, claude: t.claude, title }),
+          t: 'spawn', id, cmd: commandLine(shell.file, args), cwd: dir, env: childEnvironment(extraPath, accountDir), cols, rows,
+          meta: JSON.stringify({ cwd: dir, claude: t.claude, title, account: t.account }),
         });
         if (r.t !== 'spawned') {
           all.delete(id);
@@ -192,7 +243,7 @@ function createTerminals({ onData, onExit, host, extraPath }) {
         try {
           meta = JSON.parse(s.meta || '{}');
         } catch {}
-        const t = { cwd: meta.cwd || os.homedir(), claude: !!meta.claude, title: meta.title, pid: s.pid, startedAt: s.startedAt || Date.now(), lastIO: Date.now(), pty: null };
+        const t = { cwd: meta.cwd || os.homedir(), claude: !!meta.claude, title: meta.title, pid: s.pid, startedAt: s.startedAt || Date.now(), lastIO: Date.now(), pty: null, account: typeof meta.account === 'string' ? meta.account : null, accountDir: null };
         all.set(s.id, t);
         found.push({ id: s.id, ...t });
       }
@@ -225,8 +276,54 @@ function createTerminals({ onData, onExit, host, extraPath }) {
     resize(id, cols, rows) {
       const t = all.get(id);
       if (!t || !(cols > 0 && rows > 0)) return;
+      t.cols = cols;
+      t.rows = rows;
+      // A restart under way (another account): the new process starts at this size, not the one taken when it was asked
+      // for. The switch's note bar comes up meanwhile and takes a row; Claude started a row too tall drew its prompt below
+      // the window's last line.
+      if (t.restart) {
+        t.restart.cols = cols;
+        t.restart.rows = rows;
+      }
       if (t.pty) t.pty.resize(cols, rows);
       else if (link) link.send({ t: 'resize', id, cols, rows });
+    },
+    /**
+     * Goes on in the same terminal (same id, same window) with another Claude account: what runs in it is hung up, and a new
+     * shell starts with `claudeArgs` ([..., '--resume', sid]) and the account's environment. Only ever called for a click of
+     * the user's. Returns false when there is no such terminal.
+     */
+    restart(id, { claudeArgs, account, done }) {
+      const t = all.get(id);
+      if (!t || t.restart || (!t.pty && !link)) return false;
+      t.restart = { cwd: t.cwd, claudeArgs, account, cols: t.cols || 100, rows: t.rows || 30, title: t.title, done };
+      if (t.pty) {
+        try {
+          t.pty.kill();
+        } catch {}
+      } else link.send({ t: link.canEnd ? 'end' : 'kill', id });
+      const waiting = () => all.get(id) === t && !!t.restart;
+      // Safety: an exit that never comes would leave the pane dead.
+      setTimeout(() => {
+        if (!waiting()) return;
+        // In the app: the new shell starts anyway; the old process is marked replaced (again), so its late end and output
+        // are ignored and can't take the new one's record.
+        if (t.pty) return again(id, t);
+        // In the session host the pane's id is the session's, so a new one can't start until the old one has ended: it is
+        // ended hard, then given 5 s more. Still there, the pane ends with a line that says so (and its late end is ignored).
+        if (link) link.send({ t: 'kill', id });
+        setTimeout(() => {
+          if (!waiting()) return;
+          const r = t.restart;
+          t.restart = null;
+          all.delete(id);
+          gaveUp.add(id);
+          if (typeof r.done === 'function') r.done();
+          onData(id, "\r\n\x1b[31mThe old terminal didn't stop, so it couldn't start again with the other account.\x1b[0m\r\n");
+          onExit(id, 1);
+        }, 5000).unref?.();
+      }, 10_000).unref?.();
+      return true;
     },
     kill(id) {
       const t = all.get(id);
@@ -272,9 +369,10 @@ function createTerminals({ onData, onExit, host, extraPath }) {
     cwds: () => [...new Set([...all.values()].map((t) => t.cwd))],
     /** Typed in or printed to lately: a sign of work, for the active time (XP). */
     busySince: (ms) => [...all.values()].some((t) => Date.now() - t.lastIO < ms),
-    list: () => [...all.entries()].map(([id, t]) => ({ id, cwd: t.cwd, claude: t.claude, pid: t.pid, startedAt: t.startedAt })),
+    list: () => [...all.entries()].map(([id, t]) => ({ id, cwd: t.cwd, claude: t.claude, pid: t.pid, startedAt: t.startedAt, account: t.account || null })),
   };
+  return api;
 }
 
 // childEnvironment too: notesai.js runs the AI tools' own `mcp add` with it.
-module.exports = { createTerminals, which, childEnvironment };
+module.exports = { createTerminals, which, childEnvironment, quote, accountPrefix };

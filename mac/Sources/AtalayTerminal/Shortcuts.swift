@@ -39,6 +39,8 @@ enum Shortcuts {
         Action(id: "previousTab", group: "Tabs and panes", title: "Previous tab", combo: "shift+cmd+["),
         Action(id: "moveTabLeft", group: "Tabs and panes", title: "Move the tab left", combo: "opt+shift+cmd+["),
         Action(id: "moveTabRight", group: "Tabs and panes", title: "Move the tab right", combo: "opt+shift+cmd+]"),
+        Action(id: "moveTabToNewWindow", group: "Tabs and panes", title: "Move the tab to a new window", combo: ""),
+        Action(id: "mergeAllWindows", group: "Tabs and panes", title: "Merge all windows", combo: ""),
         Action(id: "nextPane", group: "Tabs and panes", title: "Next pane", combo: "cmd+]"),
         Action(id: "previousPane", group: "Tabs and panes", title: "Previous pane", combo: "cmd+["),
         Action(id: "paneAbove", group: "Tabs and panes", title: "Pane above", combo: "opt+cmd+up"),
@@ -355,6 +357,8 @@ final class KeysBridge: NSObject, WKScriptMessageHandlerWithReply {
                 replyHandler(Shortcuts.state(), nil)
             default: replyHandler(nil, "unknown request")
             }
+            // The chats list's fold bar names ⌘B's keys (`chatsKey` in its snapshot): a new set goes to it at once.
+            if ["set", "reset"].contains(body["type"] as? String ?? "") { MainWindowController.shared?.pushChats() }
         }
     }
 }

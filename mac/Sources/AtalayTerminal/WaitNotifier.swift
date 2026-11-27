@@ -8,7 +8,6 @@ final class WaitNotifier {
     static let shared = WaitNotifier()
 
     /// The name the chat list shows for a chat (a renamed one's own).
-    var titleOf: ((SessionBrief) -> String)?
     /// What each waiting chat waits for, as last seen.
     private var waits: [String: String] = [:]
     /// Chats with a notice in the corner.
@@ -54,7 +53,7 @@ final class WaitNotifier {
         // Streamer mode: the made-up names the dashboard shows.
         let streamer = Streamer.on
         let folder = streamer ? Streamer.project(b.cwd) : (b.cwd as NSString).lastPathComponent
-        let real = titleOf?(b) ?? b.title
+        let real = b.title
         let name = streamer && !real.isEmpty ? Streamer.fake("title", real) : real
         let tool = b.id.hasPrefix("ai:") ? "\(b.name) · " : ""
         let what = b.waitingFor.flatMap { $0.isEmpty ? nil : streamer ? Streamer.fake("wait", $0) : $0 } ?? "waiting for your approval"

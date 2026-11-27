@@ -9,15 +9,15 @@
 .pl-panel.pl-hidden, .pl-panel.pl-dragging { display: none !important; }
 
 /* the page's parts' sizes, when one was dragged */
-#app.lay-w { grid-template-columns: 48px var(--lay-sess, minmax(250px, 21%)) minmax(0, 1fr) var(--lay-right, minmax(270px, 23%)); }
+#app.lay-w { grid-template-columns: 48px var(--lay-sess, minmax(17.5rem, 22%)) minmax(0, 1fr) var(--lay-right, minmax(270px, 23%)); }
 #app.lay-h { grid-template-rows: auto minmax(0, 1fr) var(--lay-bottom, minmax(176px, 27vh)) 22px; }
 @media (max-width: 1250px) {
-  #app.lay-w { grid-template-columns: 48px var(--lay-sess, minmax(230px, 26%)) minmax(0, 1fr) var(--lay-right, minmax(240px, 26%)); }
+  #app.lay-w { grid-template-columns: 48px var(--lay-sess, minmax(230px, 26%)) minmax(0, 1fr) var(--lay-right, minmax(240px, 24%)); }
 }
 /* every panel hidden from the column or the row: the map (and the column) take its room */
 #app.no-right #right, #app.no-bottom #bottom { display: none; }
 #app.no-right #mapwrap { grid-column: 3 / -1; }
-#app.no-bottom #sessions, #app.no-bottom #mapwrap, #app.no-bottom #right { grid-row: 2 / 4; }
+#app.no-bottom #mapwrap, #app.no-bottom #right { grid-row: 2 / 4; }
 
 /* the lines between panels */
 .pl-sash { position: relative; flex: none; z-index: 2; }
@@ -71,11 +71,17 @@ body:has(#app.pl-cols) { cursor: col-resize; }
 
 /* one column (a narrow window): the page's own layout, nothing to drag */
 @media (max-width: 920px) {
-  #app.lay-w, #app.lay-h { grid-template-columns: 1fr; grid-template-rows: auto; }
+  #app.lay-w, #app.lay-h { grid-template-columns: 48px minmax(0, 1fr); grid-template-rows: auto; }
+  /* a view in the dashboard's place (Source Control, friends, the board…): the window's height, beside the activity
+     bar, as in the full layout; nothing of the page to scroll past */
+  #app.git-mode, #app.cloud-mode { height: 100vh; grid-template-rows: auto minmax(0, 1fr) 22px; }
+  #app.git-mode #activity, #app.cloud-mode #activity { grid-row: 2; position: relative; top: auto; height: auto; align-self: stretch; }
+  #app.git-mode #git, #app.cloud-mode .cv { grid-row: 2; }
+  body:has(#app.git-mode, #app.cloud-mode) { overflow: hidden; }
   #right, #bottom { flex-direction: column; }
   #right > .pl-panel, #bottom > .pl-panel { flex: none !important; }
   .pl-sash, .pl-gsash { display: none !important; }
   .pl-panel > header { cursor: default; }
-  #app.no-right #mapwrap { grid-column: 1; }
-  #app.no-bottom #sessions, #app.no-bottom #mapwrap, #app.no-bottom #right { grid-row: auto; }
+  #app.no-right #mapwrap { grid-column: 2; }
+  #app.no-bottom #chats, #app.no-bottom #mapwrap, #app.no-bottom #right { grid-row: auto; }
 }

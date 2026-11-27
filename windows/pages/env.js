@@ -16,8 +16,15 @@
   btn.id = 'envbtn';
   btn.type = 'button';
   btn.textContent = 'env';
-  btn.title = 'The env files in this folder and the ones in it (Ctrl+Shift+E)';
   btn.setAttribute('aria-label', 'Env files');
+  // Its tooltip, the Mac's: in a split pane's slim strip (Panes.swift's env button) always the files and whether they hold
+  // changes not saved; on the full strip (the HUD's) "Back to the terminal" while the view is open.
+  const tipBtn = () => {
+    const open = !!S && !document.body.classList.contains('pane-split');
+    btn.title = open ? 'Back to the terminal (Ctrl+Shift+E)'
+      : `The env files in this folder and the ones in it: open one to edit or copy from it (Ctrl+Shift+E).${S && S.dirty ? ' It has changes not saved.' : ''}`;
+  };
+  atl.on('term:pane', tipBtn);
   hud.insertBefore(btn, document.getElementById('pin') || document.getElementById('star') || document.getElementById('end'));
 
   const view = document.createElement('section');
@@ -30,6 +37,7 @@
 
   // ---------- state (the Mac's EnvModel) ----------
   let S = null; // null: the view is closed
+  tipBtn();
   let streamer = false;
   let closeKeys = (window.__keys && window.__keys.closePane) || 'ctrl+w';
   let nextId = 1;
@@ -91,6 +99,7 @@
   let toldDirty = false;
   function tellDirty() {
     btn.classList.toggle('dirty', !!(S && S.dirty));
+    tipBtn();
     const on = !!(S && S.dirty && !S.locked);
     if (on === toldDirty) return;
     toldDirty = on;
@@ -110,6 +119,9 @@
   async function open() {
     S = fresh();
     btn.classList.add('on');
+    tipBtn();
+    // The window's bar over a split has an env button too (pages/tabs.js): it shows pressed while this view is open.
+    ask({ type: 'open', on: true }).catch(() => {});
     view.hidden = false;
     document.body.classList.add('env-open');
     render();
@@ -207,6 +219,7 @@
     view.innerHTML = '';
     document.body.classList.remove('env-open');
     btn.classList.remove('on');
+    ask({ type: 'open', on: false }).catch(() => {});
     tellDirty();
     // Back to the terminal, which has the keys again.
     window.dispatchEvent(new Event('focus'));

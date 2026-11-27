@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 
 /// The single main screen: the live dashboard (plus an optional chats list). Every chat opens in its
@@ -20,15 +21,17 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private var lastWinOpen = ""
     /// The terminal window/pane the user touched last: its chat is the one the sidebar marks.
     private var activeTerminalWindow: String?
-    private var split: ThemedSplitView!
-    private var sidebarHost: NSView!
-    /// The chat list's narrowest width and the width it opens at (the one it had when it closed).
-    private var sidebarMin: NSLayoutConstraint!
-    private var sidebarPreferred: NSLayoutConstraint!
-    private var sidebarSliding = false
-    /// The dark cover on the chat list while a menu is open on the dashboard: the page's own backdrop ends at its edge.
-    private var sidebarDim: NSView?
-    /// A menu is open on the dashboard (so a chat list opened meanwhile must be dimmed too).
+    /// The chats list is a panel of the dashboard's page (web/chats.js): its list is pushed from `sidebar` (a change, debounced),
+    /// and ⌘B folds its saved chats there.
+    private var chatsPush: [AnyCancellable] = []
+    private var chatsJSON = ""
+    private var chatsBridge: ChatsBridge?
+    /// The page's top bar (its CSS px): the traffic lights sit in its middle.
+    private var topBar: (top: Double, h: Double)?
+    /// AppKit lays the title bar out again by itself (a resize, a key change): its frame is watched to put the lights back.
+    private var titlebarObserver: NSObjectProtocol?
+    private var placingLights = false
+    /// A menu is open on the dashboard.
     private var modalOpen = false
     private var frameObserver: NSObjectProtocol?
     private var fontSize: CGFloat
@@ -48,8 +51,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         // Until the user picks a size here, their iTerm2 one.
         fontSize = saved >= 9 ? CGFloat(saved) : ITermLook.current?.fontSize ?? 13
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1480, height: 900),
-                              styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+                              styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
         window.title = "Orbiterm"
+        // The title bar is the page's top bar: its content runs under it, the traffic lights sit in the bar (positionTrafficLights).
+        window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.backgroundColor = Theme.bg
         window.appearance = NSAppearance(named: .darkAqua)
@@ -77,8 +82,17 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         WorktreeShip.shared.manager = self
         buildLayout()
         wireEngine()
-        WaitNotifier.shared.titleOf = { [weak self] b in self?.sidebar.customTitles[b.id] ?? b.title }
-        MessagePanel.onOpenWait = { [weak self] sid in self?.openFromNotice(sid) }
+        sidebar.onRenamed = { [weak self] id in self?.chatRenamed(id) }
+        // The AI's own /rename, newer than a name typed here: the typed one is dropped (ChatNames.noteCustom).
+        NotificationCenter.default.addObserver(forName: ChatNames.superseded, object: nil, queue: .main) { [weak self] n in
+            MainActor.assumeIsolated {
+                // Not a name typed again meanwhile.
+                guard let self, let id = n.object as? String, self.sidebar.customTitles[id] == n.userInfo?["name"] as? String else { return }
+                self.sidebar.customTitles[id] = nil
+                self.chatRenamed(id)
+            }
+        }
+                MessagePanel.onOpenWait = { [weak self] sid in self?.openFromNotice(sid) }
         runaways.onChange = { [weak self] json in
             self?.radar.push("runaways", json)
             MessagePanel.notices.runaways(json)
@@ -130,7 +144,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         root.layer?.backgroundColor = Theme.bg.cgColor
         window.contentView = root
 
-        let side = NSHostingView(rootView: SidebarView(model: sidebar, actions: SidebarActions(
+        let actions = SidebarActions(
             open: { [weak self] in self?.userOpenSession($0) },
             fork: { [weak self] in self?.userOpenSession($0, fork: true) },
             newTerminal: { [weak self] in self?.newTerminal(in: $0) },
@@ -141,48 +155,49 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString($0, forType: .string)
             },
-            delete: { [weak self] in self?.deleteChats($0) },
+            delete: { [weak self] in self?.deleteChats($0) ?? false },
             openTerminal: { [weak self] in self?.openTerminal($0) },
             endTerminal: { [weak self] in self?.endTerminal($0) },
-            openFolder: { [weak self] in self?.openFolder() },
-            close: { [weak self] in self?.toggleSidebar() })))
-        sidebarHost = side
-        ThemeStore.glow(side, on: ThemeStore.shared.glows, soft: true)
+            openFolder: { [weak self] done in self?.openFolder(done: done) ?? done(false) })
+        // The chats list is a panel of the dashboard's page (web/chats.js): the page asks, the bridge does.
+        let bridge = ChatsBridge(model: sidebar, actions: actions)
+        bridge.onReady = { [weak self] in self?.chatsReady() }
+        bridge.onClosed = { on in UserDefaults.standard.set(on, forKey: "sidebarHidden") }
+        chatsBridge = bridge
+        radar.handleChats(bridge)
         radar.handleArchive(ArchiveBridge(model: sidebar))
         radar.handleTrash(TrashBridge(model: sidebar) { [weak self] title, text in
             self?.ask(title, text, ["Delete", "Cancel"], style: .warning) == 0
         })
         // A deleted chat's files are gone: the list is read again now, not at the engine's next look.
         sidebar.onErased = { [weak self] in self?.engine.refreshHistorySoon() }
+        // The list follows its model (and the worktrees' state): pushed to the page a moment after a change.
+        let changed: [AnyPublisher<Void, Never>] = [
+            sidebar.objectWillChange.map { _ in () }.eraseToAnyPublisher(),
+            WorktreeShip.shared.objectWillChange.map { _ in () }.eraseToAnyPublisher(),
+        ]
+        chatsPush = changed.map {
+            $0.debounce(for: .milliseconds(100), scheduler: RunLoop.main).sink { [weak self] in self?.pushChats() }
+        }
 
-        let split = ThemedSplitView()
-        split.isVertical = true
-        split.dividerStyle = .thin
-        split.addArrangedSubview(side)
-        split.addArrangedSubview(radar.webView)
-        split.setHoldingPriority(NSLayoutConstraint.Priority(260), forSubviewAt: 0)
-        split.setHoldingPriority(NSLayoutConstraint.Priority(240), forSubviewAt: 1)
-        self.split = split
-        split.translatesAutoresizingMaskIntoConstraints = false
-        root.addSubview(split)
-        let preferred = side.widthAnchor.constraint(equalToConstant: Self.sidebarWidth)
-        preferred.priority = .defaultLow
-        sidebarPreferred = preferred
-        sidebarMin = side.widthAnchor.constraint(greaterThanOrEqualToConstant: 210)
+        // The page fills the window: the chats list is one of its panels.
+        let web = radar.webView
+        web.translatesAutoresizingMaskIntoConstraints = false
+        root.addSubview(web)
         NSLayoutConstraint.activate([
-            split.topAnchor.constraint(equalTo: root.topAnchor),
-            split.leadingAnchor.constraint(equalTo: root.leadingAnchor),
-            split.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            split.bottomAnchor.constraint(equalTo: root.bottomAnchor),
-            sidebarMin,
-            side.widthAnchor.constraint(lessThanOrEqualToConstant: 460),
-            preferred,
+            web.topAnchor.constraint(equalTo: root.topAnchor),
+            web.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            web.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            web.bottomAnchor.constraint(equalTo: root.bottomAnchor),
         ])
-        // The page centres its menus on the whole window, so it needs the chat list's width (left of it) in its own px.
-        // The dashboard's frame changes whenever the list is dragged, opened or closed, or the window is resized.
+        // The page centres its menus on the whole window, so it needs how far right of the window's edge it starts (nothing
+        // sits left of it now) in its own px; the text size changes the px.
         radar.webView.postsFrameChangedNotifications = true
         frameObserver = NotificationCenter.default.addObserver(forName: NSView.frameDidChangeNotification, object: radar.webView, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.pushSide() }
+            MainActor.assumeIsolated {
+                self?.pushSide()
+                self?.positionTrafficLights()
+            }
         }
         radar.onMessage = { [weak self] in self?.handleRadar($0) }
         Cloud.shared.onChange = { [weak self] _ in
@@ -237,7 +252,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             self?.radar.push("openDanger", "null")
         }
         MessagePanel.onEndRunaway = { [weak self] pid, started in self?.runaways.end(pid: pid, started: started) }
-        if UserDefaults.standard.bool(forKey: "sidebarHidden") { side.isHidden = true }
+        // Fire back (or its Cancel) pressed on the card or in a chat: the dashboard page presses its own 🚀 for that friend.
+        MessagePanel.onAttackFire = { [weak self] id in
+            self?.radar.callNotes("window.Attack && Attack.press && Attack.press(id); return true", ["id": id])
+        }
+        MessagePanel.onAttackCancel = { [weak self] id in
+            self?.radar.callNotes("window.Attack && Attack.cancelFor && Attack.cancelFor(id); return true", ["id": id])
+        }
     }
 
     // MARK: engine
@@ -265,7 +286,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             for c in chats.values { c.stepBack() }
             MessagePanel.stepAside(false)
             NoteWindow.stepAside(false)
-            dimSidebar(false)
             modalOpen = false
             // A reloaded page starts its feed over: lines from the old one would never dissolve.
             FeedPanel.clearIfCreated()
@@ -279,6 +299,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             terminalsJSON = ""
             pushTerminals()
             radar.push("runaways", runaways.json)
+            // The chats list's panel draws once the page's script is up (this is its "ready").
+            chatsReady()
             Cleanup.shared.viewChanged(open: false)
             Cleanup.shared.pushPrefs()
             MemoryWatch.shared.pushMemory(force: true)
@@ -319,9 +341,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             for c in chats.values { open ? c.stepAside() : c.stepBack() }
             MessagePanel.stepAside(open)
             NoteWindow.stepAside(open)
-            // Here and not with --side-x: this message comes once the box is drawn, and moving it then would make it jump.
             modalOpen = open
-            dimSidebar(open)
         // Streamer mode (the switch on the map): the chats list and the chat windows show made-up names too.
         case "streamer":
             let on = msg["on"] as? Bool == true
@@ -340,6 +360,33 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         // A note hidden from AI or shown again (the dashboard's page): its window, if out, is told.
         case "noteAiHidden": if let id = msg["id"] as? String { NoteWindow.setAiHidden(id: id, on: msg["on"] as? Bool == true) }
         case "log": NSLog("dashboard page: %@", String(describing: msg["msg"] ?? ""))
+        // The window has no title bar of its own: the page's top bar is it. Its height (CSS px) places the traffic lights, and a
+        // press on its empty part drags the window.
+        case "topBar":
+            if let top = (msg["top"] as? NSNumber)?.doubleValue, let h = (msg["h"] as? NSNumber)?.doubleValue {
+                topBar = (top, h)
+                positionTrafficLights()
+            }
+        case "dragWindow":
+            guard let w = window, let event = NSApp.currentEvent, event.type == .leftMouseDown, event.window === w else { return }
+            // Terminals still free since a minimize join first, so they ride this drag (only those it moves nothing for).
+            rejoinRiders()
+            w.performDrag(with: event)
+            // The release of that press goes to the drag, not the page: it gets one, or it would go on as a held button (a
+            // move would select the bar's text).
+            if let up = NSEvent.mouseEvent(with: .leftMouseUp, location: event.locationInWindow, modifierFlags: event.modifierFlags,
+                                           timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: w.windowNumber, context: nil,
+                                           eventNumber: event.eventNumber, clickCount: event.clickCount, pressure: 0) {
+                radar.webView.mouseUp(with: up)
+            }
+        // A double-click on it, as on the title bar it replaces: what System Settings › Desktop & Dock says one does (zoom).
+        case "titleDoubleClick":
+            guard let w = window, !w.styleMask.contains(.fullScreen) else { return }
+            switch UserDefaults.standard.string(forKey: "AppleActionOnDoubleClick") {
+            case "Minimize": w.miniaturize(nil)
+            case "None": break
+            default: w.zoom(nil)
+            }
         // Two chats began (or stopped) writing the same file (files.heat): the corner's notice.
         case "clash":
             guard let key = msg["key"] as? String, !key.isEmpty else { return }
@@ -348,6 +395,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         case "clashOver": if let key = msg["key"] as? String { MessagePanel.notices.clashOver(key) }
         // A friend's spaceship attack (attack.js): its DANGER banner, over whatever is in front.
         case "attack": MessagePanel.notices.attack(msg)
+        // The 🚀 button's state for a friend (attack.js): the who-fired-at-me card and the chats draw Fire back from it.
+        case "attackBtn": MessagePanel.attackBtn(msg)
         // The community feed's lines (community.js decides; the panel at the screen's corner draws).
         case "feedLine":
             guard let id = msg["id"] as? String, let kind = msg["kind"] as? String, let html = msg["html"] as? String else { return }
@@ -394,28 +443,117 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         Mascot.shared.refreshPlatforms()
     }
 
-    /// Darkens the chat list as the page's backdrop darkens the dashboard (cloud.css #cloudui), so the open menu is the
-    /// one thing in front. It also takes the list's clicks, which a menu over the whole window would.
-    private func dimSidebar(_ on: Bool) {
-        if !on {
-            sidebarDim?.removeFromSuperview()
-            sidebarDim = nil
-            return
+    // MARK: the chats list (a panel of the page, web/chats.js)
+
+    /// The list as the page draws it, pushed when it changed.
+    func pushChats(force: Bool = false) {
+        let json = sidebar.snapshotJSON()
+        if json == chatsJSON && !force { return }
+        chatsJSON = json
+        radar.push("chats", json)
+    }
+
+    /// The page (a load or a reload) asked for its list: the list, and whether its saved chats are folded (⌘B).
+    private func chatsReady() {
+        pushChats(force: true)
+        radar.push("chatsFold", UserDefaults.standard.bool(forKey: "sidebarHidden") ? "true" : "false")
+        pushFullScreen()
+    }
+
+    /// Full screen has no traffic lights in the top bar (they come down with the menu bar): the page drops their room.
+    private func pushFullScreen() {
+        let on = window?.styleMask.contains(.fullScreen) == true
+        radar.webView.evaluateJavaScript("document.documentElement.classList.toggle('mac-full', \(on)); true", completionHandler: nil)
+    }
+
+    /// The traffic lights in the middle of the page's top bar (the window has no title bar of its own), 21 px from the left
+    /// as the mock has them. AppKit lays them out again on a resize: this puts them back.
+    func positionTrafficLights() {
+        guard !placingLights, let w = window, !w.styleMask.contains(.fullScreen), let close = w.standardWindowButton(.closeButton),
+              let mini = w.standardWindowButton(.miniaturizeButton), let zoom = w.standardWindowButton(.zoomButton),
+              let container = close.superview?.superview, let bar = topBar else { return }
+        placingLights = true
+        defer { placingLights = false }
+        if titlebarObserver == nil {
+            container.postsFrameChangedNotifications = true
+            titlebarObserver = NotificationCenter.default.addObserver(forName: NSView.frameDidChangeNotification, object: container, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.positionTrafficLights() }
+            }
         }
-        // A hidden list keeps its old frame: a cover on it would darken the dashboard's edge instead.
-        guard sidebarDim == nil, !sidebarHost.isHidden, let root = window?.contentView else { return }
-        let dim = NSView()
-        dim.wantsLayer = true
-        dim.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.4).cgColor
-        dim.translatesAutoresizingMaskIntoConstraints = false
-        root.addSubview(dim, positioned: .above, relativeTo: split)
-        NSLayoutConstraint.activate([
-            dim.leadingAnchor.constraint(equalTo: sidebarHost.leadingAnchor),
-            dim.trailingAnchor.constraint(equalTo: sidebarHost.trailingAnchor),
-            dim.topAnchor.constraint(equalTo: sidebarHost.topAnchor),
-            dim.bottomAnchor.constraint(equalTo: sidebarHost.bottomAnchor),
-        ])
-        sidebarDim = dim
+        let z = Double(radar.webView.pageZoom)
+        // Where the bar's middle is, from the window's top, in points.
+        let middle = CGFloat((bar.top + bar.h / 2) * z)
+        let height = max(28, (middle * 2).rounded())
+        let frameHeight = container.superview?.frame.height ?? w.frame.height
+        if abs(container.frame.height - height) > 0.5 || abs(container.frame.minY - (frameHeight - height)) > 0.5 {
+            container.frame = NSRect(x: container.frame.minX, y: frameHeight - height, width: container.frame.width, height: height)
+        }
+        for (i, b) in [close, mini, zoom].enumerated() {
+            let at = NSPoint(x: 20 + CGFloat(i) * 20, y: ((height - b.frame.height) / 2).rounded())
+            if b.frame.origin != at { b.setFrameOrigin(at) }
+        }
+    }
+
+    func windowDidResize(_ notification: Notification) { positionTrafficLights() }
+
+    /// Chat windows ride the dashboard as its child windows, and AppKit takes a minimized parent's children into the Dock
+    /// with it. Minimizing the dashboard must not hide a terminal on screen, so they let go first and stay where they are.
+    private var ridersToRejoin = Set<String>()
+    func windowWillMiniaturize(_ notification: Notification) {
+        guard let dash = window else { return }
+        for (id, c) in chats where c.detachForDashboardMinimize(dash) { ridersToRejoin.insert(id) }
+    }
+
+    func windowDidDeminiaturize(_ notification: Notification) { rejoinRiders() }
+
+    /// The terminals that let go for a minimize ride the dashboard again, each only when that moves nothing. AppKit orders a
+    /// parent and its children as one group, and attaching a child orders that group: pinned the moment the dashboard came
+    /// back from the Dock (Orbiterm not the active app yet, Chrome clicked meanwhile) with the terminal behind Chrome, it took
+    /// the restored dashboard down behind Chrome. So a terminal pins only while Orbiterm is the active app and with no other
+    /// app's window between it and the dashboard: one right under the restored dashboard comes back on top of it, one behind
+    /// another app stays there, free. Those are asked again at the next chance: the app comes forward, the dashboard or a
+    /// terminal gets the keyboard, the dashboard is dragged.
+    @objc func rejoinRiders() {
+        ridersToRejoin = ridersToRejoin.filter { id in
+            guard let c = chats[id], let w = c.window else { return false }
+            // Pinned again some other way (a card, a menu closing, its own Dock trip), closed, or pinned on top: done here.
+            return w.parent == nil && c.isShown && c.hud.attached
+        }
+        guard !ridersToRejoin.isEmpty, NSApp.isActive, let dash = window, dash.isVisible, !dash.isMiniaturized else { return }
+        // An ordering reaches the window server when the run loop turn ends; the list must see this turn's (a click's).
+        CATransaction.flush()
+        let me = Int(ProcessInfo.processInfo.processIdentifier)
+        let info = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+        // The list is one stack for every display, and a terminal rides only on the dashboard's: Chrome used on the other
+        // display meanwhile sat between them and kept a terminal buried under the restored dashboard, though the pin moves
+        // nothing anyone sees there. (Quartz's frames count from the main display's top left, downwards.)
+        let main = NSScreen.screens.first?.frame ?? .zero
+        let display = dash.screen.map { CGRect(x: $0.frame.minX, y: main.maxY - $0.frame.maxY, width: $0.frame.width, height: $0.frame.height) } ?? .infinite
+        // Normal-level windows, front to back, and whether each may sit between a terminal and the dashboard: Orbiterm's, or
+        // another app's that is wholly on another display.
+        let stack = info.filter { $0[kCGWindowLayer as String] as? Int == 0 }.map { w -> (number: Int, ours: Bool) in
+            let bounds = (w[kCGWindowBounds as String] as? NSDictionary).flatMap { CGRect(dictionaryRepresentation: $0 as CFDictionary) } ?? .infinite
+            return (w[kCGWindowNumber as String] as? Int ?? 0, w[kCGWindowOwnerPID as String] as? Int == me || !bounds.intersects(display))
+        }
+        guard let d = stack.firstIndex(where: { $0.number == dash.windowNumber }) else { return }
+        let riders = ridersToRejoin.compactMap { id -> (id: String, chat: ChatWindowController, at: Int)? in
+            guard let c = chats[id], let n = c.window?.windowNumber, let at = stack.firstIndex(where: { $0.number == n }) else { return nil }
+            return (id, c, at)
+        }
+        // Each pin goes on top of the dashboard's other children: back one first, so overlapping terminals keep their stacking.
+        for r in riders.sorted(by: { $0.at > $1.at }) where stack[min(r.at, d) + 1 ..< max(r.at, d)].allSatisfy(\.ours) {
+            if r.chat.repinAfterDashboardRestore() { ridersToRejoin.remove(r.id) }
+        }
+    }
+
+    func windowWillEnterFullScreen(_ notification: Notification) {
+        radar.webView.evaluateJavaScript("document.documentElement.classList.add('mac-full'); true", completionHandler: nil)
+    }
+
+    /// Back from full screen AppKit puts the title bar back as its own: the lights go to the top bar's middle again.
+    func windowDidExitFullScreen(_ notification: Notification) {
+        pushFullScreen()
+        positionTrafficLights()
     }
 
     // MARK: what's new and tips
@@ -573,7 +711,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 }
             }
             _ = Sessions.start(name: e.name, cwd: cwd, claudeArgs: args, fontSize: fontSize, ai: resumed.map { ($0.tool, $0.id) },
-                               history: Detached.takeHistory(e.name), notice: why + what)
+                               history: Detached.takeHistory(e.name), notice: why + what, account: e.account)
             out.append(Detached.RunningSession(name: e.name, sessionId: resumed?.tool == "claude" ? resumed?.id : nil,
                                                claude: resumed?.tool == "claude", cwd: cwd, title: e.title))
         }
@@ -615,7 +753,22 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// Status of each live AI session by its process id (AgyRewind asks whether Antigravity is idle).
     static var aiStatus: [Int32: String] = [:]
 
-    private func apply(_ list: [SessionBrief]) {
+    /// A chat renamed in the sidebar: its windows (header, tab chips, pane bars, Window menu) take the name at once, and a
+    /// name typed by hand for that session's tab gives way to it (the newest rename wins).
+    private func chatRenamed(_ id: String) {
+        // Before the engine's first state there's nothing to show it on (and apply would run pendingOpen on an empty list).
+        guard hasState else { return }
+        // Hand-typed names are kept by the terminal's session name, not the brief's: the AI's own pane, and the tab's first pane.
+        if let b = briefs.values.first(where: { $0.id == id || $0.convId == id }), let pid = b.pid {
+            if let s = Detached.sessionName(hosting: pid) { setTabName(nil, for: s) }
+            for c in chats.values { c.clearTabNames(hosting: pid) }
+        }
+        engine.republishNames()
+        radar.webView.evaluateJavaScript("window.GitView && window.GitView.refresh && window.GitView.refresh(); true", completionHandler: nil)
+    }
+
+    private func apply(_ raw: [SessionBrief]) {
+        let list = raw   // titles already carry the names given in the sidebar (the engine resolves them: ChatNames)
         Self.aiStatus = Dictionary(list.filter(\.live).compactMap { b in b.pid.map { ($0, b.status) } }, uniquingKeysWith: { a, _ in a })
         briefs = Dictionary(list.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         if !hasState {
@@ -625,7 +778,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             DispatchQueue.main.async { [weak self] in open.forEach { self?.openSession($0) } }
         }
         for c in chats.values {
-            let b = list.first(where: { $0.tab == c.id }) ?? c.sessionId.flatMap { briefs[$0] }
+            // After windows merged, several AIs are hosted by one window: the header follows the one under its own shell.
+            // While its own chat goes on under another account (the old Claude left, the new one not up yet), that chat
+            // still, not another pane's.
+            let b = list.first(where: { $0.tab == c.id && ChatWindowController.isUnder($0.pid, shell: c.shellPid) })
+                ?? c.sessionId.flatMap { c.hud.switching[$0] != nil ? briefs[$0] : nil }
+                ?? list.first(where: { $0.tab == c.id }) ?? c.sessionId.flatMap { briefs[$0] }
             c.apply(b)
             c.applyHosted(list.filter { $0.tab == c.id && $0.live })
             WorktreeNudge.review(c, briefs: briefs)
@@ -649,7 +807,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         WaitNotifier.shared.update(live)
         McpHub.shared.update(live)
         DiscordPresence.shared.update(list)
-        if sidebar.briefs != briefs { sidebar.briefs = briefs }
+        // Only what the chats list uses of a session (its state, its host, its conversation, its folder, its title): the rest
+        // (context, cost, tools…) changes many times a second while it works, and each change would rebuild the list's
+        // snapshot (pushChats) for nothing.
+        let listed = { (m: [String: SessionBrief]) in
+            m.mapValues { [$0.status, $0.live ? "live" : "", $0.host ?? "", $0.convId ?? "", $0.cwd, $0.title, $0.name] }
+        }
+        if listed(sidebar.briefs) != listed(briefs) { sidebar.briefs = briefs }
         var open = Set(chats.values.compactMap(\.sessionId))
         for sid in open {
             if let cid = briefs[sid]?.convId { open.insert(cid) }
@@ -842,8 +1006,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     @objc private func themeChanged() {
         window?.backgroundColor = Theme.bg
         window?.contentView?.layer?.backgroundColor = Theme.bg.cgColor
-        split?.needsDisplay = true
-        ThemeStore.glow(sidebarHost, on: ThemeStore.shared.glows, soft: true)
     }
 
     // MARK: dashboard visibility
@@ -872,6 +1034,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         for name in appNames {
             nc.addObserver(self, selector: #selector(dashboardVisibilityChanged), name: name, object: nil)
         }
+        // Orbiterm in front again (the Dock, ⌘-Tab, a click): terminals free since a minimize may ride the dashboard again.
+        nc.addObserver(self, selector: #selector(rejoinRiders), name: NSApplication.didBecomeActiveNotification, object: nil)
     }
 
     @objc func dashboardVisibilityChanged() {
@@ -961,31 +1125,54 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     // Friend chats stay above the dashboard when it's clicked, like the terminals.
     func windowDidBecomeKey(_ notification: Notification) {
+        rejoinRiders()
         MessagePanel.pinAll()
         NoteWindow.pinAll()
     }
 
     /// A terminal in `cwd`, not a chat: a new conversation starts with `claude`, an earlier one in that folder
     /// with `claude -r`. Whatever Claude runs there shows up in the window like any chat.
-    func newTerminal(in cwd: String, frame: NSRect? = nil, nudgeTold: Bool = false) {
+    func newTerminal(in cwd: String, frame: NSRect? = nil, nudgeTold: Bool = false, account: String? = nil) {
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: cwd, isDirectory: &isDir), isDir.boolValue else {
             alert("Folder not found", tildify(cwd))
             return
         }
-        makeChat(cwd: cwd, claudeArgs: nil, sessionId: nil, title: (cwd as NSString).lastPathComponent, frame: frame, told: nudgeTold)
+        makeChat(cwd: cwd, claudeArgs: nil, sessionId: nil, title: (cwd as NSString).lastPathComponent, frame: frame, told: nudgeTold, account: account)
     }
 
     /// A new chat in `cwd` with the AI the new-worktree sheet picked: Claude, Codex, Antigravity, Cursor, or none (a plain terminal).
     /// Each starts in the folder the same way (`cd`, then its command), as a chat opened from the list does.
-    func newChat(in cwd: String, ai: String) {
+    func newChat(in cwd: String, ai: String, account: String? = nil) {
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: cwd, isDirectory: &isDir), isDir.boolValue else {
             alert("Folder not found", tildify(cwd))
             return
         }
         let args: [String]? = ai == "codex" ? ["codex"] : ai == "agy" ? ["agy"] : ai == "cursor" ? ["cursor-agent"] : ai == "terminal" ? nil : []
-        makeChat(cwd: cwd, claudeArgs: args, sessionId: nil, title: (cwd as NSString).lastPathComponent)
+        makeChat(cwd: cwd, claudeArgs: args, sessionId: nil, title: (cwd as NSString).lastPathComponent, account: account)
+    }
+
+    /// Settings › Claude's "Sign in with Claude…": a terminal runs Claude's own `claude auth login` under the new account's folder.
+    func signInAccount(_ id: String) {
+        makeChat(cwd: HOME, claudeArgs: ["auth", "login"], sessionId: nil, title: "Sign in to Claude", account: id)
+    }
+
+    /// The chat window menu's "Add / Manage Claude Accounts…": the dashboard in front, Settings on Claude (with the add form).
+    func openClaudeSettings(add: Bool) {
+        showDashboard()
+        radar.webView.evaluateJavaScript("window.ClaudeAcct && ClaudeAcct.openSettings(\(add ? "true" : "false"))")
+    }
+
+    /// Chat › Claude Account…: the chat window's account menu (ClaudeAccountsChat.swift), for the window in front.
+    func showClaudeAccountMenu() {
+        guard ClaudeAccounts.multiple, let c = activeChat else { return NSSound.beep() }
+        c.acctMenu()
+    }
+
+    /// How many Claude chats run under an account (an account with some can't be removed).
+    func runningChats(ofAccount id: String) -> Int {
+        briefs.values.filter { $0.live && !$0.id.hasPrefix("ai:") && ($0.account.isEmpty ? ClaudeAccounts.defaultId : $0.account) == id }.count
     }
 
     /// The AIs working in the working tree `path` is in, by name (the folder picker's "· Codex is working here").
@@ -1015,13 +1202,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     func moveToWorktree(_ c: ChatWindowController? = nil) {
         guard let (chat, b) = c.flatMap({ c in c.hud.brief.map { (c, $0) } }) ?? movableChat(), let ai = WorktreeNudge.aiOf(b) else { return NSSound.beep() }
         let folder = Worktrees.info(of: b.cwd).map { ($0.top as NSString).lastPathComponent } ?? ""
-        overlay.showNewWorktree(from: b.cwd, ai: ai, moving: (window: chat.id, sid: b.id, tool: WorktreeNudge.name(b), folder: folder))
+        // The sheet's account choice starts on the chat's own (two or more Claude accounts).
+        overlay.showNewWorktree(from: b.cwd, ai: ai, moving: (window: chat.id, sid: b.id, tool: WorktreeNudge.name(b), folder: folder),
+                                account: b.account.isEmpty ? nil : b.account)
     }
 
     /// The worktree is made: the AI starts in it, in the usual place. The old chat is not touched; its strip says where the
     /// new one is and offers "Close this chat" (the usual confirmation). Nothing closes by itself.
-    func finishMove(replacing id: String, sid: String, path: String, ai: String) {
-        newChat(in: path, ai: ai)
+    func finishMove(replacing id: String, sid: String, path: String, ai: String, account: String? = nil) {
+        newChat(in: path, ai: ai, account: account)
         guard let old = chats[id], let b = old.hud.brief, b.id == sid || old.sessionId == sid else { return }
         let w = Worktrees.info(of: path)
         old.hud.nudge = WorktreeOffer(sid: sid, tool: WorktreeNudge.name(b), folder: "", top: w?.top ?? path, dir: b.cwd,
@@ -1063,7 +1252,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                   let name = Detached.sessionName(hosting: pid) else { continue }
             let win = chats.values.first { $0.detached?.name == name || $0.extras.contains { $0.link?.name == name } }
             if win?.hud.mirror == true { continue }
-            let title = sidebar.customTitles[b.id] ?? (b.title.isEmpty ? (b.cwd as NSString).lastPathComponent : b.title)
+            let title = (b.title.isEmpty ? (b.cwd as NSString).lastPathComponent : b.title)
             out.append(CleanupChat(brief: b, title: title, lastInput: win?.lastInputAt(session: name) ?? 0,
                                    inFront: win?.window?.isKeyWindow == true, ai: kind, aiName: WorktreeNudge.name(b),
                                    blocker: win?.detached?.name == name ? win?.cleanupBlocker() : nil))
@@ -1107,7 +1296,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// Whether the chats list can be seen now (the dashboard on screen with the list open): only then its groups are read.
     func shipListVisible() -> Bool {
         guard let w = window, w.isVisible, !w.isMiniaturized, w.occlusionState.contains(.visible), NSApp.isActive || w.isKeyWindow else { return false }
-        return !sidebarHost.isHidden && sidebarHost.frame.width > 8
+        return true
     }
 
     /// The window in front when it is a window of the worktree `top` (what the chats list's menu and the Chat menu open the sheet
@@ -1207,7 +1396,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// Delete in the chats list (a chat's menu, a folder's, or the bar over the list while some are picked): asks first,
     /// then the chats (Claude Code's, Codex's, Antigravity's) leave the list for Settings' deleted chats, where they stay
     /// 30 days before they're deleted from the Mac. Running chats stay: they're ended first.
-    private func deleteChats(_ ids: [String]) {
+    @discardableResult
+    private func deleteChats(_ ids: [String]) -> Bool {
         let pick = sidebar.deletable(ids)
         var stay: [String] = []
         if pick.running > 0 {
@@ -1218,18 +1408,23 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             stay.append(pick.others == 1 ? "1 chat that isn't saved yet stays too." : "\(pick.others) chats that aren't saved yet stay too.")
         }
         guard !pick.chats.isEmpty else {
-            if pick.running + pick.others == 0 { return alert("Nothing to delete", "There are no saved chats here.") }
+            if pick.running + pick.others == 0 {
+                alert("Nothing to delete", "There are no saved chats here.")
+                return false
+            }
             let one = pick.running + pick.others == 1
-            return alert(one ? "This chat can't be deleted" : "These chats can't be deleted",
-                         pick.others == 0 ? (one ? "It's running: end it first." : "They're running: end them first.") : stay.joined(separator: "\n"))
+            alert(one ? "This chat can't be deleted" : "These chats can't be deleted",
+                  pick.others == 0 ? (one ? "It's running: end it first." : "They're running: end them first.") : stay.joined(separator: "\n"))
+            return false
         }
         let one = pick.chats.count == 1
         let title = one ? "Delete “\(clip(sidebar.title(of: pick.chats[0]), 60))”?" : "Delete \(pick.chats.count) chats?"
         let text = (one ? "It stays in Settings › deleted chats for 30 days, where you can put it back. Then it's deleted from this Mac for good."
                         : "They stay in Settings › deleted chats for 30 days, where you can put them back. Then they're deleted from this Mac for good.")
             + (stay.isEmpty ? "" : "\n\n" + stay.joined(separator: "\n"))
-        guard ask(title, text, ["Delete", "Cancel"], style: .warning) == 0 else { return }
-        withAnimation(.easeInOut(duration: 0.25)) { sidebar.delete(pick.chats) }
+        guard ask(title, text, ["Delete", "Cancel"], style: .warning) == 0 else { return false }
+        sidebar.delete(pick.chats)
+        return true
     }
 
     private func openFromNotice(_ sid: String) {
@@ -1416,13 +1611,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// Opens a chat window and starts its shell (and Claude, with `claudeArgs`) in a pty the app opens itself, so the
     /// window shows it at once.
     private func makeChat(cwd: String, claudeArgs: [String]?, sessionId: String?, title: String, origin: ITermOrigin? = nil,
-                          frame: NSRect? = nil, told: Bool = false) {
+                          frame: NSRect? = nil, told: Bool = false, account: String? = nil) {
         // A fresh name every time: a name made from the conversation would clash with an older session of it.
         let name = Detached.prefix + UUID().uuidString.lowercased()
         // The window opens at this size, so the shell (and Claude) start at it, not at a default they would redraw from.
         let content = frame ?? nextChatFrame()
         _ = Sessions.start(name: name, cwd: cwd, claudeArgs: claudeArgs, fontSize: fontSize, ai: Self.resuming(claudeArgs),
-                           size: ChatWindowController.terminalSize(forContent: content.size))
+                           size: ChatWindowController.terminalSize(forContent: content.size), account: account)
         let c = openWindow(cwd: cwd, claudeArgs: claudeArgs, sessionId: sessionId, title: title, detached: DetachedLink(name: name), frame: frame,
                            contentFrame: content)
         c.origin = origin
@@ -1470,9 +1665,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     /// ⌘T / ⌥⌘T: a new tab in the window in front (from the dashboard: the folder picker).
-    func newTab() {
+    func newTab(next: Bool = false) {
         guard let c = activeChat else { return overlay.showNewTerminal() }
-        c.newTab()
+        c.newTab(next: next)
     }
 
     /// ⌘D / ⇧⌘D: splits the pane in front.
@@ -1538,6 +1733,236 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     /// ⌥⇧⌘[ / ⌥⇧⌘]: the shown tab a place left or right.
     func moveTab(step: Int) { _ = activeChat?.moveTab(step: step) }
+
+    // MARK: tabs and windows moving between windows (tear a tab off, drop it on another window, merge windows)
+    // A moved session never restarts: its view (the process's terminal) changes windows and its name is changed for its new
+    // place (Detached.rehome), so a restart still brings it back where it is. A session shows in one place only.
+
+    /// The terminal window under `p` (screen coordinates) below the window numbered `n`; nil over another app's window or the desktop.
+    func chatWindow(atScreen p: NSPoint, below n: Int) -> ChatWindowController? {
+        let num = NSWindow.windowNumber(at: p, belowWindowWithWindowNumber: n)
+        return chats.values.first { $0.window?.windowNumber == num }
+    }
+
+    /// The terminal window under `p` (screen coordinates) other than `a` itself, whatever its level (a pinned one floats above
+    /// `a`); nil over another app's window or the desktop.
+    func chatWindow(atScreen p: NSPoint, skipping a: ChatWindowController) -> ChatWindowController? {
+        var below = 0
+        for _ in 0..<12 {
+            let n = NSWindow.windowNumber(at: p, belowWindowWithWindowNumber: below)
+            if n <= 0 { return nil }
+            if n == a.window?.windowNumber {
+                below = n
+                continue
+            }
+            return chats.values.first { $0.window?.windowNumber == n }
+        }
+        return nil
+    }
+
+    /// A window other than `a` that can take tabs, with the pointer `p` on its header (or its tab bar).
+    func tabTarget(atScreen p: NSPoint, excluding a: ChatWindowController) -> ChatWindowController? {
+        guard let c = chatWindow(atScreen: p, skipping: a), c.acceptsTabs, let f = c.window?.frame,
+              p.y >= f.maxY - c.dropHeaderHeight else { return nil }
+        return c
+    }
+
+    /// The pane under the pointer `p` in a window other than `a` that can take tabs, below its header: the side a split
+    /// there would take, or nil for the middle (tabs).
+    func paneTarget(atScreen p: NSPoint, excluding a: ChatWindowController) -> (win: ChatWindowController, pane: ChatTerminalView, edge: NSRectEdge?)? {
+        guard let c = chatWindow(atScreen: p, skipping: a), c.acceptsTabs, let w = c.window, p.y < w.frame.maxY - c.dropHeaderHeight,
+              let spot = c.paneSpot(at: w.convertPoint(fromScreen: p)) else { return nil }
+        return (c, spot.0, spot.1)
+    }
+
+    /// The frame of a window made from a tab of `a` let go at `p`: `a`'s size, the pointer on its header, kept on the screen.
+    func tearFrame(like a: ChatWindowController, at p: NSPoint) -> NSRect {
+        let size = a.window?.frame.size ?? NSSize(width: 900, height: 600)
+        let screen = NSScreen.screens.first { $0.frame.contains(p) } ?? NSScreen.main
+        var origin = NSPoint(x: p.x - size.width / 2, y: p.y + 30 - size.height)
+        if let vf = screen?.visibleFrame {
+            origin.x = max(vf.minX, min(origin.x, vf.maxX - size.width))
+            origin.y = max(vf.minY, min(origin.y, vf.maxY - size.height))
+        }
+        return NSRect(origin: origin, size: size)
+    }
+
+    /// A session got a new name (it moved to another window): what is kept by name follows.
+    func sessionRenamed(_ old: String, to new: String) {
+        guard old != new else { return }
+        NotesTools.renameSession(from: old, to: new)
+        if let name = tabNames[old] { tabNames[old] = nil; setTabName(name, for: new) }
+        if standalone.remove(old) != nil { saveStandalone() }
+        pushTerminals()
+    }
+
+    /// A window of its own for the tab `cargo` took out of `a`: its first terminal is the window's, at `frame`. Pinned when
+    /// `a` is.
+    @discardableResult
+    private func openTorn(_ cargo: ChatWindowController.TabCargo, like a: ChatWindowController, frame: NSRect) -> ChatWindowController? {
+        guard let lead = cargo.items.first else { return nil }
+        let name = Detached.rehome(lead.name, parent: nil, kind: .tab) ?? lead.name
+        sessionRenamed(lead.name, to: name)
+        // The lead's place in a split is kept for it until the new window takes it back.
+        var placeholder: NSView?
+        if cargo.root !== lead.view, let sv = lead.view.superview as? PaneSplitView {
+            let ph = NSView()
+            sv.replaceArrangedSubview(lead.view, with: ph)
+            placeholder = ph
+        }
+        let args = Sessions.live[name]?.shellPid.flatMap { ChatWindowController.aiLaunch($0) }
+        let c = openWindow(cwd: lead.cwd, claudeArgs: args, sessionId: nil, title: (lead.cwd as NSString).lastPathComponent,
+                           detached: DetachedLink(name: name), show: false, frame: frame)
+        c.install(cargo, placeholder: placeholder)
+        if a.hud.onTop { c.togglePin() }
+        c.show()
+        return c
+    }
+
+    /// `a`'s own tab stays; every other tab goes to a window of its own at `a`'s place, in their order.
+    private func splitOffRest(of a: ChatWindowController, keeping own: Int) -> ChatWindowController? {
+        let others = (0..<a.tabCount).filter { $0 != own }
+        guard let frame = a.window?.frame, !others.isEmpty, others.allSatisfy({ a.canMoveOut(tab: $0) }) else { return nil }
+        var cargos: [ChatWindowController.TabCargo] = []
+        for j in others.reversed() {
+            guard let c = a.detachTab(j) else { return nil }
+            cargos.insert(c, at: 0)
+        }
+        guard let first = cargos.first, let b = openTorn(first, like: a, frame: frame) else { return nil }
+        for c in cargos.dropFirst() { b.adopt(c, select: false) }
+        return b
+    }
+
+    /// Tab `i` of `a` becomes a window at `frame`. The window's own tab does it the other way round: the other tabs go to a
+    /// new window at `a`'s place and `a` itself moves to `frame`.
+    func tearOff(tab i: Int, of a: ChatWindowController, frame: NSRect) {
+        guard a.tabCount > 1, a.canMoveOutOfWindow(tab: i) else { return NSSound.beep() }
+        if a.tabHoldsOwn(i) {
+            guard splitOffRest(of: a, keeping: i) != nil else { return NSSound.beep() }
+            a.window?.setFrameOrigin(frame.origin)
+            a.show()
+            return
+        }
+        guard let cargo = a.detachTab(i) else { return NSSound.beep() }
+        openTorn(cargo, like: a, frame: frame)
+    }
+
+    /// Tab `i` of `a` joins `c` at `slot` of its bar.
+    func moveTab(_ i: Int, of a: ChatWindowController, to c: ChatWindowController, slot: Int) {
+        guard a !== c, c.acceptsTabs, a.canMoveOutOfWindow(tab: i) else { return NSSound.beep() }
+        if a.tabHoldsOwn(i) {
+            if a.tabCount > 1, splitOffRest(of: a, keeping: i) == nil { return NSSound.beep() }
+            return merge(a, into: c, slot: slot)
+        }
+        guard let cargo = a.detachTab(i) else { return NSSound.beep() }
+        c.adopt(cargo, at: slot)
+        c.show()
+    }
+
+    /// Pane `tv` of `a` (a split's pane, by its title bar) becomes a window of its own at `frame`.
+    func tearOffPane(_ tv: ChatTerminalView, of a: ChatWindowController, frame: NSRect) {
+        guard let cargo = a.detachPane(tv) else { return NSSound.beep() }
+        openTorn(cargo, like: a, frame: frame)
+    }
+
+    func movePaneToNewWindow(_ tv: ChatTerminalView, of a: ChatWindowController) {
+        guard let f = a.window?.frame else { return }
+        tearOffPane(tv, of: a, frame: tearFrame(like: a, at: NSPoint(x: f.midX + 30, y: f.maxY - 30)))
+    }
+
+    /// The pane becomes a tab of `c` at `slot`.
+    func movePane(_ tv: ChatTerminalView, of a: ChatWindowController, to c: ChatWindowController, slot: Int) {
+        guard a !== c, c.acceptsTabs, let cargo = a.detachPane(tv) else { return NSSound.beep() }
+        c.adopt(cargo, at: slot)
+        c.show()
+    }
+
+    /// The pane becomes a split beside `target` in `c`.
+    func movePane(_ tv: ChatTerminalView, of a: ChatWindowController, to c: ChatWindowController,
+                  beside target: ChatTerminalView, edge: NSRectEdge) {
+        guard a !== c, c.acceptsTabs, let cargo = a.detachPane(tv) else { return NSSound.beep() }
+        c.adoptSplit(cargo, beside: target, edge: edge)
+        c.show()
+    }
+
+    /// Tab `i` of `a` joins `c` as a split beside `target` on `edge`'s side. `a`'s own tab goes with the window: the other
+    /// tabs stay in a new window at its place, and `a` is gone. The target's window keeps its pin.
+    func moveTabAsSplit(_ i: Int, of a: ChatWindowController, to c: ChatWindowController, beside target: ChatTerminalView, edge: NSRectEdge) {
+        guard a !== c, c.acceptsTabs, a.canMoveOutOfWindow(tab: i) else { return NSSound.beep() }
+        if a.tabHoldsOwn(i) {
+            if a.tabCount > 1, splitOffRest(of: a, keeping: i) == nil { return NSSound.beep() }
+            let (cargos, _) = a.detachAllTabs()
+            removeChat(a.id)
+            guard let cargo = cargos.first else { return }
+            c.adoptSplit(cargo, beside: target, edge: edge)
+        } else {
+            guard let cargo = a.detachTab(i) else { return NSSound.beep() }
+            c.adoptSplit(cargo, beside: target, edge: edge)
+        }
+        c.show()
+    }
+
+    /// A window dragged onto a pane's side: its tab in front joins `c` as a split there (a window of one tab dissolves into it).
+    func mergeSplit(_ a: ChatWindowController, into c: ChatWindowController, beside target: ChatTerminalView, edge: NSRectEdge) {
+        moveTabAsSplit(a.activeTabIndex, of: a, to: c, beside: target, edge: edge)
+    }
+
+    /// Every tab of `a` joins `c` (at `slot`, else the end) and `a` goes, without ending anything: the tab that was in front
+    /// in `a` is in front in `c`.
+    func merge(_ a: ChatWindowController, into c: ChatWindowController, slot: Int? = nil) {
+        guard a !== c, a.canDissolve, c.acceptsTabs else { return NSSound.beep() }
+        let (cargos, active) = a.detachAllTabs()
+        // Nothing of `a` is left to end: its sessions are loose, and the window just closes.
+        removeChat(a.id)
+        var at = slot ?? c.tabCount
+        for (n, cargo) in cargos.enumerated() {
+            c.adopt(cargo, at: at, select: n == min(active, cargos.count - 1))
+            at += 1
+        }
+        c.show()
+    }
+
+    /// The Window menu's Move Tab to New Window: the tab in front of the window in front.
+    var canMoveTabToNewWindow: Bool {
+        guard let a = activeChat, a.tabCount > 1 else { return false }
+        return a.canMoveOutOfWindow(tab: a.activeTabIndex)
+    }
+
+    func moveTabToNewWindow() {
+        guard let a = activeChat, canMoveTabToNewWindow else { return NSSound.beep() }
+        moveTabToNewWindow(tab: a.activeTabIndex, of: a)
+    }
+
+    /// A tab's chip menu: tab `i` of `a` to a window of its own, a little down and right of `a`.
+    func moveTabToNewWindow(tab i: Int, of a: ChatWindowController) {
+        guard let f = a.window?.frame, a.tabCount > 1, a.canMoveOutOfWindow(tab: i) else { return NSSound.beep() }
+        tearOff(tab: i, of: a, frame: tearFrame(like: a, at: NSPoint(x: f.midX + 30, y: f.maxY - 30)))
+    }
+
+    // The names typed for tabs (Rename Tab), by the tab's session name, kept across launches (sessions keep their names).
+    private lazy var tabNames: [String: String] = UserDefaults.standard.dictionary(forKey: "tabNames") as? [String: String] ?? [:]
+
+    func tabName(for session: String) -> String? { tabNames[session] }
+
+    func setTabName(_ name: String?, for session: String) {
+        tabNames[session] = name
+        UserDefaults.standard.set(tabNames, forKey: "tabNames")
+    }
+
+    /// The windows Merge All Windows takes into the one in front: the others on screen that can give up all their tabs.
+    private var mergeableWindows: [ChatWindowController] {
+        guard let c = activeChat, c.acceptsTabs else { return [] }
+        return shownChats.filter { $0 !== c && !$0.hud.mirror && !$0.hud.exited && $0.canDissolve }
+    }
+
+    var canMergeAll: Bool { !mergeableWindows.isEmpty }
+
+    func mergeAllWindows() {
+        guard let c = activeChat else { return NSSound.beep() }
+        let list = mergeableWindows
+        guard !list.isEmpty else { return NSSound.beep() }
+        for o in list { merge(o, into: c) }
+    }
 
     /// ⇧⌘↩: only the pane in front shows; with a single pane the window fills the screen.
     func toggleMaximize() {
@@ -1664,7 +2089,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     /// The chats list's open folder button: a folder from the system's picker stays at the list's top, with a terminal
     /// opened in it.
-    private func openFolder() {
+    private func openFolder(done finished: @escaping (Bool) -> Void) {
         let panel = NSOpenPanel()
         panel.title = "Open a folder in the chats list"
         panel.canChooseDirectories = true
@@ -1672,9 +2097,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         panel.allowsMultipleSelection = false
         panel.prompt = "Open"
         let done = { [weak self] (r: NSApplication.ModalResponse) in
-            guard let self, r == .OK, let url = panel.url else { return }
+            guard let self, r == .OK, let url = panel.url else { return finished(false) }
             self.sidebar.pin(url.path)
             self.newTerminal(in: url.path)
+            finished(true)
         }
         if let w = window, w.isVisible { panel.beginSheetModal(for: w, completionHandler: done) } else { done(panel.runModal()) }
     }
@@ -1809,7 +2235,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     /// The live AI brief nearest `shell` (the shortest parent chain from its process to the shell).
-    private func nearestBrief(under shell: Int32) -> SessionBrief? {
+    func nearestBrief(under shell: Int32) -> SessionBrief? {
         var best: (brief: SessionBrief, distance: Int)?
         for b in briefs.values where b.live && b.status != "ended" {
             guard var pid = b.pid else { continue }
@@ -1920,7 +2346,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             let b = a.brief
             let folder = b.flatMap { $0.cwd.isEmpty ? nil : $0.cwd } ?? Proc.cwd(shell) ?? s.cwd
             let title = b.flatMap { $0.title.isEmpty ? nil : $0.title } ?? (folder as NSString).lastPathComponent
-            entries.append(.init(name: s.name, cwd: folder, title: title, ai: a.ai.map { .init(tool: $0.tool, id: $0.id) }))
+            entries.append(.init(name: s.name, cwd: folder, title: title, ai: a.ai.map { .init(tool: $0.tool, id: $0.id) }, account: s.account))
         }
         return SessionSnapshot(reason: reason, sessions: entries)
     }
@@ -1934,7 +2360,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         snapshot.write()
     }
 
-    private func takeOver(pid: Int32, then: @escaping () -> Void, failed: @escaping () -> Void) {
+    func takeOver(pid: Int32, then: @escaping () -> Void, failed: @escaping () -> Void) {
         kill(pid, SIGTERM)
         DispatchQueue.global(qos: .userInitiated).async {
             for step in 0..<40 {
@@ -1952,61 +2378,17 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     // MARK: view options
 
-    /// The width the chat list had when it last closed: it opens at it again (its preferred width, which the split view
-    /// keeps to when nothing else decides).
-    private static var sidebarWidth: CGFloat {
-        let w = CGFloat(UserDefaults.standard.double(forKey: "sidebarWidth"))
-        return (210...460).contains(w) ? w : 280
-    }
-
-    /// The chat list slides open and shut, fading as it goes and the dashboard giving it room and taking it back, instead
-    /// of snapping. It opens to the width the split view itself gives it, so nothing jumps once the slide is over.
     deinit {
         if let frameObserver { NotificationCenter.default.removeObserver(frameObserver) }
+        if let titlebarObserver { NotificationCenter.default.removeObserver(titlebarObserver) }
     }
 
+    /// ⌘B (Chats List): the chats list folds its saved chats away, or unfolds them, in the page; the live chats stay. The
+    /// state is kept across launches (`sidebarHidden`).
     func toggleSidebar() {
-        guard !sidebarSliding else { return }
-        let side: NSView = sidebarHost
-        let opening = side.isHidden
-        var target: CGFloat = 0
-        if opening {
-            // Measured shown, before anything is drawn; then it starts from nothing.
-            side.isHidden = false
-            split.adjustSubviews()
-            split.layoutSubtreeIfNeeded()
-            target = side.frame.width
-        } else {
-            sidebarPreferred.constant = side.frame.width
-            UserDefaults.standard.set(Double(side.frame.width), forKey: "sidebarWidth")
-        }
-        // While it slides, its width is the animation's alone.
-        sidebarMin.isActive = false
-        let width = side.widthAnchor.constraint(equalToConstant: opening ? 0 : side.frame.width)
-        width.isActive = true
-        side.alphaValue = opening ? 0 : 1
-        split.layoutSubtreeIfNeeded()
-        sidebarSliding = true
-        NSAnimationContext.runAnimationGroup({ ctx in
-            ctx.duration = 0.45
-            ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.65, 0, 0.35, 1)
-            ctx.allowsImplicitAnimation = true
-            width.animator().constant = target
-            side.animator().alphaValue = opening ? 1 : 0
-            self.split.layoutSubtreeIfNeeded()
-        }, completionHandler: { [weak self] in
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                width.isActive = false
-                if !opening { side.isHidden = true }
-                side.alphaValue = 1
-                self.sidebarMin.isActive = true
-                self.split.adjustSubviews()
-                self.sidebarSliding = false
-                self.dimSidebar(self.modalOpen)
-                UserDefaults.standard.set(side.isHidden, forKey: "sidebarHidden")
-            }
-        })
+        let on = !UserDefaults.standard.bool(forKey: "sidebarHidden")
+        UserDefaults.standard.set(on, forKey: "sidebarHidden")
+        radar.push("chatsFold", on ? "true" : "false")
     }
 
     /// The terminals' text size, and whether the user picked it here (else it's their iTerm2 one): Settings sync
@@ -2084,12 +2466,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         return (CGPoint(x: wr.minX, y: dw.frame.height - wr.maxY), web.pageZoom)
     }
 
-    func mascotSidebarFrame() -> CGRect? {
-        guard let dw = window, !sidebarHost.isHidden, sidebarHost.frame.width > 8 else { return nil }
-        let sr = sidebarHost.convert(sidebarHost.bounds, to: nil)
-        return CGRect(x: sr.minX, y: dw.frame.height - sr.maxY, width: sr.width, height: sr.height)
-    }
-
     func mascotPageEval(_ js: String) {
         radar.webView.evaluateJavaScript("\(js); true", completionHandler: nil)
     }
@@ -2100,12 +2476,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func mascotNavTap(_ id: String) {
-        if id.hasPrefix("fold:") {
-            let cwd = String(id.dropFirst(5))
-            guard sidebar.cards.contains(where: { $0.cwd == cwd }) else { return }
-            sidebar.toggleFold(cwd)
-            return
-        }
+        // A folder's fold (`fold:<key>`) is the page's own (chats.js), reached through `__mascotNav` like the other taps.
         guard let data = try? JSONEncoder().encode(id), let arg = String(data: data, encoding: .utf8) else { return }
         radar.webView.evaluateJavaScript("window.__mascotNav?.(\(arg)); true", completionHandler: nil)
     }
@@ -2153,7 +2524,3 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 }
 
-final class ThemedSplitView: NSSplitView {
-    override var dividerColor: NSColor { NSColor(hex: Theme.accentHex, alpha: 0.22) }
-    override var dividerThickness: CGFloat { 1 }
-}

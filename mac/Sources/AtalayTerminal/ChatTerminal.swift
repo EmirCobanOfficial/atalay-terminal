@@ -485,25 +485,29 @@ private final class ClipboardGuard: TerminalViewDelegate {
 @MainActor
 enum TerminalFactory {
     static func make(chatId: String, cwd: String, claudeArgs: [String]?, fontSize: CGFloat,
-                     delegate: LocalProcessTerminalViewDelegate) -> ChatTerminalView {
+                     delegate: LocalProcessTerminalViewDelegate, account: String? = nil) -> ChatTerminalView {
         let tv = styled(chatId: chatId, fontSize: fontSize, delegate: delegate)
-        start(tv, cwd: cwd, claudeArgs: claudeArgs)
+        start(tv, cwd: cwd, claudeArgs: claudeArgs, account: account)
         return tv
     }
 
-    static func start(_ tv: ChatTerminalView, cwd: String, claudeArgs: [String]?) {
+    static func start(_ tv: ChatTerminalView, cwd: String, claudeArgs: [String]?, account: String? = nil) {
         let shell = userShell()
         Sessions.closeOnExec()
-        tv.startProcess(executable: shell, args: shellArgs(shell, cwd: cwd, claudeArgs: claudeArgs), environment: childEnvironment(),
-                        execName: nil, currentDirectory: cwd)
+        tv.startProcess(executable: shell, args: shellArgs(shell, cwd: cwd, claudeArgs: claudeArgs, account: account),
+                        environment: childEnvironment(account: account), execName: nil, currentDirectory: cwd)
     }
 
     /// The user's login shell in `cwd`. With `claudeArgs` it runs Claude first and stays when Claude exits;
     /// without, it is a plain terminal (where Claude can be started or resumed by hand).
-    nonisolated static func shellArgs(_ shell: String, cwd: String, claudeArgs: [String]?) -> [String] {
+    nonisolated static func shellArgs(_ shell: String, cwd: String, claudeArgs: [String]?, account: String? = nil) -> [String] {
         guard let claudeArgs else { return ["-il"] }
         // Antigravity's, Codex's and Cursor's own command lines (a saved conversation opened from the chats list), else Claude's.
-        let cmd = (["agy", "codex", "cursor-agent"].contains(claudeArgs.first) ? claudeArgs : ["claude"] + claudeArgs).map(shellQuote).joined(separator: " ")
+        // A Claude of another account: its folder is set on the command itself (the shell's rc files run after our
+        // environment and may set their own), and a key in the environment that would override the account's sign-in is dropped.
+        let other = ["agy", "codex", "cursor-agent"].contains(claudeArgs.first)
+        let prefix = !other ? ClaudeAccounts.account(account)?.envDir.map { ["env", "-u", "ANTHROPIC_API_KEY", "-u", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CONFIG_DIR=" + $0] } ?? [] : []
+        let cmd = (other ? claudeArgs : prefix + ["claude"] + claudeArgs).map(shellQuote).joined(separator: " ")
         return ["-ilc", "cd -- \(shellQuote(cwd)) && \(cmd); exec \(shellQuote(shell)) -il"]
     }
 
@@ -613,12 +617,19 @@ enum TerminalFactory {
     }
 
     /// The app's environment minus anything that would make Claude think it runs inside another terminal or Claude.
-    nonisolated static func childEnvironment() -> [String] {
-        childEnvironmentDict().map { "\($0.key)=\($0.value)" }
+    nonisolated static func childEnvironment(account: String? = nil) -> [String] {
+        childEnvironmentDict(account: account).map { "\($0.key)=\($0.value)" }
     }
 
-    nonisolated static func childEnvironmentDict() -> [String: String] {
+    /// `account`: another Claude account's id; its folder becomes CLAUDE_CONFIG_DIR, and a key that would override its
+    /// sign-in (ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN) is left out. The default account's environment is unchanged.
+    nonisolated static func childEnvironmentDict(account: String? = nil) -> [String: String] {
         var env = ProcessInfo.processInfo.environment
+        if let dir = ClaudeAccounts.account(account)?.envDir {
+            env["CLAUDE_CONFIG_DIR"] = dir
+            env.removeValue(forKey: "ANTHROPIC_API_KEY")
+            env.removeValue(forKey: "ANTHROPIC_AUTH_TOKEN")
+        }
         // Started from a Codex command (a staging build it launched), the app had Codex's tool environment: NO_COLOR
         // turned every chat's Claude white, and its C.UTF-8 locale and pagers reached the shells. The login shell sets
         // whatever the user really wants again.

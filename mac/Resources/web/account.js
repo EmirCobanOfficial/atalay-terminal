@@ -163,7 +163,7 @@ window.Account = (() => {
     picAt = Date.now();
     const url = A.avatar;
     const fresh = new Image();
-    fresh.onload = () => document.querySelectorAll('img.acct-avatar').forEach((i) => {
+    fresh.onload = () => document.querySelectorAll('img.acct-avatar, #top img.id-pic').forEach((i) => {
       if (i.getAttribute('src') !== url) return;
       i.src = '';
       i.src = url;
@@ -173,37 +173,10 @@ window.Account = (() => {
   document.addEventListener('visibilitychange', () => refreshPic(false));
   window.addEventListener('focus', () => refreshPic(false));
 
-  // The activity bar's icon: their GitHub picture once signed in with GitHub (the person icon otherwise, e-mail too),
-  // a green dot while signed in, who they are in its tooltip.
+  // The corner's card (cloud.js renderId) is where your picture and status show now: it follows the account (who's signed
+  // in, the picture) and your status.
   function paintIcon() {
-    const ab = document.querySelector('#activity [data-view=account]');
-    if (!ab || !A) return;
-    ab.querySelector('.acct-dot').hidden = !A.signedIn;
-    ab.title = A.signedIn ? `Account · ${A.github || A.email}` : 'Account · not signed in';
-    const pic = A.signedIn && A.avatar;
-    let img = ab.querySelector('img.acct-avatar');
-    const glyph = ab.querySelector('.vs-ci');
-    if (pic) {
-      if (!img) {
-        img = document.createElement('img');
-        img.className = 'acct-avatar';
-        img.alt = '';
-        // Offline, or no picture to load: the icon again.
-        img.onerror = () => {
-          img.remove();
-          if (glyph) glyph.hidden = false;
-        };
-        ab.insertBefore(img, ab.firstChild);
-      }
-      if (img.getAttribute('src') !== pic) {
-        img.src = pic;
-        picAt = Date.now();
-      }
-      if (glyph) glyph.hidden = true;
-    } else {
-      img?.remove();
-      if (glyph) glyph.hidden = false;
-    }
+    if (A) window.Cloud?.paintMe?.();
   }
 
   function say2(msg, bad = false) {
@@ -243,7 +216,7 @@ window.Account = (() => {
 
   function signedIn() {
     if (!A) return;
-    // The activity bar's icon too (an e-mail code's sign-in brings no live event that would load it again).
+    // The top bar's card too (an e-mail code's sign-in brings no live event that would load it again).
     paintIcon();
     form.mode = '';
     if (A.pending) return say2('');
@@ -369,27 +342,42 @@ window.Account = (() => {
     paintDanger();
   }
 
-  // ---------- the activity bar's menu ----------
+  // ---------- the account menu, under the identity card ----------
   const icon = (cp) => `<i class="vs-ci">${String.fromCodePoint(cp)}</i>`;
   let menuEl = null;
-  function closeMenu() {
+  // `back` (Esc): the focus goes back to the card that opened the menu, when it was in the menu (or lost with it).
+  function closeMenu(back) {
+    const me = document.querySelector('#top .id-me');
+    const refocus = back && menuEl && (menuEl.contains(document.activeElement) || document.activeElement === document.body);
     menuEl?.remove();
     menuEl = null;
+    me?.setAttribute('aria-expanded', 'false');
+    if (refocus) me?.focus();
     document.removeEventListener('mousedown', outside, true);
     document.removeEventListener('keydown', escape, true);
   }
   const outside = (e) => {
-    if (menuEl && !menuEl.contains(e.target) && !e.target.closest('#activity [data-view=account]')) closeMenu();
+    if (menuEl && !menuEl.contains(e.target) && !e.target.closest('#top .id-me')) closeMenu();
   };
-  // Esc closes the status's small menu first, then this one.
+  // ↑ ↓ move between the rows (the status's small menu's while it's open), as in a Mac's menus. Esc closes the status's
+  // small menu first, then this one.
   const escape = (e) => {
+    if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && menuEl) {
+      const sub = menuEl.querySelector('.mn-pick');
+      const rows = [...(sub || menuEl).querySelectorAll('button')].filter((b) => sub || !b.closest('.mn-pick'));
+      if (!rows.length) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const i = rows.indexOf(document.activeElement), down = e.key === 'ArrowDown';
+      return rows[i < 0 ? (down ? 0 : rows.length - 1) : (i + (down ? 1 : -1) + rows.length) % rows.length].focus();
+    }
     if (e.key !== 'Escape') return;
     const pick = menuEl && menuEl.querySelector('.mn-pick');
     if (!pick) {
       // Only the menu takes this Esc: the page behind it (cloud.js's view handler) must not also step back.
       e.preventDefault();
       e.stopPropagation();
-      return closeMenu();
+      return closeMenu(true);
     }
     e.stopPropagation();
     statusPick(false);
@@ -409,13 +397,13 @@ window.Account = (() => {
 
   // Who you are, your status and your account, Slack's and Discord's way: at the top your picture and name#tag (a click
   // opens your profile; ⧉ copies the name#tag for a friend), your status under it, then your profile, Settings and the
-  // account's own items.
-  async function menu() {
+  // account's own items. `keys`: opened from the keyboard, so its first row takes the focus (Esc gives it back).
+  async function menu(anchor, keys) {
     if (menuEl) return closeMenu();
     if (!A) await load();
     refreshPic(false);
     if (!A) return say(errText('offline'));
-    const ab = document.querySelector('#activity [data-view=account]');
+    const ab = anchor || document.querySelector('#top .id-me');
     const line = A.signedIn
       ? `<span class="acct-ok-t">✓ signed in</span> · ${esc(A.github ? `GitHub · ${A.github}` : A.email)}${A.devices.length > 1 ? ` · ${A.devices.length} computers` : ''}`
       : 'not signed in · this computer only';
@@ -448,10 +436,12 @@ window.Account = (() => {
       status +
       items;
     document.body.appendChild(menuEl);
-    // Beside the icon, its bottom level with the icon's (VS Code's accounts menu opens the same way).
-    const r = ab ? ab.getBoundingClientRect() : { right: 60, bottom: innerHeight - 80 };
-    menuEl.style.left = `${Math.round(r.right + 8)}px`;
-    menuEl.style.top = `${Math.round(Math.max(8, Math.min(innerHeight - menuEl.offsetHeight - 8, r.bottom - menuEl.offsetHeight)))}px`;
+    // Under the card, its left edge on the card's (Steam's and Discord's account menus open the same way).
+    ab?.setAttribute('aria-expanded', 'true');
+    const r = ab ? ab.getBoundingClientRect() : { left: 12, bottom: 48 };
+    menuEl.style.left = `${Math.round(Math.max(8, Math.min(innerWidth - menuEl.offsetWidth - 8, r.left)))}px`;
+    menuEl.style.top = `${Math.round(r.bottom + 6)}px`;
+    if (keys) menuEl.querySelector('button')?.focus();
     menuEl.onmouseover = (e) => {
       const b = e.target.closest('button');
       if (b && !b.closest('.mn-pick')) statusPick(b.dataset.m === 'status');
@@ -918,6 +908,7 @@ window.Account = (() => {
   // Live: a sign-in finished in the browser, a merge, a computer removed; settings from another computer.
   window.Social?.on((ev) => {
     if (ev.type === 'account' || ev.type === 'hello') load();
+    if (ev.type === 'status' || ev.type === 'snapshot' || ev.type === 'hello') paintIcon();
     if (ev.type === 'settings' && ev.set) Sync.apply(ev.set, ev.from);
   });
   setTimeout(load, 2500);

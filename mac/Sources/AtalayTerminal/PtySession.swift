@@ -9,9 +9,14 @@ final class PtySession: NSObject, LocalProcessTerminalViewDelegate {
     private(set) var name: String
     private(set) var terminal: ChatTerminalView!
     let cwd: String
-    let started = Date()
+    /// When it started, or last restarted with another Claude account: the AI it resumes takes a moment to show under the
+    /// new shell (MainWindowController.inspect).
+    private(set) var started = Date()
     /// The AI it was started to resume (`tool`: "claude", "codex", "agy", "cursor"), for the snapshot until one shows under the shell.
     var ai: (tool: String, id: String)?
+    /// The Claude account its environment was made for (ClaudeAccounts id), nil for the default one. A switch in the same
+    /// terminal changes it (ChatWindowController.acctPerform).
+    var account: String?
     /// The window or pane showing it now; nil while parked. Every delegate call is forwarded there.
     weak var owner: LocalProcessTerminalViewDelegate?
     /// Ended (its shell exited, or End Session): no longer in `Sessions.live`.
@@ -40,6 +45,24 @@ final class PtySession: NSObject, LocalProcessTerminalViewDelegate {
         guard !finished else { return nil }
         let pid = terminal.process.shellPid
         return pid > 0 ? pid : nil
+    }
+
+    /// What to start in this same view once the shell now ending has gone (restart).
+    private var relaunch: (cwd: String, args: [String]?, account: String?)?
+
+    /// Goes on in the same terminal with another Claude account: the shell and Claude in it get a hangup, and once it has
+    /// ended a new shell starts in this same view (the window or pane never hears of an end) with the account's environment,
+    /// running `claude <args>`. Nothing is typed into the terminal. False when it can't: ended, or a restart already under way.
+    @discardableResult
+    func restart(cwd: String, claudeArgs: [String]?, account: String?) -> Bool {
+        guard !finished, relaunch == nil else { return false }
+        relaunch = (cwd, claudeArgs, account)
+        // The account it is for from now on (the title chip, the snapshot), and a fresh start for the AI to show up in.
+        self.account = account
+        started = Date()
+        let shell = terminal.process.shellPid
+        if shell > 0 { Detached.endTree(shell) } else { processTerminated(source: terminal, exitCode: nil) }
+        return true
     }
 
     /// A tab dragged into a split (or the other way) is named for its new kind, for the next launch.
@@ -88,6 +111,26 @@ final class PtySession: NSObject, LocalProcessTerminalViewDelegate {
     /// Its shell exited (`exit`, Ctrl-D, a crash), or was ended: the session is gone. The window or pane showing it hears
     /// of it; a parked one has none, and its car goes at the next terminals update.
     func processTerminated(source: TerminalView, exitCode: Int32?) {
+        // A restart (another Claude account): the same view starts a new shell, and nobody hears that the old one ended.
+        if let r = relaunch, !finished, !Sessions.stopping {
+            relaunch = nil
+            account = r.account
+            started = Date()
+            let shell = TerminalFactory.userShell()
+            Sessions.closeOnExec()
+            terminal.startProcess(executable: shell, args: TerminalFactory.shellArgs(shell, cwd: r.cwd, claudeArgs: r.args, account: r.account),
+                                  environment: TerminalFactory.childEnvironment(account: r.account) + ["ORBITERM_SESSION=" + name],
+                                  execName: nil, currentDirectory: r.cwd)
+            Sessions.closeOnExec()
+            let pid = terminal.process.shellPid
+            if pid > 0 { Sessions.setShell(name, pid) }
+            if r.account != nil { Limits.installScript() }
+            // The engine matches an AI to its window by the AI's shell: it learns the new one now. Without this the chat
+            // going on here belonged to no window, so the next switch took the pane for a plain terminal and restarted it
+            // without Claude (the window then showed ended).
+            MainWindowController.shared?.panesChanged()
+            return
+        }
         // The app is quitting or restarting: the windows are being torn down and what the shells showed was just kept for
         // the next launch (MainWindowController.terminateAll), so nothing here may touch it.
         Sessions.dying[name] = nil
@@ -133,7 +176,7 @@ enum Sessions {
     /// Whether `pid` is the shell of one of this run's own sessions.
     nonisolated static func isShell(_ pid: Int32) -> Bool { lock.withLock { shells.values.contains(pid) } }
 
-    private static func setShell(_ name: String, _ pid: Int32?) {
+    fileprivate static func setShell(_ name: String, _ pid: Int32?) {
         lock.withLock { shells[name] = pid }
     }
 
@@ -142,9 +185,12 @@ enum Sessions {
     /// dimmed.
     @MainActor
     static func start(name: String, cwd: String, claudeArgs: [String]?, fontSize: CGFloat, ai: (tool: String, id: String)? = nil,
-                      history: [String] = [], notice: String? = nil, size: NSSize? = nil) -> PtySession {
+                      history: [String] = [], notice: String? = nil, size: NSSize? = nil, account: String? = nil) -> PtySession {
         let session = PtySession(name: name, cwd: cwd, fontSize: fontSize)
         session.ai = ai
+        session.account = account
+        // A session of another account: the status line script is re-installed if the installed app's older one replaced it.
+        if account != nil { Limits.installScript() }
         let tv = session.terminal!
         // The size the view will have, so the shell (and Claude) start at it instead of at the default and redraw.
         if let size, size.width >= 100, size.height >= 60 { tv.frame = NSRect(origin: .zero, size: size) }
@@ -152,8 +198,8 @@ enum Sessions {
         if let notice { tv.feed(text: "\u{1b}[2m" + notice + "\u{1b}[0m\r\n\r\n") }
         let shell = TerminalFactory.userShell()
         closeOnExec()
-        tv.startProcess(executable: shell, args: TerminalFactory.shellArgs(shell, cwd: cwd, claudeArgs: claudeArgs),
-                        environment: TerminalFactory.childEnvironment() + ["ORBITERM_SESSION=" + name], execName: nil, currentDirectory: cwd)
+        tv.startProcess(executable: shell, args: TerminalFactory.shellArgs(shell, cwd: cwd, claudeArgs: claudeArgs, account: account),
+                        environment: TerminalFactory.childEnvironment(account: account) + ["ORBITERM_SESSION=" + name], execName: nil, currentDirectory: cwd)
         // The new pty's own master too, before the next process starts.
         closeOnExec()
         live[name] = session
@@ -224,6 +270,8 @@ struct SessionSnapshot: Codable, Equatable {
         var cwd: String
         var title: String
         var ai: AI?
+        /// The Claude account it ran with (nil: the default one, and what a file from an older build says).
+        var account: String?
     }
     var v = 1
     /// "running" (what a crash leaves) or "update".

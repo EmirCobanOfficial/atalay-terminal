@@ -703,6 +703,7 @@ window.Profile = (() => {
       heroFires.add(c);
       window.Fire.burn(c, { reach: [26, 0, 0], scale: 8, look: c.dataset.look });
     }
+    window.WebPriv?.decorate();
   }
 
   const inFlight = new Set();

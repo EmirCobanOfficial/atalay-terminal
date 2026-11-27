@@ -30,7 +30,6 @@
 .atk-banner.lock .atk-ret circle { fill: currentColor; stroke: none; }
 .atk-banner.lock .atk-in { padding: 6px 0 7px; text-align: left; }
 .atk-banner.lock .atk-big { font-size: 28px; font-weight: 800; text-shadow: 0 2px 0 rgba(0, 0, 0, 0.6); }
-.atk-banner.lock .atk-who { margin-top: 3px; font-size: 15px; font-weight: 500; }
 .atk-banner.lock.lost { animation: atk-slide 0.18s ease-out backwards; }
 .atk-banner.lock.lost .atk-big { color: #ffd9a8; }
 @keyframes atk-lockglow { 50% { box-shadow: 0 0 0 1px rgba(255, 190, 70, 0.55), 0 0 32px rgba(255, 120, 20, 0.6), 0 10px 30px rgba(0, 0, 0, 0.6); } }
@@ -60,3 +59,57 @@
 .atk-hitplate span { color: #fff1de; font: 600 15px/1.2 var(--font-sans); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .atk-hitplate.out { opacity: 0; transition: opacity 0.36s ease-in; }
 .atk-hitplate.still { animation: atk-fade 0.2s linear backwards; }
+
+/* The spaceship attack on the whole screen (attack-screen.js), in the notices panel, which has the screen for it and lets every
+   click through: the reticle, the ship, its shots, the cracked glass. Fixed warm colours, like the banner. Only transform and
+   opacity move; every moving thing is its own layer. */
+#atk-screen { position: fixed; inset: 0; z-index: 2700; overflow: hidden; pointer-events: none; user-select: none; contain: strict; }
+#atk-screen .as-dim { position: absolute; inset: 0; opacity: 0; will-change: opacity; background: radial-gradient(ellipse 75% 70% at 50% 48%, rgba(20, 6, 0, 0) 38%, rgba(26, 8, 0, 0.55) 78%, rgba(14, 4, 0, 0.85) 100%); }
+#atk-screen .as-world { position: absolute; inset: 0; will-change: transform; }
+#atk-screen .as-world > * { position: absolute; left: 0; top: 0; }
+#atk-screen .as-ship { will-change: transform, opacity; visibility: hidden; filter: drop-shadow(0 30px 40px rgba(0, 0, 0, 0.45)); }
+#atk-screen .as-ship svg { display: block; width: 100%; height: 100%; }
+#atk-screen .as-halo { will-change: transform, opacity; opacity: 0; visibility: hidden; border-radius: 50%; background: radial-gradient(circle, rgba(255, 150, 50, 0.7) 0%, rgba(255, 96, 20, 0.32) 34%, rgba(255, 70, 10, 0) 68%); }
+#atk-screen .as-warp { width: 300px; height: 300px; opacity: 0; will-change: transform, opacity; background: radial-gradient(circle, #fff 0%, rgba(255, 226, 170, 0.9) 10%, rgba(255, 150, 50, 0.4) 34%, rgba(255, 100, 20, 0) 66%); }
+#atk-screen .as-nav { animation: as-blink 1.1s steps(1, end) infinite; }
+#atk-screen .as-charge { animation: as-charge 0.5s ease-in-out infinite alternate; }
+@keyframes as-blink { 50% { opacity: 0.2; } }
+@keyframes as-charge { to { opacity: 0.6; } }
+/* the shots: a trail (one pixel, stretched along its way) and a head that grows as it comes at you; a flash at the muzzle */
+#atk-screen .as-bolt { width: 0; height: 0; }
+#atk-screen .as-bolt .tr { position: absolute; left: 0; top: -0.5px; width: 1px; height: 1px; transform-origin: 0 50%; will-change: transform; background: linear-gradient(90deg, rgba(255, 90, 20, 0), rgba(255, 170, 60, 0.85) 60%, #fff4d8); border-radius: 0 50% 50% 0 / 0 50% 50% 0; }
+#atk-screen .as-bolt .hd { position: absolute; left: 0; top: 0; width: 120px; height: 120px; will-change: transform; background: radial-gradient(circle, #fff 0%, #fff0c8 18%, #ffb84a 32%, rgba(255, 110, 20, 0.5) 46%, rgba(255, 80, 10, 0) 62%); }
+#atk-screen .as-flare { width: 240px; height: 240px; opacity: 0; will-change: transform, opacity; background: radial-gradient(circle, #fff 0%, rgba(255, 232, 170, 0.95) 14%, rgba(255, 140, 40, 0.5) 38%, rgba(255, 90, 10, 0) 66%); }
+/* an impact: a ring that opens, a hot core, sparks */
+#atk-screen .as-burst { width: 0; height: 0; }
+#atk-screen .as-burst .ring { position: absolute; left: 0; top: 0; width: 200px; height: 200px; border-radius: 50%; border: 4px solid rgba(255, 236, 200, 0.95); box-shadow: 0 0 30px rgba(255, 150, 50, 0.8), inset 0 0 30px rgba(255, 150, 50, 0.45); opacity: 0; will-change: transform, opacity; }
+#atk-screen .as-burst .core { position: absolute; left: 0; top: 0; width: 180px; height: 180px; border-radius: 50%; opacity: 0; will-change: transform, opacity; background: radial-gradient(circle, #fff 0%, #fff0c8 24%, rgba(255, 170, 60, 0.7) 48%, rgba(255, 90, 20, 0) 70%); }
+#atk-screen .as-spark { width: 3px; height: 3px; margin: -1.5px 0 0 -1.5px; opacity: 0; visibility: hidden; will-change: transform, opacity; background: linear-gradient(90deg, rgba(255, 160, 50, 0), #ffe6b0); border-radius: 2px; }
+/* the cracked glass: a layer for each crack, its lines drawn by the script, shards that catch the light */
+#atk-screen .as-crack { will-change: opacity; }
+#atk-screen .as-crack svg { position: absolute; left: 0; top: 0; overflow: visible; fill: none; stroke-linecap: butt; stroke-linejoin: round; }
+#atk-screen .as-crack .dk path { stroke: rgba(14, 5, 1, 0.5); transform: translate(1.2px, 1.5px); }
+#atk-screen .as-crack .lt path { stroke: #fff6ea; }
+/* their warm glow: a wide faint stroke under them (not a CSS filter: redrawn with every frame of the cracking and the
+   sealing, a drop-shadow cost up to 270 ms a frame on a 5K screen) */
+#atk-screen .as-crack .gl path { stroke: rgba(255, 190, 120, 0.24); stroke-linecap: round; }
+#atk-screen .as-shard { position: absolute; opacity: 0; background: #fff; clip-path: polygon(50% 0, 100% 80%, 20% 100%); transition: opacity 0.18s; }
+#atk-screen .as-shard.on { opacity: 0.9; animation: as-twinkle var(--tw, 1.6s) ease-in-out var(--dl, 0s) infinite alternate; }
+@keyframes as-twinkle { from { opacity: 0.25; } to { opacity: 1; } }
+#atk-screen .as-flash { position: absolute; inset: 0; opacity: 0; will-change: opacity; background: radial-gradient(ellipse at 50% 50%, #fffaf0 0%, #fff1da 55%, #ffd9a8 100%); }
+/* the reticle: four brackets closing onto the middle, orange while closing, amber once locked; steady until the blast */
+#atk-screen .as-ret { position: absolute; left: 50%; top: 50%; width: min(26vh, 300px); height: min(26vh, 300px); margin: calc(min(26vh, 300px) / -2) 0 0 calc(min(26vh, 300px) / -2); }
+#atk-screen .as-ret .rt { position: absolute; inset: 0; --c: #ffb020; animation: as-close 1s cubic-bezier(0.2, 0.7, 0.3, 1) backwards; }
+#atk-screen .as-ret .rt i { position: absolute; width: 24%; height: 24%; border: 0 solid var(--c); filter: drop-shadow(0 0 5px rgba(255, 120, 20, 0.7)); animation: as-lockcol 1s linear backwards; }
+#atk-screen .as-ret .rt .b1 { left: 0; top: 0; border-width: 4px 0 0 4px; }
+#atk-screen .as-ret .rt .b2 { right: 0; top: 0; border-width: 4px 4px 0 0; }
+#atk-screen .as-ret .rt .b3 { right: 0; bottom: 0; border-width: 0 4px 4px 0; }
+#atk-screen .as-ret .rt .b4 { left: 0; bottom: 0; border-width: 0 0 4px 4px; }
+@keyframes as-close { from { transform: scale(3.2); opacity: 0.1; } to { transform: scale(1); opacity: 1; } }
+@keyframes as-lockcol { 0%, 80% { border-color: #ff6a1a; } 100% { border-color: #ffb020; } }
+#atk-screen.still .as-ret .rt, #atk-screen.still .as-ret .rt i { animation: none; }
+/* the 3D show (attack-screen3d.js) has the cockpit frame for its lock-on: the reticle only in the old show (shown, and
+   closing from then, if the 3D one falls back to it) */
+#atk-screen.v3 .as-ret { display: none; }
+#atk-screen.still .as-dim { display: none; }
+@media (prefers-reduced-motion: reduce) { #atk-screen .as-ret .rt, #atk-screen .as-ret .rt i { animation: none; } #atk-screen .as-nav, #atk-screen .as-charge, #atk-screen .as-shard.on { animation: none; } }

@@ -226,6 +226,8 @@ function createCloud(opts = {}) {
   const mascot = opts.mascot || (() => -1);
   const onChange = opts.onChange || (() => {});
   const onSocial = opts.onSocial || (() => {});
+  // The network came back: what else holds a line to the API tries again too (main.js: the shared notes' lines).
+  const onNetBack = opts.onNetBack || (() => {});
   // How calls go out: Node's fetch by default; the app passes Electron's net.fetch, which goes through Windows' proxy
   // settings and certificate store (antivirus that scans HTTPS, a company proxy).
   const fetcher = opts.fetch || fetch;
@@ -1130,8 +1132,11 @@ function createCloud(opts = {}) {
     const was = netUp;
     netUp = up;
     if (!running || was === null || was === up) return;
-    if (up) kick();
-    else set({ reachable: false });
+    if (up) {
+      kick();
+      // As the Mac's Social.kick takes the notes' lines with it (notesNetBack).
+      onNetBack();
+    } else set({ reachable: false });
   }
 
   // The PC woke up (main.js) or the network came back (checkNetwork): a line opened before may be dead without anyone
