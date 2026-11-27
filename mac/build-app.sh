@@ -26,7 +26,7 @@ MANIFEST=Sources/AtalayTerminal/WebManifest+Build.swift
 # The bundle carries none of Viktoria's files (her model, clips and Live2D): the app downloads her (MascotAsset.swift).
 # The pages' folder is staged without them, and both the integrity list and the bundle's copy come from the stage.
 WEBSRC="$(mktemp -d)/web"
-rsync -a --exclude '/mascot/vrm' --exclude '/mascot/live2d' Resources/web/ "$WEBSRC/"
+rsync -a --exclude '/mascot/vrm' --exclude '/mascot/live2d' --exclude '/attack3d/show.webm' --exclude '/attack3d/video.js' Resources/web/ "$WEBSRC/"
 FLAGS=()
 # The shared staging API answers only requests with its access key (the API's src/gate.ts): ~/.atalay-terminal/
 # staging-access-key, written into a gitignored source file like the client key (Sources/AtalayTerminal/AccessKey.swift).

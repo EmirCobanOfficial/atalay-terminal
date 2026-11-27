@@ -61,6 +61,12 @@
   const WARM = [-1200, 300, 1500, 3000, 4500, 5700, 6000, 6400, 7200, 8000, 9000, 11000, 12000];
   // What scene3d.js and assets.js leave on window (three.js marks itself too)
   const GLOBALS = ['AttackSceneV3', 'Cracks', 'Glass', '__THREE__', '__ATTACK3D_PACK'];
+  // Windows plays the same show as a video made once from the scene (attack3d/show.webm, VP9 with alpha, and its clock in
+  // attack3d/video.js; windows/scripts/attack3d-video): Chromium there compiles the scene's shaders through ANGLE/D3D11, and
+  // making the scene took 3-8 s on a GTX 1650 (LOCK_WAIT is 1.5 s), so every attack fell back to the old show. The video
+  // is ready in a fraction of a second and costs nothing until an attack comes. Reduced motion takes the old show there.
+  const VIDEO = window.__platform === 'win32';
+  let vinfo = null; // { src, fps, w, h, T } from attack3d/video.js, read once
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const reducedMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
   const layer = () => document.getElementById('atk-screen');
@@ -80,7 +86,7 @@
     cancel,
     active: () => V1.active(),
     get T() {
-      return (lib && lib.T) || V1.T;
+      return (lib && lib.T) || (VIDEO && vinfo && vinfo.T) || V1.T;
     },
     seek: (ms) => V1.seek(ms),
     end: () => (cur ? endRun(cur) : V1.end()),
@@ -183,11 +189,82 @@
     } catch {}
   }
 
+  // ---------- the video instead of the scene (Windows) ----------
+  // A stand-in for the scene with what begin() and releasePrep() use: T, render(t), dispose(). render(t) keeps the video on
+  // the show's clock: it plays while t moves, holds while t holds (the picture at 0 until start()), and seeks only when it
+  // has drifted more than a frame or two from the clock.
+  function videoScene(v, T) {
+    let last = NaN;
+    return {
+      T,
+      render(t) {
+        const want = (t - T.LOCK_START) / 1000;
+        if (want >= v.duration) return void v.pause();
+        if (Math.abs(v.currentTime - want) > 0.12) v.currentTime = want;
+        if (t === last) {
+          if (!v.paused) v.pause();
+        } else if (v.paused) {
+          v.play().catch(() => {});
+        }
+        last = t;
+      },
+      dispose() {
+        v.pause();
+        v.removeAttribute('src');
+        v.load();
+      },
+    };
+  }
+
+  function prepareVideo(p) {
+    return (async () => {
+      if (!vinfo) {
+        await loadScript(BASE + 'video.js');
+        vinfo = window.__ATTACK3D_VIDEO;
+        delete window.__ATTACK3D_VIDEO;
+        if (!vinfo || !vinfo.src || !vinfo.T) throw new Error('attack3d: video info missing');
+      }
+      if (p.dead) return;
+      const root = layer();
+      if (!root) throw new Error('attack3d: no layer');
+      const host = document.createElement('div');
+      host.className = 'as3d';
+      host.style.cssText = 'position:absolute;inset:0;pointer-events:none;opacity:0';
+      const v = document.createElement('video');
+      v.muted = true;
+      v.playsInline = true;
+      v.preload = 'auto';
+      v.disablePictureInPicture = true;
+      // the frame hugs the screen's edges: the 16:9 picture is stretched to any other shape rather than cut
+      v.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;object-fit:fill;pointer-events:none';
+      host.appendChild(v);
+      root.insertBefore(host, root.querySelector('.as-ret'));
+      p.host = host;
+      p.scene = videoScene(v, vinfo.T);
+      await new Promise((ok, no) => {
+        v.addEventListener('loadeddata', ok, { once: true });
+        v.addEventListener('error', () => no(new Error('attack3d: video ' + ((v.error && v.error.code) || ''))), { once: true });
+        v.src = BASE + vinfo.src;
+      });
+      if (p.dead) return;
+      p.ok = true;
+      fails = 0;
+    })();
+  }
+
   // ---------- making the scene (before its lock-on shows) ----------
   function prepare() {
     releasePrep(true);
     clearTimeout(dropTimer);
     const p = (P = { dead: false, ok: false, calm: reducedMotion(), urls: [], imgs: [], scene: null, host: null });
+    if (VIDEO) {
+      p.ready = prepareVideo(p).catch((e) => {
+        if (!p.dead && ++fails >= 2) failed = true;
+        throw e;
+      });
+      p.ready.catch(() => {});
+      return p;
+    }
     p.ready = (async () => {
       try {
         let pack = await files();
@@ -314,7 +391,8 @@
     V1.lock();
     // decoded now, not on the shot's frame (V1.lock() loads the old show's sounds only)
     if (window.Sfx && Sfx.preload) ['attack-shot', 'attack-crack'].forEach((n) => Sfx.preload(n));
-    if (failed || !webgl2()) return undefined; // the old show: its reticle closes now
+    // the old show: its reticle closes now (Windows' video has no reduced-motion cut: the old show has one)
+    if (failed || (VIDEO ? reducedMotion() : !webgl2())) return undefined;
     const root = layer();
     if (root) root.classList.add('v3'); // its reticle hidden (attack.css)
     const R = (cur = { opts: null, p: prepare(), T: null, t0: 0, shown: false, v1: false, raf: 0, guard: 0, timers: [], cues: [], drawn: false });
