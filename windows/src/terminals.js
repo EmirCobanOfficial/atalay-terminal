@@ -186,7 +186,12 @@ function createTerminals({ onData, onExit, host, extraPath }) {
     all.delete(id);
     onData(id, '\r\n');
     const { done, ...rest } = r;
-    api.spawn({ id, ...rest }).then(() => typeof done === 'function' && done(), (e) => {
+    api.spawn({ id, ...rest }).then(() => {
+      // The window's size now, should it have changed while the new process was being started.
+      const n = all.get(id);
+      if (n && (n.cols !== rest.cols || n.rows !== rest.rows)) api.resize(id, n.cols, n.rows);
+      if (typeof done === 'function') done();
+    }, (e) => {
       if (typeof done === 'function') done();
       onData(id, `\r\n\x1b[31m${e.message}\x1b[0m\r\n`);
       onExit(id, 1);
@@ -273,6 +278,13 @@ function createTerminals({ onData, onExit, host, extraPath }) {
       if (!t || !(cols > 0 && rows > 0)) return;
       t.cols = cols;
       t.rows = rows;
+      // A restart under way (another account): the new process starts at this size, not the one taken when it was asked
+      // for. The switch's note bar comes up meanwhile and takes a row; Claude started a row too tall drew its prompt below
+      // the window's last line.
+      if (t.restart) {
+        t.restart.cols = cols;
+        t.restart.rows = rows;
+      }
       if (t.pty) t.pty.resize(cols, rows);
       else if (link) link.send({ t: 'resize', id, cols, rows });
     },
