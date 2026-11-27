@@ -61,9 +61,10 @@ function textOf(q) {
  * `chatOf(event)`: the terminal window an IPC came from, [id, chat] (main.js); `rootOf([id, chat])`: the folder its env
  * view looks at (main.js's termCwd: where its shell is now, else where it started); `streamer`: the dashboard's streamer
  * mode (made-up folder names); `tildify`: a path as the strip shows it; `native` (envnative.js): the copy kept out of
- * Clipboard History and the save that keeps a file's permissions, `clipboard` the plain copy when it can't.
+ * Clipboard History and the save that keeps a file's permissions, `clipboard` the plain copy when it can't. `onState(found)`:
+ * the view opened or closed, or its changes not saved came or went (c.envOpen, c.envDirty).
  */
-function createEnvBridge({ ipcMain, chatOf, clipboard, streamer, tildify, home, rootOf, native = null }) {
+function createEnvBridge({ ipcMain, chatOf, clipboard, streamer, tildify, home, rootOf, native = null, onState = () => {} }) {
   const rootFor = rootOf || ((found) => found[1].cwd || home);
   // The folder each page's view lists, fixed then (by the page's webContents): its reads, writes and looks at the disk use
   // that one, wherever the shell has gone since. A page that hasn't listed has none, and is refused.
@@ -128,6 +129,12 @@ function createEnvBridge({ ipcMain, chatOf, clipboard, streamer, tildify, home, 
       // Whether the page holds changes not saved (main.js asks it before a terminal ends or the app quits).
       case 'dirty':
         c.envDirty = q.on === true;
+        onState(found);
+        return true;
+      // Whether the view is over the terminal (the env button of the window's bar over a split shows it pressed).
+      case 'open':
+        c.envOpen = q.on === true;
+        onState(found);
         return true;
       // To the clipboard, plain text: one value, a line, or the whole file as it would be saved (Copy all); kept out of
       // Clipboard History and the cloud clipboard when the helper can, else an ordinary copy.

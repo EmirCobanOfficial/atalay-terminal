@@ -969,7 +969,7 @@ function pushShipWindow(id, c) {
   const key = wc.id;
   if (!top) {
     if (was) send(c.page, 'term:ship', null);
-    shipWins.delete(key);
+    if (shipWins.delete(key) && c.frame && c.frame.views.size > 1) pushBar(c.frame);
     return;
   }
   const w = shipWins.get(key);
@@ -986,6 +986,9 @@ function shipSend(w, view) {
   if (json === w.sent) return;
   w.sent = json;
   send(w.win, 'term:ship', view);
+  // The window's bar over a split shows it for the pane with the keys (hudOf).
+  const f = chats.get(w.id)?.frame;
+  if (f && f.views.size > 1) pushBar(f);
 }
 
 // A worktree's status changed: its windows (ended ones too), the chats list and the menu's items follow.
@@ -2483,15 +2486,20 @@ ipcMain.on('term:acctMenu', (e, at) => {
   const found = chatOf(e);
   if (!found) return;
   const [id, c] = found;
-  const template = acctMenuFor(id);
-  if (!template || !c.win || c.win.isDestroyed()) return;
+  if (!c.win || c.win.isDestroyed()) return;
   const z = e.sender.getZoomFactor() || 1;
   // Menu.popup's place is in the window's own coordinates: the page's view place in it, and the chip's place in the page.
   const b = (c.page.getBounds && c.page.getBounds()) || { x: 0, y: 0 };
   const pos = at && Number.isFinite(at.x) && Number.isFinite(at.y) ? { x: b.x + Math.round(at.x * z), y: b.y + Math.round(at.y * z) } : {};
-  send(c.page, 'term:acctMenu', true);
-  Menu.buildFromTemplate(template).popup({ window: c.win, ...pos, callback: () => send(c.page, 'term:acctMenu', false) });
+  acctMenuAt(id, c, c.win, pos, (open) => send(c.page, 'term:acctMenu', open));
 });
+/** Pane `id`'s account menu at `pos` (window `win`'s coordinates); `shown(open)` says when it opens and closes. */
+function acctMenuAt(id, c, win, pos, shown) {
+  const template = acctMenuFor(id);
+  if (!template || !win || win.isDestroyed()) return;
+  shown(true);
+  Menu.buildFromTemplate(template).popup({ window: win, ...pos, callback: () => shown(false) });
+}
 // A note's button (the limit note's "Continue with …", the 5% note's "After this reply", "Not now", "Dismiss"): the user's click.
 ipcMain.on('term:acctNote', (e, q) => {
   const found = chatOf(e);
@@ -2614,7 +2622,9 @@ function openChatWindow({ id = crypto.randomUUID(), cwd, claudeArgs, claude = !!
 // that page isn't even loaded. A terminal's id never changes, so the dashboard, its notes and the session host find it
 // wherever it moves.
 const frames = new Set();
-const TAB_BAR = 30, PANE_GAP = 4;
+// The tab bar; the gap between split panes (the Mac's divider, 5 pt); over a split, the window's bar (the Mac's header: its
+// title row of 32 and HUD row of 30) and the room under it before the panes (the Mac's 6 pt).
+const TAB_BAR = 30, PANE_GAP = 5, HUD_BAR = 62, HUD_GAP = 6;
 const frameHolding = (id) => chats.get(id)?.frame || [...frames].find((f) => f.views.has(id)) || null;
 const focusedFrame = () => [...frames].find((f) => !f.win.isDestroyed() && f.win.isFocused()) || null;
 
@@ -2807,11 +2817,37 @@ function frontOf(f, t = f.active) {
   return ids[0] || null;
 }
 
-/** Where the panes of the tab in front go: under the bar when there's one. */
+/** Whether the tab in front shows two panes or more (none of them zoomed to the whole area). */
+function splitShown(f) {
+  const shown = f.tabs[f.active];
+  return !!shown && panes.ids(shown).length > 1 && !(f.zoom && panes.has(shown, f.zoom));
+}
+
+/** Where the panes of the tab in front go: under the tab bar when there's one, and under the window's bar in a split. */
 function areaOf(f) {
   const { width, height } = f.win.contentView.getBounds();
-  const top = f.tabs.length > 1 ? TAB_BAR : 0;
+  const top = (f.tabs.length > 1 ? TAB_BAR : 0) + (splitShown(f) ? HUD_BAR + HUD_GAP : 0);
   return { x: 0, y: top, width, height: Math.max(0, height - top) };
+}
+
+/**
+ * The window's bar over a split (the Mac's header: ChatWindow.swift's TitleRow over its HUDRow), for the pane with the
+ * keys: what its strip would show (its term:info), and the window's own state. The bar's page
+ * (pages/tabs.js) shows and hides the pieces by the Mac's rules (the context, the counts, the star and End go with two tabs
+ * or more, where each chip has its own). Null: no split in front, no bar.
+ */
+function hudOf(f) {
+  const id = f.focus;
+  const c = chats.get(id);
+  if (!splitShown(f) || !c) return null;
+  const wc = pageOf(c.page);
+  const ship = wc && shipWins.get(wc.id);
+  return {
+    info: f.last.get(id) || {}, tabs: f.tabs.length, pinned: !!f.pinned,
+    env: { open: !!c.envOpen, dirty: !!c.envDirty },
+    ship: ship && ship.sent ? JSON.parse(ship.sent) : null,
+    keys: { copyReply: shortcuts.label(shortcuts.combo('copyReply')), envFiles: shortcuts.label(shortcuts.combo('envFiles')) },
+  };
 }
 
 /** The tab in front's panes where they go (the others' hidden), and the tab bar and each page told how things are. */
@@ -2827,18 +2863,13 @@ function layoutFrame(f) {
     view.setVisible(!!r);
   }
   f.dividers = dividers;
-  // The window's one pin (it pins the whole window, as the Mac's HUD pin does): on the strip of the pane at the window's
-  // top right corner only, not once per pane.
-  let pinId = null;
-  for (const [id, r] of rects) {
-    const p = pinId && rects.get(pinId);
-    if (!p || r.y < p.y || (r.y === p.y && r.x + r.width > p.x + p.width)) pinId = id;
-  }
-  // Each page: whether it's one of several (dimmed without the keys, as in iTerm2), whether it has them, and the pin.
-  const key = `${f.tabs.length}|${rects.size}|${f.focus}|${[...rects.keys()].join(',')}|${pinId}`;
+  // Each page: whether it's one of several (dimmed without the keys, as in iTerm2; its strip slim then, the Mac's pane
+  // title bar, the window's bar above the panes carrying the rest), whether it has them, and whether the window's panes use
+  // more than one Claude account (the slim strip shows the account's disc then, as the Mac's does).
+  const key = `${f.tabs.length}|${rects.size}|${f.focus}|${[...rects.keys()].join(',')}|${!!f.acctMarks}`;
   if (key !== f.stateKey) {
     f.stateKey = key;
-    for (const [id, view] of f.views) send(view, 'term:pane', { tabs: f.tabs.length, panes: rects.size, split: panes.ids(shown).length > 1, shown: rects.has(id), focused: id === f.focus, pin: id === pinId });
+    for (const [id, view] of f.views) send(view, 'term:pane', { tabs: f.tabs.length, panes: rects.size, split: panes.ids(shown).length > 1, shown: rects.has(id), focused: id === f.focus, accounts: !!f.acctMarks });
   }
   pushBar(f);
 }
@@ -2896,6 +2927,11 @@ function sendBar(f) {
   // Each chip shows the pane in front of its tab: its name, whether its AI works or needs you, its context.
   // The Claude account's initial on a chip, only when the window's panes use more than one (the Mac's TabChip).
   const marks = new Set([...f.views.keys()].map((pid) => ((f.last.get(pid) || {}).acct || {}).chip).filter(Boolean).map((chip) => chip.mark.id));
+  // The panes' slim strips show the disc by the same rule (layoutFrame tells them).
+  if ((marks.size > 1) !== !!f.acctMarks) {
+    f.acctMarks = marks.size > 1;
+    layoutFrame(f);
+  }
   const tabs = f.tabs.map((node, i) => {
     const id = frontOf(f, i);
     const info = f.last.get(id) || {};
@@ -2904,7 +2940,7 @@ function sendBar(f) {
     return { title: info.title || chats.get(id)?.title || 'terminal', status, stats: info.stats || null, panes: panes.ids(node).length, acct: mark ? { initial: mark.initial, hue: mark.hue, label: mark.label } : null };
   });
   send(f.win, 'term:tabs', {
-    tabs, active: f.active, bar, height: TAB_BAR,
+    tabs, active: f.active, bar, height: TAB_BAR, hud: hudOf(f), hudHeight: HUD_BAR, hudTop: bar ? TAB_BAR : 0,
     dividers: f.dividers.map(({ x, y, width, height, dir }) => ({ x, y, width, height, dir })),
   });
 }
@@ -2918,6 +2954,29 @@ ipcMain.on('term:tabs', (e, q) => {
   switch (q.type) {
     case 'ready':
       return sendBar(f);
+    // The window's bar over a split: its buttons act for the pane with the keys, as the Mac's header does. The keys go back
+    // to that pane first (a click on the bar gave them to the bar's page), then the button does what its pane's would.
+    case 'hud': {
+      const id = f.focus;
+      const c = chats.get(id);
+      if (!c) return;
+      focusPane(f, id);
+      const at = barPoint(f, q);
+      const menuShown = (menu) => (open) => send(f.win, 'term:hudMenu', { menu, open });
+      switch (q.act) {
+        case 'pin': return setPinned(f, !f.pinned);
+        // Nothing to star (a plain terminal): a beep, as the Mac's toggleFavorite.
+        case 'star': return void (toggleFavoriteOf(id, c) || shell.beep());
+        case 'end': return void endAsked(id);
+        case 'copy': return send(c.page, 'term:do', { action: 'copyReply' });
+        case 'env': return send(c.page, 'term:env');
+        case 'acct': return acctMenuAt(id, c, f.win, at, menuShown('acct'));
+        case 'shipChip': return shipChip(shipWinOfChat(c));
+        case 'shipMain': return shipMain(shipWinOfChat(c));
+        case 'shipMore': return shipMenu(shipWinOfChat(c), f.win, at, menuShown('ship'));
+      }
+      return;
+    }
     case 'select':
       if (i >= 0) focusPane(f, frontOf(f, i));
       return;
@@ -3401,6 +3460,7 @@ tabdrag.init({
     return f && frames.has(f) ? { f, id: found[0] } : null;
   },
   paneRects,
+  headH: (f) => (splitShown(f) ? HUD_BAR : 0),
   barGeom: (f) => (f.tabs.length > 1 && f.barLoaded && f.chipGeom) || null,
   tabTitle: (f, i) => paneTitle(frontOf(f, i)),
   paneTitle,
@@ -3857,6 +3917,8 @@ const chatOf = (e) => !mascot.has(e.sender) && [...chats.entries()].find(([, c])
 createEnvBridge({
   ipcMain, chatOf, clipboard, streamer, tildify, home: os.homedir(),
   rootOf: ([id, c]) => termCwd(id, c),
+  // The view opened or closed, or holds changes not saved: the window's bar over a split shows it on its env button.
+  onState: ([, c]) => c.frame && c.frame.views.size > 1 && pushBar(c.frame),
   native: process.platform === 'win32' ? createEnvNative({ ownDir: path.join(process.env.LOCALAPPDATA || app.getPath('appData'), 'atalay-terminal') }) : null,
 });
 
@@ -3900,8 +3962,9 @@ ipcMain.on('term:ready', (e, { cols, rows }) => {
   const found = chatOf(e);
   if (!found) return;
   const [id, c] = found;
-  // A page loaded again holds no env changes.
+  // A page loaded again holds no env changes, and no env view open.
   c.envDirty = false;
+  c.envOpen = false;
   // A new window starts its shell; one for a session that's already running (it outlived the app, or the page
   // reloaded) attaches to it.
   if (terminals.has(id)) terminals.attach(id, cols, rows);
@@ -3996,17 +4059,19 @@ ipcMain.on('term:end', (e) => {
 // (the Mac's toggleFavorite). Nothing to star in a plain terminal.
 ipcMain.on('term:favorite', (e) => {
   const found = chatOf(e);
-  if (!found) return;
-  const [id, c] = found;
+  if (found) toggleFavoriteOf(found[0], found[1]);
+});
+function toggleFavoriteOf(id, c) {
   const live = engine.live();
   const s = live.find((x) => !x.ai && (x.tab === id || (c.sessionId && x.sessionId === c.sessionId)));
   const ids = favoriteIds(s, live.find((x) => x.ai && x.tab === id));
   const pick = ids.find((x) => chatlist.isFavorite(x)) || ids.find((x) => chatlist.listed(x));
-  if (!pick) return;
+  if (!pick) return false;
   chatlist.toggleFavorite(pick);
   pushChats(true);
   pushChatInfos();
-});
+  return true;
+}
 ipcMain.on('term:copy', (e, text) => {
   if (chatOf(e) && typeof text === 'string' && text) clipboard.writeText(text);
 });
@@ -4186,23 +4251,36 @@ ipcMain.on('term:open', (e, uri) => {
 // The header's worktree chip and split button (pages/terminal.js; the Mac's WorktreeChipView and WorktreeShipButton):
 // the window's own worktree only, whatever the page sends. An ended window keeps its chip (shipWins).
 const shipWinOf = (e) => (mascot.has(e.sender) ? null : shipWins.get(e.sender.id) || null);
-ipcMain.on('term:shipMain', (e) => {
-  const w = shipWinOf(e);
+// The same for a terminal (the window's bar over a split acts for the pane with the keys).
+const shipWinOfChat = (c) => {
+  const wc = c && pageOf(c.page);
+  return (wc && shipWins.get(wc.id)) || null;
+};
+function shipMain(w) {
   const view = w && worktreeShip.headerView(w.top);
   if (view && view.face && view.face.enabled && !view.busy) worktreeShip.handle(view.face.kind, w.top, chats.has(w.id) ? w.id : null);
-});
-ipcMain.on('term:shipChip', (e) => {
-  const w = shipWinOf(e);
+}
+function shipChip(w) {
   const view = w && worktreeShip.headerView(w.top);
   if (view && view.clickable) worktreeShip.handle('changes', w.top);
-});
+}
+ipcMain.on('term:shipMain', (e) => shipMain(shipWinOf(e)));
+ipcMain.on('term:shipChip', (e) => shipChip(shipWinOf(e)));
 // ▾: every action for the worktree, as a system menu under the button (`at`: its bottom left, in the page's pixels).
 ipcMain.on('term:shipMore', (e, at) => {
   const w = shipWinOf(e);
   const page = w && pageOf(w.win);
+  if (!page) return;
+  // The page's pixels, from its own corner: its view's place in the window comes first.
+  const z = page.getZoomFactor() || 1;
+  const v = w.win.getBounds();
+  const pos = at && Number.isFinite(at.x) && Number.isFinite(at.y) ? { x: v.x + Math.round(at.x * z), y: v.y + Math.round(at.y * z) } : {};
   // The window the terminal is a tab or pane of now.
-  const win = w && w.chat && w.chat.win;
-  if (!page || !win || win.isDestroyed()) return;
+  shipMenu(w, w.chat && w.chat.win, pos, (open) => send(w.win, 'term:shipMenu', open));
+});
+/** Worktree `w`'s menu at `pos` (window `win`'s coordinates); `shown(open)` says when it opens and closes. */
+function shipMenu(w, win, pos, shown) {
+  if (!w || !win || win.isDestroyed()) return;
   const top = w.top;
   const deleted = worktreeShip.isDeleted(top);
   const its = worktreeShip.items(worktreeShip.status(top), deleted || worktreeShip.isBusy(top));
@@ -4214,13 +4292,9 @@ ipcMain.on('term:shipMore', (e, at) => {
     template.push({ label: menuLabel(it), enabled: it.enabled, accelerator: it.id === 'create' ? shortcuts.accel('createPR') : undefined, registerAccelerator: false,
       click: () => worktreeShip.handle(it.id, top, chats.has(w.id) ? w.id : null) });
   }
-  // The page's pixels, from its own corner: its view's place in the window comes first.
-  const z = page.getZoomFactor() || 1;
-  const v = w.win.getBounds();
-  const pos = at && Number.isFinite(at.x) && Number.isFinite(at.y) ? { x: v.x + Math.round(at.x * z), y: v.y + Math.round(at.y * z) } : {};
-  send(w.win, 'term:shipMenu', true);
-  Menu.buildFromTemplate(template).popup({ window: win, ...pos, callback: () => send(w.win, 'term:shipMenu', false) });
-});
+  shown(true);
+  Menu.buildFromTemplate(template).popup({ window: win, ...pos, callback: () => shown(false) });
+}
 
 // ---------- the overlay: the Ring and the new-terminal folder picker, over the whole screen ----------
 let over = null, overReady = false, overPending = null;

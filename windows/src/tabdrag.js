@@ -55,6 +55,8 @@ function viewOf(f) {
     tabs,
     active: f.active,
     barH,
+    // Under the tab bar: the window's bar over a split, else the first pane's strip (dropgeom's STRIP_H).
+    headH: (deps.headH && deps.headH(f)) || g.STRIP_H,
     geom: tabs > 1 ? deps.barGeom(f) || g.evenGeom(tabs, cb.width) : null,
     rects: deps.paneRects(f),
     accepts: showing(f),

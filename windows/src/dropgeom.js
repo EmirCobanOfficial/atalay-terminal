@@ -5,7 +5,7 @@
 // slot code), with the points taken as DIP and the Mac's y-up edges mirrored (its .maxY is the top here).
 //
 // A `view` is one terminal window as plain data, built by tabdrag.js from a frame:
-//   { key, outer, content, tabs, active, barH, geom, rects, accepts }
+//   { key, outer, content, tabs, active, barH, headH, geom, rects, accepts }
 // `outer` is its visible bounds on screen (title bar included), `content` its content bounds on screen, `geom` the chip spans
 // of its tab bar in content coordinates ({ chips: [[l, r], ...], clip: [l, r] }), `rects` a Map of pane id to rect in content
 // coordinates, `key` whatever the caller wants back (the frame). `hit` says what the pointer is over: { kind: 'self' } (the
@@ -117,9 +117,9 @@ function incomingSlot(view, lp) {
   return inBar(view, lp) ? slotAt(view.geom, lp.x) : view.tabs;
 }
 
-// The Mac's header zone: the native title bar, the tab bar and the first strip.
+// The Mac's header zone: the native title bar, the tab bar and the first strip (over a split, the window's bar: `headH`).
 function headerRect(view) {
-  return { x: 0, y: 0, width: view.content.width, height: view.barH + STRIP_H };
+  return { x: 0, y: 0, width: view.content.width, height: view.barH + (view.headH || STRIP_H) };
 }
 
 // The mark for something joining as a tab at a slot: a slot marker in the bar, or the whole header when there is no bar.
@@ -178,7 +178,7 @@ function paneDrop({ p, self, id, hit }) {
 
 // Screen point p over the window's header zone: from the top of its title bar to the bottom of the first strip.
 function inHeader(view, p) {
-  const bottom = view.content.y + view.barH + STRIP_H;
+  const bottom = view.content.y + view.barH + (view.headH || STRIP_H);
   return p.y >= view.outer.y && p.y < bottom && p.x >= view.content.x && p.x < view.content.x + view.content.width;
 }
 

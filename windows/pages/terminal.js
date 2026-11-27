@@ -669,7 +669,10 @@
   const DROPS = ['#spark', '#model', '#counts', '#cost', '#status .why', '#action', '#ctx'].map((s) => hudEl.querySelector(s));
   const fitHud = () => {
     for (const el of DROPS) el.classList.remove('dropped');
-    const cramped = () => hudEl.scrollWidth > hudEl.clientWidth || titleEl.clientWidth < Math.min(titleEl.scrollWidth, 72);
+    // In a split the slim strip keeps 70 px for the name, as the Mac's pane title bar does (its counts go first, then the
+    // context; the rest isn't on it).
+    const keep = document.body.classList.contains('pane-split') ? 70 : 72;
+    const cramped = () => hudEl.scrollWidth > hudEl.clientWidth || titleEl.clientWidth < Math.min(titleEl.scrollWidth, keep);
     acctEl.classList.remove('narrow');
     for (const el of DROPS) {
       if (!cramped()) break;
@@ -705,11 +708,19 @@
     pinEl.classList.toggle('on', on);
     pinEl.title = on ? 'Stop keeping this window above all other apps' : 'Keep this window above all other apps';
   };
-  // The pin is the window's, once (the Mac's HUD pin): in a split only the pane at the window's top right shows it
-  // (main.js layoutFrame, term:pane `pin`).
-  let pinHere = true;
+  // The pin is the window's, once (the Mac's HUD pin): in a split the window's bar over the panes has it, and the slim
+  // strips don't (terminal.css).
   const showPin = () => {
-    pinEl.hidden = !pinHere || typeof info.pinned !== 'boolean';
+    pinEl.hidden = typeof info.pinned !== 'boolean';
+  };
+  // In a split the strip is the Mac's pane title bar: its dot only while the AI in it works or needs you, in that colour,
+  // and saying so when the pointer rests on the strip.
+  const paintSlim = () => {
+    const split = document.body.classList.contains('pane-split');
+    const st = !info.chat ? '' : info.status === 'terminal' && info.tool ? info.toolStatus || '' : info.status || '';
+    const dot = st === 'busy' || st === 'waiting' ? st : '';
+    hudEl.dataset.dot = dot;
+    hudEl.title = split && dot ? (dot === 'busy' ? 'Working' : 'Needs you') : '';
   };
   atl.on('term:info', (got) => {
     const i = (info = got || {});
@@ -742,6 +753,8 @@
     if (st) {
       ctxEl.querySelector('.bar span').style.width = `${st.ctxMax > 0 ? Math.min(1, st.ctx / st.ctxMax) * 100 : 0}%`;
       ctxEl.querySelector('.n').textContent = fmtTok(st.ctx) + (st.ctxMax > 0 ? ` / ${fmtTok(st.ctxMax)}` : '');
+      // The slim strip's (a split's) shows the size alone, as the Mac's pane title bar.
+      ctxEl.querySelector('.s').textContent = fmtTok(st.ctx);
       // Its subagents at work after the counts, as the Mac's "⤷2".
       const agents = Math.trunc(Number(i.agentsRunning) || 0);
       countsEl.innerHTML = `<b>${st.tools}</b><i> tools · </i><b>${st.web}</b><i> web · </i><b${st.errors > 0 ? ' class="err"' : ''}>${st.errors}</b><i> err</i>` +
@@ -773,6 +786,7 @@
     document.getElementById('copyreply').hidden = i.canCopyReply !== true;
     if (typeof i.pinned === 'boolean') setPin(i.pinned);
     showPin();
+    paintSlim();
     tick();
     drawAcct(i.acct, i.status);
     fitHud();
@@ -973,14 +987,21 @@
   // with them is marked. A double click on its name renames it in place (Enter keeps it, empty goes back to the one it's
   // given, Esc drops it); a right click on the strip has Rename and the moves to a tab or a window of its own.
   // The tab in front has several panes, even while one is zoomed to the whole area (only then is `panes` 1): its strip drags.
+  // With several panes shown the strip is slim (terminal.css, the Mac's PaneTitleBar): the window's bar over the panes
+  // (pages/tabs.js) has the rest for the pane with the keys, and End here is the pane's ×. The account's disc shows when
+  // the window's panes use more than one account (`accounts`).
   let inSplit = false;
+  const endEl = document.getElementById('end');
   atl.on('term:pane', (p) => {
     inSplit = !!p && (p.panes > 1 || !!p.split);
     const several = !!p && p.panes > 1;
     document.body.classList.toggle('pane-split', several);
     document.body.classList.toggle('pane-off', several && !p.focused);
-    pinHere = !p || p.pin !== false;
-    showPin();
+    document.body.classList.toggle('pane-accts', several && !!p.accounts);
+    endEl.textContent = several ? '×' : 'end';
+    endEl.title = several ? 'Close this pane' : 'End this terminal';
+    endEl.setAttribute('aria-label', endEl.title);
+    paintSlim();
     fitHud();
   });
   let renaming = false;

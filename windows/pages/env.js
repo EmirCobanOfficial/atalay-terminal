@@ -110,6 +110,8 @@
   async function open() {
     S = fresh();
     btn.classList.add('on');
+    // The window's bar over a split has an env button too (pages/tabs.js): it shows pressed while this view is open.
+    ask({ type: 'open', on: true }).catch(() => {});
     view.hidden = false;
     document.body.classList.add('env-open');
     render();
@@ -207,6 +209,7 @@
     view.innerHTML = '';
     document.body.classList.remove('env-open');
     btn.classList.remove('on');
+    ask({ type: 'open', on: false }).catch(() => {});
     tellDirty();
     // Back to the terminal, which has the keys again.
     window.dispatchEvent(new Event('focus'));

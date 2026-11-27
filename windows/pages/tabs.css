@@ -47,5 +47,117 @@ body { overflow: hidden; background: var(--code-bg, #251200); color: var(--txt, 
 /* A tab's Claude account: its initial in the account's colour, only when the window's tabs use more than one. */
 .chip .ac { display: inline-grid; flex: none; place-items: center; width: 14px; height: 14px; border-radius: 50%; background: rgb(var(--ah, 255, 176, 87)); color: #180e07; font: 800 8.5px/1 "Segoe UI", sans-serif; font-style: normal; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35); }
 
+/* Over a split: the window's bar, the Mac's header (ChatWindow.swift ChatHeaderView): TitleRow (32 px: the hexagon, the
+   project's name, the worktree's and the account's chips, the title; the split button and the status pill at the right),
+   over HUDRow (30 px: the figures; the sparkline and the buttons at the right). --st is the status's colour, the Mac's
+   `hex`. Each row is one line whatever the width: what doesn't fit is dropped piece by piece (tabs.js fitHud). */
+#hud { position: fixed; left: 0; right: 0; top: 0; z-index: 2; display: flex; flex-direction: column; height: 62px; box-sizing: border-box; overflow: hidden;
+  background:
+    repeating-linear-gradient(90deg, color-mix(in srgb, var(--st, var(--accent, #f88008)) 7%, transparent) 0 1px, transparent 1px 18px) 0 0 / 100% 32px no-repeat,
+    linear-gradient(color-mix(in srgb, var(--st, var(--accent, #f88008)) 14%, transparent), transparent) 0 0 / 100% 32px no-repeat;
+  color: var(--txt, #f5ebe0); font: 10.5px "Cascadia Mono", Consolas, monospace; white-space: nowrap; }
+#hud[hidden] { display: none; }
+#hud .row { display: flex; flex: none; align-items: center; box-sizing: border-box; min-width: 0; overflow: hidden; padding: 0 12px; }
+#hud .row > * { flex: none; }
+#hud [hidden], #hud .dropped { display: none !important; }
+#hudTitle { height: 32px; gap: 8px; }
+#hudRow { height: 30px; gap: 14px; border-top: 1px solid color-mix(in srgb, var(--st, var(--accent, #f88008)) 18%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--st, var(--accent, #f88008)) 35%, transparent); background: rgba(0, 0, 0, 0.16); }
+#hud .spacer { flex: 1 1 6px !important; min-width: 6px; }
+#hudTitle .spacer { min-width: 8px; }
+#hex { width: 14px; height: 14px; fill: none; stroke: var(--st, var(--accent, #f88008)); stroke-width: 1.9; stroke-linejoin: round; filter: drop-shadow(0 0 3px var(--st, var(--accent, #f88008))); }
+#project { max-width: 24ch; overflow: hidden; color: var(--accent, #f88008); font-size: 12px; font-weight: 700; text-overflow: ellipsis; text-shadow: 0 0 6px rgba(var(--accent-rgb, 248, 128, 8), 0.6); }
+#sep { color: var(--dim2, #6b5646); font-size: 12px; }
+#title { flex: 0 1 auto !important; min-width: 0; overflow: hidden; color: var(--hi, #fff8f0); font-size: 12px; text-overflow: ellipsis; }
+/* The status pill: its colour on a tint of it, filled while it needs you, and then blinking with the clock (the Mac's). */
+#pill { padding: 2px 8px; font-size: 10.5px; border: 1px solid var(--st, #8f7a66); border-radius: 3px; background: color-mix(in srgb, var(--st, #8f7a66) 14%, transparent);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--st, #8f7a66) 60%, transparent); color: var(--st, #8f7a66); font-weight: 700; letter-spacing: 1.2px; }
+#pill.waiting { background: var(--st, #ffb000); color: var(--ink, #180e07); }
+#pill.waiting.blink { opacity: 0.45; }
+#where, #starting { flex: 0 1 auto !important; min-width: 0; overflow: hidden; color: var(--dim, #8f7a66); text-overflow: ellipsis; }
+#ctx { display: inline-flex; align-items: center; gap: 6px; }
+#ctx i { color: var(--dim, #8f7a66); font-style: normal; }
+#ctx .bar { position: relative; width: 110px; height: 6px; background: rgba(255, 255, 255, 0.08); }
+#ctx .bar span { position: absolute; inset: 0 auto 0 0; width: 0; background: linear-gradient(90deg, var(--accent, #f88008), var(--amber, #ffc040)); box-shadow: 0 0 4px rgba(var(--accent-rgb, 248, 128, 8), 0.7); }
+#model { max-width: 24ch; overflow: hidden; color: var(--dim, #8f7a66); text-overflow: ellipsis; }
+#cost { color: var(--amber, #ffc040); font-weight: 600; }
+#counts i { color: var(--dim, #8f7a66); font-style: normal; }
+#counts b { font-weight: 600; }
+#counts b.err { color: var(--red, #ff4d4d); }
+#counts .ag { color: var(--violet, #b48cff); font-weight: 600; }
+/* The tool call: its name in its kind's colour, what it's on (shrinks first), how long it's taken (5 apart). */
+#action { display: inline-flex; flex: 0 1 auto !important; gap: 5px; min-width: 0; overflow: hidden; }
+#action .name { flex: none; color: var(--cat, var(--lavender, #c8a8ff)); font-weight: 700; }
+#action .label { min-width: 0; overflow: hidden; color: var(--txt, #f5ebe0); text-overflow: ellipsis; }
+#action .label:empty { display: none; }
+#action .dur { flex: none; color: var(--dim, #8f7a66); font-style: normal; }
+#spark { display: inline-flex; }
+#spark svg { width: 96px; height: 18px; fill: var(--st, var(--accent, #f88008)); }
+/* The buttons (the Mac's HUDButton): a square of 24 by 20 (the env word's 34), its colour's outline, dim until hovered,
+   filled while on; a dot at the corner while the env view holds changes not saved. */
+#hud .hb { position: relative; display: inline-grid; place-items: center; width: 24px; height: 20px; padding: 0; box-sizing: border-box;
+  border: 1px solid color-mix(in srgb, var(--c, var(--st, #f88008)) 40%, transparent); border-radius: 0; background: transparent;
+  color: var(--dim, #8f7a66); font: 700 10px "Cascadia Mono", Consolas, monospace; cursor: pointer; }
+#hud .hb:hover { border-color: var(--c, var(--st, #f88008)); color: var(--hi, #fff8f0); box-shadow: 0 0 6px color-mix(in srgb, var(--c, var(--st, #f88008)) 60%, transparent); }
+#hud .hb.on { border-color: var(--c, var(--st, #f88008)); background: var(--c, var(--st, #f88008)); color: var(--ink, #180e07); }
+#hud .hb.word { width: 34px; }
+#hud .hb svg { width: 11px; height: 11px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+#hud .hb.on svg { fill: currentColor; }
+#hud #copy.on svg, #hud #end svg { fill: none; }
+#hud #env, #hud #star { --c: var(--amber, #ffc040); }
+#hud #end { --c: var(--red, #ff4d4d); }
+#hud #env.dirty::after { content: ''; position: absolute; top: -2px; right: -2px; width: 6px; height: 6px; border-radius: 50%; background: var(--amber, #ffc040); }
+#hud .hb:focus-visible { outline: 2px solid var(--accent-soft, #ffb057); outline-offset: 1px; }
+/* The worktree chip, the split button and the account chip: the strip's (terminal.css), the same tokens. */
+#hud #wt { display: inline-flex; align-items: center; gap: 5px; max-width: 40%; height: 20px; padding: 0 6px; box-sizing: border-box;
+  border: 1px solid color-mix(in srgb, var(--accent-soft, #ffb057) 55%, transparent); border-radius: 3px;
+  background: rgba(var(--accent-rgb, 248, 128, 8), 0.06); color: var(--accent-soft, #ffb057); font: 10.5px "Cascadia Mono", Consolas, monospace; cursor: pointer; }
+#hud #wt:hover:not(.dim):not(.flat) { border-color: var(--accent-soft, #ffb057); background: rgba(var(--accent-rgb, 248, 128, 8), 0.14); }
+#hud #wt.flat { cursor: default; }
+#hud #wt.dim { border-color: color-mix(in srgb, var(--dim, #8f7a66) 50%, transparent); background: transparent; color: var(--dim, #8f7a66); cursor: default; }
+#wt svg, #ship svg { flex: none; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
+#wt > svg { width: 10px; height: 10px; }
+#wt .word { color: var(--txt3, var(--dim, #8f7a66)); }
+#wt .br { overflow: hidden; font-weight: 600; text-overflow: ellipsis; }
+#wt .sep { flex: none; width: 1px; height: 10px; background: color-mix(in srgb, var(--accent-soft, #ffb057) 40%, transparent); }
+#wt .tail { display: inline-flex; flex: none; align-items: center; gap: 4px; }
+#wt .del { color: var(--red-soft, #ff8a80); }
+#wt .pr { color: var(--txt2, #e0cdb8); font-weight: 600; }
+#wt .gone { color: var(--dim, #8f7a66); }
+#wt .ok { width: 9px; height: 9px; color: var(--accent-soft, #ffb057); stroke-width: 2.2; }
+#wt .bad { width: 9px; height: 9px; color: var(--red, #ff4d4d); stroke-width: 2.2; }
+.ring { flex: none; display: inline-block; width: 9px; height: 9px; box-sizing: border-box; border: 1.5px solid color-mix(in srgb, var(--amber, #ffc040) 30%, transparent);
+  border-top-color: var(--amber, #ffc040); border-radius: 50%; animation: wt-spin 0.8s linear infinite; }
+#ship .ring { width: 10px; height: 10px; border-color: color-mix(in srgb, var(--accent-soft, #ffb057) 30%, transparent); border-top-color: var(--accent-soft, #ffb057); }
+@keyframes wt-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .ring { animation: none; border-left-color: transparent; border-top-color: currentColor; border-right-color: currentColor; border-bottom-color: currentColor; } }
+#ship { display: inline-flex; align-items: stretch; height: 24px; box-sizing: border-box; border: 1px solid var(--accent, #f88008); border-radius: 6px; overflow: hidden; }
+#hud #ship button { display: inline-flex; align-items: center; height: 100%; border: 0; border-radius: 0; background: transparent; color: var(--accent-soft, #ffb057); font: 600 11.5px "Segoe UI", system-ui, sans-serif; cursor: pointer; }
+#hud #shipMain { gap: 5px; padding: 0 9px 0 8px; }
+#hud #shipMain svg { width: 12px; height: 12px; }
+#hud #shipMore { justify-content: center; width: 18px; padding: 0; border-left: 1px solid rgba(var(--accent-rgb, 248, 128, 8), 0.5); }
+#hud #shipMore svg { width: 9px; height: 9px; stroke-width: 2; }
+#hud #ship button:hover:not(.off):not(.busy), #hud #shipMore.open { background: rgba(var(--accent-rgb, 248, 128, 8), 0.14); color: var(--hi, #fff8f0); }
+#hud #shipMain.off { opacity: 0.42; cursor: default; }
+#hud #shipMain.busy { cursor: default; }
+@media (max-width: 959px) { #wt .word { display: none; } }
+@media (max-width: 639px) { #wt .nums { display: none !important; } }
+#hud #acct { display: inline-flex; align-items: center; gap: 5px; max-width: 46%; height: 20px; padding: 0 6px 0 3px; box-sizing: border-box; overflow: hidden;
+  border: 1px solid rgba(var(--ah, 255, 176, 87), 0.55); border-radius: 10px; background: rgba(var(--ah, 255, 176, 87), 0.1);
+  color: rgb(var(--ah, 255, 176, 87)); font: 600 10.5px "Cascadia Mono", Consolas, monospace; cursor: pointer; }
+#hud #acct:hover, #hud #acct.open { border-color: rgb(var(--ah, 255, 176, 87)); background: rgba(var(--ah, 255, 176, 87), 0.2); }
+#hud #acct.open { box-shadow: 0 0 0 3px rgba(var(--ah, 255, 176, 87), 0.18); }
+#hud #acct.out { border-color: color-mix(in srgb, var(--red, #ff4d4d) 70%, transparent); background: color-mix(in srgb, var(--red, #ff4d4d) 10%, transparent); }
+#hud #acct.pending { border-style: dashed; }
+#acct .ac { display: inline-grid; flex: none; place-items: center; width: 14px; height: 14px; border-radius: 50%; background: rgb(var(--ah, 255, 176, 87)); color: #180e07; font: 800 8.5px/1 "Segoe UI", sans-serif; font-style: normal; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35); }
+#acct .lab { overflow: hidden; text-overflow: ellipsis; }
+#acct .sep { flex: none; width: 1px; height: 10px; background: rgba(var(--ah, 255, 176, 87), 0.35); }
+#acct .pct { color: var(--red, #ff4d4d); font-weight: 700; }
+#acct .next { display: inline-flex; align-items: center; gap: 4px; color: var(--txt2, var(--dim, #8f7a66)); font-weight: 500; }
+#acct .next svg { width: 11px; height: 11px; fill: none; stroke: rgb(var(--ah2, 255, 176, 87)); stroke-width: 1.4; stroke-linecap: round; }
+#acct .chev { width: 8px; height: 8px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+#hud #acct.narrow .lab, #hud #acct.narrow .sep, #hud #acct.narrow .pct, #hud #acct.narrow .words { display: none; }
+#hud #wt:focus-visible, #hud #acct:focus-visible, #hud #ship button:focus-visible { outline: 2px solid var(--accent-soft, #ffb057); outline-offset: -2px; }
+
 /* While a chip is dragged the pointer holds a closed hand wherever it is over this page, the chip's own × included. */
 body.dragging, body.dragging * { cursor: grabbing !important; }
