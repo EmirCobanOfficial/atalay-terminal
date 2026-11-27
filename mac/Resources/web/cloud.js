@@ -2752,7 +2752,8 @@ window.Cloud = (() => {
     if (r.error) return toast(errorText(r.error));
     S.xp = { ...S.xp, show };
     renderActivity();
-    toast(show ? 'friends see your active time again' : 'your active time is hidden from friends · your level still shows');
+    toast(show ? 'your hours are shown again' : 'your hours are hidden · your level still shows');
+    window.dispatchEvent(new Event('webpriv'));
   }
 
   // ---------- your ORB: the chip's number and its popover ----------
@@ -3487,7 +3488,7 @@ window.Cloud = (() => {
   // Share your week as a picture (share-card.js): the leaderboard's own week from its button; from the profile, Last week | This week.
   const share = (opts) => window.ShareCard?.open(opts);
 
-  return { rename, share, nameMax: MAX, render, state: () => S, openMenu, openSettings: (pane = 'account') => {
+  return { toggleActivity, rename, share, nameMax: MAX, render, state: () => S, openMenu, openSettings: (pane = 'account') => {
     // Opened for a purpose (the account menu's Settings…, a badge's sign in, the shortcut list's "Change shortcuts…"):
     // that category, Account unless another is named, whatever was open last time. The gear and the app menu open the last one.
     openMenu(pane);

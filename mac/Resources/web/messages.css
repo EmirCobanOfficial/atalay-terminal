@@ -680,17 +680,29 @@ body.danger-on #msgbox { display: none; }
 
 /* One jolt: two-dimensional and dying out, so it reads as a buzz, not as the Mac's side-to-side "wrong password" shake.
    --ndg-a scales it: 1 = the window (±8 px across, ±5 px up and down), .75 the card, .5 the line's mark, .4 a tab.
-   560 ms, ease-in-out on every leg (the timing function applies between each pair of keyframes). */
+   1400 ms (MSN-like, strong first then settling), ease-in-out on every leg (the timing function applies between each pair of keyframes). */
 @keyframes ndg-jolt {
   0%, 100% { transform: none; }
-  8% { transform: translate(calc(8px * var(--ndg-a, 1)), calc(-5px * var(--ndg-a, 1))); }
-  19% { transform: translate(calc(-7px * var(--ndg-a, 1)), calc(4px * var(--ndg-a, 1))); }
-  30% { transform: translate(calc(6px * var(--ndg-a, 1)), calc(5px * var(--ndg-a, 1))); }
-  41% { transform: translate(calc(-8px * var(--ndg-a, 1)), calc(-3px * var(--ndg-a, 1))); }
-  52% { transform: translate(calc(5px * var(--ndg-a, 1)), calc(-4px * var(--ndg-a, 1))); }
-  63% { transform: translate(calc(-4px * var(--ndg-a, 1)), calc(3px * var(--ndg-a, 1))); }
-  74% { transform: translate(calc(3px * var(--ndg-a, 1)), calc(2px * var(--ndg-a, 1))); }
-  85% { transform: translate(calc(-2px * var(--ndg-a, 1)), calc(-1px * var(--ndg-a, 1))); }
+  3.21% { transform: translate(calc(7.7px * var(--ndg-a, 1)), calc(-4.8px * var(--ndg-a, 1))); }
+  6.57% { transform: translate(calc(-7.3px * var(--ndg-a, 1)), calc(-3.7px * var(--ndg-a, 1))); }
+  10.00% { transform: translate(calc(7px * var(--ndg-a, 1)), calc(4.4px * var(--ndg-a, 1))); }
+  13.64% { transform: translate(calc(-6.6px * var(--ndg-a, 1)), calc(2.5px * var(--ndg-a, 1))); }
+  17.36% { transform: translate(calc(6.2px * var(--ndg-a, 1)), calc(-3.1px * var(--ndg-a, 1))); }
+  21.29% { transform: translate(calc(-5.9px * var(--ndg-a, 1)), calc(-2.2px * var(--ndg-a, 1))); }
+  25.36% { transform: translate(calc(5.5px * var(--ndg-a, 1)), calc(1.4px * var(--ndg-a, 1))); }
+  29.57% { transform: translate(calc(-5.1px * var(--ndg-a, 1)), calc(1.3px * var(--ndg-a, 1))); }
+  33.93% { transform: translate(calc(4.7px * var(--ndg-a, 1)), calc(-2.9px * var(--ndg-a, 1))); }
+  38.43% { transform: translate(calc(-4.3px * var(--ndg-a, 1)), calc(-2.1px * var(--ndg-a, 1))); }
+  43.21% { transform: translate(calc(3.8px * var(--ndg-a, 1)), calc(2.4px * var(--ndg-a, 1))); }
+  48.07% { transform: translate(calc(-3.4px * var(--ndg-a, 1)), calc(1.3px * var(--ndg-a, 1))); }
+  53.21% { transform: translate(calc(3px * var(--ndg-a, 1)), calc(-1.5px * var(--ndg-a, 1))); }
+  58.50% { transform: translate(calc(-2.5px * var(--ndg-a, 1)), calc(-1px * var(--ndg-a, 1))); }
+  64.00% { transform: translate(calc(2.1px * var(--ndg-a, 1)), calc(0.5px * var(--ndg-a, 1))); }
+  69.79% { transform: translate(calc(-1.7px * var(--ndg-a, 1)), calc(0.4px * var(--ndg-a, 1))); }
+  75.71% { transform: translate(calc(1.3px * var(--ndg-a, 1)), calc(-0.8px * var(--ndg-a, 1))); }
+  81.93% { transform: translate(calc(-0.9px * var(--ndg-a, 1)), calc(-0.4px * var(--ndg-a, 1))); }
+  88.36% { transform: translate(calc(0.5px * var(--ndg-a, 1)), calc(0.3px * var(--ndg-a, 1))); }
+  95.00% { transform: translate(calc(-0.2px * var(--ndg-a, 1)), calc(0.1px * var(--ndg-a, 1))); }
 }
 /* Reduce Motion: nothing moves; one soft ring swells and fades instead (a single slow change, never a flash). */
 @keyframes ndg-ring {
@@ -738,7 +750,7 @@ body.danger-on #msgbox { display: none; }
 .fc-ndg.mine .fc-ndg-t b { color: var(--txt2); }
 /* arriving: the row slides in like a message, then its mark jolts once */
 .fc-ndg.new { animation: mb-line 0.25s ease-out both; }
-.fc-ndg.new .fc-ndg-i { --ndg-a: 0.5; animation: ndg-jolt 0.56s ease-in-out 0.12s; }
+.fc-ndg.new:not(.mine:not(.atk)) .fc-ndg-i { --ndg-a: 0.5; animation: ndg-jolt 1.4s ease-in-out 0.12s; }
 
 /* ---------- 3. the corner card (their chat isn't on screen) ---------- */
 /* The message pop-up's frame and quick reply; its own tag, the friend's picture with the mark on its corner (HIG:
@@ -749,7 +761,7 @@ body.danger-on #msgbox { display: none; }
 .mb.peek.nudge .mb-time { font-variant-numeric: tabular-nums; }
 /* in, then one jolt as it lands (the window's keyframes at three quarters); `quiet`: one that waited under a takeover, the flames or
    DANGER's banner comes in without the jolt */
-.mb.peek.nudge.in { --ndg-a: 0.75; animation: mb-in 0.42s cubic-bezier(0.2, 0.8, 0.25, 1) both, ndg-jolt 0.56s ease-in-out 0.4s; }
+.mb.peek.nudge.in { --ndg-a: 0.75; animation: mb-in 0.42s cubic-bezier(0.2, 0.8, 0.25, 1) both, ndg-jolt 1.4s ease-in-out 0.4s; }
 .mb.peek.nudge.in.quiet { animation: mb-in 0.42s cubic-bezier(0.2, 0.8, 0.25, 1) both; }
 .nd-one { display: grid; grid-template-columns: 44px minmax(0, 1fr); align-items: center; gap: 12px; padding: 12px 12px 4px; }
 .nd-pic { position: relative; width: 44px; height: 44px; }
@@ -762,12 +774,12 @@ body.danger-on #msgbox { display: none; }
 
 /* ---------- 4. their tab, the window open on someone else ---------- */
 .fc-tab.ndg .fc-tl small { color: var(--accent-soft); }
-.fc-tab.ndg.jolt { --ndg-a: 0.4; animation: ndg-jolt 0.56s ease-in-out; }
+.fc-tab.ndg.jolt { --ndg-a: 0.4; animation: ndg-jolt 1.4s ease-in-out; }
 
 /* ---------- focus, reduced motion ---------- */
 .ndg-btn:focus-visible, .mb.peek.nudge:focus-visible { outline: 2px solid var(--accent-soft); outline-offset: 2px; }
 @media (prefers-reduced-motion: reduce) {
   .mb.peek.fired.in, .fc-ndg.new, .mb.peek.nudge.in, .mb.peek.nudge.in.quiet, .fc-tab.ndg.jolt { animation: none; }
-  .fc-ndg.new .fc-ndg-i { animation: ndg-ring 0.9s ease-out; }
+  .fc-ndg.new:not(.mine:not(.atk)) .fc-ndg-i { animation: ndg-ring 0.9s ease-out; }
   .mb.peek.nudge.in .nd-pic, .fc-tab.ndg.jolt .fc-tav { border-radius: 4px; animation: ndg-ring 0.9s ease-out; }
 }

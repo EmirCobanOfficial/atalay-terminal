@@ -102,6 +102,7 @@
   let renaming = null; // a saved row's id, or `card:<session id>`
   let draft = '';
   let arrive = null, unfolding = null, foldTimer = 0;
+  let reveal = null; // a new favourite's row, scrolled into view (for a second: a drawing meanwhile stops a smooth scroll)
 
   const isActive = (r) => (!!activeId && (r.id === activeId || r.sid === activeId)) || (!!activeAlt && r.id === activeAlt);
   // Ids that have a card on the dashboard: those chats are not listed again.
@@ -269,7 +270,8 @@
     const terms = (data.terms || []).filter((t) => !q || `${t.title} ${t.job} ${t.cwd}`.toLowerCase().includes(q));
     const hide = cardIds();
     const isHidden = (r) => hide.has(r.id) || (r.sid && hide.has(r.sid));
-    const favs = rows.filter((r) => r.fav && !isHidden(r));
+    // A starred chat is listed here live or not (its card on the dashboard too); `build` keeps it out of its folder.
+    const favs = rows.filter((r) => r.fav);
     const { top, groups } = build(rows, terms);
     const folders = data.folders || {};
     // The folder's name: its last path part; two folders with the same one fall back to the app's distinct label.
@@ -320,6 +322,8 @@
       body.innerHTML = html;
       drawn = html;
       $('chats-body').scrollTop = keep;
+      // That stopped the scroll to a new favourite halfway: it's there at once.
+      if (reveal) revealRow('auto');
       if (had) {
         const back = [...body.querySelectorAll('.sl-row, .sl-fold, .sl-more')].find((el) => focusKey(el) === had);
         if (back) back.focus({ preventScroll: true });
@@ -396,7 +400,20 @@
         el.tabIndex = 0;
         el.setAttribute('role', 'button');
       }
-      if (c) el.setAttribute('aria-label', `${c.title || c.name}, ${aiFull(c.tool)}, ${STW[c.st] || 'ended'}`);
+      const fav = !!c && cardFav(c);
+      if (c) el.setAttribute('aria-label', `${c.title || c.name}, ${aiFull(c.tool)}, ${STW[c.st] || 'ended'}${fav ? ', favorite' : ''}`);
+      // A starred chat's card carries the amber star by its name (a glyph, not the colour alone).
+      const nm = el.querySelector('.ch .nm');
+      let cf = el.querySelector('.cfav');
+      if (fav && nm && !cf) {
+        cf = document.createElement('span');
+        cf.className = 'cfav';
+        cf.setAttribute('role', 'img');
+        cf.setAttribute('aria-label', 'Favorite');
+        cf.title = 'Favorite';
+        cf.innerHTML = I.starFill;
+        nm.after(cf);
+      } else if (!fav && cf) cf.remove();
     }
     const live = cards.filter((c) => c.st !== 'ended').length;
     const need = cards.filter((c) => c.st === 'waiting').length;
@@ -489,6 +506,11 @@
   const saved = () => $('chats-saved');
   const rowEl = (id) => [...saved().querySelectorAll('.sl-row[data-id]')].find((el) => el.dataset.id === id);
   const folderEl = (key) => [...saved().querySelectorAll('.sl-grp[data-key]')].find((el) => el.dataset.key === key);
+  function revealRow(behavior) {
+    if (!reveal || performance.now() > reveal.until) return void (reveal = null);
+    const el = !query && rowEl(reveal.id);
+    if (el) el.scrollIntoView({ block: 'nearest', behavior });
+  }
   const archiveChat = (id) => leave([rowEl(id)], () => post({ type: 'archive', id }));
   const archiveFolder = (key) => leave([folderEl(key)], () => post({ type: 'folders', keys: [key], on: true }));
 
@@ -593,6 +615,26 @@
       if (wt) post({ type: 'ship', id: choice.slice(3), top: wt.top });
     } else if (choice) post({ type: choice, id: item.id });
   }
+  // The starred chats of a snapshot by both their ids (the row's, its live session's), read once per snapshot: the cards
+  // ask at every state the dashboard gets.
+  let favOf = null, favSet = new Set();
+  const favIds = () => {
+    if (favOf !== data) {
+      favOf = data;
+      favSet = new Set();
+      for (const r of (data && data.rows) || []) {
+        if (!r.fav) continue;
+        favSet.add(r.id);
+        if (r.sid) favSet.add(r.sid);
+      }
+    }
+    return favSet;
+  };
+  // Whether the chat of a card is a favourite: its row in the snapshot says so (by the session id or the conversation's).
+  const cardFav = (c) => {
+    const f = favIds();
+    return f.has(c.id) || (!!c.conv && f.has(c.conv));
+  };
   // The live chat of a card: its row in the snapshot (it has one once saved), else what the card itself knows.
   function rowOfCard(el) {
     const c = cards.find((x) => x.id === el.dataset.key);
@@ -829,7 +871,12 @@
       if (!d || !Array.isArray(d.rows)) return;
       // The demo (Windows staging, ORBITERM_DEMO: made-up projects on the dashboard) had no chats list: nothing real here.
       if (window.__DEMO__) d = { ...d, rows: [], terms: [], pinned: [], order: [], folders: {}, folded: [] };
+      // A chat that has just become a favourite (from its row, a tab's star or the HUD's) slides into Favorites. Not one
+      // that only changed its id (a live chat's conversation became known, it was saved): its session's is the same.
+      const was = data ? favIds() : null;
+      const gained = was ? d.rows.find((r) => r.fav && !was.has(r.id) && !(r.sid && was.has(r.sid))) : null;
       data = d;
+      if (gained && !calm()) arrive = { id: gained.id, fav: true, until: performance.now() + 1500 };
       if (typeof d.chatsKey === 'string' && d.chatsKey !== keyKey) this.keys({ chatsList: d.chatsKey });
       if ('active' in d) {
         activeId = d.active || null;
@@ -848,6 +895,11 @@
       // A drawing meanwhile must not eat what is being typed.
       if (renaming) draft = (root.querySelector('.sl-ren') || {}).value ?? draft;
       render();
+      // Out of view, the new favourite is scrolled to (the nearest edge: no jump when it is already seen).
+      if (gained) {
+        reveal = { id: gained.id, until: performance.now() + 1000 };
+        revealRow(calm() ? 'auto' : 'smooth');
+      }
     },
     // The focused window's session, and (`altId`) the conversation its AI is in when that's another id.
     active(id, altId) {

@@ -71,7 +71,10 @@ nonisolated enum ChatNames {
 final class SidebarModel: ObservableObject {
     @Published var items: [ChatItem] = []
     @Published var briefs: [String: SessionBrief] = [:] {
-        didSet { reviveRunning() }
+        didSet {
+            reviveRunning()
+            starConversations()
+        }
     }
     @Published var openInTabs: Set<String> = []
     @Published var activeSessionId: String?
@@ -294,6 +297,19 @@ final class SidebarModel: ObservableObject {
         }
     }
 
+    /// A chat starred before its conversation was known (Antigravity's, Codex's, Cursor's go by their live id,
+    /// "ai:<pid>:<start>", until then): the star moves to the conversation, the id its row and its saved chat have.
+    private func starConversations() {
+        guard !favorites.isEmpty else { return }
+        var next = favorites
+        for b in briefs.values {
+            guard let conv = b.convId, conv != b.id, next.contains(b.id) else { continue }
+            next.remove(b.id)
+            next.insert(conv)
+        }
+        if next != favorites { favorites = next }
+    }
+
     /// Deleted from the disk, for good: these chats of the trash. Their names and marks here go with them. One that
     /// couldn't be deleted just now (its tool held its list) stays in the trash, to be tried again.
     func erase(_ ids: [String]) {
@@ -463,10 +479,14 @@ final class SidebarModel: ObservableObject {
     /// Every chat, newest first; live sessions without a saved title too. The deleted ones aren't among them.
     private var everything: [ChatItem] {
         var all = items.filter { trash[$0.id] == nil && !erasing.contains($0.id) }
-        let known = Set(items.map(\.id))
+        var known = Set(items.map(\.id))
         for b in briefs.values where b.live && !known.contains(b.id) && (b.convId.map { !known.contains($0) } ?? true) && !b.cwd.isEmpty {
             let tool = b.name == "Antigravity" ? "antigravity" : b.name == "Codex" ? "codex" : b.name == "Cursor" ? "cursor" : "claude"
-            all.append(ChatItem(id: b.id, path: "", cwd: b.cwd, mtime: Date().timeIntervalSince1970 * 1000, size: 0,
+            // By its conversation once known (the id its saved chat will have, and its tab's and HUD's stars use): a star,
+            // a name or an archive given now stays with the chat when it is saved. One row for two processes on it.
+            let id = b.convId ?? b.id
+            known.insert(id)
+            all.append(ChatItem(id: id, path: "", cwd: b.cwd, mtime: Date().timeIntervalSince1970 * 1000, size: 0,
                                 title: b.title.isEmpty ? "new chat · \(b.name)" : b.title, lastPrompt: "", tool: tool))
         }
         return all.sorted { $0.mtime > $1.mtime }

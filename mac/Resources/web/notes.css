@@ -5,7 +5,11 @@
 #notes { padding: 0; }
 
 /* ---------- the page ---------- */
-.np-ed { box-sizing: border-box; height: 100%; overflow-y: auto; scrollbar-width: thin; padding: 8px 12px 28px 28px; line-height: 1.6; cursor: text; }
+.np-ed { box-sizing: border-box; height: 100%; overflow-y: auto; scrollbar-width: thin; padding: 8px 12px 28px 28px; cursor: text;
+  /* Notion's default text style: its system sans (SF Pro on a Mac, Segoe UI on Windows), 13px / 1.5 (Apple macOS body size, one step above the 12px UI). In rem so the app's text size still scales it. */
+  --note-font: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, "Apple Color Emoji", Arial, sans-serif, "Segoe UI Emoji", "Segoe UI Symbol";
+  --note-mono: SFMono-Regular, Consolas, "Liberation Mono", Menlo, Courier, monospace;
+  font-family: var(--note-font); font-size: 0.8125rem; line-height: 1.5; font-weight: 400; letter-spacing: normal; }
 /* Blocks selected (Ctrl+A twice, or a drag from one block into another): they light up, as Notion shows them, instead
    of the text. */
 .nb.sel { background: rgba(var(--accent-rgb), 0.16); }
@@ -26,16 +30,16 @@
    the next block, and the text jumped up under the pointer, ending the selection lines further down. */
 .nb-text.is-empty[contenteditable="false"]::after { content: '\200b'; }
 
-.nb-h1 .nb-text, .nb-h2 .nb-text, .nb-h3 .nb-text { color: var(--hi); font-weight: 700; line-height: 1.3; }
+.nb-h1 .nb-text, .nb-h2 .nb-text, .nb-h3 .nb-text { color: var(--hi); font-weight: 600; line-height: 1.3; }
 .nb-h1 { margin: 10px 0 2px; }
-.nb-h1 .nb-text { font-size: 1.5em; }
+.nb-h1 .nb-text { font-size: 1.875em; }
 .nb-h2 { margin: 8px 0 1px; }
-.nb-h2 .nb-text { font-size: 1.28em; }
+.nb-h2 .nb-text { font-size: 1.5em; }
 .nb-h3 { margin: 6px 0 0; }
-.nb-h3 .nb-text { font-size: 1.12em; }
+.nb-h3 .nb-text { font-size: 1.25em; }
 .np-ed > .nb:first-child { margin-top: 0; }
 
-.nb-mark { flex: none; display: flex; align-items: center; justify-content: center; min-width: 14px; height: 1.6em; color: var(--accent); user-select: none; }
+.nb-mark { flex: none; display: flex; align-items: center; justify-content: center; min-width: 14px; height: 1.5em; color: var(--accent); user-select: none; }
 .nb-num .nb-mark { min-width: 18px; justify-content: flex-end; font-variant-numeric: tabular-nums; }
 .nb-cb { position: relative; box-sizing: border-box; width: 12px; height: 12px; border: 1px solid var(--accent); cursor: pointer; }
 .nb-cb:hover { box-shadow: 0 0 6px rgba(var(--accent-rgb), 0.5); }
@@ -44,7 +48,7 @@
 .nb-todo.done .nb-text { color: var(--dim); text-decoration: line-through; }
 .nb-quote .nb-text { padding-left: 10px; border-left: 3px solid var(--accent); color: var(--hi); }
 .nb-code { margin: 4px 0; }
-.nb-code .nb-text { padding: 7px 10px; border: 1px solid var(--line-soft); border-radius: 4px; background: var(--code-bg); color: var(--code-fg); line-height: 1.5; tab-size: 2; }
+.nb-code .nb-text { padding: 7px 10px; border: 1px solid var(--line-soft); border-radius: 4px; background: var(--code-bg); color: var(--code-fg); font-family: var(--note-mono); font-size: 0.85em; line-height: 1.5; tab-size: 2; }
 .nb-divider { padding: 9px 0; cursor: default; }
 .nb-divider hr { flex: 1; margin: 0; border: 0; border-top: 1px solid var(--line); }
 /* A block from a newer Orbiterm: kept as it is, shown as a grey line with nothing to write in. */

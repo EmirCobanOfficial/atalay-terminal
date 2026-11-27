@@ -125,6 +125,20 @@ window.Social = (() => {
   }
 
   const friend = (id) => (S ? S.friends.find((f) => f.id === id) : null);
+  // What this app can show, told to the API on every connect (POST v1/social/caps; the API's live.ts CAPS): friends' nudge and
+  // fire buttons grey out with "needs to update" for an app that doesn't say it (an older one), so nobody spends ORB for nothing.
+  // `nudge`: shows a nudge it gets. `attack-screen`: the full-screen ship attack, which the Windows app doesn't have yet (the same
+  // condition as attack.js SCREEN). `nudge-chat`: this app reports which chats are open (messages.js, POST v1/social/chats), so a
+  // friend's nudge only works while their chat with that friend is open; the Mac only for now (the Windows app shares these pages
+  // but keeps the nudge's card until its own port). Only the main page says it (the notices and chat panels share the app's connection).
+  const NUDGE_CHAT = window.__platform !== 'win32';
+  // `attack-revenge`: a fire back shows even on do not disturb (attack.js arrive).
+  const CAPS = ['nudge', ...(NUDGE_CHAT ? ['nudge-chat'] : []), ...(window.__platform !== 'win32' ? ['attack-screen'] : []), 'attack-revenge'];
+  const announceCaps = () => {
+    if (window.__MESSAGES_ROLE__) return;
+    api('POST', 'v1/social/caps', { caps: CAPS }).catch(() => {});
+  };
+  announceCaps();
   // Who fired at me (attack.js, messages.js): which friend each unseen attack on you is from, so a seen one (`attack_seen`,
   // from another of your computers too) lowers that friend's count. Filled from the live `attack_landed` and from the
   // friends list's `me.attacksUnseen`; one not known here (a count beyond the list's five) makes the list load again.
@@ -144,7 +158,7 @@ window.Social = (() => {
   function event(ev) {
     if (!ev || !ev.type) return;
     // (Re)connected: anything that happened while the line was down is in a fresh snapshot.
-    if (ev.type === 'hello') loadNotes(), loadNoteInvites(), loadOrb();
+    if (ev.type === 'hello') loadNotes(), loadNoteInvites(), loadOrb(), announceCaps();
     // Your ORB changed (an earn, a grant, an attack's cost or refund) or the economy's numbers did: kept before anything else.
     if (ev.type === 'orb' && ev.orb) (O = { ...(O || {}), ...ev.orb }), (orbAt = Date.now());
     // The price or the rules changed (CONTRACT v3): /v1/orb/me and the friends list again.
@@ -213,6 +227,8 @@ window.Social = (() => {
         f.attack = { ...(f.attack || {}) };
         if ('off' in ev) f.attack.off = !!ev.off;
         if ('shieldUntil' in ev) f.attack.shieldUntil = ev.shieldUntil;
+        // Your right to fire back at them (they fired at you): given, used up, or given back by a cancel (attack.ts).
+        if ('revengeUntil' in ev) f.attack.revengeUntil = ev.revengeUntil;
         // Your cooldown on them: cleared (staging's reset) or the longer one after you cancelled (attack.ts).
         if ('cooldownUntil' in ev) f.attack.cooldownUntil = ev.cooldownUntil;
         break;
@@ -271,6 +287,29 @@ window.Social = (() => {
           f.nudge.lastIn = at;
           answered(f, had);
         }
+        break;
+      }
+      // Staging test reset (nudge.ts, POST v1/friends/nudge/reset): the limits on that friend's row are gone.
+      case 'nudge_reset': {
+        const f = friend(ev.id);
+        if (f && f.nudge) f.nudge = { ...f.nudge, why: null, readyAt: null, unread: 0, last: null, lastId: null, lastIn: null };
+        break;
+      }
+      // What a friend's app can show changed (the API's `caps`, sent as they connect): "needs to update" goes or comes on their
+      // nudge and fire buttons. Only for a friend the API says is online.
+      case 'caps': {
+        const f = friend(ev.id);
+        if (!f) break;
+        const caps = Array.isArray(ev.caps) ? ev.caps : [];
+        f.nudge = { ...(f.nudge || {}), outdated: !caps.includes('nudge'), away: caps.includes('nudge-chat') && !!ev.away };
+        f.attack = { ...(f.attack || {}), outdated: !caps.includes('attack-screen') };
+        break;
+      }
+      // A friend opened or closed their chat with you (the API's `nudge_chat`, only for their apps that report it): the nudge button
+      // is ready or greys out with "away" live.
+      case 'nudge_chat': {
+        const f = friend(ev.id);
+        if (f) f.nudge = { ...(f.nudge || {}), away: !!ev.away };
         break;
       }
       // A friend's nudge switch changed (nudge.ts): their button greys out or comes back.
@@ -410,6 +449,9 @@ window.Social = (() => {
         }
         return r;
       }),
+    // Which friends' chats are open on screen, told to the API (messages.js; it relays it to those friends only, `nudge-chat`).
+    nudgeChat: NUDGE_CHAT,
+    chats: (ids) => api('POST', 'v1/social/chats', { with: ids }),
     nudge: (id) =>
       api('POST', `v1/friends/${id}/nudge`, {}).then((r) => {
         syncNow(r);

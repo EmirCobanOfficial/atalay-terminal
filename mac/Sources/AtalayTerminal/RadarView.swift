@@ -27,8 +27,9 @@ final class DashboardWebView: WKWebView {
 
 /// Whether a friend's spaceship (web/attack.js) would really be seen on the orbit map. macOS calls a window visible
 /// (occlusionState) when any pixel of it shows, so a dashboard at the bottom of the pile, its map under another app's
-/// window, counted as seen: the ship flew there unseen and only its sounds came. attack.js asks at each attack, at its
-/// blast and while a missed one waits to fly, with the map's box as fractions of the page (`rect`). True when the window
+/// window, counted as seen: the ship flew there unseen and only its sounds came. attack.js asked at each attack, at its
+/// blast and while a missed one waited to fly, with the map's box as fractions of the page (`rect`); since the attack plays
+/// on the whole screen (attack-screen.js, the notices panel) nothing asks it any more. True when the window
 /// is on screen and at least half of that box is clear of other apps' windows (normal, floating and panel levels; the
 /// Dock, the menu bar and overlays above them don't count). The app's own windows don't count either: a chat window over
 /// the dashboard is the page's `covered`, and its panels (the notices, the feed, Viktoria) let everything through. Only

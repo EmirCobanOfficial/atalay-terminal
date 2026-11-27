@@ -57,10 +57,11 @@ window.Messages = (() => {
   // Friends whose chat window is open: no pop-ups for them, their chat shows their messages.
   let showing = new Set();
   // Whether that chat window is really on screen (not minimized, on another Space, covered or the app hidden): the native side
-  // says, with `showing`. A nudge shakes the chat only when it is seen; else the card comes (and the dashboard may shake).
+  // says, with `showing`. A nudge counts only when it is seen (the Mac tells the API, reportChats); on Windows, without `nudge-chat`,
+  // the card comes otherwise (and the dashboard may shake).
   let chatSeen = true;
-  // The friend whose tab is in front while that chat window has the keyboard focus, else null (the native side says, with
-  // `showing`): only their nudge shakes the chat; any other one brings the card (and the terminals or the map shake).
+  // The friend whose tab is in front while that chat window is on screen, else null (the native side says, with `showing`). Windows
+  // only: just their nudge stays in the chat (its window has the keys there); any other one brings the card.
   let chatFocused = null;
 
   // ======================= notices =======================
@@ -87,6 +88,9 @@ window.Messages = (() => {
     // Layout size, not the on-screen one: the slide-in animation scales the box while it starts. The level-up takeover
     // has the whole screen (a notice can wait under it).
     if (takeover) return post({ type: 'layout', w: 1, h: 1, place: 'screen' });
+    // A friend's spaceship attack on the whole screen (attack-screen.js): the menu bar and the Dock included, every click
+    // passing through, over a full-screen app and on every Space.
+    if (window.Attack?.screen?.()) return post({ type: 'layout', w: 1, h: 1, place: 'attack' });
     // The flames have the screen's edges, every click passing through (the notice sits in its corner meanwhile).
     if (fire) return post({ type: 'layout', w: 1, h: 1, place: 'fire' });
     // A friend's spaceship attack's DANGER banner (attack.js) the same way, for its few seconds.
@@ -277,8 +281,9 @@ window.Messages = (() => {
     return `<div class="mb peek in"><div class="mb-border"></div>${body}</div>`;
   }
 
-  // A friend's nudge while their chat isn't on screen (nudge.ts): the message card's frame with its own tag, the friend's
-  // picture with the mark on its corner and their last words for context. A reply goes out as a message, as on INCOMING.
+  // A friend's nudge while their chat isn't on screen (nudge.ts), only in an app without `nudge-chat` (Windows for now; on the Mac
+  // a nudge outside their chat shows nothing): the message card's frame with its own tag, the friend's picture with the mark on
+  // its corner and their last words for context. A reply goes out as a message, as on INCOMING.
   // The card's second line, the same on the nudge's and the attack's: the last words between you, for context.
   function lastSaid(f) {
     const said = f && f.last && Social.preview(f.last);
@@ -470,8 +475,8 @@ window.Messages = (() => {
 
   // ======================= who fired at me =======================
   // A friend's spaceship leaves a trace that waits for you: a card in the corner (here), a line in your chat with them (the
-  // chat part), and their row in Friends. The card comes after the DANGER banner has ended (afterDanger, called by attack.js),
-  // or after 20 s if no DANGER showed, and has no timer: it goes when it's closed, that chat is opened, you fire back (once
+  // chat part), and their row in Friends. The card comes after the DANGER banner has ended (afterDanger, called by attack.js;
+  // on the Mac once the ship's whole show on the screen is over), or after 20 s if no DANGER showed, and has no timer: it goes when it's closed, that chat is opened, you fire back (once
   // the lock is over), another computer of yours saw it, or the setting is turned off. A message goes over it and it comes
   // back. No sound, no INCOMING pop-up, no focus: the alarm already sounded. The name never shows during LOCKED ON: the API's
   // `attack_landed` comes 10 s after the fire, once the blast has come.
@@ -560,9 +565,9 @@ window.Messages = (() => {
     const h = { id: a.id, fid: a.with, from: a.from, nick: a.nick || null, at: new Date(a.at).getTime() || Date.now(), shieldUntil: a.shieldUntil || 0 };
     if (hitGone.has(h.id) || hits.some((x) => x.id === h.id) || waitingHits.some((x) => x.id === h.id)) return;
     const A = window.Attack;
-    // The banner is up now: the card follows it (afterDanger). Its banner ended a moment ago: now. None showed (the ship may
-    // yet wait for the map, DANGER already came, or an old app): after 20 s anyway. The 20 s also stands behind a banner
-    // that is up: one replaced by another never calls afterDanger.
+    // The banner, or the ship's show on the screen (attack.js dangerUp), is up now: the card follows it (afterDanger). Its
+    // banner ended a moment ago: now. None showed (DANGER already came, or an old app): after 20 s anyway. The 20 s also
+    // stands behind a banner that is up: one replaced by another never calls afterDanger.
     if (A && A.dangerUp && A.dangerUp()) return waitHit(h);
     if (A && A.dangerEnd && Date.now() - A.dangerEnd() < HIT_AFTER_MS) return addHit(h);
     waitHit(h);
@@ -1293,9 +1298,9 @@ window.Messages = (() => {
     post({ type: 'log', msg });
   }
 
-  // The nudge's card, put up when nothing else holds the screen (a takeover, the flames, DANGER's banner, the alarm): then it waits
-  // and comes quietly (no jolt, no buzz, no shake), at most 30 s later.
   const screenHeld = () => !!(takeover || fire || (window.Attack && Attack.wide && Attack.wide()) || alertOn);
+  // The nudge's card (an app without `nudge-chat` only: Windows for now), put up when nothing else holds the screen (a takeover, the
+  // flames, DANGER's banner, the alarm): then it waits and comes quietly (no jolt, no buzz, no shake), at most 30 s later.
   function nudgeCard(p, tries = 0) {
     if (screenHeld()) {
       p.quiet = true;
@@ -1309,8 +1314,35 @@ window.Messages = (() => {
     showPeek(p);
   }
 
+  // Which friends' chats are open on screen, told to the API so a friend's nudge only works while you are in their chat (`nudge-chat`,
+  // the Mac only for now): the notices page knows (Swift's `showing`: the open tabs and whether the window is really on screen). A
+  // little after the last change, only when it changed, and again on every connect (the API forgets it with the connection). One
+  // at a time and read when it goes, so an older list can't land after a newer one; a failed one is sent again with the next change.
+  let chatsSent = null; // the list the API has (joined), or null: unknown
+  let chatsTimer = 0;
+  let chatsLine = Promise.resolve();
+  function reportChats(force) {
+    if (!Social.nudgeChat) return;
+    // A connect: whatever the API had is gone, so the next send goes even if the list looks the same (also when another change
+    // restarts the wait before it ends).
+    if (force) chatsSent = null;
+    clearTimeout(chatsTimer);
+    chatsTimer = setTimeout(() => {
+      chatsLine = chatsLine.then(() => {
+        const list = chatSeen ? [...showing].sort().slice(0, 32) : [];
+        const key = list.join();
+        if (key === chatsSent) return;
+        chatsSent = key;
+        return Social.chats(list).then((r) => { if (!r || r.error || r.connected === false) chatsSent = null; }, () => { chatsSent = null; });
+      });
+    }, 300);
+  }
+
   function notice(ev) {
     switch (ev.type) {
+      case 'hello':
+        reportChats(true);
+        return;
       case 'message':
         if (ev.message.mine || showing.has(ev.with)) return;
         Sfx.play('message');
@@ -1325,17 +1357,18 @@ window.Messages = (() => {
         }
         showPeek({ kind: 'message', from: ev.from || Social.friend(ev.with), body: Social.preview(ev.message), at: ev.message.at });
         return;
-      // A friend's nudge (nudge.ts): the buzz plays here, once per computer. With the keyboard in their chat (its window key,
-      // their tab in front) the chat page shakes itself and nothing comes up; else the card does, and every terminal on
-      // screen or else the map's centre shakes (Swift: "nudgeShake"). Never a focus, a raise or a window opened. A second one within a
-      // minute (`floored`, social.js) and the ones that wait under a takeover, the flames, DANGER or the alarm come without
-      // buzz, shake or jolt.
+      // A friend's nudge (nudge.ts): the buzz plays here, once per computer, while their chat is open on screen; the chat page shakes
+      // its window itself. On the Mac (`nudge-chat`) that is the only place: the app tells the API which chats are open and it refuses
+      // a nudge otherwise, and one that still arrives when it isn't (the chat closed a moment ago, or another computer of yours took
+      // it) is ignored completely: no card, no buzz, no terminal or map shake. Without `nudge-chat` (Windows for now) it is as before:
+      // with the keyboard in their chat only the buzz, else the card comes and every terminal on screen or else the map's centre
+      // shakes (Swift/main.js "nudgeShake"). Never a focus, a raise or a window opened. A second one within a minute (`floored`,
+      // social.js) and the ones under a takeover, the flames, DANGER or the alarm come without buzz.
       case 'nudge': {
         const n = ev.nudge;
         if (!n || n.mine || !n.with || n.floored || Social.dnd()) return;
-        // (No buzz either while a takeover, the flames, DANGER or the alarm holds the screen: the chat's line is enough then.)
-        if (showing.has(n.with) && chatSeen && chatFocused === n.with) return void (screenHeld() || Sfx.play('nudge'));
-        nudgeCard({ kind: 'nudge', from: n.from || Social.friend(n.with), at: n.at, quiet: false });
+        if (showing.has(n.with) && chatSeen && (Social.nudgeChat || chatFocused === n.with)) return void (screenHeld() || Sfx.play('nudge'));
+        if (!Social.nudgeChat) nudgeCard({ kind: 'nudge', from: n.from || Social.friend(n.with), at: n.at, quiet: false });
         return;
       }
       case 'request':
@@ -1731,6 +1764,10 @@ window.Messages = (() => {
     offline: (n) => `${n} is offline. You can nudge when they're online.`,
     dnd: (n) => `${n} is on do not disturb. You can nudge when it's off.`,
     off: (n) => `${n} turned nudges off.`,
+    // Their app is too old to show a nudge (the API's `outdated`): nothing is sent or charged.
+    outdated: (n) => `${n} needs to update Orbiterm. You can nudge when they have.`,
+    // Their app says your chat isn't open on their screen (the API's `away`): a nudge only works while they are in it; nothing is charged.
+    away: (n) => `Works when ${n} has your chat open.`,
     mine_off: () => "Nudges are off for you, so you can't send one either. Turn them on in Settings > Privacy.",
     down: () => "Can't reach the server.",
     not_friends: () => "You're not friends anymore.",
@@ -1753,8 +1790,11 @@ window.Messages = (() => {
     if (f.presence === 'dnd') return { k: 'dnd' };
     const n = f.nudge || {};
     if (n.off) return { k: 'off' };
+    if (n.outdated) return { k: 'outdated' };
     const left = Math.ceil(((n.readyAt || 0) - Social.now()) / 1000);
     if (left > 0) return { k: n.why === 'unanswered' ? 'streak' : 'wait', left };
+    // After the limits, as the API decides (nudge.ts), and before the price.
+    if (n.away) return { k: 'away' };
     const o = nudgeOrb();
     if (o && Number.isFinite(o.balance) && o.balance < o.nudgePrice) return { k: 'orb' };
     return { k: 'ready' };
@@ -1789,7 +1829,7 @@ window.Messages = (() => {
     b.title = ready ? `Nudge ${name}: their chat shakes for a moment${nudgePriceText() ? ` \u00b7 ${nudgePriceText()}` : ''} \u00b7 or type /nudge` : ndgText(s, name);
     if (wait) ndgTimer = setTimeout(paintNudge, 1000);
   }
-  // Send one: your line at once, your own window's half jolt, the buzz; then the API. False when it didn't go (the reason is in
+  // Send one: your line at once, the send sound (nothing shakes for the sender); then the API. False when it didn't go (the reason is in
   // the chat's toast). The API's refusals answer 200 with `sent: false` and `why` (nudge.ts).
   async function nudge() {
     const id = current;
@@ -1801,14 +1841,13 @@ window.Messages = (() => {
       flash(ndgText(s, name));
       return false;
     }
-    // One at a time: a double click (or Return held) sends one, jolts once and buzzes once.
+    // One at a time: a double click (or Return held) sends one and sounds once.
     if (ndgBusy) return false;
     ndgBusy = true;
     const c = conv(id);
     const temp = { id: `tmp${Date.now()}`, k: `tmp${Date.now()}`, temp: true, mine: true, at: new Date().toISOString() };
     c.nudges.push(temp);
     paintList({ stick: true, fresh: new Set([`ndg:${temp.k}`]) });
-    if (!reducedMotion()) post({ type: 'shake', amp: 0.5 });
     Sfx.play('nudgeOut');
     const r = await Social.nudge(id).finally(() => (ndgBusy = false));
     const undo = () => {
@@ -1821,6 +1860,8 @@ window.Messages = (() => {
       if (fr && (r.why === 'cooldown' || r.why === 'unanswered') && r.readyAt) fr.nudge = { ...(fr.nudge || {}), readyAt: r.readyAt, why: r.why };
       // Their switch, or yours, as the API has it now: the button greys out with it.
       if (fr && r.why === 'off') fr.nudge = { ...(fr.nudge || {}), off: true };
+      if (fr && r.why === 'outdated') fr.nudge = { ...(fr.nudge || {}), outdated: true };
+      if (fr && r.why === 'away') fr.nudge = { ...(fr.nudge || {}), away: true };
       if (r.why === 'mine_off' && Social.state()?.me) Social.state().me.nudges = false;
       if (r.why === 'orb' && Social.setOrb) Social.setOrb({ nudgePrice: r.price, balance: r.balance });
       const why = r.error ? (r.error === 'not_friends' ? 'not_friends' : 'down') : r.why;
@@ -2278,7 +2319,7 @@ window.Messages = (() => {
           // An attack's or a nudge's line (one component) has two: the slide, then its mark's jolt or, with Reduce Motion, its
           // ring; it keeps `new` until that is over.
           const done = (e) => {
-            if ((it.atk || it.ndg) && e.animationName !== 'ndg-jolt' && e.animationName !== 'ndg-ring') return;
+            if ((it.atk || it.ndg) && !(it.ndg && it.mine) && e.animationName !== 'ndg-jolt' && e.animationName !== 'ndg-ring') return;
             made.classList.remove('new');
             made.removeEventListener('animationend', done);
           };
@@ -2882,9 +2923,9 @@ window.Messages = (() => {
         return;
       }
       // A friend's nudge, live (nudge.ts), or yours from another of your computers: its line slides in (read at once in the chat
-      // in front). Theirs shakes that chat window (native "shake" with `key`: only when it has the keyboard focus and nothing holds
-      // the screen; else the notices' card came and the terminals or the map shake) unless
-      // a pointer is down in it or it is a second one within a minute (`floored`); another tab's friend: only that tab jolts.
+      // in front). Theirs shakes that chat window (native "shake" with `key`: only when it is on screen, keyboard focus or not on the
+      // Mac, and nothing holds the screen) unless a pointer is down in it or it is a second one within a minute (`floored`); another
+      // tab's friend: that tab jolts, and on the Mac (`nudge-chat`) the window shakes as well (Windows: the notices' card came).
       // The buzz is the notices page's. Reduce Motion: nothing moves, the line's mark and the tab swell a ring instead (CSS).
       case 'nudge': {
         const n = ev.nudge;
@@ -2912,8 +2953,11 @@ window.Messages = (() => {
             const tab = q(`.fc-tab[data-tab="${CSS.escape(n.with)}"]`);
             if (tab && !n.floored) {
               tab.classList.add('jolt');
-              setTimeout(() => tab.classList.remove('jolt'), 700);
+              setTimeout(() => tab.classList.remove('jolt'), 1500);
             }
+            // On the Mac (`nudge-chat`) an open tab is their chat on screen, so the whole window shakes too (the notices page buzzes);
+            // without it (Windows for now) the card came instead.
+            if (Social.nudgeChat && !n.floored && !pointerDown && !reducedMotion() && !Social.dnd()) post({ type: 'shake', amp: 1, key: true });
           } else paint();
         }
         return;
@@ -3441,6 +3485,7 @@ window.Messages = (() => {
       showing = new Set(ids || []);
       chatSeen = seen !== false;
       chatFocused = typeof focused === 'string' && focused ? focused : null;
+      if (NOTICES) reportChats(false);
       // Their chat is open now: the attack's card has done its job. (Only while the chat is on screen: this is also called when it
       // gets covered, minimized or hidden, now that the nudge asks whether it is seen.)
       if (NOTICES && chatSeen) for (const id of showing) if (hits.some((h) => h.fid === id)) seenFrom(id);

@@ -474,6 +474,8 @@ final class PaneTabBar: NSView {
     var onRename: ((Int, String?) -> Void)?
     var onRenameRequest: ((Int) -> Void)?
     var onMenu: ((Int) -> NSMenu?)?
+    /// A chip's star was clicked: the chat it shows (TabStats.starId), not a tab index, so it can't star another one.
+    var onFavorite: ((String) -> Void)?
     private let clip = NSView()
     private let content = NSView()
     private let more = NSButton(title: "\u{00BB}", target: nil, action: nil)
@@ -521,6 +523,7 @@ final class PaneTabBar: NSView {
             chip.onRename = { [weak self] in self?.onRename?(i, $0) }
             chip.onRenameRequest = { [weak self] in self?.onRenameRequest?(i) }
             chip.onMenu = { [weak self] in self?.onMenu?(i) }
+            chip.onFavorite = { [weak self] in self?.onFavorite?($0) }
             content.addSubview(chip)
             chips.append(chip)
         }
@@ -839,6 +842,10 @@ struct TabStats: Equatable {
     var status = ""
     /// The Claude account of the session, drawn as its initial disc: only given when the window's tabs use more than one.
     var account: AcctMark?
+    /// The id the tab's chat is starred under in the sidebar's favourites (nil: a plain shell, no star), and whether
+    /// it is starred.
+    var starId: String?
+    var starred = false
 }
 
 private final class TabChip: NSView, NSTextFieldDelegate {
@@ -849,10 +856,19 @@ private final class TabChip: NSView, NSTextFieldDelegate {
     var onRename: ((String?) -> Void)?
     var onRenameRequest: (() -> Void)?
     var onMenu: (() -> NSMenu?)?
+    var onFavorite: ((String) -> Void)?
+    private var isActive = false
+    private var hovering = false { didSet { if hovering != oldValue { paintStar() } } }
+    private var hoverArea: NSTrackingArea?
+    /// The chat's star (a chat tab only): filled amber always when favourited, an outline on hover and on the selected tab.
+    private let star = NSButton()
+    /// Behind a favourited chat's star: a soft amber plate with a glow (22 pt, inside the star's 24 pt target).
+    private let plate = NSView()
     var stats: TabStats? {
         didSet {
             guard stats != oldValue else { return }
             fillStats()
+            paintStar()
             paintMark()
             needsLayout = true
         }
@@ -873,6 +889,7 @@ private final class TabChip: NSView, NSTextFieldDelegate {
 
     init(title: String, number: Int, active: Bool) {
         super.init(frame: .zero)
+        isActive = active
         wantsLayer = true
         layer?.cornerRadius = 6
         layer?.borderWidth = 1
@@ -898,24 +915,83 @@ private final class TabChip: NSView, NSTextFieldDelegate {
         dot.layer?.cornerRadius = 3.5
         dot.isHidden = true
         disc.isHidden = true
-        for v in [dot, disc, label, meter, ctxText, counts, close] as [NSView] { addSubview(v) }
+        star.isBordered = false
+        star.imagePosition = .imageOnly
+        star.imageScaling = .scaleProportionallyDown
+        star.refusesFirstResponder = true
+        star.focusRingType = .none
+        star.target = self
+        star.action = #selector(starTapped)
+        star.isHidden = true
+        plate.wantsLayer = true
+        plate.isHidden = true
+        for v in [dot, disc, label, meter, ctxText, counts, plate, star, close] as [NSView] { addSubview(v) }
         fillStats()
+        paintStar()
     }
+
+    private func paintStar() {
+        guard let id = stats?.starId, !id.isEmpty else { star.isHidden = true; plate.isHidden = true; return }
+        let on = stats?.starred == true
+        star.isHidden = !(on || hovering || isActive)
+        plate.isHidden = star.isHidden || !on
+        if let l = plate.layer {
+            let amber = ThemeStore.shared.color("--amber")
+            l.cornerRadius = 6
+            l.borderWidth = 1
+            l.backgroundColor = amber.withAlphaComponent(0.15).cgColor
+            l.borderColor = amber.withAlphaComponent(0.45).cgColor
+            l.shadowColor = amber.cgColor
+            l.shadowOpacity = 0.3
+            l.shadowRadius = 5
+            l.shadowOffset = .zero
+        }
+        let name = on ? "star.fill" : "star"
+        let help = on ? "Remove this chat from your favorites" : "Add this chat to your favorites in the sidebar"
+        let img = NSImage(systemSymbolName: name, accessibilityDescription: help)?
+            .withSymbolConfiguration(.init(pointSize: 12, weight: .bold))
+        star.image = img
+        // The amber a touch lighter on its plate, so it keeps 3:1 against the selected chip in every theme.
+        star.contentTintColor = on ? (ThemeStore.shared.color("--amber").blended(withFraction: 0.2, of: .white) ?? ThemeStore.shared.color("--amber")) : ThemeStore.shared.color("--accent-soft")
+        star.toolTip = help
+        star.setAccessibilityLabel(help)
+    }
+
+    @objc private func starTapped() {
+        guard let id = stats?.starId, !id.isEmpty else { return }
+        onFavorite?(id)
+    }
+
+    /// Only its own area is replaced (the chip's tooltip keeps its own). A chip rebuilt under the pointer (a tab's name
+    /// changed) gets no mouseEntered: it starts out hovered, so the star doesn't vanish under the pointer.
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let a = hoverArea { removeTrackingArea(a) }
+        let a = NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect], owner: self)
+        addTrackingArea(a)
+        hoverArea = a
+        if let w = window, NSApp.isActive { hovering = visibleRect.contains(convert(w.mouseLocationOutsideOfEventStream, from: nil)) }
+    }
+
+    override func mouseEntered(with event: NSEvent) { hovering = true }
+    override func mouseExited(with event: NSEvent) { hovering = false }
 
     /// Working (the accent) or waiting for the user (the warning colour), as the header's status badge; the waiting dot
     /// pulses, unless Reduce Motion is on. Nothing for any other state.
     private func paintMark() {
         let st = stats?.status ?? ""
         dot.layer?.removeAllAnimations()
+        let fav = stats?.starred == true && !(stats?.starId ?? "").isEmpty
         guard st == "busy" || st == "waiting", let hex = Theme.statusHex[st] else {
             dot.isHidden = true
             toolTip = nil
+            setAccessibilityLabel(fav ? label.stringValue + ", favorite" : nil)
             return
         }
         dot.isHidden = false
         dot.layer?.backgroundColor = NSColor(hex: hex).cgColor
         toolTip = st == "busy" ? "Working" : "Needs you"
-        setAccessibilityLabel(label.stringValue + (st == "busy" ? ", working" : ", needs you"))
+        setAccessibilityLabel(label.stringValue + (st == "busy" ? ", working" : ", needs you") + (fav ? ", favorite" : ""))
         if st == "waiting", !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
             let a = CABasicAnimation(keyPath: "opacity")
             a.fromValue = 1
@@ -987,7 +1063,11 @@ private final class TabChip: NSView, NSTextFieldDelegate {
         super.layout()
         let w = bounds.width, h = bounds.height
         close.frame = NSRect(x: w - 21, y: (h - 16) / 2, width: 16, height: 16)
-        let right = w - 26
+        // The star's 24 pt slot is reserved whenever the tab is a chat, shown or not: the title never shifts.
+        let hasStar = !(stats?.starId ?? "").isEmpty
+        star.frame = NSRect(x: w - 21 - 24, y: (h - 24) / 2, width: 24, height: 24)
+        plate.frame = star.frame.insetBy(dx: 1, dy: 1)
+        let right = w - 26 - (hasStar ? 24 : 0)
         let showCounts = stats != nil && w >= 230
         let showMeter = stats != nil && w >= 150
         meter.isHidden = !showMeter

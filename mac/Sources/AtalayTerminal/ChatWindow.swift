@@ -357,10 +357,13 @@ private struct HUDRow: View {
                           : "The env files in this folder and the ones in it: open one to edit or copy from it (⇧⌘E)."
                               + (hud.envUnsaved ? " It has changes not saved." : ""),
                       hex: ThemeStore.shared.hex("--amber"), badge: hud.envUnsaved, action: onToggleEnv)
-            HUDButton(symbol: hud.isFavorite ? "star.fill" : "star", active: hud.isFavorite,
-                      help: hud.isFavorite ? "Remove this chat from your favorites"
-                          : "Add this chat to your favorites in the sidebar",
-                      hex: ThemeStore.shared.hex("--amber"), action: onToggleFavorite)
+            // With tabs, each chat tab carries its own star (PaneTabBar); the window's star is for a single chat.
+            if hud.tabCount < 2 {
+                HUDButton(symbol: hud.isFavorite ? "star.fill" : "star", active: hud.isFavorite,
+                          help: hud.isFavorite ? "Remove this chat from your favorites"
+                              : "Add this chat to your favorites in the sidebar",
+                          hex: ThemeStore.shared.hex("--amber"), action: onToggleFavorite)
+            }
             HUDButton(symbol: hud.onTop ? "pin.fill" : "pin", active: hud.onTop,
                       help: hud.onTop ? "Stop keeping this window above all other apps"
                           : "Keep this window above all other apps",
@@ -897,6 +900,7 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
     private var nudgeSub: AnyCancellable?
     private var acctNoteSub: AnyCancellable?
     private var shipSub: AnyCancellable?
+    private var favSub: AnyCancellable?
     private var shipLastStatus = ""
     private var nudgeAnnounced: String?
     private(set) var terminal: ChatTerminalView!
@@ -1084,7 +1088,7 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
         border.repaint()
         beam.paint()
         for tv in allTerminals { TerminalFactory.paint(tv) }
-        if tabs.count > 1 { tabBar.show(titles: tabs.indices.map(tabTitle), active: activeTab) }
+        if tabs.count > 1 { tabBar.show(titles: tabs.indices.map(tabTitle), active: activeTab); updateTabStats() }
         for bar in paneBars.values { bar.paint() }
         updatePaneBars()
         func redraw(_ v: NSView) { v.needsDisplay = true; v.subviews.forEach(redraw) }
@@ -1150,6 +1154,7 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
         tabBar.onRename = { [weak self] in self?.renameTab($0, to: $1) }
         tabBar.onRenameRequest = { [weak self] in self?.beginRename($0) }
         tabBar.onMenu = { [weak self] in self?.tabMenu($0) }
+        tabBar.onFavorite = { [weak self] in self?.toggleTabFavorite($0) }
         for v in [backdrop, tint, header, tabBar, paneArea, ticker, selectionBadge, border, flash] as [NSView] {
             v.translatesAutoresizingMaskIntoConstraints = false
             container.addSubview(v)
@@ -1193,6 +1198,12 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
         acctNoteSub = hud.$acctNote.receive(on: DispatchQueue.main).sink { [weak self, weak nudgeBar] note in
             nudgeBar?.isHidden = note == nil && self?.hud.nudge == nil
             self?.layoutNudge(self?.hud.nudge)
+        }
+        // The stars (the HUD's, the tabs') follow the sidebar's favourites live: its own rows, another window, a star here.
+        favSub = manager?.sidebar.$favorites.receive(on: DispatchQueue.main).sink { [weak self] _ in
+            guard let self else { return }
+            self.syncFavorite()
+            if self.tabs.count > 1 { self.updateTabStats() }
         }
         hud.onAcctMenu = { [weak self] in self?.acctMenu() }
         hud.onAcct = { [weak self] in self?.acctNoteAction($0) }
@@ -1457,19 +1468,57 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
     /// Star this chat in the sidebar's favourites. No sessionId yet (Claude hasn't opened its transcript): a beep —
     /// nothing to star. A terminal with no Claude in it is not a chat either.
     func toggleFavorite() {
-        guard let sid = sessionId, let sidebar = manager?.sidebar else { return NSSound.beep() }
-        if sidebar.favorites.remove(sid) == nil {
-            sidebar.favorites.insert(sid)
-            if sidebar.archived.contains(sid) { sidebar.archived.remove(sid) }
-        }
-        hud.isFavorite = sidebar.favorites.contains(sid)
+        guard let t = starTarget else { return NSSound.beep() }
+        toggleStar(t.id, conv: t.conv)
+        syncFavorite()
     }
 
     /// The star in the HUD syncs with the sidebar: the session id came in late (a new chat) or changed (a resume), or
     /// the sidebar was changed from its own row. Called on every brief update and once per sidebar favourites change.
     func syncFavorite() {
-        let sid = sessionId
-        hud.isFavorite = sid.map { manager?.sidebar.favorites.contains($0) ?? false } ?? false
+        let on = starTarget.map { Self.starred(manager?.sidebar.favorites ?? [], id: $0.id, conv: $0.conv) } ?? false
+        if hud.isFavorite != on { hud.isFavorite = on }
+    }
+
+    /// The chat the HUD's star is for, and its saved conversation (Antigravity's, Codex's, Cursor's) when its brief is the
+    /// HUD's: the window's session, else a brand-new chat's live brief whose id hasn't reached the window yet.
+    private var starTarget: (id: String, conv: String?)? {
+        if let sid = sessionId { return (sid, hud.brief?.id == sid ? hud.brief?.convId : nil) }
+        guard hud.terminalDir == nil, let b = hud.brief, b.live else { return nil }
+        return (b.id, b.convId)
+    }
+
+    /// The star on a tab's chip: favourites the chat that chip shows (`key`, as TabStats.starId), not the window's.
+    private func toggleTabFavorite(_ key: String) {
+        // By either id: a chip drawn before its conversation was known still names its chat.
+        let b = paneBriefs.values.first { $0.id == key || $0.convId == key }
+        toggleStar(b?.id ?? key, conv: b?.convId)
+        if tabs.count > 1 { updateTabStats() }
+        syncFavorite()
+    }
+
+    /// The sidebar lists Antigravity's, Codex's and Cursor's chats by their saved conversation (their live id,
+    /// "ai:<pid>:<start>", goes with the process), Claude's by the session id: a star goes on that. One starred under the
+    /// live id (the sidebar's row before the conversation was known) counts too, and its star comes off with the other.
+    private static func starred(_ favs: Set<String>, id: String, conv: String?) -> Bool {
+        favs.contains(conv ?? id) || favs.contains(id)
+    }
+
+    /// In or out of the sidebar's favourites; starred, an archived chat comes back to the list (as the sidebar's own star).
+    private func toggleStar(_ id: String, conv: String?) {
+        guard let sidebar = manager?.sidebar else { return NSSound.beep() }
+        let key = conv ?? id
+        if Self.starred(sidebar.favorites, id: id, conv: conv) {
+            sidebar.favorites.subtract([key, id])
+        } else {
+            sidebar.favorites.insert(key)
+            // Archived (on its own, or its whole folder): it comes back, else the star would show nowhere in the list.
+            if let item = sidebar.chat(key) ?? sidebar.chat(id), sidebar.isArchived(item) {
+                sidebar.toggleArchived(item)
+            } else if sidebar.archived.contains(key) {
+                sidebar.archived.remove(key)
+            }
+        }
     }
 
     /// The pin: on top of every app's windows (Discord, Chrome…), on any desktop. A window rides above the dashboard
@@ -1535,6 +1584,8 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
     /// left then up is the top-left quarter.
     func tile(key: UInt16) {
         guard let w = window, let screen = (w.screen ?? NSScreen.main)?.visibleFrame else { return }
+        // A nudge's shake ends first: its frame back where it was, before it is read (the way back, the tile it is in).
+        WindowShake.stop(w)
         if let tiledFrame, w.frame != tiledFrame { tile = nil }
         let t = tile
         let next: Tile?
@@ -3373,10 +3424,12 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
         // The account's initial on each chip, only when the window's tabs use more than one Claude account.
         let briefs = tabs.indices.map { briefForTab($0) }
         let several = Set(briefs.compactMap { $0.flatMap(acctMark) }.map(\.id)).count > 1
+        let favs = manager?.sidebar.favorites ?? []
         let stats: [TabStats?] = briefs.map { brief in
             brief.map { b in
                 TabStats(ctx: b.ctx, ctxMax: b.ctxMax, tools: b.tools, web: b.web, errors: b.errors, status: b.status,
-                         account: several ? acctMark(b) : nil)
+                         account: several ? acctMark(b) : nil,
+                         starId: b.live ? b.convId ?? b.id : nil, starred: Self.starred(favs, id: b.id, conv: b.convId))
             }
         }
         let height: CGFloat = stats.contains { $0 != nil } ? 36 : 24
@@ -3412,7 +3465,7 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
         if on { env?.mask() }
         streamVeil.isHidden = !on
         nameWindow()
-        if tabs.count > 1 { tabBar.show(titles: tabs.indices.map(tabTitle), active: activeTab) }
+        if tabs.count > 1 { tabBar.show(titles: tabs.indices.map(tabTitle), active: activeTab); updateTabStats() }
         updatePaneBars()
     }
 

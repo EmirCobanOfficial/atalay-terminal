@@ -213,8 +213,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             Mascot.shared.onSocialJSON(json)
             if json.contains(#""type":"xp""#) { Cloud.shared.apply(xpEvent: json) }
         }
-        // A friend's nudge while their chat isn't on screen (the card came): the dashboard shakes by its own state.
-        MessagePanel.onNudgeDashboard = { [weak self] in self?.nudgeDashboard() }
         // The "update available" notice was clicked: the dashboard in front, on its "what's new" screen.
         MessagePanel.onOpenUpdate = { [weak self] in
             self?.showDashboard()
@@ -980,28 +978,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                                              NSApplication.didBecomeActiveNotification, NSApplication.didResignActiveNotification]
         for name in appNames {
             nc.addObserver(self, selector: #selector(dashboardVisibilityChanged), name: name, object: nil)
-        }
-    }
-
-    /// A friend's nudge and their chat doesn't have the keyboard focus (MessagePanel "nudgeShake"; the corner card came as well).
-    /// In this order: every terminal window on screen shakes at once (visible, not minimized, on the current Space, not covered, the
-    /// app not hidden; WindowShake: about half a second, the exact frame put back, never a full-screen or zoomed one); else the map's
-    /// centre circle when the dashboard is on screen (in the page, no window moves); else nothing (the card and the buzz are all).
-    /// Never a focus change or a raise; nothing while a mouse button is down or Reduce Motion is on.
-    func nudgeDashboard() {
-        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion, !MessagePanel.noticesHoldScreen, !NSApp.isHidden,
-              NSEvent.pressedMouseButtons == 0 else { return }
-        var shaken = false
-        var seen = Set<ObjectIdentifier>()
-        for c in chats.values {
-            guard let t = c.window, seen.insert(ObjectIdentifier(t)).inserted, t.isVisible, !t.isMiniaturized, t.isOnActiveSpace,
-                  t.occlusionState.contains(.visible), !t.styleMask.contains(.fullScreen), !t.isZoomed else { continue }
-            WindowShake.run(t, amp: 1)
-            shaken = true
-        }
-        if shaken { return }
-        if let w = window, w.isVisible, !w.isMiniaturized, w.isOnActiveSpace, w.occlusionState.contains(.visible) {
-            radar.push("nudgeCore", "null")
         }
     }
 

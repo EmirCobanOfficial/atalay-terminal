@@ -1,6 +1,6 @@
 'use strict';
 
-// A spaceship attack between friends, for fun (the API's attack.ts sends it; the orbit map's raid.js flies the ship):
+// A spaceship attack between friends, for fun (the API's attack.ts sends it; attack-screen.js plays it on the victim's screen):
 //  · Firing: a 🚀 button on a friend's row (left of ◎ ✉, on hover or keyboard focus), "🚀 Fire" beside Message on their
 //    profile, and "🚀 fire at" in the right-click menu. No confirm box: pressing shows "Locking on… · Cancel" for LOCK_MS
 //    and Cancel within it aborts (their warning turns to LOCK LOST, the price comes back, and that friend waits out a
@@ -8,29 +8,29 @@
 //  · A friend who can't be fired at keeps the button, dimmed, with the reason (status()): away, do not disturb, offline
 //    (invisible looks offline), turned off, shielded · m:ss, ready in m:ss. The API sends each friend's state in the
 //    friends list and keeps it live (attack_state events, social.js); it enforces the same on fire.
-//  · Fired at you: first LOCKED ON (LOCK_MS): a thin strip in the notices panel, where DANGER shows, and, with the map in
-//    sight, a reticle closing onto its centre; five rising beeps and a lock tone (sfx.js lockon). The attacker's name is
-//    NOT shown there. Then a little ship flies in over your orbit map, swings onto an orbit round its centre, goes round
-//    it, fires three times and the centre blows up; the ship flies off. As it blows up, flames break out on a few panels
-//    of the dashboard, and DANGER says who fired (the nickname you gave them, else their name) with an alarm. Some five
-//    seconds later the centre puts itself back together, exactly as it was, and the flames die down with it. About 14 s,
-//    each sound (sounds/attack-*.m4a) at its moment; nothing is harmed, every click goes through it and it never takes
-//    the focus. The banner shows in the notices panel (messages.html), over whatever is in front, so a terminal or
-//    another app in front doesn't hide it; with the map out of sight (the dashboard hidden, minimized, on another Space,
-//    covered, or its map under another app's window: the Mac asks, inView()) the banner and its alarm come at once and
-//    the ship waits: it flies in the first moment within 2 minutes that the map can be seen (hold(), look()); one whose
-//    blast went unseen comes again the same way. If the attacker cancels during the lock, the strip says LOCK LOST and
-//    no ship comes.
+//  · Fired at you: first LOCKED ON (LOCK_MS): a thin strip in the notices panel, where DANGER shows, and a cockpit frame
+//    deploying round the screen (the 3D show; the old one's reticle closes onto its middle instead); five rising beeps and
+//    a lock tone (sfx.js lockon). The attacker's name is NOT shown
+//    there. Then a big spaceship comes straight at your screen out of deep space, fires three times at it, and the glass
+//    cracks at each hit (the third is the big one); DANGER says who fired (the nickname you gave them, else their name)
+//    with an alarm and the ship's taunt. The ship rolls away, the cracks seal a few seconds later. About 14 s, each sound
+//    (sounds/attack-*.m4a) at its moment; nothing is harmed, every click goes through it and it never takes the focus.
+//    All of it plays in the notices panel (messages.html, attack-screen.js), which has the whole screen the app is on
+//    for it, over whatever is in front (a full-screen app, another Space, the dashboard hidden, minimized or covered), so
+//    where the map or the dashboard is doesn't matter. This page only decides (do not disturb, one at a time, the lock
+//    and a cancel within it) and tells that page when (the radar handler's "attack" kinds lock, show, lost). If the attacker cancels during the lock, the strip says LOCK LOST and no ship comes.
+//    Windows has no screen show yet (SCREEN below): LOCKED ON, then DANGER with its alarm and the taunt about when the
+//    blast would be, nothing more.
 //  · Whoever was attacked is shielded for 30 minutes (nobody can fire at them): a small "Shielded · m:ss" chip on your
 //    own card and profile (shieldChip()).
 //  · Settings › Privacy "let friends fire spaceships at me" (`social.attacks`, kept with the account): off, nobody can
 //    fire at you, and you can't fire either (the button stays, dimmed: "turn attacks on in Settings").
 //  · Hit feel, for the one who fired (strike section, dashboard page): once the API answers the fire, a fixed local
-//    timeline runs from that moment (the target's own show is fixed: lock + ship + blast, raid.js): 1.2 s launch sound and
+//    timeline runs from that moment (the target's own show is fixed: lock + ship + blast, attack-screen.js): 1.2 s launch sound and
 //    the button counts `In flight · 0:07`; 7.64 and 7.78 s two hit ticks on their picture; 7.92 s the blast: their row
 //    flashes, cracks, burns 2.5 s, shakes, confirm sound; 8.3 s toast `Your ship hit <name>`; the crack stays to 15.4 s.
 //    A cancel stops it all quietly. Row not on screen: the notices panel shows a small HIT plate (kind 'hit', banner()).
-// Two pages load this file: the dashboard hears the attack, decides and flies the ship; the notices panel shows the
+// Two pages load this file: the dashboard hears the attack and decides; the notices panel shows the
 // banner it's told to (Swift relays it: the radar handler's "attack" → MessagePanel.attack → Attack.banner; Windows:
 // main.js).
 
@@ -39,25 +39,26 @@ window.Attack = (() => {
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
   const sleep = (ms) => new Promise((ok) => setTimeout(ok, ms));
   const reduced = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
-  // The damage on the dashboard's cards (damage()): how many get hit, and the timings, all in ms.
+  // The screen's show (attack-screen.js) is the Mac's for now (its panel place "attack", Messages.swift). The Windows app,
+  // until it has it too, gets the lock-on strip and then DANGER with its alarm, as its main.js relays them.
+  const SCREEN = window.__platform !== 'win32';
+  // The cracks' timings on a friend's row (strike(), the attacker's side), in ms.
   const DMG = {
-    hits: [1, 3], // fewest, most cards hit
-    cards: '#sessions .card', // what is hit first; panels fill in if there are fewer than two cards
-    stagger: 260, // between one hit and the next
     crack: 220, // the cracks drawing out from the impact
-    glitchAt: [0, 1300, 2700], // each glitch burst, from its hit (under 3 a second)
-    glitch: 240, // a burst's length
-    shake: 280, // the shake at the hit
     fade: 700, // the cracks sealing at the end
     still: 400 // reduced motion: the cracks' fade in and out
   };
   const BANNER_MS = 2500; // the DANGER banner up, its fade-out at the end included
   const LOST_MS = 700; // LOCK LOST
   const HIT_MS = 1500; // the small HIT plate
+  const SHOW_MS = 14500; // the ship's show on the screen, from the end of the lock (attack-screen.js T.END)
   const LOCK_MS = 1200; // the lock-on warning before the ship arrives (the API's attackstate.ts LOCK_MS)
   // Locked, the ship held back a moment more for a cancel sent at the lock's last instant (the API lets one in up to
   // 300 ms late, attack.ts CANCEL_MS): it says LOCK LOST then, never after the ship came.
   const HOLD_MS = 400;
+  // The notices page holds the lock-on back at most this long while it makes the 3D show (attack-screen3d.js LOCK_WAIT),
+  // so the strip, its sound and the cockpit frame start together; the whole show is that much later there.
+  const LOAD_MS = 1500;
   // m:ss
   const clock = (ms) => {
     const s = Math.max(0, Math.ceil(ms / 1000));
@@ -81,16 +82,17 @@ window.Attack = (() => {
   };
   // Every word the attack shows, in one place.
   const TEXT = {
-    lockBig: 'LOCKED ON',
-    lockSub: 'Something has locked onto you',
-    lockAria: 'Locked on. Something has locked onto you.',
+    // The lock-on's one line, worded only here: banner() puts it on the strip and hands it to the screen's show
+    // (AttackScreen.lock(label); the 3D cockpit draws no line of its own, so the strip is where it shows). The lock names
+    // nobody today (the dashboard sends it with no name), so it reads LOCKED ON; given a name it says who.
+    lock: (n) => (n ? `${n} locked on you` : 'LOCKED ON'),
+    lockAria: (n) => (n ? `Locked on. ${n} locked on you.` : 'Locked on.'),
     lostBig: 'LOCK LOST',
     lostAria: 'Lock lost.',
     dangerBig: 'DANGER',
     dangerWho: (n) => `<b>${n}</b> fired at you`,
     dangerAria: (n) => `Danger. ${n} fired at you.`,
-    // What the ship says over your map while it attacks (a speech bubble over it); with the map out of sight, DANGER's
-    // line under who fired.
+    // What the ship says as it attacks: the line under who fired in DANGER.
     taunt: 'hahaha yowai mo',
     // The firing buttons.
     fire: 'Fire',
@@ -122,6 +124,10 @@ window.Attack = (() => {
       dnd: { label: () => 'do not disturb', tip: (n) => `${n} is on do not disturb. You can fire when it's off.` },
       offline: { label: () => 'offline', tip: (n) => `${n} is offline. You can fire when they're online.` },
       off: { label: () => 'turned off', tip: (n) => `${n} turned off spaceship attacks.` },
+      // Their app is too old for the ship (the API's `outdated`, from the capabilities each app announces): nothing is charged.
+      outdated: { label: () => 'needs to update', tip: (n) => `${n} needs to update Orbiterm. You can fire when they have.` },
+      // Your own status is Away, Do Not Disturb or Invisible: no firing at all, not even back (the API's `mine_busy`).
+      mine_busy: { label: () => `you're ${myStatusName()}`, tip: () => `You're ${myStatusName()}, so you can't fire. Set your status to online to fire.` },
       mine_off: { label: () => 'turn attacks on in Settings', tip: () => 'Spaceship attacks are off for you, so you can\'t fire either. Turn them on in Settings > Privacy.' },
       shield: { label: (t) => `shielded · ${t}`, tip: (n, t) => `${n} was just attacked: no one can fire at them for ${(ORB() || {}).shieldMin || 30} minutes after an attack. ${t} left.` },
       cooldown: { label: (t) => `ready in ${t}`, tip: (n, t) => `You can fire at ${n} again in ${t}.` },
@@ -135,7 +141,7 @@ window.Attack = (() => {
     // Settings › Privacy.
     setting: {
       title: 'let friends fire spaceships at me',
-      hint: "a friend's little ship flies in over your map and blows up its centre, which puts itself back together in a few seconds · off: nobody can fire at you, and you can't fire at them either",
+      hint: "a friend's little spaceship flies at your screen and cracks the glass for a few seconds (nothing is really broken) · off: nobody can fire at you, and you can't fire at them either",
       aria: 'Let friends fire spaceships at me',
       on: 'friends can fire spaceships at you again',
       off: "friends can't fire spaceships at you now",
@@ -147,6 +153,9 @@ window.Attack = (() => {
   // Your switch (Settings › Privacy), and why a friend can't be fired at right now: the dashboard's buttons and the Fire back
   // on the who-fired-at-me card and in a chat (the notices and chat pages) all say the same words.
   const me = () => (window.Social && Social.state() && Social.state().me) || null;
+  // The statuses you can't fire from (the API's `mine_busy`): picked by you, not the automatic away after 10 idle minutes.
+  const NO_FIRE = { idle: 'away', dnd: 'on do not disturb', invisible: 'invisible' };
+  const myStatusName = () => NO_FIRE[(me() || {}).status] || 'on do not disturb';
   let takes = null; // your switch, once known; on until then
   const on = () => (takes !== null ? takes !== false : !me() || me().attacks !== false);
   // Why a friend can't be fired at right now, or null: from the presence the app has live (away, do not disturb, offline,
@@ -164,11 +173,16 @@ window.Attack = (() => {
     const p = f.presence || 'offline';
     let why = null;
     let until = 0;
+    // Revenge (the API's `revengeUntil`): they fired at you and you haven't since, so their status and switch don't count.
+    // Whether their app is really there is the API's to say when you fire (invisible shows as offline here).
+    const revenge = a.revengeUntil > now;
     if (!on()) why = 'mine_off';
-    else if (p === 'offline') why = 'offline';
-    else if (p === 'dnd') why = 'dnd';
-    else if (p === 'idle') why = 'away';
-    else if (a.off) why = 'off';
+    else if (me() && NO_FIRE[me().status]) why = 'mine_busy';
+    else if (!revenge && p === 'offline') why = 'offline';
+    else if (!revenge && p === 'dnd') why = 'dnd';
+    else if (!revenge && p === 'idle') why = 'away';
+    else if (!revenge && a.off) why = 'off';
+    else if (a.outdated) why = 'outdated';
     else if (a.shieldUntil > now) (why = 'shield'), (until = a.shieldUntil);
     else if (a.cooldownUntil > now) (why = 'cooldown'), (until = a.cooldownUntil);
     else if ((dailyMax.get(f.id) || 0) > now) (why = 'target_daily_max'), (until = dailyMax.get(f.id));
@@ -258,7 +272,7 @@ window.Attack = (() => {
         takes = ev.set['social.attacks'] !== false;
         if (me()) me().attacks = takes;
       }
-      if (['presence', 'attack_state', 'friend', 'orb', 'orb_settings', 'orb_state', 'snapshot'].includes(ev.type)) tick();
+      if (['presence', 'status', 'attack_state', 'caps', 'friend', 'orb', 'orb_settings', 'orb_state', 'snapshot'].includes(ev.type)) tick();
     });
   }
 
@@ -269,20 +283,48 @@ window.Attack = (() => {
     let sr = null;
     let up = false;
     let timers = [];
+    let gen = 0; // banner() calls so far: a lock-on held back for the 3D show shows only if it's still the last one
     let cur = null; // the kind up or on its way, until it's gone
     let dangerEnd = 0; // when the last DANGER banner ended (the who-fired-at-me card waits for it, messages.js afterDanger)
+    let cardWaits = false; // DANGER ended while the show was still up: the card comes when the show ends
+    function afterShow() {
+      if (cardWaits) {
+        cardWaits = false;
+        dangerEnd = Date.now();
+        window.Messages?.afterDanger?.();
+      }
+    }
     function banner(b) {
       if (!b) return;
-      const kind = b.kind === 'lock' || b.kind === 'lost' || b.kind === 'hit' ? b.kind : 'danger';
+      const kind = b.kind === 'lock' || b.kind === 'lost' || b.kind === 'hit' || b.kind === 'show' ? b.kind : 'danger';
       if ((kind === 'danger' || kind === 'hit') && !b.name) return;
+      // The ship's show on the whole screen (attack-screen3d.js, else attack-screen.js): the lock-on's cockpit frame (or
+      // reticle), the ship after it, DANGER at the blast, a cancel within the lock takes it down. The strip is the banner's.
+      if (kind === 'show') {
+        const name = String(b.name || '').slice(0, 40);
+        const danger = { kind: 'danger', name, sound: b.sound !== false, taunt: b.taunt === true };
+        if (SCREEN && window.AttackScreen) return void AttackScreen.start({ onBlast: () => banner(danger), onEnd: afterShow });
+        // No show here (Windows, or its script missing): DANGER alone, about when the blast would be.
+        return void banner({ ...danger, delay: 5000 });
+      }
+      // The lock-on's one line (TEXT.lock), made once here: the strip shows it and the screen's show is given it.
+      const label = kind === 'lock' ? TEXT.lock(String(b.name || '').slice(0, 40)) : '';
+      // The 3D show holds its lock-on back until its scene is made (a promise, LOAD_MS at most): the strip and its sound
+      // wait for it, so they start with the cockpit frame.
+      const held = kind === 'lock' && SCREEN ? window.AttackScreen?.lock(label) : null;
+      if (kind === 'lost' && SCREEN) window.AttackScreen?.cancel();
       // Your own HIT plate never cuts a warning about you (LOCKED ON, DANGER, LOCK LOST): it's let go, its sounds played.
       if (kind === 'hit' && cur && cur !== 'hit') return;
       cur = kind;
       timers.forEach(clearTimeout);
-      timers = [setTimeout(() => show(b, kind), Math.max(0, Math.min(5000, Number(b.delay) || 0)))];
+      timers = [];
+      const at = ++gen; // a banner that comes meanwhile wins over a lock-on still held back
+      const go = () => at === gen && timers.push(setTimeout(() => show(b, kind, label), Math.max(0, Math.min(5000, Number(b.delay) || 0))));
+      if (held && typeof held.then === 'function') held.then(go, go);
+      else go();
     }
     const RET = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 8V3h5M16 3h5v5M21 16v5h-5M8 21H3v-5"/><circle cx="12" cy="12" r="1.6"/></svg>';
-    function show(b, kind) {
+    function show(b, kind, label) {
       if (!box) {
         box = document.createElement('div');
         box.id = 'attackbox';
@@ -305,8 +347,8 @@ window.Attack = (() => {
         ? `<div class="atk-banner${still}" aria-hidden="true"><i class="atk-haz"></i><div class="atk-in"><b class="atk-big"><i>⚠</i>${TEXT.dangerBig}</b>` +
           `<span class="atk-who">${TEXT.dangerWho(name)}</span>${b.taunt ? `<span class="atk-taunt">${esc(TEXT.taunt)}</span>` : ''}</div><i class="atk-haz"></i></div>`
         : `<div class="atk-banner lock${kind === 'lost' ? ' lost' : ''}${still}" aria-hidden="true"><i class="atk-ret">${RET}</i><div class="atk-in">` +
-          `<b class="atk-big">${kind === 'lost' ? TEXT.lostBig : TEXT.lockBig}</b>${kind === 'lost' ? '' : `<span class="atk-who">${TEXT.lockSub}</span>`}</div></div>`;
-      sr.textContent = kind === 'hit' ? `${TEXT.hitToast(String(b.name || '').slice(0, 40))}` : kind === 'danger' ? `${TEXT.dangerAria(String(b.name || '').slice(0, 40))}${b.taunt ? ` ${TEXT.taunt}` : ''}` : kind === 'lost' ? TEXT.lostAria : TEXT.lockAria;
+          `<b class="atk-big">${kind === 'lost' ? TEXT.lostBig : esc(label)}</b></div></div>`;
+      sr.textContent = kind === 'hit' ? `${TEXT.hitToast(String(b.name || '').slice(0, 40))}` : kind === 'danger' ? `${TEXT.dangerAria(String(b.name || '').slice(0, 40))}${b.taunt ? ` ${TEXT.taunt}` : ''}` : kind === 'lost' ? TEXT.lostAria : TEXT.lockAria(String(b.name || '').slice(0, 40));
       up = true;
       // The panel takes the screen as it does for the flames, letting every click through (messages.js sizeNotes).
       window.Messages?.layout?.();
@@ -323,15 +365,19 @@ window.Attack = (() => {
         cur = null;
         window.Messages?.layout?.();
         // DANGER is over: the card that says who fired comes now (never over the banner, never before the blast).
+        // With the ship's show still on the screen it follows the show instead (afterShow).
         if (kind === 'danger') {
           dangerEnd = Date.now();
-          window.Messages?.afterDanger?.();
+          if (window.AttackScreen?.active()) cardWaits = true;
+          else window.Messages?.afterDanger?.();
         }
       }, ms));
     }
     // The alarm ready before it's needed.
     setTimeout(() => Sfx.preload('attack-alarm'), 8000);
-    return { banner, wide: () => up, text: TEXT, button: cardButton, shield: cardShield, shieldLeft: shieldLeftMs, clock, setBtn, tick, dangerUp: () => cur === 'danger', dangerEnd: () => dangerEnd };
+    // The screen's show lays the panel over the whole screen (messages.js sizeNotes: place "attack"), and tells when it's up or gone.
+    if (window.AttackScreen) AttackScreen.onChange = () => window.Messages?.layout?.();
+    return { banner, wide: () => up || !!window.AttackScreen?.active(), screen: () => !!window.AttackScreen?.active(), text: TEXT, button: cardButton, shield: cardShield, shieldLeft: shieldLeftMs, clock, setBtn, tick, dangerUp: () => cur === 'danger' || !!window.AttackScreen?.active(), dangerEnd: () => dangerEnd };
   }
   if (ROLE !== 'dashboard') return { wide: () => false, text: TEXT, button: cardButton, shield: cardShield, shieldLeft: shieldLeftMs, clock, setBtn, tick, dangerUp: () => false, dangerEnd: () => 0 };
 
@@ -344,17 +390,20 @@ window.Attack = (() => {
   const nameOf = (ev) => (ev.from && Social.nick(ev.from.id)) || ev.nick || (ev.from && ev.from.name) || 'a friend';
 
   // ---------- fired at you ----------
+  // The show itself is on the notices page, on the whole screen (attack-screen.js): the dashboard decides (do not disturb,
+  // one at a time, the lock-on and a cancel within it) and tells that page when to start, over the radar handler's "attack".
   let queue = []; // waiting for the one playing
   let busyUntil = 0;
   let timer = 0;
   let playing = null; // { id, cancelled, wake }: the one in its lock-on, which its sender can still cancel
-  function arrive(ev) {
+  // `local`: the staging preview (preview()), played even on do not disturb; never set for what the API sends.
+  function arrive(ev, local = false) {
     if (!ev || !ev.from) return;
-    // The API doesn't send it to someone on do not disturb; one already on its way when they switched is let go.
-    if (Social.dnd()) return;
-    // The newest from each friend, three at most (one of theirs still waiting to be seen, hold(), gives way to it).
+    // The API doesn't send it to someone on do not disturb; one already on its way when they switched is let go. A fire back
+    // (`revenge`: you fired at them first) comes even then, and shows (social.js says `attack-revenge`).
+    if (Social.dnd() && !local && !ev.revenge) return;
+    // The newest from each friend, three at most.
     queue = queue.filter((q) => q.from.id !== ev.from.id);
-    missed = missed.filter((m) => m.ev.from.id !== ev.from.id);
     queue.push(ev);
     if (queue.length > 3) queue.shift();
     next();
@@ -370,254 +419,57 @@ window.Attack = (() => {
   }
   function next() {
     clearTimeout(timer);
-    // Nothing more to play (the one waiting may have been taken back since): back where you were, if the attack took you.
-    if (!queue.length) return void release();
+    if (!queue.length) return;
     const wait = busyUntil - Date.now();
     if (wait > 0) return void (timer = setTimeout(next, wait + 300));
     play(queue.shift());
   }
-  // The map is on screen when the dashboard can be seen (app.js setVisibility: not hidden, minimized or under other
-  // windows, `paused`; not under one of the app's own chat windows, `covered`) and no view covers it (they hide #mapwrap).
-  // On the Mac, not being the app in front doesn't count against it: `behind` is only another app having the keyboard
-  // (a browser, Discord, the released Orbiterm beside the staging one) while the dashboard still shows, and the map is
-  // drawn there (raid.js pokes the loop to full speed), so the ship has to come. Counting it is what kept the ship away
-  // while the warning showed. Windows can't tell a dashboard beside another app from one under it (it reports only shown
-  // and not minimized, main.js), so there `behind` still counts, or the ship would fly unseen.
+  // The Windows dashboard's own state, for strike() below: it can be seen when it isn't hidden, minimized or under other
+  // windows (`paused`), not under one of the app's own chat windows (`covered`), and (Windows can't tell a dashboard beside
+  // another app from one under it) not behind another app (`behind`).
   const BEHIND_HIDES = window.__platform === 'win32';
-  // Windows only: the app is not the one in front (`behind`), but the app has looked at the desktop (main.js 'attackSeen',
-  // the window list in front to back) and says the dashboard lies beside the other windows, not under them: that counts as
-  // seen, as it does on the Mac. Asked at each attack's start (not once for good: where the windows are changes). The
-  // answer takes a moment; none within a second (the helper still compiling, an error): not seen, the banner alone.
-  let exposed = false;
-  const hiddenBehind = () => BEHIND_HIDES && html.classList.contains('behind') && !exposed;
-  async function expose() {
-    exposed = false;
-    if (!html.classList.contains('behind')) return;
-    exposed = await Promise.race([
-      h.radar.postMessage({ type: 'attackSeen' }).then((r) => r === true, () => false),
-      sleep(1000).then(() => false),
-    ]);
-  }
-  // The dashboard window itself can be seen (the same conditions, apart from a view of the app lying over the map).
+  const hiddenBehind = () => BEHIND_HIDES && html.classList.contains('behind');
+  // The dashboard window itself can be seen.
   function dashboardSeen() {
     return !html.classList.contains('paused') && !html.classList.contains('covered') && !hiddenBehind() &&
       document.visibilityState === 'visible';
   }
-  function mapInSight() {
-    const space = document.getElementById('space');
-    return dashboardSeen() && !!space && space.clientWidth > 0 && space.clientHeight > 0;
-  }
-  // The Mac: the window "visible" isn't enough. macOS calls a window visible when any pixel of it shows, so a dashboard at
-  // the bottom of the pile, its map under another app's window, counted as seen and the ship flew where nobody saw it
-  // (iTerm2 in front, the staging dashboard under it: the flight began, unseen, the sounds came). The app looks at the
-  // windows over the map (AttackBridge, RadarView.swift): true when at least half of the map's box is clear of other
-  // apps' windows. Asked as the ship is about to come, at its blast, and while a missed one waits (hold()). Another view
-  // over the map: the whole page is asked (leave() brings the map back there). No answer within a second: seen, as before.
-  // Windows has its own (expose(), the window list at the lock's start).
-  const MAC_LOOKS = !BEHIND_HIDES && !!h.attack;
-  async function inView() {
-    if (!MAC_LOOKS) return true;
-    const space = document.getElementById('space');
-    const W = innerWidth || 1, H = innerHeight || 1;
-    let rect = { x: 0, y: 0, w: 1, h: 1 };
-    if (space && space.clientWidth > 0 && space.clientHeight > 0) {
-      const b = space.getBoundingClientRect();
-      rect = { x: b.left / W, y: b.top / H, w: b.width / W, h: b.height / H };
-    }
-    let asked;
-    try {
-      asked = Promise.resolve(h.attack.postMessage({ type: 'seen', rect })).then((r) => r !== false, () => true);
-    } catch {
-      return true;
-    }
-    return Promise.race([asked, sleep(1000).then(() => true)]);
-  }
-  // Another view of the app (Settings' pages are windows over the dashboard and don't hide the map; these do) lies over the
-  // map while the dashboard can be seen: the app goes back to the dashboard for the ship, then returns you (away/release).
-  // Never when the window is hidden, minimized or under another window (attack.js never takes the focus or un-hides it),
-  // and never from where leaving could lose something: the themes' preview, Clean Up, a profile being edited, a file with
-  // unsaved changes, a field with the cursor in it (what you type next would go nowhere; an IME's composition is in one
-  // too), a mouse button held down (a note being dragged, a selection). Notes save as you type, so they're fine. Those
-  // keep the banner alone, as before.
-  const BACK_TO = ['notes', 'friends', 'profile', 'board', 'notifications', 'roadmap'];
-  // { view, git, profile, took }: where you were, while the attack has you on the dashboard. `took`: you did something
-  // yourself meanwhile (a click or a key on the page, another view by any way, even back to the dashboard): you stay.
-  let away = null;
-  let pressed = false;
-  const appEl = document.getElementById('app');
-  const onDash = () => !window.Cloud?.current?.() && !appEl?.classList.contains('git-mode');
-  const NOT_TEXT = /^(button|checkbox|radio|range|color|file|submit|reset|image|hidden)$/i;
-  function writing() {
-    const a = document.activeElement;
-    if (!a || a === document.body) return false;
-    if (a.isContentEditable) return true;
-    return (a.tagName === 'TEXTAREA' || (a.tagName === 'INPUT' && !NOT_TEXT.test(a.type))) && !a.readOnly && !a.disabled;
-  }
-  addEventListener('pointerdown', () => {
-    pressed = true;
-    if (away) away.took = true;
-  }, true);
-  addEventListener('pointerup', () => (pressed = false), true);
-  addEventListener('pointercancel', () => (pressed = false), true);
-  // A release the page never heard of (a native menu, a drag let go outside) is put right by the next move.
-  addEventListener('pointermove', (e) => (pressed = e.buttons > 0), { capture: true, passive: true });
-  addEventListener('blur', () => (pressed = false)); // the window's own (an element's blur doesn't reach here)
-  addEventListener('keydown', (e) => {
-    if (away && !['Shift', 'Control', 'Alt', 'Meta', 'CapsLock', 'Fn'].includes(e.key)) away.took = true;
-  }, true);
-  // Any view opened meanwhile (the activity bar, a shortcut, the menu bar, a notification). Told after leave() and
-  // release() have run, so their own switching never counts: on the dashboard then, or `away` already gone.
-  if (appEl) new MutationObserver(() => away && !onDash() && (away.took = true)).observe(appEl, { attributes: true, attributeFilter: ['class'] });
-  // `dry`: only whether it would (true), nothing switched (a missed ship waiting for the map, look()).
-  function leave(dry = false) {
-    const space = document.getElementById('space');
-    if (!window.GitView || !window.Cloud?.current || !window.Orbit?.attack || reduced() || !dashboardSeen()) return null;
-    if (!space || (space.clientWidth > 0 && space.clientHeight > 0) || onDash() || pressed || writing()) return null;
-    const view = window.Cloud.current();
-    const git = !view && !!appEl?.classList.contains('git-mode');
-    if (view && !BACK_TO.includes(view)) return null;
-    if (document.getElementById('profile-view')?.classList.contains('editing')) return null;
-    if (git && (window.FileEditor?.list?.() || []).some((t) => t.dirty)) return null;
-    if (dry) return true;
-    // A profile comes back as it was opened: whose, where its Back goes, the leaderboard's list to step through.
-    let profile = null;
-    if (view === 'profile' && window.Profile?.currentId?.()) {
-      const { edit, picEl, ...opts } = window.Profile.opts?.() || {};
-      profile = { id: window.Profile.currentId(), opts: { ...opts, instant: true } };
-    }
-    window.GitView.view('dash'); // the way Esc goes back to the dashboard
-    return { view, git, profile, took: false };
-  }
-  // You go back to where you were, unless you did something yourself meanwhile, or another attack is waiting (it keeps
-  // you on the dashboard, and you go back after the last one). Also with the window hidden by then: it shows where you
-  // left it when it comes back.
-  function release() {
-    if (!away || queue.length) return;
-    const from = away;
-    away = null;
-    if (from.took || !onDash() || writing()) return;
-    if (from.git) return window.GitView?.open();
-    if (from.profile && window.Profile?.openPerson) return window.Profile.openPerson(from.profile.id, from.profile.opts);
-    if (!from.view) return;
-    // The leaderboard as it was (its week, "Show all"), as back from a profile.
-    if (from.view === 'board') window.Cloud?.showView('board', true);
-    window.GitView?.view(from.view);
-  }
-  // The ship's sounds, each played at its moment on the map (raid.js gives the moments); the alarm is the banner's.
-  const SOUNDS = ['attack-flyby', 'attack-lasers', 'attack-boom', 'attack-rebuild'];
-  // Each attack's own number: its timed release() does nothing once another has started (that one releases you then).
-  let seq = 0;
-  const back = (my, ms) => setTimeout(() => my === seq && release(), ms);
   function play(ev) {
-    const my = ++seq;
-    fly(ev, my).catch(() => {
-      // Something failed half way: nothing left up, and the next one comes (or, none waiting, you go back: next()).
-      reticle(false);
+    fly(ev).catch(() => {
+      // Something failed half way: nothing left up, and the next one comes.
       playing = null;
       busyUntil = Date.now();
       clearTimeout(timer);
       timer = setTimeout(next, 300);
     });
   }
-  async function fly(ev, my) {
+  async function fly(ev) {
     busyUntil = Date.now() + 20_000; // the next one waits; set right below, once this one's length is known
     const name = nameOf(ev);
-    if (ev.replay) {
-      // A missed one, now that the map can be seen (look()): the ship at once, no lock-on (that was when it came). A view
-      // of the app over the map is left first, as for a live one.
-      if (away && away.took) away = null;
-      if (!away && (away = leave())) {
-        dispatchEvent(new Event('resize'));
-        await sleep(120);
-      }
-    } else {
-      const lock = (playing = { id: ev.from.id, cancelled: false, wake: () => {} });
-      const woken = new Promise((ok) => (lock.wake = ok));
-      // The warning first, wherever the app is on screen (the notices panel shows it over whatever is in front), then the
-      // ship. Its sender stays unnamed until the blast.
-      banner('', 'lock');
-      // Windows: whether the dashboard can be seen is asked inside the lock's own time (it comes off the wait below), so
-      // the ship still comes when the warning says, as on the Mac.
-      let spent = 0;
-      if (BEHIND_HIDES) {
-        const asked = Date.now();
-        await expose();
-        spent = Date.now() - asked;
-      }
-      // A view of the app over the map: the dashboard first, so the ship's arrival is seen (once the layout has settled).
-      // Already there for the one before: you stay. Gone your own way meanwhile: from where you are now.
-      if (away && away.took) away = null;
-      if (!away && (away = leave())) {
-        dispatchEvent(new Event('resize'));
-        await sleep(120);
-      }
-      reticle(true);
-      await Promise.race([sleep(Math.max(0, LOCK_MS + HOLD_MS - spent)), woken]);
-      playing = null;
-      if (lock.cancelled) {
-        reticle(false);
-        banner('', 'lost');
-        back(my, 600);
-        busyUntil = Date.now() + LOST_MS;
-        clearTimeout(timer);
-        timer = setTimeout(next, LOST_MS + 300);
-        return;
-      }
+    const lock = (playing = { id: ev.from.id, cancelled: false, wake: () => {} });
+    const woken = new Promise((ok) => (lock.wake = ok));
+    // The warning first (the notices panel has the screen for it: the strip and the cockpit frame, or the old reticle), then
+    // the ship. Its sender stays unnamed until the blast. Held a moment past the lock for a cancel sent at its last instant.
+    banner('', 'lock');
+    await Promise.race([sleep(LOCK_MS + HOLD_MS), woken]);
+    playing = null;
+    if (lock.cancelled) {
+      banner('', 'lost');
+      busyUntil = Date.now() + LOST_MS;
+      clearTimeout(timer);
+      timer = setTimeout(next, LOST_MS + 300);
+      return;
     }
-    let show = null;
-    // The Mac asks the app whether the map really shows (inView()); a moment at most.
-    if (mapInSight() && !reduced() && window.Orbit?.attack && (await inView())) {
-      // The sounds loaded first (a moment at most, the first time), so each starts on time.
-      await Promise.race([Promise.all(SOUNDS.map((s) => Sfx.preload(s))), sleep(1500)]);
-      show = mapInSight() ? window.Orbit.attack() : null;
-      // The one before still on the map (its frames stopped while the map was out of sight; it ends on the first frame
-      // back): once more, a moment later.
-      if (!show && mapInSight()) {
-        await sleep(400);
-        show = mapInSight() ? window.Orbit.attack() : null;
-      }
-    }
-    if (show) {
-      busyUntil = Date.now() + show.end;
-      back(my, show.end);
-      // What belongs to the map plays only if the map is still in sight at that moment.
-      const at = (ms, fn) => setTimeout(() => mapInSight() && fn(), ms);
-      Sfx.sample('attack-flyby', 0.8);
-      at(show.fire, () => Sfx.sample('attack-lasers', 0.9));
-      setTimeout(() => reticle(false), show.boom);
-      const said = taunt(show);
-      at(show.boom, () => {
-        Sfx.sample('attack-boom', 1);
-        flames(show.whole - show.boom);
-        damage(show.whole - show.boom);
-      });
-      // The ship away again: its engines once more, quieter, under the alarm.
-      at(show.leave + 150, () => Sfx.sample('attack-flyby', 0.4));
-      at(show.reform, () => Sfx.sample('attack-rebuild', 0.7));
-      // The blast not seen (the map went out of sight on the way: another Space, the window hidden or covered, another
-      // app's window over the map): the ship comes again once the map can be seen (hold()).
-      setTimeout(async () => {
-        if (!(mapInSight() && (await inView()))) hold(ev);
-      }, show.boom);
-      // The banner and its alarm right after the blast, whatever is in front by then (a replay's is silent: its alarm
-      // came when it was fired). The taunt goes on DANGER only if its bubble never showed (the map went out of sight first).
-      setTimeout(() => banner(name, 'danger', !said.seen, !ev.replay), show.boom + 350);
-    } else if (ev.replay) {
-      // Out of sight again just as it was to come: it waits on (its time unchanged).
-      reticle(false);
-      busyUntil = Date.now();
-      back(my, 600);
-      hold(ev);
-    } else {
-      reticle(false);
-      busyUntil = Date.now() + BANNER_MS;
-      banner(name, 'danger', true);
-      back(my, 600);
-      // The ship isn't wasted: it comes when the map can be seen (hold()).
-      hold(ev);
-    }
+    // The ship, and DANGER with its alarm at the blast: the notices page runs it all, on the screen the app is on (up to
+    // LOAD_MS later than sent: the next one waits for that too, never cutting its end).
+    const showMs = SHOW_MS + (SCREEN ? LOAD_MS : 0);
+    busyUntil = Date.now() + showMs;
+    try {
+      if (SCREEN) h.radar.postMessage({ type: 'attack', name, kind: 'show', delay: 0, sound: true, taunt: true });
+      else h.radar.postMessage({ type: 'attack', name, kind: 'danger', delay: 5000, sound: true, taunt: true });
+    } catch {}
     clearTimeout(timer);
-    timer = setTimeout(next, busyUntil - Date.now() + 300);
+    timer = setTimeout(next, showMs + 300);
   }
   function banner(name, kind = 'danger', taunt = false, sound = true) {
     try {
@@ -625,200 +477,10 @@ window.Attack = (() => {
     } catch {}
   }
 
-  // ---------- a missed one comes back ----------
-  // The ship flies only where it's seen. When the map is out of sight as it comes (the window hidden, minimized, on another
-  // Space or under other windows, a chat window over it), or goes out of sight before the blast, LOCKED ON and DANGER
-  // with its alarm come as ever, and the ship waits: the first moment within REPLAY_MS that the map can be seen again
-  // (another view of the app over it is left as for a live one, leave()), it flies in and does it all, without the
-  // lock-on and with DANGER silent. The newest from each friend, three at most; on do not disturb they're let go. Looked
-  // for when the window's state changes (app.js setVisibility, the page shown) and every LOOK_MS (the Mac: another app's
-  // window moved off the map tells the page nothing). Windows: the app in front again is what brings it back (expose()'s
-  // answer was for the attack's start).
-  const REPLAY_MS = 120_000;
-  const LOOK_MS = 1500;
-  let missed = []; // { ev, until }
-  let lookTimer = 0;
-  let lookSeq = 0;
-  function hold(ev) {
-    if (reduced() || !window.Orbit?.attack || !ev || !ev.from) return;
-    const until = ev.replay ? ev.until : Date.now() + REPLAY_MS;
-    if (!(until > Date.now())) return;
-    missed = missed.filter((m) => m.ev.from.id !== ev.from.id);
-    missed.push({ ev: { ...ev, replay: true, until }, until });
-    if (missed.length > 3) missed.shift();
-    exposed = false;
-    clearTimeout(lookTimer);
-    lookTimer = setTimeout(look, LOOK_MS);
-  }
-  async function look() {
-    clearTimeout(lookTimer);
-    lookTimer = 0;
-    const my = ++lookSeq;
-    missed = missed.filter((m) => m.until > Date.now());
-    if (!missed.length) return;
-    if (Social.dnd() || reduced()) return void (missed = []);
-    const free = !playing && busyUntil <= Date.now() && !queue.length;
-    if (free && dashboardSeen() && (mapInSight() || leave(true)) && (await inView())) {
-      if (my !== lookSeq) return; // a newer look decides
-      const ready = missed.filter((m) => m.until > Date.now()).map((m) => m.ev);
-      missed = [];
-      if (!ready.length || playing || busyUntil > Date.now() || queue.length) return void ready.forEach(hold);
-      queue.push(...ready);
-      return void next();
-    }
-    if (my === lookSeq) lookTimer = setTimeout(look, LOOK_MS);
-  }
-  const lookNow = () => missed.length && look();
-  new MutationObserver(lookNow).observe(html, { attributes: true, attributeFilter: ['class'] });
-  document.addEventListener('visibilitychange', lookNow);
 
-  // ---------- the reticle on the map ----------
-  // With the map in sight, four brackets close onto its centre (the core) as the lock builds: orange while closing, amber
-  // when locked (the strip's amber), steady until the blast. Only a drawing, no words; reduced motion: it just stands there.
-  let ret = null;
-  let retFrame = 0;
-  function reticle(on) {
-    cancelAnimationFrame(retFrame);
-    clearTimeout(ret && ret.lockTimer);
-    ret?.el.remove();
-    ret = null;
-    if (!on || !mapInSight() || !window.Orbit?.corePoint || !window.Orbit.corePoint()) return;
-    const el = document.createElement('div');
-    el.id = 'atk-ret';
-    if (reduced()) el.className = 'still locked';
-    el.setAttribute('aria-hidden', 'true');
-    el.innerHTML = '<div class="rt"><i class="b1"></i><i class="b2"></i><i class="b3"></i><i class="b4"></i></div>';
-    document.body.appendChild(el);
-    ret = { el, lockTimer: setTimeout(() => el.classList.add('locked'), LOCK_MS - 200) };
-    const place = () => {
-      const space = document.getElementById('space');
-      const p = window.Orbit?.corePoint?.();
-      if (!ret || ret.el !== el) return;
-      if (space && p) {
-        const box = space.getBoundingClientRect();
-        const d = Math.max(48, 2 * p.r);
-        el.style.cssText = `left:${(box.left + p.x).toFixed(1)}px;top:${(box.top + p.y).toFixed(1)}px;width:${d.toFixed(1)}px;height:${d.toFixed(1)}px`;
-      }
-      retFrame = requestAnimationFrame(place);
-    };
-    place();
-    // Never left up by a missed end.
-    setTimeout(() => ret && ret.el === el && reticle(false), 20_000);
-  }
-
-  // ---------- the taunt over the ship ----------
-  // A comic speech bubble over the raiding ship, kept over it as it flies (the map's shipPoint): it pops up as the ship
-  // comes onto its orbit, stays through the lasers, and goes as the ship flies off. Only over the map in sight; a page
-  // element taking no clicks, like the reticle. `seen`: it showed at least once.
-  let bub = null;
-  let bubFrame = 0;
-  function taunt(show) {
-    cancelAnimationFrame(bubFrame);
-    bub?.remove();
-    const said = { seen: false };
-    const el = (bub = document.createElement('div'));
-    el.id = 'atk-taunt';
-    el.hidden = true;
-    el.setAttribute('aria-hidden', 'true');
-    if (reduced()) el.className = 'still';
-    el.innerHTML = `<span>${esc(TEXT.taunt)}</span>`;
-    document.body.appendChild(el);
-    const t0 = performance.now();
-    const place = () => {
-      if (bub !== el) return;
-      const t = performance.now() - t0;
-      if (t > show.leave + 300) {
-        el.remove();
-        bub = null;
-        return;
-      }
-      if (t > show.leave) el.classList.add('out');
-      const p = t >= show.enter && mapInSight() ? window.Orbit?.shipPoint?.() : null;
-      const space = document.getElementById('space');
-      if (p && space) {
-        const box = space.getBoundingClientRect();
-        el.style.left = `${(box.left + p.x).toFixed(1)}px`;
-        el.style.top = `${(box.top + p.y - Math.max(14, p.r * 0.7)).toFixed(1)}px`;
-        el.hidden = false;
-        said.seen = true;
-      } else el.hidden = true;
-      bubFrame = requestAnimationFrame(place);
-    };
-    place();
-    return said;
-  }
-
-  // ---------- flames on the dashboard ----------
-  // As the map's centre blows up, parts of the dashboard catch fire: a patch of the app's own flames (fire.js, all of
-  // them drawn with its one WebGL context: one of their own each took the orbit map's away) on the bottom edge of up
-  // to five panels picked at random, each patch its own size, catching one after another and dying down one after
-  // another, the last as the centre is whole again (`ms` from now). They're drawn in a box over the dashboard's panels
-  // that takes no clicks, under the page's scanlines and its menus; the terminals' windows are above the dashboard as
-  // ever.
-  let fires = null;
-  function flames(ms) {
-    if (fires || !window.Fire || reduced()) return;
-    const panels = [...document.querySelectorAll('#app .panel')].filter((p) => {
-      const r = p.getBoundingClientRect();
-      return r.width >= 160 && r.height >= 90 && r.bottom <= innerHeight + 1;
-    });
-    for (let i = panels.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [panels[i], panels[j]] = [panels[j], panels[i]];
-    }
-    const lit = panels.slice(0, 5);
-    if (!lit.length) return;
-    const box = (fires = document.createElement('div'));
-    box.id = 'atk-fires';
-    box.style.cssText = 'position:fixed;inset:0;z-index:48;overflow:hidden;pointer-events:none';
-    document.body.appendChild(box);
-    const stops = lit.map((p, i) => {
-      const r = p.getBoundingClientRect();
-      const w = Math.round(Math.min(r.width - 12, 440, Math.max(150, r.width * (0.45 + Math.random() * 0.35))));
-      const tall = Math.round(Math.min(r.height - 6, 110 + Math.random() * 70));
-      const wait = i * 120 + Math.random() * 150;
-      const life = Math.max(2400, ms * (0.7 + (0.3 * (i + 1)) / lit.length) - wait);
-      const spot = document.createElement('div');
-      spot.style.cssText = `position:absolute;left:${Math.round(r.left + 6 + Math.random() * Math.max(0, r.width - 12 - w))}px;top:${Math.round(r.bottom - tall)}px;width:${w}px;height:${tall}px`;
-      // Its light on the panel, under the flames.
-      const light = document.createElement('div');
-      light.style.cssText = 'position:absolute;inset:0;opacity:0;background:radial-gradient(ellipse 50% 72% at 50% 100%,rgba(255,112,20,.3),rgba(255,84,10,.11) 55%,transparent 76%)';
-      const canvas = document.createElement('canvas');
-      canvas.style.cssText = 'position:absolute;inset:0;width:100%;height:100%';
-      spot.append(light, canvas);
-      box.appendChild(spot);
-      let stop = null;
-      const lightAt = performance.now() + wait;
-      // Full for the first half of its life, then lower and lower (fire.js puts it out over its last moments); its
-      // light comes and goes with it. Asked each frame the fire draws.
-      const reach = () => {
-        const x = Math.min(1, (performance.now() - lightAt) / life), low = x < 0.5 ? 0 : (x - 0.5) / 0.5;
-        light.style.opacity = (Math.min(1, x / 0.08) * (1 - low)).toFixed(3);
-        return [tall * 0.66 * (1 - 0.55 * low ** 1.3), 0, 0];
-      };
-      const fuse = setTimeout(() => (stop = Fire.burn(canvas, { reach, scale: 11 + Math.random() * 5, life, mound: true })), wait);
-      return () => {
-        clearTimeout(fuse);
-        stop?.();
-      };
-    });
-    setTimeout(() => {
-      stops.forEach((stop) => stop());
-      box.remove();
-      fires = null;
-    }, ms + 400);
-  }
-
-
-  // ---------- damage on the dashboard ----------
-  // As the centre blows up, one to three session cards (else panels) are hit: cracked glass over them, drawn here as SVG
-  // lines radiating from an impact point, a few short glitch bursts (colour-split edges, slices sliding sideways) and a
-  // small shake, then the cracks seal as the centre is whole again (`ms` from now). A box over the dashboard that takes
-  // no clicks, like the flames; the cards themselves are only shaken with the Web Animations API (transform), their
-  // content, clicks and scrolling are never touched. Cards nearest the map's centre are likelier; only with the map in
-  // sight, and it goes early if the map leaves it. Reduced motion: the cracks fade in and out, nothing moves.
+  // ---------- cracked glass (for the one who fired) ----------
   // The cracked glass: 7 to 10 rays from the impact (ix, iy) in a w x hh box, each a few jagged segments, some with a
-  // branch, and a ring of shattered glass round it. An SVG for a `.atk-hit` box (damage(), strike()).
+  // branch, and a ring of shattered glass round it. An SVG for a `.atk-hit` box (strike()).
   const NS = 'http://www.w3.org/2000/svg';
   const rnd = (a, b) => a + Math.random() * (b - a);
   function cracks(w, hh, ix, iy) {
@@ -862,90 +524,16 @@ window.Attack = (() => {
     return svg;
   }
 
-  let hurt = null;
-  function damage(ms) {
-    if (hurt || ms < 1500) return;
-    const seen = (r) => r.width >= 90 && r.height >= 40 && r.top >= 0 && r.bottom <= innerHeight + 1 && r.left >= 0 && r.right <= innerWidth + 1;
-    const pick = (sel) => [...document.querySelectorAll(sel)].map((el) => ({ el, r: el.getBoundingClientRect() })).filter((x) => seen(x.r));
-    let pool = pick(DMG.cards);
-    const [lo, hi] = DMG.hits;
-    const n = lo + Math.floor(Math.random() * (hi - lo + 1));
-    if (pool.length < 2) pool = pool.concat(pick('#app .panel').filter((x) => !pool.some((p) => p.el.contains(x.el) || x.el.contains(p.el))));
-    if (!pool.length) return;
-    const space = document.getElementById('space');
-    const core = window.Orbit?.corePoint?.();
-    const sb = space && space.getBoundingClientRect();
-    // Nearer the core, likelier: a random pull on the distance.
-    const rank = (x) => {
-      const d = core && sb ? Math.hypot(x.r.left + x.r.width / 2 - (sb.left + core.x), x.r.top + x.r.height / 2 - (sb.top + core.y)) : 500;
-      return d * (0.5 + Math.random());
-    };
-    const hits = pool.sort((a, b) => rank(a) - rank(b)).slice(0, n);
-    const calm = reduced();
-    const box = (hurt = document.createElement('div'));
-    box.id = 'atk-dmg';
-    box.setAttribute('aria-hidden', 'true');
-    document.body.appendChild(box);
-    const cleanups = [];
-    hits.forEach(({ el, r }, i) => {
-      const w = Math.round(r.width), hh = Math.round(r.height);
-      const wait = i * DMG.stagger;
-      const life = ms - wait - 100;
-      const ix = rnd(0.25, 0.75) * w, iy = rnd(0.25, 0.75) * hh;
-      const hit = document.createElement('div');
-      hit.className = 'atk-hit' + (calm ? ' still' : '');
-      hit.style.cssText = `left:${Math.round(r.left)}px;top:${Math.round(r.top)}px;width:${w}px;height:${hh}px;--ix:${ix.toFixed(0)}px;--iy:${iy.toFixed(0)}px;--crack:${DMG.crack}ms;--fade:${DMG.fade}ms;--still:${DMG.still}ms;--wait:${wait}ms;--end:${Math.max(0, life - DMG.fade)}ms`;
-      const svg = cracks(w, hh, ix, iy);
-      hit.appendChild(svg);
-      // Glitch: two colour-split edges and three slices, only moved while a burst runs.
-      if (!calm) {
-        const fx = document.createElement('div');
-        fx.className = 'fx';
-        fx.innerHTML = '<i class="rg a"></i><i class="rg b"></i>' + [0, 1, 2].map(() => `<i class="sl" style="top:${Math.round(rnd(8, 88))}%;height:${Math.round(rnd(5, 12))}%"></i>`).join('');
-        hit.appendChild(fx);
-      }
-      box.appendChild(hit);
-      // The shake and the glitch bursts, from the hit on. Web Animations: they end by themselves and leave nothing behind.
-      const anims = [];
-      if (!calm) {
-        anims.push(el.animate([
-          { transform: 'translate(0,0)' }, { transform: 'translate(-3px,1px)' }, { transform: 'translate(3px,-2px)' },
-          { transform: 'translate(-2px,-1px)' }, { transform: 'translate(1px,1px)' }, { transform: 'translate(0,0)' }
-        ], { duration: DMG.shake, delay: wait, easing: 'linear' }));
-        DMG.glitchAt.forEach((at) => {
-          const t = wait + at + 80;
-          hit.querySelectorAll('.fx').forEach((fx) => anims.push(fx.animate([{ opacity: 0 }, { opacity: 1, offset: 0.001 }, { opacity: 1, offset: 0.999 }, { opacity: 0 }], { duration: DMG.glitch, delay: t, fill: 'both' })));
-          anims.push(...[...hit.querySelectorAll('.rg.a')].map((x) => x.animate([{ transform: 'translateX(0)' }, { transform: 'translateX(-4px)' }, { transform: 'translateX(2px)' }, { transform: 'translateX(-3px)' }, { transform: 'translateX(0)' }], { duration: DMG.glitch, delay: t, easing: 'steps(5, end)' })));
-          anims.push(...[...hit.querySelectorAll('.rg.b')].map((x) => x.animate([{ transform: 'translateX(0)' }, { transform: 'translateX(4px)' }, { transform: 'translateX(-2px)' }, { transform: 'translateX(3px)' }, { transform: 'translateX(0)' }], { duration: DMG.glitch, delay: t, easing: 'steps(5, end)' })));
-          anims.push(...[...hit.querySelectorAll('.sl')].map((x, q) => x.animate([{ transform: 'translateX(0)' }, { transform: `translateX(${q % 2 ? 14 : -14}px)` }, { transform: `translateX(${q % 2 ? -8 : 9}px)` }, { transform: 'translateX(0)' }], { duration: DMG.glitch, delay: t, easing: 'steps(4, end)' })));
-        });
-      }
-      cleanups.push(() => anims.forEach((a) => a.cancel()));
-    });
-    let gone = false;
-    const end = () => {
-      if (gone) return;
-      gone = true;
-      clearInterval(watch);
-      clearTimeout(done);
-      cleanups.forEach((f) => f());
-      box.remove();
-      hurt = null;
-    };
-    // The map leaving the screen takes the damage with it.
-    const watch = setInterval(() => !mapInSight() && end(), 400);
-    const done = setTimeout(end, ms + 200);
-  }
-
 
   // ---------- the hit feel (for the one who fired) ----------
-  // From the moment the API answers a fire (t0), a fixed local timeline (ms from t0; the target's show is fixed too, raid.js):
+  // From the moment the API answers a fire (t0), a fixed local timeline (ms from t0; the target's show is fixed too, attack-screen.js):
   // launch sound + `In flight` countdown on the button, a thin amber line along their row filling to the blast, two hit
-  // ticks on their picture, then the blast: row flashes 80 ms, cracks (the same glass as damage()), burns 2.5 s (fire.js),
+  // ticks on their picture, then the blast: row flashes 80 ms, cracks (the same kind of glass as the screen's, cracks()), burns 2.5 s (fire.js),
   // shakes (only that row: no window shake, no focus), confirm sound; then the toast and, with the row out of sight, the
   // notices panel's HIT plate. The crack stays to `crack`. Late by more than `stale` (computer slept): skipped.
   // Reduced motion: no flash, flame, shake or line; the ticks, text and a fading crack remain. Cancel: stopHit(id).
-  const HIT = { launch: 1200, marks: [7640, 7780], boom: 7920, toast: 8300, crack: 15400, flash: 80, burn: 2500, shake: 280, stale: 1000 };
+  // marks/boom = the lock (1600) + the screen show's three hits (scene T: 5980 / 6150 / 6320).
+  const HIT = { launch: 1200, marks: [7580, 7750], boom: 7920, toast: 8300, crack: 15400, flash: 80, burn: 2500, shake: 280, stale: 1000 };
   const HIT_SOUNDS = ['attack-launch', 'attack-hitmark', 'attack-confirm'];
   // One per friend (two ships at two friends fly side by side): id → { id, name, t0, timers, recs, marks, boomed, until, frame }
   const flights = new Map();
@@ -1276,7 +864,11 @@ window.Attack = (() => {
     if (r.why === 'shield' && r.readyAt) f.attack.shieldUntil = r.readyAt;
     if (r.why === 'target_daily_max' && r.readyAt) dailyMax.set(f.id, r.readyAt);
     if (r.fired && r.shieldUntil) f.attack.shieldUntil = r.shieldUntil;
+    // The right to fire back is used up by a fire (the API also says so).
+    if (r.fired) f.attack.revengeUntil = null;
+    if (r.why === 'mine_busy' && me() && NO_FIRE[r.status]) me().status = r.status;
     if (r.why === 'off') f.attack.off = true;
+    if (r.why === 'outdated') f.attack.outdated = true;
   }
   // How a fire that didn't happen is said (the API answered, or the friend's state had just changed).
   function explain(f, r) {
@@ -1376,11 +968,20 @@ window.Attack = (() => {
     }
   });
 
+  // ---------- staging: "👁 PREVIEW ATTACK" (social-test.js) ----------
+  // The whole show of a friend's attack on yourself, played here with no API and no friend: the same path as a real one
+  // (lock-on, ship, blast, DANGER naming "Preview Pilot"), even on do not disturb. Only in the staging build (its version
+  // ends in "-staging", as the strip's own test); a released app does nothing.
+  async function preview() {
+    const s = await h.cloud.postMessage({ type: 'state' }).catch(() => null);
+    if (!/-staging$/.test((s && s.version) || '')) return;
+    arrive({ from: { id: 'preview-pilot', name: 'Preview Pilot' }, nick: null }, true);
+  }
+
   // ---------- staging: "🚀 ATTACK ME" (social-test.js) ----------
   async function test() {
-    // The map in sight, then one on yourself from a friend (the API's DEV_TOOLS route).
-    window.GitView?.view('dash');
-    say('🚀 test attack on its way · watch the map');
+    // One on yourself from a friend (the API's DEV_TOOLS route); it plays on the screen wherever the dashboard is.
+    say('🚀 test attack on its way · watch your screen');
     await sleep(700);
     const r = await api('POST', 'v1/friends/dev/attack', {});
     if (r.error) return say(`test: ${r.error}`);
@@ -1408,17 +1009,14 @@ window.Attack = (() => {
     // Your ORB, the price or the limits changed: every fire button says it at once.
     if (ev.type === 'orb' || ev.type === 'orb_settings' || ev.type === 'orb_state') paintAll();
     if (ev.type === 'attack_cancel') cancelled(ev);
-    if (ev.type === 'hello') {
-      loadPref();
-      setTimeout(() => SOUNDS.forEach((s) => Sfx.preload(s)), 6000);
-    }
+    if (ev.type === 'hello') loadPref();
     if (ev.type === 'settings' && ev.set && 'social.attacks' in ev.set) setTakes(ev.set['social.attacks'] !== false);
     // A friend's state or presence changed: their buttons follow at once.
-    if (ev.type === 'presence' || ev.type === 'attack_state' || ev.type === 'friend') {
+    if (ev.type === 'presence' || ev.type === 'status' || ev.type === 'attack_state' || ev.type === 'friend' || ev.type === 'caps') {
       paintAll();
       paintShield();
     }
   });
 
-  return { on, button, blocked, status, shieldChip, test, reset, press: fireFor, cancelFor, text: TEXT, wide: () => false };
+  return { on, button, blocked, status, shieldChip, test, reset, preview, press: fireFor, cancelFor, text: TEXT, wide: () => false };
 })();

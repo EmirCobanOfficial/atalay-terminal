@@ -166,14 +166,20 @@ window.Settings = (() => {
       `<p class="st-note">Claude only sees Claude Code, Codex, Antigravity and Cursor chats, never a plain terminal. Passwords, keys and tokens are masked before anything leaves Orbiterm. It can't answer approvals, and can't type into a chat started with permissions bypassed. While it's on, ${WIN ? 'an icon shows in the system tray' : 'a sign shows in the menu bar'} with a way to turn it off.</p>`;
 
     const privacy =
+      group('your profile',
+        row('show my profile to everyone', { cls: 'wp-pub-hint', text: 'anyone can open your page on orbiterm.dev and find you by name \u00b7 off: only friends see it' }, sw('pub', 'Show my profile to everyone', true)) +
+        row('your page', { cls: 'st-url wp-url', text: '\u2026' }, '<span class="st-two"><button type="button" class="st-btn wp-copy">copy link</button><a class="st-btn wp-open" href="https://orbiterm.dev" target="_blank" rel="noopener noreferrer">open \u2197</a></span>') +
+        row('show my hours', 'how long you work, your calendar and your flame \u00b7 friends see them too', sw('act', 'Show my hours', true), 'st-sub') +
+        row('show when I work', 'the hours of the day and the days of the week you work', sw('whn', 'Show when I work', true), 'st-sub') +
+        row('show which AI tools and models I use', 'your time with each AI, your models and tokens \u00b7 on the Tokens board too', sw('tkd', 'Show which AI tools and models I use', true), 'st-sub') +
+        row('show all my badges', 'off: only the badge beside your name', sw('bdg', 'Show all my badges', true), 'st-sub')) +
+      '<p class="st-note wp-note"></p>' +
       group('friends and leaderboard',
-        row('show my active time to friends', 'today, this week and in total · your level shows either way', sw('act', 'Show my active time to friends', true)) +
         row('show my name on the leaderboard', 'off: you show as Anonymous, and nobody can add you from there', sw('brd', 'Show my name on the leaderboard', true)) +
         // Kept by the app on this computer, not by the API (Cloud.swift, the Windows app's cloud.js): off, no token counts
         // leave it at all. The two under it are about how the counts it sent show on the board.
         row('share my token counts for the Tokens board', `how many tokens each AI, model and effort used a day, never what was in them · off: none leave this ${MACHINE}, not even later · what was sent stays`, sw('tks', 'Share my token counts for the Tokens board', true)) +
         row('show my name on the Tokens board', 'off: Anonymous on the Tokens board only · your total still counts', sw('tkn', 'Show my name on the Tokens board', true)) +
-        row('let friends see which AI and model I use', 'opening your row on the Tokens board · off: only your total shows, to everyone', sw('tkd', 'Let friends see which AI and model I use', true)) +
         // A friend's spaceship attack (attack.js): the switch's clicks and its state are attack.js's; its words too.
         (window.Attack?.on
           ? row(window.Attack.text.setting.title, window.Attack.text.setting.hint, sw(`atk-on${window.Attack.on() ? ' on' : ''}`, window.Attack.text.setting.aria, window.Attack.on()))
@@ -230,7 +236,7 @@ window.Settings = (() => {
       pane('chats', 'Chats', '', chats) +
       pane('claude', 'Claude', window.ClaudeAcct && window.webkit?.messageHandlers?.claudeAccounts ? 'your Claude accounts, and what Claude can do with your chats' : `let Claude on this ${MACHINE} see your AI chats, and type into them`, claude) +
       (c.keys ? pane('shortcuts', 'Shortcuts', 'click a shortcut, then press the new keys · esc cancels, delete takes them off', shortcuts) : '') +
-      pane('privacy', 'Privacy', 'what friends, the leaderboard and Discord can see', privacy) +
+      pane('privacy', 'Privacy', 'who can see your profile, and what friends, the leaderboard and Discord see', privacy) +
       pane('general', 'General', '', general) +
       '</div>'
     );
@@ -448,6 +454,7 @@ window.Settings = (() => {
     paintSound();
     paintTheme();
     paintMascot();
+    window.WebPriv?.mountSettings(page);
   }
 
   // What takes the keys when Settings shows (cloud.js showTab): in Account the e-mail sign-in's field if it's open,

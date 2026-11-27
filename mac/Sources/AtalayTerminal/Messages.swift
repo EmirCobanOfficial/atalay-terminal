@@ -56,12 +56,8 @@ final class MessagePanel: NSObject, WKScriptMessageHandler, WKNavigationDelegate
     /// the friend's id, relayed to the dashboard page's Attack.press / Attack.cancelFor (MainWindowController).
     static var onAttackFire: ((String) -> Void)?
     static var onAttackCancel: ((String) -> Void)?
-    /// A friend's nudge while their chat isn't on screen (the notices page says, "nudgeShake"): the dashboard's own state decides what
-    /// shakes (MainWindowController.nudgeDashboard): every terminal window on screen at once, else the map's centre circle, else
-    /// nothing (the card and the buzz).
-    static var onNudgeDashboard: (() -> Void)?
-    /// The notices panel holds the screen (the level-up takeover, the flames, DANGER's banner, the alarm in the middle): no window
-    /// shakes then, as the page queues the nudge's card to show quietly after.
+    /// The notices panel holds the screen (the level-up takeover, the flames, a spaceship attack's show or DANGER's banner, the alarm in the middle): no window
+    /// shakes then (a nudge's buzz waits too).
     private(set) static var noticesHoldScreen = false
     /// Until when keys do nothing (the level-up takeover; AppDelegate drops them).
     private static var keysLockedUntil: TimeInterval = 0
@@ -77,10 +73,18 @@ final class MessagePanel: NSObject, WKScriptMessageHandler, WKNavigationDelegate
     }
     /// Brings the panel back if the takeover's page never says it ended (a crashed page must not keep the screen).
     private var takeoverGuard: DispatchWorkItem?
+    /// The spaceship attack's overlay: the same, for the whole screen it takes (placeNotice, "attack").
+    private var attackGuard: DispatchWorkItem?
 
     private final class Panel: NSPanel {
         override var canBecomeKey: Bool { true }
         override var canBecomeMain: Bool { false }
+    }
+
+    /// Takes the first click even while another app is in front: without this the first click on a card's x / Reply /
+    /// Fire back only woke the window and never reached the page.
+    private final class FirstClickWebView: WKWebView {
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     }
 
     private let role: Role
@@ -117,7 +121,7 @@ final class MessagePanel: NSObject, WKScriptMessageHandler, WKNavigationDelegate
         ucc.addUserScript(WKUserScript(source: "window.__MESSAGES_ROLE__ = '\(role.rawValue)'; window.__MESSAGES_FRIEND__ = \(Self.literal(friend)); window.__CHAT_SIZE__ = \(Self.savedSize);",
                                        injectionTime: .atDocumentStart, forMainFrameOnly: true))
         config.userContentController = ucc
-        webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 380, height: 140), configuration: config)
+        webView = FirstClickWebView(frame: NSRect(x: 0, y: 0, width: 380, height: 140), configuration: config)
         webView.lockInspector()
         super.init()
         ThemeStore.shared.attach(webView)
@@ -144,12 +148,12 @@ final class MessagePanel: NSObject, WKScriptMessageHandler, WKNavigationDelegate
             // The see-through ring around the box takes the mouse too: it's where the window is made larger or smaller.
             panel.ignoresMouseEvents = false
             Self.watchScreens()
-            // Whether the chat is really on screen (the nudge shakes it only then; else its card comes): hidden, minimized with the
-            // dashboard, on another Space, covered, or the app hidden. The notices page is told with `showing`.
+            // Whether the chat is really on screen (a friend's nudge works only then; messages.js tells the API): hidden, minimized with
+            // the dashboard, on another Space, covered, or the app hidden. The notices page is told with `showing`.
             NotificationCenter.default.addObserver(forName: NSWindow.didChangeOcclusionStateNotification, object: panel, queue: .main) { _ in
                 MainActor.assumeIsolated { Self.tellShowing() }
             }
-            // The keyboard focus decides too (the nudge shakes the chat only when it has the keys).
+            // (The keyboard focus no longer decides: a chat on screen shakes without it. Telling again on a focus change is harmless.)
             for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification] {
                 NotificationCenter.default.addObserver(forName: name, object: panel, queue: .main) { _ in
                     MainActor.assumeIsolated { Self.tellShowing() }
@@ -280,12 +284,13 @@ final class MessagePanel: NSObject, WKScriptMessageHandler, WKNavigationDelegate
         run("window.__messages && __messages.restartOver && __messages.restartOver()")
     }
 
-    /// A friend's spaceship attack (attack.js): the dashboard says which banner (`kind`: lock, lost, hit or danger; a lock names nobody) and, for DANGER, who fired, when it shows (ms from now,
-    /// after the ship's flight on the map) and whether it sounds the alarm itself (the map wasn't in sight). It shows here,
-    /// over whatever is in front, every click passing through.
+    /// A friend's spaceship attack (attack.js): the dashboard says which banner (`kind`: lock, lost, hit or danger; a lock names nobody) and, for DANGER, who fired, when it shows (ms from now)
+    /// and whether it sounds the alarm. `show` starts the ship's whole show on the screen (attack-screen.js: `name` is who fired,
+    /// shown at the blast); the page then asks for the whole screen (place "attack", placeNotice). It shows here, over whatever
+    /// is in front, every click passing through.
     func attack(_ msg: [String: Any]) {
         let banner: [String: Any] = ["name": String((msg["name"] as? String ?? "").prefix(40)),
-                                     "kind": ["lock", "lost", "hit"].contains(msg["kind"] as? String ?? "") ? (msg["kind"] as? String ?? "danger") : "danger",
+                                     "kind": ["lock", "lost", "hit", "show"].contains(msg["kind"] as? String ?? "") ? (msg["kind"] as? String ?? "danger") : "danger",
                                      "delay": min(max((msg["delay"] as? NSNumber)?.doubleValue ?? 0, 0), 5000),
                                      "sound": msg["sound"] as? Bool == true,
                                      // The ✕ HIT plate's picture (attack.js only uses an http(s) URL).
@@ -460,10 +465,10 @@ final class MessagePanel: NSObject, WKScriptMessageHandler, WKNavigationDelegate
         return p.isVisible && p.occlusionState.contains(.visible) && !NSApp.isHidden
     }
 
-    /// The friend whose tab is in front while the chat window has the keyboard focus (key window, the app not hidden), else nil:
-    /// a nudge from them shakes the chat itself; any other one brings the card (another tab only jolts its tab).
+    /// The friend whose tab is in front while the chat window is on screen (chatSeen; no keyboard focus needed), else nil.
+    /// (The nudge goes by `showing` and chatSeen on the Mac: messages.js tells the API which chats are open, `nudge-chat`.)
     private static var chatFocused: String? {
-        guard let p = chatPanel?.panel, p.isKeyWindow, !NSApp.isHidden else { return nil }
+        guard chatSeen else { return nil }
         return front
     }
 
@@ -509,6 +514,8 @@ final class MessagePanel: NSObject, WKScriptMessageHandler, WKNavigationDelegate
                 if role == .notices {
                     Self.noticesHoldScreen = false
                     endTakeover()
+                    attackGuard?.cancel()
+                    attackGuard = nil
                 }
                 glass.alphaValue = 0
                 panel.ignoresMouseEvents = false
@@ -525,23 +532,19 @@ final class MessagePanel: NSObject, WKScriptMessageHandler, WKNavigationDelegate
                 return
             }
             let place = role == .notices ? body["place"] as? String : nil
-            let wide = place == "screen" || place == "fire"
+            let wide = place == "screen" || place == "fire" || place == "attack"
             frost(!wide, duration: wide ? 0 : 0.3)
             role == .notices ? placeNotice(size, place: place) : placeChat(size, focus: body["focus"] as? Bool == true)
         case "leaving":
             // The box plays its way out: the frost goes with it.
             frost(false, duration: 0.18)
         case "shake":
-            // A nudge (nudge.ts, messages.js): the chat window's own frame moves for 0.56 s, the frost and the page with it. Only
+            // A nudge (nudge.ts, messages.js): the chat window's own frame moves for 1.4 s, the frost and the page with it. Only
             // when it is on screen and nothing holds the screen, no button is down and Reduce Motion is off; never a focus or a raise.
-            // A friend's (`key`): only while the chat has the keyboard focus, else their card came and the terminals or the map shake.
+            // A friend's (`key`) needs no keyboard focus: the chat on screen with their tab in front is enough.
             guard role == .chat, panel.isVisible, panel.occlusionState.contains(.visible), !NSApp.isHidden, !Self.noticesHoldScreen,
-                  NSEvent.pressedMouseButtons == 0, number("amp") > 0, body["key"] as? Bool != true || panel.isKeyWindow else { return }
+                  NSEvent.pressedMouseButtons == 0, number("amp") > 0 else { return }
             WindowShake.run(panel, amp: min(number("amp"), 1))
-        case "nudgeShake":
-            // The nudge's card came up (the chat isn't on screen): the dashboard shakes by its own state (MainWindowController).
-            guard role == .notices, !Self.noticesHoldScreen else { return }
-            Self.onNudgeDashboard?()
         case "drag":
             guard role == .chat else { return }
             WindowShake.stop(panel)
@@ -622,8 +625,9 @@ final class MessagePanel: NSObject, WKScriptMessageHandler, WKNavigationDelegate
     /// day past five hours have it short of the menu bar and the Dock, letting every click through to the windows.
     private func placeNotice(_ size: CGSize, place: String?) {
         let s = NSScreen.main ?? NSScreen.screens[0]
-        Self.noticesHoldScreen = place == "screen" || place == "fire" || place == "center"
-        panel.ignoresMouseEvents = place == "fire"
+        Self.noticesHoldScreen = place == "screen" || place == "fire" || place == "center" || place == "attack"
+        panel.ignoresMouseEvents = place == "fire" || place == "attack"
+        if place != "attack" { attackGuard?.cancel(); attackGuard = nil }
         if place == "screen" {
             panel.level = .screenSaver
             panel.setFrame(s.frame, display: true)
@@ -638,6 +642,27 @@ final class MessagePanel: NSObject, WKScriptMessageHandler, WKNavigationDelegate
             }
             takeoverGuard = work
             DispatchQueue.main.asyncAfter(deadline: .now() + 16, execute: work)
+        } else if place == "attack" {
+            // A friend's spaceship attack (attack-screen.js): the whole screen, the menu bar and the Dock too, above them and over
+            // a full-screen app (the panel joins every Space and is a full-screen auxiliary), every click going through, never key or
+            // main. A guard takes it down if the page never lets go of it.
+            endTakeover()
+            panel.level = .screenSaver
+            panel.setFrame(s.frame, display: true)
+            if attackGuard == nil {
+                let work = DispatchWorkItem { [weak self] in
+                    MainActor.assumeIsolated {
+                        guard let self else { return }
+                        self.attackGuard = nil
+                        Self.noticesHoldScreen = false
+                        self.endTakeover()
+                        self.panel.ignoresMouseEvents = false
+                        self.panel.orderOut(nil)
+                    }
+                }
+                attackGuard = work
+                DispatchQueue.main.asyncAfter(deadline: .now() + 26, execute: work)
+            }
         } else if place == "fire" {
             endTakeover()
             panel.setFrame(s.visibleFrame, display: true)
@@ -701,12 +726,16 @@ final class MessagePanel: NSObject, WKScriptMessageHandler, WKNavigationDelegate
         decisionHandler(PagePolicy.decide(action))
     }
 
-    /// The page's process died: load it again (it reports "ready" and asks for the conversations anew). A takeover it
-    /// was playing ends with it.
+    /// The page's process died: load it again (it reports "ready" and asks for the conversations anew).
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
         ready = false
         if role == .notices {
+            // A takeover or a spaceship attack's overlay it was playing ends with it: the panel back to a notice's.
             endTakeover()
+            attackGuard?.cancel()
+            attackGuard = nil
+            Self.noticesHoldScreen = false
+            panel.ignoresMouseEvents = false
             panel.orderOut(nil)
         }
         webView.reload()
@@ -714,7 +743,7 @@ final class MessagePanel: NSObject, WKScriptMessageHandler, WKNavigationDelegate
 }
 
 /// The nudge's shake of a window (nudge.ts, messages.js; the same on Windows, main.js shakeWin): one jolt, two-dimensional and dying
-/// out so it reads as a buzz, not as the Mac's side-to-side "wrong password" shake. Eight legs, ease-in-out, 560 ms, the offsets of
+/// out so it reads as a buzz, not as the Mac's side-to-side "wrong password" shake. 22 legs (strong first, then settling), ease-in-out, 1400 ms (MSN), the offsets of
 /// messages.css `ndg-jolt` (x right, y down), times `amp` (1 = the chat window, .5 the sender's own, the dashboard 1), rounded to
 /// whole points, driven at about 120 Hz in the common run-loop modes (so it runs during menu tracking). The start origin is taken
 /// once and put back exactly at the end (or on `stop`); a window being dragged, resized, full screen or zoomed, or one that went off
@@ -724,7 +753,7 @@ final class MessagePanel: NSObject, WKScriptMessageHandler, WKNavigationDelegate
 final class WindowShake {
     private static var running: [ObjectIdentifier: WindowShake] = [:]
     private static let stops: [(t: Double, x: Double, y: Double)] = [
-        (0, 0, 0), (45, 8, -5), (106, -7, 4), (168, 6, 5), (230, -8, -3), (291, 5, -4), (353, -4, 3), (414, 3, 2), (476, -2, -1), (560, 0, 0),
+        (0, 0, 0), (45, 7.7, -4.8), (92, -7.3, -3.7), (140, 7, 4.4), (191, -6.6, 2.5), (243, 6.2, -3.1), (298, -5.9, -2.2), (355, 5.5, 1.4), (414, -5.1, 1.3), (475, 4.7, -2.9), (538, -4.3, -2.1), (605, 3.8, 2.4), (673, -3.4, 1.3), (745, 3, -1.5), (819, -2.5, -1), (896, 2.1, 0.5), (977, -1.7, 0.4), (1060, 1.3, -0.8), (1147, -0.9, -0.4), (1237, 0.5, 0.3), (1330, -0.2, 0.1), (1400, 0, 0),
     ]
     private weak var window: NSWindow?
     /// Its key in `running`, kept apart from the window: a window that went away mid-shake still leaves the table.
@@ -733,6 +762,8 @@ final class WindowShake {
     private let amp: Double
     private let began = ProcessInfo.processInfo.systemUptime
     private var timer: Timer?
+    /// The frame as the shake last left it: any other change (the dashboard it rides moving, a display gone, a tile) ends it.
+    private var last: NSRect?
 
     private init(_ window: NSWindow, amp: Double) {
         self.window = window
@@ -741,10 +772,16 @@ final class WindowShake {
         self.amp = amp
     }
 
+    /// Zoomed by the user (the green button, a double-click on the title bar). AppKit's `isZoomed` is always true for a window
+    /// that can't be resized (no zoom button): the chat window, borderless, never shook because of it. Only a resizable one counts.
+    private static func zoomed(_ w: NSWindow) -> Bool {
+        w.styleMask.contains(.resizable) && w.isZoomed
+    }
+
     /// Starts one (none while one runs on that window, or with Reduce Motion on).
     static func run(_ window: NSWindow, amp: Double) {
         guard amp > 0, running[ObjectIdentifier(window)] == nil, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
-              !window.styleMask.contains(.fullScreen), !window.isZoomed, !window.inLiveResize else { return }
+              !window.styleMask.contains(.fullScreen), !zoomed(window), !window.inLiveResize else { return }
         let shake = WindowShake(window, amp: amp)
         running[ObjectIdentifier(window)] = shake
         let timer = Timer(timeInterval: 1.0 / 120.0, repeats: true) { [weak shake] _ in
@@ -762,8 +799,8 @@ final class WindowShake {
     private func step() {
         guard let w = window else { return finish() }
         let t = (ProcessInfo.processInfo.systemUptime - began) * 1000
-        guard t < 560, w.isVisible, !w.isMiniaturized, !w.styleMask.contains(.fullScreen), !w.isZoomed, !w.inLiveResize,
-              NSEvent.pressedMouseButtons == 0, !MessagePanel.noticesHoldScreen else { return finish() }
+        guard t < 1400, w.isVisible, !w.isMiniaturized, !w.styleMask.contains(.fullScreen), !Self.zoomed(w), !w.inLiveResize,
+              NSEvent.pressedMouseButtons == 0, !MessagePanel.noticesHoldScreen, last == nil || w.frame == last else { return finish() }
         var i = 1
         while i < Self.stops.count - 1, Self.stops[i].t < t { i += 1 }
         let a = Self.stops[i - 1], b = Self.stops[i]
@@ -771,6 +808,7 @@ final class WindowShake {
         let dx = ((a.x + (b.x - a.x) * k) * amp).rounded(), dy = ((a.y + (b.y - a.y) * k) * amp).rounded()
         // AppKit's y points up.
         w.setFrameOrigin(NSPoint(x: start.x + dx, y: start.y - dy))
+        last = w.frame
     }
 
     private func finish() {
@@ -778,6 +816,9 @@ final class WindowShake {
         timer = nil
         if Self.running[key] === self { Self.running[key] = nil }
         // Back to the exact start, unless it went full screen or was zoomed meanwhile: that frame is AppKit's now, never moved.
-        if let w = window, !w.styleMask.contains(.fullScreen), !w.isZoomed { w.setFrameOrigin(start) }
+        // Moved or resized by something else meanwhile: that change stays, only the shake's own offset goes.
+        guard let w = window, !w.styleMask.contains(.fullScreen), !Self.zoomed(w) else { return }
+        guard let last, w.frame != last else { return w.setFrameOrigin(start) }
+        w.setFrameOrigin(NSPoint(x: w.frame.minX - (last.minX - start.x), y: w.frame.minY - (last.minY - start.y)))
     }
 }

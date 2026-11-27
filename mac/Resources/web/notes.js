@@ -308,6 +308,8 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
           bind(n);
           n.blocks = keepBlocks;
           render(null);
+          // The copy drawn meanwhile was not editable (placeholder); its elements are kept by render, so editing comes back here.
+          if (!placeholder && !part) setEditable(true);
         }
       });
     }
@@ -820,6 +822,11 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
     t.className = `nb-text${b.text ? '' : ' is-empty'}`;
     t.setAttribute('contenteditable', 'plaintext-only');
     t.spellcheck = false;
+    // No macOS inline prediction: its grey ghost text sits to the right of the cursor, is not in the page's text, and so
+    // can't be reached with the arrow keys or deleted.
+    t.setAttribute('writingsuggestions', 'false');
+    t.setAttribute('autocorrect', 'off');
+    t.setAttribute('autocapitalize', 'off');
     t.dataset.ph = blank ? "Write something, or type '/' for commands…" : TYPES[b.type].ph;
     paint(t, b.text, b.type);
     el.appendChild(t);
@@ -1916,7 +1923,8 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
 
   // The text block a node is in, if any.
   const textOf2 = (n) => n && (n.nodeType === 1 ? n : n.parentElement)?.closest('.nb-text');
-  const setEditable = (on) => ed.querySelectorAll('.nb-text').forEach((t) => t.setAttribute('contenteditable', on ? 'plaintext-only' : 'false'));
+  // A shared note's copy drawn before its text came (placeholder) stays not editable whatever ends.
+  const setEditable = (on) => ed.querySelectorAll('.nb-text').forEach((t) => t.setAttribute('contenteditable', on && !placeholder ? 'plaintext-only' : 'false'));
   // Editing comes back; what was selected stays selected (the next click or key moves it).
   function endPart() {
     if (!part) return;
@@ -2110,12 +2118,11 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
       const at = caretIn(t)?.start ?? 0;
       const text = read(t);
       // paint() marks its text as drawn, but this one comes from the typing that typed() still has to take: kept as the
-      // text drawn before, or typed() takes the block's old text for a friend's change not drawn yet and drops the
-      // deletion (Windows: Chromium leaves a <br> in a block emptied by Backspace or Ctrl+Backspace, so its last letter or
-      // word came back and the cursor went before it).
+      // text drawn before this keystroke (t._t), or an emptied block (the last letter deleted) is seen as unchanged and the
+      // letter comes back (Windows: Chromium leaves a <br> in a block emptied by Backspace or Ctrl+Backspace; the Mac too).
       const drawn = t._t;
       paint(t, text, b.type);
-      if (!MAC) t._t = drawn;
+      t._t = drawn;
       place(t, Math.min(at, text.length));
     }
     typed(b, read(t), caretIn(t)?.start);
@@ -2907,8 +2914,8 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
       const on = !!n.aiHidden;
       // The eye only means something while AI has access; a hidden note keeps it so it can be shown again.
       b.hidden = AI.mode === 'off' && !on;
-      // A shared note says whose AI can read it too (the owner's switch in the share sheet).
-      const seen = n.shared ? `AI can read this note (everyone\u2019s AI: ${n.shared.ai ? 'on' : 'off'}) \u00b7 Click to hide it from AI` : AI_TIP_SEEN;
+      // A shared note says everyone's AI in it can read it.
+      const seen = n.shared ? 'AI can read this note (everyone\u2019s AI in it can) \u00b7 Click to hide it from AI' : AI_TIP_SEEN;
       const key = `${on}|${on ? '' : seen}`;
       if (b.dataset.ai === key) return;
       b.dataset.ai = key;
@@ -4766,7 +4773,7 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
   const presence = new Map(); // shared id -> the accounts in it now (note.presence)
   const friendAi = new Map(); // note id -> { at, text }: what an AI of a friend changed last
   const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-  const aiOff = (n) => !!n && (n.aiHidden === true || (!!n.shared && n.shared.ai !== true && n.shared.mine !== true));
+  const aiOff = (n) => !!n && n.aiHidden === true;
   const person = (p) => (p && typeof p === 'object' ? { id: String(p.id || ''), name: String(p.name || ''), tag: Number(p.tag) || 0 } : { id: '', name: '', tag: 0 });
   // A member's picture: only a web address as the API gives it (signed on the gated staging API), else none.
   const picOf = (u) => (typeof u === 'string' && u.length <= 1024 && /^https?:\/\//i.test(u) ? u : null);
@@ -5969,7 +5976,6 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
             `<em>${p.owner ? 'owner' : p.invited ? 'invited' : ''}</em>${owner && !p.owner ? `<button type="button" class="sh-link" data-remove="${esc(p.id)}" aria-label="Remove ${esc(p.name)}">Remove</button>` : ''}</div>`;
         })
         .join('');
-      const ownerName = (sh.members.find((p) => p.owner) || sh.owner).name || 'the owner';
       const room = sh.members.length < 8;
       // Who is here now, and where: a click goes there and brings their name tag back.
       const chip = chipState();
@@ -5992,9 +5998,6 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
         (hereRows.length ? `<div class="sh-hereNow"><h4>Here now</h4>${hereRows.join('')}</div>` : '') +
         `<div class="sh-members">${rows}</div>` +
         (owner && room ? `<details class="sh-add"><summary>Add friends</summary>${picker}${m.chosen.size ? `<button type="button" class="sh-go" data-do="invite"${m.busy ? ' disabled' : ''}>Invite ${m.chosen.size}</button>` : ''}</details>` : '') +
-        (owner
-          ? `<label class="sh-switch"><input type="checkbox" data-ai${sh.ai ? ' checked' : ''}><span><b>Let AI read this note</b><small>${sh.ai ? 'Everyone’s AI in this note can read it.' : 'Only your AI can read this note.'}</small></span></label>`
-          : `<p class="sh-text">${sh.ai ? `AI can read this note (${esc(ownerName)} turned it on).` : `Only ${esc(ownerName)}’s AI can read this note. ${esc(ownerName)} can let everyone’s AI read it.`}</p>`) +
         (m.error ? `<p class="sh-err" role="alert">${esc(m.error)}</p>` : '') +
         (m.confirm === 'stop'
           ? '<div class="sh-ask"><p><b>Stop sharing this note?</b> It stays here as a private note. Your friends’ copies are removed.</p><div class="sh-acts"><button type="button" class="sh-danger" data-do="stop">Stop sharing</button><button type="button" data-do="cancel">Cancel</button></div></div>'
@@ -6034,7 +6037,6 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
     if (e.target.matches('.sh-find input')) sheetMode.query = e.target.value;
     else if (e.target.matches('[data-pick]')) sheetMode.chosen[e.target.checked ? 'add' : 'delete'](e.target.dataset.pick);
     else if (e.target.matches('[data-keep]')) sheetMode.keep = e.target.checked;
-    else if (e.target.matches('[data-ai]')) return setAi(e.target.checked);
     paintSheet();
   });
   document.addEventListener('click', async (e) => {
@@ -6152,16 +6154,6 @@ const PIN = '<i class="np-glyph" aria-hidden="true"></i>';
       return paintSheet();
     }
     setMeta(n, { members: n.shared.members.filter((p) => p.id !== id) });
-  }
-  async function setAi(on) {
-    const n = cur;
-    if (!n || !n.shared || !n.shared.mine) return;
-    const r = await netApi('PATCH', `v1/notes/${n.shared.id}`, { ai: on });
-    if (r.error) {
-      fail(r.error);
-      return paintSheet();
-    }
-    setMeta(n, { ai: on });
   }
   // The note stops being shared here: a private note again, the content as it is now. Not before the server agrees.
   function makePrivate(n) {

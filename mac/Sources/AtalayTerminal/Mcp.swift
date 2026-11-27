@@ -104,8 +104,10 @@ enum McpPaths {
     }()
     /// One socket and one token per build (installed app, staging, a development run), as the sessions are.
     static var tag: String { String(Detached.prefix.dropLast()) }
-    static var socket: String { dir.appendingPathComponent(tag + ".sock").path }
-    static var tokenName: String { "mcp-token-" + tag }
+    static var socket: String { socket(tag: tag) }
+    static var tokenName: String { tokenName(tag: tag) }
+    static func socket(tag: String) -> String { dir.appendingPathComponent(tag + ".sock").path }
+    static func tokenName(tag: String) -> String { "mcp-token-" + tag }
     static var audit: URL { dir.appendingPathComponent("audit.log") }
 }
 
@@ -251,11 +253,21 @@ enum McpBridge {
         out.withLock { FileHandle.standardOutput.write(Sock.json(obj)) }
     }
 
+    /// The build whose app answers: the one that owns the terminal this bridge runs in (its session's prefix), whichever app
+    /// started the bridge. The installed app's and staging's servers are both registered with the AIs, and an AI in a staging
+    /// terminal may call the installed app's (or the other way round); the owning app is the only one that accepts it, so the
+    /// call goes there. Outside any terminal (Claude Desktop) it stays this app's own.
+    private static let serverTag: String = {
+        if let s = Detached.sessionName(hosting: getpid(), anyBuild: true), let p = Detached.allPrefixes.first(where: s.hasPrefix) { return String(p.dropLast()) }
+        return McpPaths.tag
+    }()
+
     /// The app answers on its socket; closed, it says so plainly.
     static func call(_ tool: String, _ args: [String: Any]) -> (ok: Bool, text: String) {
         let notOpen = "Orbiterm isn't open, or Claude access is turned off. Open Orbiterm and turn it on in Settings > Claude."
-        guard let token = KeyFile.load(McpPaths.tokenName).flatMap({ String(data: $0, encoding: .utf8) }),
-              var addr = Sock.address(McpPaths.socket) else { return (false, notOpen) }
+        let tag = serverTag
+        guard let token = KeyFile.load(McpPaths.tokenName(tag: tag)).flatMap({ String(data: $0, encoding: .utf8) }),
+              var addr = Sock.address(McpPaths.socket(tag: tag)) else { return (false, notOpen) }
         let fd = Sessions.cloexec(socket(AF_UNIX, SOCK_STREAM, 0))
         guard fd >= 0 else { return (false, notOpen) }
         defer { close(fd) }

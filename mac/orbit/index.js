@@ -1937,23 +1937,38 @@ function raidJolt() {
   for (const n of NODES.values()) n.kick = Math.min(1.5, n.kick + 1);
 }
 // A friend's nudge (messages.js, nudge.ts) while the dashboard is full screen: the core, the circle at the map's centre, shakes
-// for 560 ms through the nudge's jolt (the chat window's table, messages.css ndg-jolt), a little wider since it is a picture, not a
+// for NUDGE_MS (1.4 s like MSN: hard shakes first, then settling) through the nudge's jolt (the chat window's table, messages.css ndg-jolt), a little wider since it is a picture, not a
 // window. In the page only; nothing else on the map moves. Reduce Motion: nothing.
-const NUDGE_STOPS = [[0, 0, 0], [45, 8, -5], [106, -7, 4], [168, 6, 5], [230, -8, -3], [291, 5, -4], [353, -4, 3], [414, 3, 2], [476, -2, -1], [560, 0, 0]];
+const NUDGE_MS = 1400;
+// Legs of ~50 ms that slowly lengthen to ~100 ms; the swing alternates sides and fades out (same peak, 8 x 5 px, as before).
+const NUDGE_STOPS = (() => {
+  const stops = [[0, 0, 0]];
+  const YS = [-5, 4, 5, -3, -4, 3, 2, -2];
+  let t = 0, i = 0;
+  while (t < NUDGE_MS - 110) {
+    t += 45 + 55 * (t / NUDGE_MS);
+    const fade = Math.pow(1 - t / NUDGE_MS, 1.3);
+    const sign = i % 2 ? -1 : 1;
+    stops.push([Math.round(t), +(8 * fade * sign).toFixed(2), +(YS[i % YS.length] * fade * sign).toFixed(2)]);
+    i++;
+  }
+  stops.push([NUDGE_MS, 0, 0]);
+  return stops;
+})();
 const NUDGE = { t0: 0 };
 function nudgeCore() {
   // Only while the map itself can be seen: not out of the layout behind a full view, not under a chat window, not hidden.
   if (!SIZE.w || !ACT.visible || !ACT.shown || ACT.covered || document.hidden) return false;
   if (window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches) return false;
   NUDGE.t0 = performance.now();
-  poke(700);
+  poke(NUDGE_MS + 140);
   return true;
 }
 function updateNudge(now) {
   if (!NUDGE.t0) return;
   const t = now - NUDGE.t0;
   let dx = 0, dy = 0;
-  if (t < 560) {
+  if (t < NUDGE_MS) {
     let i = 1;
     while (NUDGE_STOPS[i][0] < t) i++;
     const [t0, x0, y0] = NUDGE_STOPS[i - 1], [t1, x1, y1] = NUDGE_STOPS[i];

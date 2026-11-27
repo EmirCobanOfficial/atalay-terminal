@@ -229,7 +229,7 @@ html.chats-closed #chats .sl-fb.arrive .fb-shut { animation: sl-fb-in .6s cubic-
 @keyframes sl-breathe { to { opacity: .45; } }
 /* what moves (200 to 250 ms, the way the old list did): a chat starred or unstarred grows in where it lands, a folder
    folds its rows away or lets them grow, an archived chat or folder shrinks out before the app takes it off */
-.sl-row.arrive { overflow: hidden; animation: sl-grow .25s var(--sl-ease); }
+.sl-row.arrive { overflow: hidden; animation: sl-grow .25s var(--sl-ease), sl-flash .3s var(--sl-ease); }
 .sl-row.arrive .star svg { animation: sl-pop .25s ease-in-out; }
 .sl-grp.unfolding > .sl-rows { overflow: hidden; animation: sl-grow-g .2s var(--sl-ease); }
 .sl-grp.unfolding .sl-fold .chev { animation: sl-chev .2s var(--sl-ease); }
@@ -240,6 +240,11 @@ html.chats-closed #chats .sl-fb.arrive .fb-shut { animation: sl-fb-in .6s cubic-
 @keyframes sl-grow-g { from { max-height: 0; opacity: 0; } to { max-height: 60em; } }
 @keyframes sl-shrink { from { max-height: var(--h, 4em); } to { max-height: 0; opacity: 0; padding-top: 0; padding-bottom: 0; margin: 0; } }
 @keyframes sl-pop { 50% { transform: scale(1.4); } }
+/* the arrival's light and a short slide (the colour only: the chat in front keeps its own gradient) */
+@keyframes sl-flash { from { background-color: rgba(var(--accent-rgb), .28); transform: translateX(-.5em); } }
+/* A starred chat's card: the same amber star as the list's, by its name */
+#sessions .card .cfav { display: inline-grid; flex: none; place-items: center; margin-left: .35em; color: var(--amber); }
+#sessions .card .cfav svg { width: .85em; height: .85em; }
 @keyframes sl-chev { from { transform: none; } }
 /* A chat goes live: its card arrives on top, one warm light crossing it */
 #chats .sl-live .card.enter:not(.st-waiting) { animation: sl-card-in .38s cubic-bezier(.34, 1.3, .64, 1); }
