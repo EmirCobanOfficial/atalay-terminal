@@ -779,7 +779,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
         for c in chats.values {
             // After windows merged, several AIs are hosted by one window: the header follows the one under its own shell.
+            // While its own chat goes on under another account (the old Claude left, the new one not up yet), that chat
+            // still, not another pane's.
             let b = list.first(where: { $0.tab == c.id && ChatWindowController.isUnder($0.pid, shell: c.shellPid) })
+                ?? c.sessionId.flatMap { c.hud.switching[$0] != nil ? briefs[$0] : nil }
                 ?? list.first(where: { $0.tab == c.id }) ?? c.sessionId.flatMap { briefs[$0] }
             c.apply(b)
             c.applyHosted(list.filter { $0.tab == c.id && $0.live })
@@ -2232,7 +2235,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     /// The live AI brief nearest `shell` (the shortest parent chain from its process to the shell).
-    private func nearestBrief(under shell: Int32) -> SessionBrief? {
+    func nearestBrief(under shell: Int32) -> SessionBrief? {
         var best: (brief: SessionBrief, distance: Int)?
         for b in briefs.values where b.live && b.status != "ended" {
             guard var pid = b.pid else { continue }

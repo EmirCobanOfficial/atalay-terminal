@@ -623,6 +623,15 @@ final class PaneTitleBar: NSView, NSTextFieldDelegate {
     var onRename: ((String?) -> Void)?
     var onRenameRequest: (() -> Void)?
     var onMenu: (() -> NSMenu?)?
+    /// The star was clicked: the chat in this pane (TabStats.starId).
+    var onFavorite: ((String) -> Void)?
+    /// Copy this pane's AI last reply / open the env view of this pane's folder.
+    var onCopy: (() -> Void)?
+    var onEnv: (() -> Void)?
+    /// The env view holds unsaved changes of this pane's folder.
+    var envUnsaved = false {
+        didSet { if envUnsaved != oldValue { paintEnv(); needsLayout = true } }
+    }
     var focused = false {
         didSet { if focused != oldValue { paint() } }
     }
@@ -636,6 +645,9 @@ final class PaneTitleBar: NSView, NSTextFieldDelegate {
     private let close = NSButton(title: "\u{00D7}", target: nil, action: nil)
     private let dot = NSView()
     private let disc = NSImageView()
+    private let star = NSButton()
+    private let copyBtn = NSButton()
+    private let envBtn = NSButton()
     private var editor: NSTextField?
     private var pressedAt: NSPoint?
     private var dragging = false
@@ -653,7 +665,7 @@ final class PaneTitleBar: NSView, NSTextFieldDelegate {
         close.font = Theme.mono(12, .medium)
         close.target = self
         close.action = #selector(closePane)
-        close.toolTip = "Close this pane"
+        close.toolTip = "End this chat and stop the AI (a terminal: close it)"
         dot.wantsLayer = true
         dot.layer?.cornerRadius = 3
         dot.isHidden = true
@@ -661,8 +673,64 @@ final class PaneTitleBar: NSView, NSTextFieldDelegate {
         ctxText.textColor = ThemeStore.shared.color("--txt")
         counts.lineBreakMode = .byTruncatingTail
         disc.isHidden = true
-        for v in [dot, disc, label, meter, ctxText, counts, close] as [NSView] { addSubview(v) }
+        star.isBordered = false
+        star.imagePosition = .imageOnly
+        star.imageScaling = .scaleProportionallyDown
+        star.refusesFirstResponder = true
+        star.focusRingType = .none
+        star.target = self
+        star.action = #selector(starTapped)
+        star.isHidden = true
+        copyBtn.isBordered = false
+        copyBtn.imagePosition = .imageOnly
+        copyBtn.imageScaling = .scaleProportionallyDown
+        copyBtn.refusesFirstResponder = true
+        copyBtn.focusRingType = .none
+        copyBtn.target = self
+        copyBtn.action = #selector(copyTapped)
+        let copyHelp = "Copy the AI's last reply, all of it (\u{21E7}\u{2318}C)"
+        copyBtn.image = NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: copyHelp)?
+            .withSymbolConfiguration(.init(pointSize: 10.5, weight: .bold))
+        copyBtn.toolTip = copyHelp
+        copyBtn.setAccessibilityLabel(copyHelp)
+        copyBtn.isHidden = true
+        envBtn.isBordered = false
+        envBtn.refusesFirstResponder = true
+        envBtn.focusRingType = .none
+        envBtn.target = self
+        envBtn.action = #selector(envTapped)
+        for v in [dot, disc, label, meter, ctxText, counts, copyBtn, envBtn, star, close] as [NSView] { addSubview(v) }
         paint()
+    }
+
+    /// The pane's chat star: always shown for a chat (every pane header has its own), outline or filled amber.
+    private func paintStar() {
+        guard let id = stats?.starId, !id.isEmpty else { star.isHidden = true; return }
+        star.isHidden = false
+        let on = stats?.starred == true
+        let help = on ? "Remove this chat from your favorites" : "Add this chat to your favorites in the sidebar"
+        star.image = NSImage(systemSymbolName: on ? "star.fill" : "star", accessibilityDescription: help)?
+            .withSymbolConfiguration(.init(pointSize: 11, weight: .bold))
+        let amber = ThemeStore.shared.color("--amber")
+        star.contentTintColor = on ? (amber.blended(withFraction: 0.2, of: .white) ?? amber) : ThemeStore.shared.color("--accent-soft")
+        star.toolTip = help
+        star.setAccessibilityLabel(help)
+    }
+
+    @objc private func copyTapped() { onCopy?() }
+    @objc private func envTapped() { onEnv?() }
+
+    private func paintEnv() {
+        let amber = ThemeStore.shared.color("--amber")
+        envBtn.attributedTitle = NSAttributedString(string: envUnsaved ? "env\u{2022}" : "env", attributes: [
+            .font: Theme.mono(10, .semibold), .foregroundColor: amber])
+        envBtn.toolTip = "The env files in this folder and the ones in it: open one to edit or copy from it (\u{21E7}\u{2318}E)."
+            + (envUnsaved ? " It has changes not saved." : "")
+    }
+
+    @objc private func starTapped() {
+        guard let id = stats?.starId, !id.isEmpty else { return }
+        onFavorite?(id)
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
@@ -698,6 +766,10 @@ final class PaneTitleBar: NSView, NSTextFieldDelegate {
             counts.attributedStringValue = tabStatsLine(s)
             ctxText.textColor = t.color("--txt")
         }
+        paintStar()
+        paintEnv()
+        copyBtn.contentTintColor = t.color("--accent-soft")
+        copyBtn.isHidden = stats == nil
         label.textColor = t.color(focused ? "--accent-soft" : "--dim")
         label.font = Theme.mono(10.5, focused ? .semibold : .regular)
         close.contentTintColor = t.color(focused ? "--accent-soft" : "--dim")
@@ -732,7 +804,12 @@ final class PaneTitleBar: NSView, NSTextFieldDelegate {
         let x: CGFloat = discX + (disc.isHidden ? 0 : 18)
         // From the right: the context (meter and size), then the counts; the name keeps at least 70 points, so the counts
         // go first when it is narrow, then the meter.
-        var right = w - 24
+        let hasStar = !(stats?.starId ?? "").isEmpty
+        star.frame = NSRect(x: w - 20 - 18, y: (h - 18) / 2, width: 18, height: 18)
+        let envW: CGFloat = envUnsaved ? 30 : 26
+        envBtn.frame = NSRect(x: w - 20 - (hasStar ? 18 : 0) - envW, y: (h - 18) / 2, width: envW, height: 18)
+        copyBtn.frame = NSRect(x: envBtn.frame.minX - 18, y: (h - 18) / 2, width: 18, height: 18)
+        var right = (copyBtn.isHidden ? envBtn.frame.minX : copyBtn.frame.minX) - 4
         let minName: CGFloat = 70
         var showMeter = false, showCounts = false
         if stats != nil {

@@ -269,7 +269,10 @@
       await act({ type: 'add', label, hue });
       poll(el);
     });
-    q('.ac-name') && (q('.ac-name').onkeydown = (e) => e.key === 'Enter' && q('.ac-go').click());
+    q('.ac-name') && (q('.ac-name').onkeydown = (e) => {
+      // A block body: an on* handler that returns false cancels the key, and that would be every letter.
+      if (e.key === 'Enter') q('.ac-go').click();
+    });
     el.querySelectorAll('.sw i').forEach((i) => {
       const pick = () => {
         el.querySelectorAll('.sw i').forEach((x) => {
@@ -278,7 +281,9 @@
         });
       };
       i.onclick = pick;
-      i.onkeydown = (e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), pick());
+      i.onkeydown = (e) => {
+        if (e.key === 'Enter' || e.key === ' ') (e.preventDefault(), pick());
+      };
     });
     el.querySelectorAll('.ac-cancel').forEach((b) => (b.onclick = () => act({ type: 'cancelSignIn', id: b.dataset.id })));
     el.querySelectorAll('.ac-again').forEach((b) => (b.onclick = async () => (await act({ type: 'signIn', id: b.dataset.id }), poll(el))));
@@ -286,7 +291,10 @@
     if (q('.ac-rn')) {
       q('.ac-rn').focus();
       q('.ac-rn').select();
-      q('.ac-rn').onkeydown = (e) => (e.key === 'Enter' ? q('.ac-rn-ok').click() : e.key === 'Escape' && q('.ac-rn-no').click());
+      q('.ac-rn').onkeydown = (e) => {
+        if (e.key === 'Enter') q('.ac-rn-ok').click();
+        else if (e.key === 'Escape') q('.ac-rn-no').click();
+      };
       q('.ac-rn-ok').onclick = async () => {
         const id = renaming;
         renaming = null;

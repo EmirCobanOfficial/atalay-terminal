@@ -8,6 +8,8 @@ import SwiftUI
 
 struct TickerChip: Identifiable, Equatable {
     let id: Int
+    /// The session it came from: a window split into panes shows only the focused pane's (ChatHUD.focusSid).
+    let sid: String
     let tag: String
     let text: String
     let hex: UInt32
@@ -33,6 +35,13 @@ final class ChatHUD: ObservableObject {
     /// Tabs open in this window right now: the HUD's End Session button hides when there are two or more, so the per-tab
     /// × on each chip ends only its own tab and nothing else can.
     @Published var tabCount = 1
+    /// A tab here holds several panes, each with its own star on its slim bar (PaneTitleBar): the HUD's star hides, or it
+    /// would be one more star with no telling which pane's chat it marks.
+    @Published var paneSplit = false
+    /// In a split, the focused pane's session and brief: the footer shows its status and its lines only, not every pane's
+    /// mixed together. Nil without a split (the footer is the window's one chat).
+    @Published var focusSid: String?
+    @Published var focusBrief: SessionBrief?
     /// Starred in the sidebar: the HUD's star icon fills in.
     @Published var isFavorite = false
     /// The env view (EnvView.swift) is over the terminal, and it holds changes not saved: the header's env button.
@@ -55,6 +64,11 @@ final class ChatHUD: ObservableObject {
     @Published var acctNote: AcctNote?
     /// A switch (to an account id) waiting for that session's reply to end, by session id; only in memory, on the user's click.
     var pendingSwitch: [String: String] = [:]
+    /// Chats going on under another account right now (acctPerform), by session id, with the pid of the Claude that is
+    /// leaving: until the new one is up, the window says "starting", never ended.
+    @Published var switching: [String: Int32] = [:]
+    /// In a split, the focused pane's chat is one of them (its brief is gone for that moment).
+    @Published var focusStarting = false
     var acctHold = false, wentAt = 0.0
     var limitQuiet = Set<String>(), lowQuiet = Set<String>()
     var onAcctMenu: (() -> Void)?
@@ -70,6 +84,7 @@ final class ChatHUD: ObservableObject {
     /// A terminal window is a chat while Claude runs in it, and a terminal again once Claude exits.
     var status: String {
         if exited { return "ended" }
+        if let b = brief, let old = switching[b.id], !b.live || b.pid == old { return "starting" }
         if let b = brief, b.live || terminalDir == nil { return b.status }
         return terminalDir != nil ? "terminal" : "starting"
     }
@@ -83,8 +98,11 @@ final class ChatHUD: ObservableObject {
             : e.kind == "say" ? (e.sid.hasPrefix("ai:") ? "reply" : "claude") : e.kind
         seq += 1
         withAnimation(.spring(response: 0.38, dampingFraction: 0.8)) {
-            chips.append(TickerChip(id: seq, tag: tag, text: String(e.label.prefix(42)), hex: hex, at: Date()))
-            if chips.count > 9 { chips.removeFirst(chips.count - 9) }
+            chips.append(TickerChip(id: seq, sid: e.sid, tag: tag, text: String(e.label.prefix(42)), hex: hex, at: Date()))
+            // The last 9 of each session (panes each keep theirs, for when the focus moves to them), 36 in all.
+            let mine = chips.indices.filter { chips[$0].sid == e.sid }
+            if mine.count > 9 { chips.remove(at: mine[0]) }
+            if chips.count > 36 { chips.removeFirst(chips.count - 36) }
         }
     }
 }
@@ -328,37 +346,41 @@ private struct HUDRow: View {
                 Text("terminal in \(hud.streamer ? Streamer.folder(dir) : tildify(dir))").foregroundColor(Theme.cDim).lineLimit(1)
             } else if let b = hud.brief {
                 // With two or more tabs each tab's chip shows its own context and counts; one bar here would be one tab's.
-                let perTab = hud.tabCount > 1
+                let perTab = hud.tabCount > 1 || hud.paneSplit
                 if !perTab { ContextBar(ctx: b.ctx, ctxMax: b.ctxMax) }
-                if !b.model.isEmpty {
+                if !b.model.isEmpty && !hud.paneSplit {
                     Text([b.model, b.effort].filter { !$0.isEmpty }.joined(separator: " · ")).foregroundColor(Theme.cDim)
                 }
                 // Only Claude's is priced: another AI tool ("ai:…") would show a $0 it didn't cost.
-                if !b.id.hasPrefix("ai:") {
+                if !b.id.hasPrefix("ai:") && !hud.paneSplit {
                     Text(fmtUsd(b.cost)).foregroundColor(Theme.cAmber).fontWeight(.semibold)
                 }
                 if !perTab { Counts(b: b) }
-                if !b.actionName.isEmpty {
+                if !b.actionName.isEmpty && !hud.paneSplit {
                     ActionLabel(b: b, now: now, streamer: hud.streamer)
                 }
             } else {
                 Text("starting \(hud.aiName)…").foregroundColor(Theme.cDim)
             }
             Spacer(minLength: 6)
-            if let b = hud.brief, !b.spark.isEmpty, hud.status != "terminal" {
+            if let b = hud.brief, !b.spark.isEmpty, hud.status != "terminal", !hud.paneSplit {
                 SparkView(values: b.spark, hex: hex).frame(width: 96, height: 18)
             }
-            if hud.status != "terminal" {
+            // With split panes each pane's bar has its own copy, env and end buttons (each may run in another folder).
+            if hud.status != "terminal" && !hud.paneSplit {
                 HUDButton(symbol: "doc.on.doc", active: false,
                           help: "Copy the AI's last reply, all of it (⇧⌘C)", hex: hex, action: onCopyReply)
             }
+            if !hud.paneSplit || hud.envOpen {
             HUDButton(symbol: "", label: "env", active: hud.envOpen,
                       help: hud.envOpen ? "Back to the terminal (⇧⌘E)"
                           : "The env files in this folder and the ones in it: open one to edit or copy from it (⇧⌘E)."
                               + (hud.envUnsaved ? " It has changes not saved." : ""),
                       hex: ThemeStore.shared.hex("--amber"), badge: hud.envUnsaved, action: onToggleEnv)
-            // With tabs, each chat tab carries its own star (PaneTabBar); the window's star is for a single chat.
-            if hud.tabCount < 2 {
+            }
+            // With tabs, each chat tab carries its own star (PaneTabBar), and with split panes each pane's bar does; the
+            // window's star is for a single chat.
+            if hud.tabCount < 2 && !hud.paneSplit {
                 HUDButton(symbol: hud.isFavorite ? "star.fill" : "star", active: hud.isFavorite,
                           help: hud.isFavorite ? "Remove this chat from your favorites"
                               : "Add this chat to your favorites in the sidebar",
@@ -370,7 +392,7 @@ private struct HUDRow: View {
                       hex: hex, action: onTogglePin)
             // With two or more tabs the HUD's End Session ended the window, not the tab in front: ambiguous. The × on
             // each tab chip ends that tab, so the HUD button hides in multi-tab mode.
-            if hud.tabCount <= 1 {
+            if hud.tabCount <= 1 && !hud.paneSplit {
                 HUDButton(symbol: "power", active: false,
                           help: hud.mirror ? "End this chat here and in the other app" : hud.status == "terminal" ? "Close this terminal" : "End this chat and stop the AI",
                           hex: ThemeStore.shared.hex("--red"), action: onEnd)
@@ -527,7 +549,7 @@ struct ChatTickerView: View {
     var body: some View {
         TimelineView(.periodic(from: .now, by: hud.visible ? 1 : 3600)) { tl in
             let blinkOff = Int(tl.date.timeIntervalSinceReferenceDate) % 2 == 0
-            let status = hud.status
+            let status = hud.focusStarting ? "starting" : hud.focusBrief?.status ?? hud.status
             let color = Color(hex: Theme.statusHex[status] ?? Theme.endedHex)
             HStack(spacing: 10) {
                 Text(statusText(status))
@@ -538,7 +560,7 @@ struct ChatTickerView: View {
                     .lineLimit(1)
                 Spacer(minLength: 8)
                 HStack(spacing: 6) {
-                    ForEach(hud.chips) { chip in
+                    ForEach(hud.focusSid.map { sid in hud.chips.filter { $0.sid == sid } } ?? Array(hud.chips.suffix(9))) { chip in
                         ChipView(chip: chip, now: tl.date, streamer: hud.streamer)
                             .transition(.asymmetric(insertion: .move(edge: .trailing).combined(with: .opacity), removal: .opacity))
                     }
@@ -556,7 +578,7 @@ struct ChatTickerView: View {
         switch status {
         case "busy": return "● working"
         case "idle": return "◆ your turn"
-        case "waiting": return "⚠ NEEDS YOU" + (hud.brief?.waitingFor.map { " · \(hud.streamer ? Streamer.fake("wait", $0) : $0)" } ?? "")
+        case "waiting": return "⚠ NEEDS YOU" + ((hud.focusBrief ?? hud.brief)?.waitingFor.map { " · \(hud.streamer ? Streamer.fake("wait", $0) : $0)" } ?? "")
         case "terminal": return "▸ terminal · claude to start · claude -r to resume"
         case "starting": return "◌ starting \(hud.aiName)…"
         default: return "○ ended · close the window to remove it"
@@ -1204,6 +1226,7 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
             guard let self else { return }
             self.syncFavorite()
             if self.tabs.count > 1 { self.updateTabStats() }
+            self.updatePaneBars()
         }
         hud.onAcctMenu = { [weak self] in self?.acctMenu() }
         hud.onAcct = { [weak self] in self?.acctNoteAction($0) }
@@ -1273,8 +1296,16 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
 
     /// Claude's last reply onto the clipboard, the whole of it, from the conversation's transcript (LastReply): on the
     /// terminal, Claude's full-screen view only lets a reply be selected as far as it fits the window.
-    func copyLastReply() {
-        guard let sid = sessionId, let text = LastReply.text(sessionId: sid) else { return NSSound.beep() }
+    func copyLastReply(of tv: ChatTerminalView? = nil) {
+        // In a split, the pane with the keyboard (or `tv`): its own AI's conversation, not the window's.
+        let sid: String?
+        if hud.paneSplit {
+            let b = briefFor(tv ?? focusedTerminal)
+            sid = b.map { $0.convId ?? $0.id }
+        } else {
+            sid = sessionId
+        }
+        guard let sid, let text = LastReply.text(sessionId: sid) else { return NSSound.beep() }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
         showCopied(text)
@@ -1494,6 +1525,7 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
         let b = paneBriefs.values.first { $0.id == key || $0.convId == key }
         toggleStar(b?.id ?? key, conv: b?.convId)
         if tabs.count > 1 { updateTabStats() }
+        updatePaneBars()
         syncFavorite()
     }
 
@@ -2729,23 +2761,53 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
         bar.onRename = { [weak self, weak tv] in if let tv { self?.renamePane(tv, to: $0) } }
         bar.onRenameRequest = { [weak self, weak tv] in if let tv { self?.beginPaneRename(tv) } }
         bar.onMenu = { [weak self, weak tv] in tv.flatMap { self?.paneMenu($0) } }
+        bar.onFavorite = { [weak self] in self?.toggleTabFavorite($0) }
+        bar.onCopy = { [weak self, weak tv] in if let tv { self?.copyLastReply(of: tv) } }
+        bar.onEnv = { [weak self, weak tv] in
+            guard let self, let tv else { return }
+            self.focus(tv)
+            self.toggleEnv()
+        }
         return bar
     }
 
     /// Each bar's name and AI figures (the tab chip's: context, tools, web, errors) and which one has the keyboard.
+    /// The footer follows the focused pane in a split (ChatHUD.focusSid / focusBrief).
+    private func syncFocusHUD() {
+        let split = tabs.indices.contains(activeTab) && terminals(in: activeTab).count > 1
+        let brief = split ? briefFor(focusedTerminal) : nil
+        // Its chat going on under another account: that chat's lines, "starting" until the new Claude is up.
+        let moving = split && brief == nil ? sessionName(of: focusedTerminal).flatMap { Sessions.live[$0]?.ai }
+            .flatMap { $0.tool == "claude" && hud.switching[$0.id] != nil ? $0.id : nil } : nil
+        if hud.focusSid != brief?.id ?? moving { hud.focusSid = brief?.id ?? moving }
+        if hud.focusBrief != brief { hud.focusBrief = brief }
+        if hud.focusStarting != (moving != nil) { hud.focusStarting = moving != nil }
+    }
+
     private func updatePaneBars() {
+        let split = tabs.indices.contains(activeTab) && terminals(in: activeTab).count > 1
+        if hud.paneSplit != split { hud.paneSplit = split }
+        syncFocusHUD()
         guard !paneBars.isEmpty else { return }
         let focus = tabs.indices.contains(activeTab) ? focusedTerminal : nil
         let several = Set(allTerminals.compactMap { briefFor($0) }.compactMap(acctMark).map(\.id)).count > 1
+        let favs = manager?.sidebar.favorites ?? []
         for bar in paneBars.values {
             guard let tv = bar.pane as? ChatTerminalView, !bar.isEditing else { continue }
             let stats = briefFor(tv).map { b in
                 TabStats(ctx: b.ctx, ctxMax: b.ctxMax, tools: b.tools, web: b.web, errors: b.errors, status: b.status,
-                         account: several ? acctMark(b) : nil)
+                         account: several ? acctMark(b) : nil,
+                         starId: b.live ? b.convId ?? b.id : nil, starred: Self.starred(favs, id: b.id, conv: b.convId))
             }
             bar.set(title: paneTitle(tv), stats: stats)
+            bar.envUnsaved = env?.dirty == true && env?.root == paneFolder(tv)
             bar.focused = tv === focus
         }
+    }
+
+    private func paneFolder(_ tv: ChatTerminalView) -> String {
+        if let pane = extra(of: tv) { return pane.currentFolder }
+        return (shellPid > 0 ? Proc.cwd(shellPid) : nil) ?? cwd
     }
 
     func sessionName(of tv: ChatTerminalView) -> String? {
@@ -3091,6 +3153,7 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
         let focus = focusedTerminal
         for tv in ts { tv.alphaValue = ts.count > 1 && tv !== focus ? 0.7 : 1 }
         for bar in paneBars.values { bar.focused = bar.pane === focus }
+        syncFocusHUD()
     }
 
     /// Gives a pane the keyboard.
@@ -3410,6 +3473,7 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
 
     func applyHosted(_ list: [SessionBrief]) {
         paneBriefs = Dictionary(list.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        list.forEach(switchArrived)
         if tabs.count > 1 { updateTabStats() }
         updatePaneBars()
     }
@@ -3437,14 +3501,26 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate, LocalPro
         tabBar.setStats(stats)
     }
 
+    /// A chat that went on under another account is up again: its new Claude (another process) is live.
+    private func switchArrived(_ b: SessionBrief) {
+        if b.live, let old = hud.switching[b.id], b.pid != old { hud.switching[b.id] = nil }
+    }
+
+    /// A switch began or timed out: the border and the split's footer follow at once (the rest with the engine's next state).
+    func acctSwitchShown() {
+        border.setStatus(hud.status)
+        updatePaneBars()
+    }
+
     func apply(_ brief: SessionBrief?) {
         if let brief {
+            switchArrived(brief)
             if hud.brief != brief { hud.brief = brief }
             if brief.tab == id { sessionId = brief.id }
             realTitle = brief.title.isEmpty ? brief.name : brief.title
             nameWindow()
         }
-        if hud.terminalDir != nil, brief?.live != true { sessionId = nil }
+        if hud.terminalDir != nil, brief?.live != true, hud.switching[brief?.id ?? ""] == nil { sessionId = nil }
         border.setStatus(hud.status)
         syncFavorite()
         shipStatusChanged(brief?.status ?? "")

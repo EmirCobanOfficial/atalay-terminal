@@ -274,7 +274,10 @@ extension ChatWindowController {
     /// Antigravity or Cursor chat.
     private func acctTarget(_ pane: ChatTerminalView? = nil) -> (tv: ChatTerminalView, pty: PtySession?, brief: SessionBrief?)? {
         let tv = pane ?? focusedTerminal
-        let brief = briefFor(tv)
+        // The engine's match by window, else the live AI nearest the pane's shell: the match follows a shell that just
+        // started (a switch's) only once the window tells it, and a Claude must never be taken for a plain terminal.
+        let shell = tv === terminal ? shellPid : extras.first { $0.terminal === tv }?.shellPid ?? 0
+        let brief = briefFor(tv) ?? (shell > 0 ? manager?.nearestBrief(under: shell) : nil)
         if let b = brief, b.id.hasPrefix("ai:") { return nil }
         let pty = sessionName(of: tv).flatMap { Sessions.live[$0] }
         return (tv, pty, brief)
@@ -287,7 +290,8 @@ extension ChatWindowController {
     }
 
     private func acctId(_ t: (tv: ChatTerminalView, pty: PtySession?, brief: SessionBrief?)) -> String {
-        if let b = t.brief, b.live, !b.account.isEmpty { return b.account }
+        // While a switch is under way the brief may still be the leaving Claude's: the session's account is the new one.
+        if let b = t.brief, b.live, !b.account.isEmpty, hud.switching[b.id] == nil { return b.account }
         return t.pty?.account ?? ClaudeAccounts.defaultId
     }
 
@@ -392,7 +396,7 @@ extension ChatWindowController {
             default:
                 hud.acctNote = nil
                 // The pane of the session the note is about (gone meanwhile: nothing switches).
-                if let tv = allTerminals.first(where: { briefFor($0)?.id == note.sid }) { acctPerform(id, now: true, pane: tv) }
+                if let tv = allTerminals.first(where: { acctTarget($0)?.brief?.id == note.sid }) { acctPerform(id, now: true, pane: tv) }
             }
         case .notNow:
             switch note.kind {
@@ -532,7 +536,7 @@ extension ChatWindowController {
     private func acctRunPending() -> Bool {
         guard !hud.pendingSwitch.isEmpty else { return false }
         var panes: [String: (tv: ChatTerminalView, brief: SessionBrief)] = [:]
-        for tv in allTerminals { if let b = briefFor(tv), b.live { panes[b.id] = (tv, b) } }
+        for tv in allTerminals { if let b = acctTarget(tv)?.brief, b.live { panes[b.id] = (tv, b) } }
         var ran = false
         for (sid, to) in hud.pendingSwitch {
             guard let p = panes[sid], let target = ClaudeAccounts.account(to), (AcctWindows(target).minLeft ?? 100) > 0 else {
@@ -561,20 +565,44 @@ extension ChatWindowController {
         let from = ClaudeAccounts.account(acctId(t))
         let fromLabel = from?.label ?? "The other account"
         let fromFills = from.flatMap { AcctWindows($0).five?.resets }.flatMap { $0 > 0 ? "at " + clockText($0) : nil }
-        if let b = t.brief, b.live, !b.id.hasPrefix("ai:") {
-            if let top = Worktrees.info(of: b.cwd)?.top { ClaudeAccounts.remember(to.id, inRepo: top) }
-            pty.ai = ("claude", b.id)
+        let folder = pty.shellPid.flatMap { Proc.cwd($0) } ?? cwd
+        // The chat in this pane: its brief, else (no brief yet: a Claude that just started, e.g. right after another switch)
+        // the Claude chat the session was started to resume, while it is on its way or runs.
+        let chat: (id: String, cwd: String, pid: Int32)? = {
+            if let b = t.brief, b.live, !b.id.hasPrefix("ai:") { return (b.id, b.cwd.isEmpty ? folder : b.cwd, b.pid ?? -1) }
+            guard let a = pty.ai, a.tool == "claude" else { return nil }
+            let runs = pty.shellPid.map { Self.runsAgent($0) } ?? false
+            return hud.switching[a.id] != nil || runs ? (a.id, folder, -1) : nil
+        }()
+        if let chat {
+            if let top = Worktrees.info(of: chat.cwd)?.top { ClaudeAccounts.remember(to.id, inRepo: top) }
+            // The same chat in the same pane: only this session's shell (and the Claude in it) ends, and a new one resumes it
+            // with the account's environment. A restart already under way: nothing (one click at a time).
+            let was = (pty.ai, pty.aiSeen)
+            pty.ai = ("claude", chat.id)
             pty.aiSeen = false
-            pty.restart(cwd: b.cwd.isEmpty ? cwd : b.cwd, claudeArgs: ["--resume", b.id], account: to.id)
+            guard pty.restart(cwd: chat.cwd, claudeArgs: ["--resume", chat.id], account: to.id) else {
+                (pty.ai, pty.aiSeen) = was
+                return NSSound.beep()
+            }
+            // "starting" until the new Claude is up, never ended; given up after 30 s (Claude didn't come back).
+            hud.switching[chat.id] = chat.pid
+            DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in
+                guard let self, self.hud.switching[chat.id] == chat.pid else { return }
+                self.hud.switching[chat.id] = nil
+                self.acctSwitchShown()
+            }
+            acctSwitchShown()
+            // The chip shows the new account at once (after this call: a waiting switch runs from inside acctRefresh).
+            DispatchQueue.main.async { [weak self] in self?.acctRefresh() }
             // The quiet note is about the pane in front (a tab behind whose reply ended switches without one).
             guard inFront else { return }
             hud.wentAt = Date().timeIntervalSince1970 * 1000
-            hud.acctNote = AcctNote(kind: .went(to: AcctMark(to), fromLabel: fromLabel, fills: fromFills), sid: b.id)
+            hud.acctNote = AcctNote(kind: .went(to: AcctMark(to), fromLabel: fromLabel, fills: fromFills), sid: chat.id)
             if let w = window { NSAccessibility.post(element: w, notification: .announcementRequested, userInfo: [.announcement: "This chat went on with \(to.label)", .priority: NSAccessibilityPriorityLevel.medium.rawValue]) }
             return
         }
         // A plain terminal, or a chat that ended: restarted in its folder; asked first when something runs in it.
-        let folder = pty.shellPid.flatMap { Proc.cwd($0) } ?? cwd
         let go = { [weak self] in
             pty.ai = nil
             pty.restart(cwd: folder, claudeArgs: nil, account: to.id)

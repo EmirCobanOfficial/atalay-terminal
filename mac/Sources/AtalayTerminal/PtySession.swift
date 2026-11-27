@@ -9,11 +9,13 @@ final class PtySession: NSObject, LocalProcessTerminalViewDelegate {
     private(set) var name: String
     private(set) var terminal: ChatTerminalView!
     let cwd: String
-    let started = Date()
+    /// When it started, or last restarted with another Claude account: the AI it resumes takes a moment to show under the
+    /// new shell (MainWindowController.inspect).
+    private(set) var started = Date()
     /// The AI it was started to resume (`tool`: "claude", "codex", "agy", "cursor"), for the snapshot until one shows under the shell.
     var ai: (tool: String, id: String)?
     /// The Claude account its environment was made for (ClaudeAccounts id), nil for the default one. A switch in the same
-    /// terminal changes it (ChatWindowController.switchAccount).
+    /// terminal changes it (ChatWindowController.acctPerform).
     var account: String?
     /// The window or pane showing it now; nil while parked. Every delegate call is forwarded there.
     weak var owner: LocalProcessTerminalViewDelegate?
@@ -50,12 +52,17 @@ final class PtySession: NSObject, LocalProcessTerminalViewDelegate {
 
     /// Goes on in the same terminal with another Claude account: the shell and Claude in it get a hangup, and once it has
     /// ended a new shell starts in this same view (the window or pane never hears of an end) with the account's environment,
-    /// running `claude <args>`. Nothing is typed into the terminal.
-    func restart(cwd: String, claudeArgs: [String]?, account: String?) {
-        guard !finished, relaunch == nil else { return }
+    /// running `claude <args>`. Nothing is typed into the terminal. False when it can't: ended, or a restart already under way.
+    @discardableResult
+    func restart(cwd: String, claudeArgs: [String]?, account: String?) -> Bool {
+        guard !finished, relaunch == nil else { return false }
         relaunch = (cwd, claudeArgs, account)
+        // The account it is for from now on (the title chip, the snapshot), and a fresh start for the AI to show up in.
+        self.account = account
+        started = Date()
         let shell = terminal.process.shellPid
         if shell > 0 { Detached.endTree(shell) } else { processTerminated(source: terminal, exitCode: nil) }
+        return true
     }
 
     /// A tab dragged into a split (or the other way) is named for its new kind, for the next launch.
@@ -108,6 +115,7 @@ final class PtySession: NSObject, LocalProcessTerminalViewDelegate {
         if let r = relaunch, !finished, !Sessions.stopping {
             relaunch = nil
             account = r.account
+            started = Date()
             let shell = TerminalFactory.userShell()
             Sessions.closeOnExec()
             terminal.startProcess(executable: shell, args: TerminalFactory.shellArgs(shell, cwd: r.cwd, claudeArgs: r.args, account: r.account),
@@ -117,6 +125,10 @@ final class PtySession: NSObject, LocalProcessTerminalViewDelegate {
             let pid = terminal.process.shellPid
             if pid > 0 { Sessions.setShell(name, pid) }
             if r.account != nil { Limits.installScript() }
+            // The engine matches an AI to its window by the AI's shell: it learns the new one now. Without this the chat
+            // going on here belonged to no window, so the next switch took the pane for a plain terminal and restarted it
+            // without Claude (the window then showed ended).
+            MainWindowController.shared?.panesChanged()
             return
         }
         // The app is quitting or restarting: the windows are being torn down and what the shells showed was just kept for
