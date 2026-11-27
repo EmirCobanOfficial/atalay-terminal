@@ -55,7 +55,7 @@ window.SocialTest = (() => {
     `<span>goal</span><div class="lb-seg">${btn('goal', 'play', '▶ PLAY')}</div>` +
     `<span>head to head</span><div class="lb-seg">${btn('h2h', 'real', 'REAL', st.h2h === 'real')}${btn('h2h', 'demo', 'DEMO', st.h2h === 'demo')}</div>` +
     // A friend's spaceship attack on yourself (attack.js test(), the API's POST v1/friends/dev/attack in attack.ts).
-    (window.Attack?.test ? `<span>attack</span><div class="lb-seg">${btn('attack', 'preview', '👁 PREVIEW ATTACK')}${btn('attack', 'me', '🚀 ATTACK ME')}${btn('attack', 'reset', '↺ RESET ATTACK')}</div>` : '') +
+    (window.Attack?.test ? `<span>attack</span><div class="lb-seg">${btn('attack', 'preview', '👁 PREVIEW ATTACK')}${btn('attack', 'me', '🚀 ATTACK ME')}${btn('attack', 'reset', '↺ RESET ATTACK LIMITS')}</div>` : '') +
     `<span>nudge</span><div class="lb-seg">${btn('nudge', 'reset', '↺ RESET NUDGE')}</div></div>`;
   // A click on the strip: true when the leaderboard is to be drawn again.
   function click(target) {

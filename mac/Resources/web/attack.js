@@ -997,7 +997,7 @@ window.Attack = (() => {
     await Social.load();
     paintAll();
     paintShield();
-    say('attack reset · shield and cooldowns cleared');
+    say(`attack limits reset · ${r.attacksCleared ?? 0} attacks, ${r.cooldownsCleared ?? 0} cooldowns, shields and revenge cleared`);
   }
 
   // ---------- live ----------
