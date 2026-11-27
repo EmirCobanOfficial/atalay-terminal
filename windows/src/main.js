@@ -4545,11 +4545,11 @@ function tellShowing() {
 }
 
 // ---------- the nudge's window shake (nudge.ts, messages.js; the Mac's WindowShake in Messages.swift) ----------
-// One jolt, two-dimensional and dying out so it reads as a buzz: eight legs, ease-in-out, 560 ms, the offsets of messages.css
+// One jolt, two-dimensional and dying out so it reads as a buzz: 22 legs (strong first, then settling), ease-in-out, 1400 ms like MSN, the offsets of messages.css
 // `ndg-jolt` (x right, y down) times `amp`, whole DIPs, a main-process timer at about 120 Hz. The start bounds are taken once
 // (the panel's own copy, never read back) and every step sets all four values, so a scaled display doesn't drift; the end puts the
 // exact start back. Never on a maximized or full-screen window, nor with Reduce Motion; never a focus, a raise or a show.
-const SHAKE_STOPS = [[0, 0, 0], [45, 8, -5], [106, -7, 4], [168, 6, 5], [230, -8, -3], [291, 5, -4], [353, -4, 3], [414, 3, 2], [476, -2, -1], [560, 0, 0]];
+const SHAKE_STOPS = [[0,0,0], [45,7.7,-4.8], [92,-7.3,-3.7], [140,7,4.4], [191,-6.6,2.5], [243,6.2,-3.1], [298,-5.9,-2.2], [355,5.5,1.4], [414,-5.1,1.3], [475,4.7,-2.9], [538,-4.3,-2.1], [605,3.8,2.4], [673,-3.4,1.3], [745,3,-1.5], [819,-2.5,-1], [896,2.1,0.5], [977,-1.7,0.4], [1060,1.3,-0.8], [1147,-0.9,-0.4], [1237,0.5,0.3], [1330,-0.2,0.1], [1400,0,0]];
 const shakes = new Map(); // window -> { timer, start }
 let noticesHold = false; // the notices panel holds the screen (takeover, flames, DANGER's banner, the alarm): nothing shakes
 const reducedMotion = () => {
@@ -4576,7 +4576,7 @@ function shakeWin(win, amp) {
   const t0 = Date.now();
   const timer = setInterval(() => {
     const t = Date.now() - t0;
-    if (t >= 560 || win.isDestroyed() || !win.isVisible() || win.isMinimized() || win.isMaximized() || win.isFullScreen() || noticesHold) return stopShake(win);
+    if (t >= 1400 || win.isDestroyed() || !win.isVisible() || win.isMinimized() || win.isMaximized() || win.isFullScreen() || noticesHold) return stopShake(win);
     let i = 1;
     while (i < SHAKE_STOPS.length - 1 && SHAKE_STOPS[i][0] < t) i++;
     const [ta, xa, ya] = SHAKE_STOPS[i - 1], [tb, xb, yb] = SHAKE_STOPS[i];
@@ -4778,7 +4778,7 @@ function handleMessages(win, body) {
       }
       return true;
     }
-    // A nudge (nudge.ts): the chat window's own frame moves for 0.56 s, only when it is on screen and nothing holds the screen. The
+    // A nudge (nudge.ts): the chat window's own frame moves for 1.4 s, only when it is on screen and nothing holds the screen. The
     // page asks only for its own chat with the friend (`key`: only while it has the keyboard focus, else the card came and the
     // terminals or the map shake), or for the sender's half jolt.
     case 'shake':
