@@ -127,13 +127,13 @@ window.Social = (() => {
   const friend = (id) => (S ? S.friends.find((f) => f.id === id) : null);
   // What this app can show, told to the API on every connect (POST v1/social/caps; the API's live.ts CAPS): friends' nudge and
   // fire buttons grey out with "needs to update" for an app that doesn't say it (an older one), so nobody spends ORB for nothing.
-  // `nudge`: shows a nudge it gets. `attack-screen`: the full-screen ship attack, which the Windows app doesn't have yet (the same
+  // `nudge`: shows a nudge it gets. `attack-screen`: the full-screen ship attack (Mac and Windows both; the same
   // condition as attack.js SCREEN). `nudge-chat`: this app reports which chats are open (messages.js, POST v1/social/chats), so a
-  // friend's nudge only works while their chat with that friend is open; the Mac only for now (the Windows app shares these pages
-  // but keeps the nudge's card until its own port). Only the main page says it (the notices and chat panels share the app's connection).
-  const NUDGE_CHAT = window.__platform !== 'win32';
+  // friend's nudge only works while their chat with that friend is open (Mac and Windows both: Messages.swift / main.js chatSeen).
+  // Only the main page says it (the notices and chat panels share the app's connection).
+  const NUDGE_CHAT = true;
   // `attack-revenge`: a fire back shows even on do not disturb (attack.js arrive).
-  const CAPS = ['nudge', ...(NUDGE_CHAT ? ['nudge-chat'] : []), ...(window.__platform !== 'win32' ? ['attack-screen'] : []), 'attack-revenge'];
+  const CAPS = ['nudge', ...(NUDGE_CHAT ? ['nudge-chat'] : []), 'attack-screen', 'attack-revenge'];
   const announceCaps = () => {
     if (window.__MESSAGES_ROLE__) return;
     api('POST', 'v1/social/caps', { caps: CAPS }).catch(() => {});

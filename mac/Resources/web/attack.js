@@ -19,8 +19,7 @@
 //    for it, over whatever is in front (a full-screen app, another Space, the dashboard hidden, minimized or covered), so
 //    where the map or the dashboard is doesn't matter. This page only decides (do not disturb, one at a time, the lock
 //    and a cancel within it) and tells that page when (the radar handler's "attack" kinds lock, show, lost). If the attacker cancels during the lock, the strip says LOCK LOST and no ship comes.
-//    Windows has no screen show yet (SCREEN below): LOCKED ON, then DANGER with its alarm and the taunt about when the
-//    blast would be, nothing more.
+//    The Windows app shows the same (its main.js gives the notices window the whole display for place "attack").
 //  · Whoever was attacked is shielded for 30 minutes (nobody can fire at them): a small "Shielded · m:ss" chip on your
 //    own card and profile (shieldChip()).
 //  · Settings › Privacy "let friends fire spaceships at me" (`social.attacks`, kept with the account): off, nobody can
@@ -39,9 +38,9 @@ window.Attack = (() => {
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
   const sleep = (ms) => new Promise((ok) => setTimeout(ok, ms));
   const reduced = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
-  // The screen's show (attack-screen.js) is the Mac's for now (its panel place "attack", Messages.swift). The Windows app,
-  // until it has it too, gets the lock-on strip and then DANGER with its alarm, as its main.js relays them.
-  const SCREEN = window.__platform !== 'win32';
+  // The screen's show (attack-screen.js): the Mac (Messages.swift) and Windows (main.js) both give the notices panel the
+  // whole screen for it (its panel place "attack"). Kept as a switch for the fallback below (no show script, no show).
+  const SCREEN = true;
   // The cracks' timings on a friend's row (strike(), the attacker's side), in ms.
   const DMG = {
     crack: 220, // the cracks drawing out from the impact

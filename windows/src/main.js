@@ -2191,7 +2191,7 @@ function handleRadar(msg) {
       const delay = Number(msg.delay);
       const banner = {
         name: String(typeof msg.name === 'string' ? msg.name : '').slice(0, 40),
-        kind: msg.kind === 'lock' || msg.kind === 'lost' || msg.kind === 'hit' ? msg.kind : 'danger',
+        kind: msg.kind === 'lock' || msg.kind === 'lost' || msg.kind === 'hit' || msg.kind === 'show' ? msg.kind : 'danger',
         delay: Number.isFinite(delay) ? Math.min(Math.max(delay, 0), 5000) : 0,
         sound: msg.sound === true,
         avatar: String(typeof msg.avatar === 'string' ? msg.avatar : '').slice(0, 2048),
@@ -4400,6 +4400,13 @@ const panelBounds = new WeakMap();
 // A level-up or a new badge takes the screen (the notices' takeover): keys do nothing while it plays (as long as the page
 // asks, 4 s at most), then a key ends it (a badge's reveal jumps to its burst), as on the Mac (Messages.swift holds).
 const takeover = { on: false, lockedUntil: 0 };
+// A spaceship attack's overlay (place "attack") holds the whole display; this takes it down if the page never lets go.
+let attackGuard = null;
+function clearAttackGuard() {
+  if (attackGuard) clearTimeout(attackGuard);
+  attackGuard = null;
+}
+
 function panelWindow(role, friend) {
   const win = new BrowserWindow({
     width: 380, height: 140, frame: false, transparent: true, resizable: false, show: false, skipTaskbar: role === 'notices',
@@ -4420,6 +4427,8 @@ function panelWindow(role, friend) {
   win.webContents.on('render-process-gone', () => {
     panelWaiting.set(win, []);
     if (role === 'notices' && !win.isDestroyed()) {
+      clearAttackGuard();
+      noticesHold = false;
       win.setIgnoreMouseEvents(false);
       win.hide();
     }
@@ -4437,7 +4446,7 @@ function tellFocus() {
   // list (dashExposed), so its helper starts here, up by the time one comes (its first compile takes a few seconds).
   if (!focused && process.platform === 'win32') attackDesk.start();
   toNotices(`focus(${focused})`);
-  // Whether a chat is on screen depends on it too (the nudge: tellShowing).
+  // The open chats are told again too (tellShowing; the API hears only a change): a chat pinned to the dashboard goes with it.
   if (panels.chats.size) tellShowing();
   if (dash && !dash.isDestroyed()) toDash(`visibility(${dash.isVisible() && !dash.isMinimized()}, ${focused})`);
 }
@@ -4528,17 +4537,17 @@ function openWait(sid) {
   return openSession(sid, false);
 }
 
-// Whether the chat window is really on screen: shown, not minimized, and an Orbiterm window has the keys (Electron has no
-// occlusion state, so "the app is in front" stands in for "not covered"). A nudge shakes the chat only then; else its card comes.
+// Whether the chat window is on screen: shown and not minimized, keyboard focus or not, as on the Mac (Messages.swift chatSeen).
+// Its open tabs then count as open chats (messages.js reportChats, `nudge-chat`: a friend's nudge works only then). Electron has
+// no occlusion state, so a chat covered by another app or on another virtual desktop still counts (the Mac's doesn't).
 function chatSeen() {
   const w = panels.chats.get('chat');
-  return !!w && !w.isDestroyed() && w.isVisible() && !w.isMinimized() && !!BaseWindow.getFocusedWindow();
+  return !!w && !w.isDestroyed() && w.isVisible() && !w.isMinimized();
 }
-// The friend whose tab is in front (panels.front, the chat page's `showing`) while the chat window itself has the keyboard focus,
-// else null: only their nudge shakes the chat (any other brings the card, and the terminals or the map shake).
+// The friend whose tab is in front (panels.front, the chat page's `showing`) while the chat window is on screen (chatSeen, no
+// focus needed), else null, as on the Mac. Only an app without `nudge-chat` reads it.
 function chatFocused() {
-  const w = panels.chats.get('chat');
-  return !!w && !w.isDestroyed() && w.isVisible() && !w.isMinimized() && w.isFocused() ? panels.front || null : null;
+  return chatSeen() ? panels.front || null : null;
 }
 function tellShowing() {
   toNotices(`showing && __messages.showing(${JSON.stringify([...panels.showing])}, ${chatSeen()}, ${JSON.stringify(chatFocused())})`);
@@ -4708,7 +4717,8 @@ function handleMessages(win, body) {
       if (role === 'notices') {
         takeover.on = body.place === 'screen' && w >= 1 && h >= 1;
         if (!takeover.on) takeover.lockedUntil = 0;
-        noticesHold = w >= 1 && h >= 1 && (body.place === 'screen' || body.place === 'fire' || body.place === 'center');
+        noticesHold = w >= 1 && h >= 1 && (body.place === 'screen' || body.place === 'fire' || body.place === 'center' || body.place === 'attack');
+        if (body.place !== 'attack' || w < 1 || h < 1) clearAttackGuard();
       }
       if (role === 'chat') stopShake(win);
       if (w < 1 || h < 1) {
@@ -4734,8 +4744,32 @@ function handleMessages(win, body) {
       }
       if (role === 'notices') {
         const d = chatHome();
-        win.setIgnoreMouseEvents(body.place === 'fire', { forward: true });
-        if (body.place === 'screen') {
+        // The attack's overlay without `forward` (as Viktoria's, mascot.js): it would install a low-level mouse hook on this
+        // process for the whole show, and the page needs no hover there.
+        win.setIgnoreMouseEvents(body.place === 'fire' || body.place === 'attack', { forward: body.place !== 'attack' });
+        if (body.place === 'attack') {
+          // A friend's spaceship attack (attack-screen3d.js): the whole display, above everything (a full-screen app's windows
+          // too), every click going through, never focused or raised as the app's key window. A guard takes it down if the
+          // page never lets go of it (the Mac's attackGuard, 26 s).
+          win.setAlwaysOnTop(true, 'screen-saver');
+          // The display it took stays for the whole show (the page asks again at DANGER and for any notice meanwhile; with the
+          // dashboard away chatHome() follows the pointer, which would move the show to another display half way).
+          const on = screen.getDisplayMatching(win.getBounds());
+          const at = attackGuard && win.isVisible() ? on : d;
+          win.setBounds(at.bounds);
+          // Windows can size a window wrongly on its first move between displays of different scale (mascot.js): again, once.
+          if (on.scaleFactor !== at.scaleFactor) win.setBounds(at.bounds);
+          if (!win.isVisible()) win.showInactive();
+          if (!attackGuard) {
+            attackGuard = setTimeout(() => {
+              attackGuard = null;
+              noticesHold = false;
+              if (win.isDestroyed()) return;
+              win.setIgnoreMouseEvents(false);
+              win.hide();
+            }, 26_000);
+          }
+        } else if (body.place === 'screen') {
           win.setAlwaysOnTop(true, 'screen-saver');
           win.setBounds(d.bounds);
           win.show();
@@ -4778,11 +4812,11 @@ function handleMessages(win, body) {
       }
       return true;
     }
-    // A nudge (nudge.ts): the chat window's own frame moves for 1.4 s, only when it is on screen and nothing holds the screen. The
-    // page asks only for its own chat with the friend (`key`: only while it has the keyboard focus, else the card came and the
-    // terminals or the map shake), or for the sender's half jolt.
+    // A friend's nudge (nudge.ts): the chat window's own frame moves for 1.4 s, only when it is on screen (chatSeen, keyboard focus
+    // or not, as on the Mac) and nothing holds the screen; never a focus, a raise or a show. The page asks only when the friend's
+    // tab is open in it (in front or behind), the only place a nudge shows (`nudge-chat`: no card).
     case 'shake':
-      if (role === 'chat' && !noticesHold && chatSeen() && (!body.key || win.isFocused()) && Number(body.amp) > 0) shakeWin(win, Math.min(Number(body.amp), 1));
+      if (role === 'chat' && !noticesHold && chatSeen() && Number(body.amp) > 0) shakeWin(win, Math.min(Number(body.amp), 1));
       return true;
     // The nudge's card came up (the chat isn't on screen): the dashboard shakes by its own state.
     case 'nudgeShake':
