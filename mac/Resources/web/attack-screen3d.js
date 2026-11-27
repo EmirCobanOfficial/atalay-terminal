@@ -17,7 +17,7 @@
 // show is over the WebGL contexts are lost, the blob URLs revoked and the scene's code itself let go (its globals
 // deleted), so an idle page holds none of it. The next attack loads them again.
 // One clock (ms, scene3d's T): the lock-on is -1600..0 (attack.js LOCK_MS + HOLD_MS: the frame deploys, the cabin's red
-// alert), the ship 0..14500 (shots 5500/5670/5840, hits 5980/6150/6320, fly-by 8000, seal 11400-13800). The scene is made
+// alert), the ship 0..14500 (shots 5920/6090/6260, hits 60 ms later at 5980/6150/6320, fly-by 8000, seal 11400-13800). The scene is made
 // before any of it shows: lock() holds the lock-on back until the scene is ready (LOCK_WAIT at most; attack.js waits on the
 // promise lock() gives back before its strip and sound) and the clock starts there, at -1600. The dashboard's start()
 // comes 1.6 s after it sent the lock-on, so before 0 here: the ship never waits for it unless it's late (the picture holds
@@ -40,12 +40,16 @@
   // reduced motion too (no ship then).
   const SOUNDS = (T) => [
     { at: 0, name: 'attack-flyby', vol: 0.8 }, // the ship out of deep space
-    { at: T.SHOTS[0], name: 'attack-shot', vol: 0.9 }, // 5920, one sound per shot
-    { at: T.SHOTS[1], name: 'attack-shot', vol: 0.9 }, // 6090
-    { at: T.SHOTS[2], name: 'attack-shot', vol: 1 }, // 6260
-    { at: T.HITS[0], name: 'attack-crack', vol: 0.8 }, // 5980, the glass cracks on each hit (the shot lands 60 ms before)
-    { at: T.HITS[1], name: 'attack-crack', vol: 0.8 }, // 6150
-    { at: T.HITS[2], name: 'attack-crack', vol: 0.9 }, // 6320
+    // Silent: wakes the audio before the shots. Sfx rests its context between sounds (the fly-by ends at ~2.2 s) and waking
+    // it takes tens of ms, longer with Bluetooth output: the first shot and crack would come late on their frames. The crack
+    // (0.24 s, kept awake 0.3 s more) holds it awake until ~140 ms past the first shot, which then keeps it going.
+    { at: T.SHOTS[0] - 400, name: 'attack-crack', vol: 0 },
+    { at: T.SHOTS[0], name: 'attack-shot', vol: 0.85 }, // 5920, one sound per shot
+    { at: T.SHOTS[1], name: 'attack-shot', vol: 0.85 }, // 6090
+    { at: T.SHOTS[2], name: 'attack-shot', vol: 0.95 }, // 6260
+    { at: T.HITS[0], name: 'attack-crack', vol: 1 }, // 5980, the glass cracks on each hit (the shot lands 60 ms before)
+    { at: T.HITS[1], name: 'attack-crack', vol: 1 }, // 6150
+    { at: T.HITS[2], name: 'attack-crack', vol: 0.9 }, // 6320, under the boom
     { at: T.HITS[2], name: 'attack-boom', vol: 1, calm: true }, // 6320, the big hit
     { at: T.FLYBY, name: 'attack-flyby', vol: 0.4 }, // 8000
     { at: T.SEAL[0], name: 'attack-rebuild', vol: 0.7, calm: true }, // 11400, the glass seals
@@ -308,6 +312,8 @@
   function lock() {
     if (cur) endRun(cur);
     V1.lock();
+    // decoded now, not on the shot's frame (V1.lock() loads the old show's sounds only)
+    if (window.Sfx && Sfx.preload) ['attack-shot', 'attack-crack'].forEach((n) => Sfx.preload(n));
     if (failed || !webgl2()) return undefined; // the old show: its reticle closes now
     const root = layer();
     if (root) root.classList.add('v3'); // its reticle hidden (attack.css)
