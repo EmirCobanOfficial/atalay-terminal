@@ -2827,11 +2827,18 @@ function layoutFrame(f) {
     view.setVisible(!!r);
   }
   f.dividers = dividers;
-  // Each page: whether it's one of several (dimmed without the keys, as in iTerm2) and whether it has them.
-  const key = `${f.tabs.length}|${rects.size}|${f.focus}|${[...rects.keys()].join(',')}`;
+  // The window's one pin (it pins the whole window, as the Mac's HUD pin does): on the strip of the pane at the window's
+  // top right corner only, not once per pane.
+  let pinId = null;
+  for (const [id, r] of rects) {
+    const p = pinId && rects.get(pinId);
+    if (!p || r.y < p.y || (r.y === p.y && r.x + r.width > p.x + p.width)) pinId = id;
+  }
+  // Each page: whether it's one of several (dimmed without the keys, as in iTerm2), whether it has them, and the pin.
+  const key = `${f.tabs.length}|${rects.size}|${f.focus}|${[...rects.keys()].join(',')}|${pinId}`;
   if (key !== f.stateKey) {
     f.stateKey = key;
-    for (const [id, view] of f.views) send(view, 'term:pane', { tabs: f.tabs.length, panes: rects.size, split: panes.ids(shown).length > 1, shown: rects.has(id), focused: id === f.focus });
+    for (const [id, view] of f.views) send(view, 'term:pane', { tabs: f.tabs.length, panes: rects.size, split: panes.ids(shown).length > 1, shown: rects.has(id), focused: id === f.focus, pin: id === pinId });
   }
   pushBar(f);
 }

@@ -705,6 +705,12 @@
     pinEl.classList.toggle('on', on);
     pinEl.title = on ? 'Stop keeping this window above all other apps' : 'Keep this window above all other apps';
   };
+  // The pin is the window's, once (the Mac's HUD pin): in a split only the pane at the window's top right shows it
+  // (main.js layoutFrame, term:pane `pin`).
+  let pinHere = true;
+  const showPin = () => {
+    pinEl.hidden = !pinHere || typeof info.pinned !== 'boolean';
+  };
   atl.on('term:info', (got) => {
     const i = (info = got || {});
     tool = i.tool || null;
@@ -765,8 +771,8 @@
     if (spark.length) drawSpark(spark);
     // Copy the last reply (once there's one to copy), and keep the window on top.
     document.getElementById('copyreply').hidden = i.canCopyReply !== true;
-    pinEl.hidden = typeof i.pinned !== 'boolean';
-    if (!pinEl.hidden) setPin(i.pinned);
+    if (typeof i.pinned === 'boolean') setPin(i.pinned);
+    showPin();
     tick();
     drawAcct(i.acct, i.status);
     fitHud();
@@ -973,6 +979,9 @@
     const several = !!p && p.panes > 1;
     document.body.classList.toggle('pane-split', several);
     document.body.classList.toggle('pane-off', several && !p.focused);
+    pinHere = !p || p.pin !== false;
+    showPin();
+    fitHud();
   });
   let renaming = false;
   const renameTitle = () => {
